@@ -999,7 +999,8 @@ Structural metric只决定proposal访问顺序；不同结构、replica、传播
 
 Spatial的方向游标从已验证的完整起点改变一个root。按迭代域工作量和semantic key排序root并轮转，
 按参与切分的轴集合分组，先每组访问一个代表，再访问该组的其它BalancedParts比例；factor乘积不超过可用Tile数，
-包含未占满Tile的合法点。组内按Tile利用率、现有operand重复读取指标和完整轴元组排序，仅生成当前组的紧凑参数，
+包含未占满Tile的合法点。组内首先保留高Tile利用率代表，其次访问逻辑重复读取最少的代表，再继续其它比例，
+平局按完整轴元组排序，仅生成当前组的紧凑参数，
 不预生成全图组合。原canonical/reuse/双向传播起点与方向点交错；新方向再经同一IndexRelation双向传播，保留raw兄弟。
 原AxisSchemes与AllPlacements完整raw游标仍在上述优先提案之后继续，不因采样而删除合法空间。
 各Spatial的局部实际可行结果可作为其融合refinement中心，不要求成为全局winner；暂未可行时继续普通Region游标，
@@ -1025,8 +1026,11 @@ Controller接收每个实际leaf的typed结果；leaf更新与结构域关闭分
 只有阶段完成且其实际IR已验证后才yield；重复layout解和无后继的Region只推进查询游标，同样不能在一次调用内无界遍历。
 没有actual结果的yield与域穷尽分别用typed continuation表达；外层只给实际结果记候选数，
 未完成物化暂时禁止结构替换。capacity repair排队和正在物化的owner具有不同保留原因，不能互相覆盖。
-外层按启动顺序轮转活动S/F，每轮各推进一个实际leaf，再引入一个新S/F；阶段yield继续当前leaf，不改变候选顺序。
-每个session同时只推进一个基础Temporal前缀；各closure分支先比较Peer与实际可用的SharedDDR，结束后才选下一T。
+外层探索通道按启动顺序轮转活动S/F，再引入一个新S/F；无可行结果时与容量修复交错，
+已有可行结果时每三个实际leaf优先两个局部改进和一个探索/修复。空通道让出机会，阶段yield继续当前leaf，不推进配额。
+每个session同时只推进一个基础Temporal前缀；尚未可行时各closure先比较Peer与实际可用的SharedDDR。
+接受后可将该实际前缀及尚未比较的transport/closure游标移入单个realization槽，立即释放下一T的改进机会。
+其中未准备的closure仍消费同一实际Temporal输入，全部layout-input物化后释放不再需要的Temporal checkpoint。
 共享、流水、通信算法等可选域无需全部耗尽即可释放基础前缀。单个局部realization anchor保留最佳可行或尚未可行的实际输入，
 其中FirstUse与LoopInvariant共享唯一只读layout-input、query和assignment；各自需要时物化、轮转一个leaf。
 每session的实际模块数是固定层数，所有活动session按O(width)增长，不再每session嵌套保留width份Temporal IR。
@@ -1091,20 +1095,22 @@ Public limits只有`width`和`trials`，默认8/42。`width`限制同时保留�
 `OptimizationConfig::search(SearchLimits)`。不另设每结构Temporal上限，也不在首个可行Temporal后停止。
 同一source、target和width的更大trials延续同一确定性序列，已找到的最佳actual objective始终保留。
 
-调度轮转探索、容量修正、候选改进三类工作，每类每轮最多一个实际尝试，空类跳过。探索先给不同结构入口，
+调度轮转探索、容量修正、候选改进三类工作，按上述有界配额服务，空类跳过。探索先给不同结构入口，
 再遍历参数；容量修正优先最早开始且仍有实际证据的修正链，配额用完只暂停；改进对保留候选提出成组邻域。
 Spatial seed之后交错访问axis tuple的规范placement witness与完整raw placement cursor；二者按完整typed choice去重。
 轴投影复用同一domain successor和closure，不改变raw集合。Region/layout/movement各保留实际checkpoint并逐leaf轮转，
 某个完整布局的所有后继不会阻止另一个Region closure获得首次尝试。
 尚无可行leaf的分支同样必须获得续跑：新结构与已保留的Explore分支交错，不能每次容量反馈无法定位就只启动新结构。
-Joint/Independent各自保留全extent和合法整数区间向下逐层中点，作为独立远处探索入口；
+Joint/Independent各自保留全extent和按域下界截断的逐层减半尺度，作为独立远处探索入口；
 这些提案不冒充近邻，也不以sqrt统一压缩所有维度。
-不同结构session按确定性的启动顺序轮转数值尺度和单轴/协调/多轴组合。每个结构的Joint入口先保留完整extent，
-保证融合与未融合结构不会因只试到碎tile而失去可比较的起点；Independent入口先试其分配的全tuple数值样本，
+不同结构session使用相同的逐层减半尺度，启动顺序不参与尺寸选择。每个结构的Joint入口先保留完整extent，
+保证融合与未融合结构不会因只试到碎tile而失去可比较的起点；Independent入口先试一次减半的数值样本，
 完整extent与只修改FullExtentOnly所在scope的提案仍在后续队列内。两类入口交错，避免尚未修改的独立scope始终保持完整尺寸。
 当前scope的FullExtentOnly非单位尺寸也可为其它维度提供远处提案，再通过现有多结果映射协调消费者；
-只使用已存在的kernel extent，不按模型名选择尺寸，不以该尺寸推断SPM容量或限制整数近邻。启动顺序只排序显式choice，不恢复任何IR语义；
-它与trials无关，同一更大预算继续同一前缀。Joint/Independent种子交错，所有尺度与组合均保留。
+只使用已存在的kernel extent，不按模型名选择尺寸，不以该尺寸推断SPM容量或限制整数近邻。
+每层保留按operand访问不变性排列的单轴批量方向、协调与多轴方向；容量关联内也按复用损失排序兄弟，
+可行点放大时优先高复用方向。逻辑重复需求不是实际DDR字节数、SPM预测或剪枝条件；未知访问不删除原方向。
+提案顺序与trials无关，同一更大预算继续同一前缀。Joint/Independent种子交错，所有尺度与组合均保留。
 调用协调查询前先补齐新尺寸对应的loop order并验证typed choice，避免查询拒绝而静默漏掉多结果状态协调。
 多结果producer和唯一consumer另从actual result/input projected-permutation maps提出协调参数：共同迭代维度使用一致tile，
 仅部分结果携带的广播维度保留完整长度，使已有共同输出遍历可被选择。原参数仍保留；区间样本只作普通候选，
@@ -1139,15 +1145,16 @@ replica输入与mandatory输入分别验证all-and-only，多个replica读取同
 组合邻域覆盖Spatial与producer/use/通信、Region融合与Temporal/驻留、layout与转换位置/共享、tile与双缓冲流水。
 Region proposal的全合并标签若因不连通等结构约束不可构造，使用同一合法合并序列的最终分组作为融合入口；
 不能只保留该序列的中间样本而丢失最终合法融合方案。该入口与baseline、replica先于合并数量采样，raw domain不变。
-Temporal普通探索保留全extent、每scope仅改变最大可切轴、全可切轴区间中点及协调状态的组合。
-只缩小一轴的入口保留其它轴的复用与指令粒度，避免所有维度一起缩小产生大量小指令；按extent和轴序确定顺序，
+Temporal普通探索保留全extent、每scope各可切轴的批量方向、全可切轴减半及协调状态的组合。
+只缩小一轴的入口保留其它轴的复用与指令粒度，避免所有维度一起缩小产生大量小指令；按访问不变性、extent和轴序确定顺序，
 不使用SPM估算或算子/模型名。所有入口仍经typed domain、actual transformation、verifier和同一actual leaf。
 同一参数入口先访问已有的基础DDR/Peer transport备选，再访问其共享输入/流水组合，不能将组合插到尚未访问的另一transport之前。
 结构session内部轮转独立参数探索、actual容量修正、可执行参数的整数改进和已物化前缀的后续layout/movement，
-向外层报告下一项实际工作类别。每个数值tuple先让基础Peer/DDR各获得一次实际尝试，再扩展accepted数值近邻；
+向外层报告下一项实际工作类别。尚未可行的tuple先完成基础Peer/DDR比较；接受后原实际前缀保留未访问的transport，
+与accepted数值近邻交错；
 失败类型仍保留，标量反馈只来自其中已接受的结果，不偏向某种transport。`TemporalProposals`只保存未修改结构域的typed choice、数值提案及已观测标量，
 不保存buffer、SPM或completion事实；accepted executable仍交给原controller持有。
-可执行参数先生成全部可切坐标及各scope轴批次的增减方向，每轴步长取当前尺寸的一半并限制在原合法域；
+可执行参数先生成各scope轴批次、再生成全部可切坐标的增减方向，每轴步长取当前尺寸的一半并限制在原合法域；
 随后轮转独立轴粗邻居、±1与对齐精化、两轴一增一减及已有合法顺序的相邻交换。各方向从同一原anchor开始，不继承兄弟点的缩小。
 当前indexing map明确对应Cx channel轴时补target block边界及两侧；布局几何只排序，不选择布局或排除非对齐点。
 细粒度探测改善后距离按1、2、4扩展，较远点变差时补未证明间隙。批次、独立轴及成对组合都按需生成完整参数向量。

@@ -1046,3 +1046,99 @@ runtime一次分配验证通过，65536记录和16MiB上限不变。18项AllGath
 一次实卡AllToAll 1031尾部FP16、none、TileRowPointerTable：**16,496个输出全部与PyTorch exact一致，设备5.123 ms**，16 Tile
 completion及正常清理完成。该时间记录运行恢复资格，不作为本项加速比。SDK provider使用canonical库重新编译，无全局环境修改。
 证据见[`shared-ddr-entry-arguments-20260913.json`](data/board-performance/shared-ddr-entry-arguments-20260913.json)。
+
+## 2026-09-14：复用排序、容量反馈与搜索调度
+
+目标是恢复同配置 LLaMA `[1,16,4096]`、MLP11008、FP16 的历史约17 ms，并保持完整 PyTorch 比较。
+历史17.635 ms与最近91.415 ms产物的实际DDR read分别为474,011,200和3,301,864,448 bytes；
+这为复用和碎块搬运提供了明确优先级，但不同软件身份不能直接用作本次单改动加速比。
+
+本轮将当前operand访问不变性共享给Spatial和Temporal提案排序，保留各轴与原父点的兄弟方向；
+去掉结构启动序号隐式决定减半深度的规则。可行候选立即进入改进游标，未访问的后端选择保留实际输入；
+输入共享分别记录查询、eligible、排队和实际执行，继续经过原completion/SPM/target门禁。
+
+| 主机修订，width8/trials42 | accepted | Explore / Repair 参数组 | 输入共享 eligible / 实际执行 | 产品结果 |
+| --- | ---: | ---: | ---: | --- |
+| 首次复用排序与调度 | 0 | 11 / 6 | 39 / 0 | 无可行候选，无package |
+| 修复服务比例与新失败/旧兄弟交错 | 0 | 6 / 7 | 32 / 3 | 无可行候选，无package |
+
+上述早期两次都未恢复上一提交的默认产品资格，不能称作性能优化成功。参数轨迹显示深层容量修复仍会被后来浅层失败
+抢占：首个结构多数方向只减半一层，后端兄弟也消耗实际试次。当前继续修正有证据的修复链推进与多层调度，
+保留换轴和其它结构的访问机会；不存在“已发现共享就等于已经生成DTE”的结论。
+上述试次均未执行板卡，完整compiler与日志摘要、计数保存在
+[`reuse-guided-search-20260914.json`](data/board-performance/reuse-guided-search-20260914.json)。
+
+继续对照修复链深度排序后，42与126次仍均无accepted；126次共115个容量拒绝、11个unsupported，
+只进入36组Temporal参数，其中19组Repair。首个结构的4组投影仍逐次暴露冲突，多次完整编译只修到部分投影。
+这说明预算和调度不是全部原因。
+
+实际分配器代码确认：单独超大allocation会提前返回，原clique cover也在首个容量证书后返回。
+现已在同一actual conflict graph的原遍历中收集全部已发现证据；同一clique按size顺序继续收集不相交的超容量前缀，
+防止一个巨大buffer遮住其余冲突。返回的是已证实allocation的去重并集，其bytes总和不是同时存活峰值。
+不增加clique枚举、重复solver或预计SPM判断。固定问题/排列oracle与实际多Region、1024/1025/1031的32项定向验证通过，
+其中修正前返回精确冲突集合，缩小后的对应IR通过同一memory gate。
+
+### 最终默认预算与实卡结果
+
+最终compiler `becefed1b4b2366affc0688d02dd126326c62b1ec052612c8fb33dc43d988eba`，
+相同LLaMA输入/输出`[1,16,4096]`、MLP11008、FP16、seed20260803，仍使用width8/trials42。
+本轮完整source导出、PyTorch eager reference、payload、prepared source逐文件一致性、package和no-card通过；
+随后原统一runner完成一次实卡launch，16 Tile全部completion、回读及正常清理成功。
+**设备14.179 ms；65,536个输出全部通过PyTorch，最大绝对误差0.0009765625，rtol=0.002、atol=0.004。**
+这已低于历史目标17.635 ms。输入raw SHA与最近91.415001 ms及历史17.635 ms样本一致。
+
+| 同配置、默认42次 | 前一提交 | 本轮最终实现 |
+| --- | ---: | ---: |
+| accepted / capacity / unsupported | 3 / 35 / 4 | 9 / 33 / 0 |
+| 首个accepted（从1计数） | 24 | 23 |
+| 胜出actual DDR read bytes | 3,301,864,448 | 451,372,608 |
+| 胜出actual DDR write bytes | 17,744,000 | 30,319,296 |
+| 胜出动态指令数 | 1,087,265 | 38,064 |
+| 胜出DDR地址连续段 | 2,799,392 | 159,040 |
+| 胜出actual IR估时 | 71.248 ms | 3.211 ms |
+| 实卡tx-stream-events单次计时 | 91.415001 ms | 14.179 ms |
+
+已检查的投影GEMM从M2/N32/K512恢复为M16/N256/K2048；这些尺寸由通用域和实际容量反馈搜索得到，
+没有写成模型规则。FP16输入、FP32 partial与末次GEMM直接输出FP16的既有数值合同不变。
+根因链是：首个容量证据提前返回使独立scope逐轮暴露 → 新浅层失败和后端组合挤占修复链 → 小块候选先获可行资格，
+却未获得足够改进机会。修复在同一actual conflict graph中汇总已证实的冲突，交错深层修复与原兄弟方向；
+外层每三个实际leaf给修复或可行改进两个优先服务机会，保留其它结构探索，stage yield不消耗该份额。
+访问不变性仅决定提案顺序，实际allocator、completion与scalar objective继续决定合法性和赢家。
+
+最终共5个结构session、12组Temporal提案（Explore7、Repair4、Improve1），单session基础Temporal前缀峰值1、IR模块峰值9。
+只读输入共享39次查询、27次eligible并排队、3次实际物化、0次accepted；胜出Instr中没有Direct DTE。
+不能将此次收益归因于通信，也不能因本轮unsupported为0就声称历史completion环已修复。
+主机compiler transaction 1078.498秒，进程wall17:59.64、峰值RSS2,740,468 KiB；当前接受并评分的候选更多，
+主机编译时间没有恢复到上一提交638.808秒的水平，不将设备性能改善表述为编译提速。
+
+定向实际容量/排列oracle32项、完整Planning/Transforms/Driver三个组件、本轮canonical完整增量构建及随后Ninja no-op通过。
+第一轮其它41项注册search产品中39项通过，两项conv mixed-DAG在第39次候选暴露动态Subview物化故障；
+下段记录其修复与最终复验。4K prefill未执行设备。
+这是普通tx-stream-events单次计时，未增加Primary/Count/Trace批次；实际IR流量与指令数支持根因判断，
+但不能分摊各个改动的设备收益，也不把历史不同compiler版本称为单变量A/B。
+完整package、compiler/runtime/runner哈希、数值audit与早期失败记录见同一JSON。
+
+### 产品回归暴露的动态Subview物化缺口
+
+conv mixed-DAG FP16/BF16均已有23次accepted，但后续候选在`BoundaryMovement::materializeSubviewLoad`中失败，
+使整个搜索退出。根因是末级view仍有SSA动态extent，旧实现创建DDR view后因SPM目标类型非静态而返回compiler failure。
+这不是容量证据，也不是前面23个可执行候选失去合法性；单纯增加预算会更容易触发这个未实现分支。
+
+通用修复使用实际DDR view的`memref.dim`作为局部allocation的dynamic size，普通和rank-reduced view均保持正确维序。
+使用标准[memref.dim/alloc语义](https://mlir.llvm.org/docs/Dialects/MemRef/)及pinned实现的Subview维度折叠，
+不增加上界估算、完整carrier分配、数值改写或新布局选择。动态Tile IR先通过verifier，再由原descriptor与SPM gate判断支持范围；
+未知动态descriptor仍明确拒绝该候选，不将unsupported提升成整个搜索的内部错误。
+
+rank3、1024/1025/1031与rank reduction回归在修复前稳定重现相同错误；修复后exact size SSA、allocation owner、load shape及
+physical Tile verifier通过，下游保持预期的动态descriptor拒绝。原4/16 Tile静态main/tail加载矩阵继续通过Instr/completion/SPM。
+最终修复版compiler `5de4a1fc362c2e1e07610ba82bcb4e81bac1ecd82ad1223662aa13b27b68cb7c`已通过完整增量构建和Ninja no-op；
+再次执行完整Transforms/Driver组件均通过，41项注册search产品全部通过，没有skip/unsupported测试结果，
+另行运行的LLaMA FP16完成fresh source/reference/payload/package/no-card，合计42/42。
+FP16/BF16 conv mixed-DAG分别174.42/66.66秒，LLaMA BF16为1200.72秒；这些为主机产品wall，不是设备耗时。
+
+最终LLaMA FP16编译transaction1179.633秒、进程wall19:40.87、峰值RSS2,789,868 KiB，
+仍得到同样9次accepted、33次capacity、0次unsupported。与其它主机回归并行执行，不据此前后wall差推断单项回归。
+最终manifest/data/module与上段14.179 ms实测包逐文件SHA完全相同；重新导出的14个source文件、输入raw与expected raw也逐文件一致。
+因此同一实际设备程序的性能/数值资格继续适用；本轮只有一次实际launch，没有把这次编译与no-card写成第二次板测。
+最终包manifest SHA为`968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e`，
+各编译器、package、日志、fresh输入及唯一板端audit的对应关系见同一JSON。主机开销、其它模型性能与完整预算曲线仍未闭合。

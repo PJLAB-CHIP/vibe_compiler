@@ -252,6 +252,53 @@ TEST(MiniMallocPackingTest,
   EXPECT_EQ(result.capacityConflictDemandIndices.front(), 2u);
 }
 
+TEST(MiniMallocPackingTest, ReportsIndependentCliquesAlongsideOversizedDemand) {
+  // Tiny fixed-problem oracle; the live IR counterpart uses rank-three
+  // 1024/1025/1031 allocations and the canonical memory gate.
+  for (bool reverse : {false, true})
+    for (bool connected : {false, true}) {
+      StaticPackingProblem problem;
+      problem.arena = ArenaRange{0, 5};
+      problem.demands = {makeDemand(3, 1, 0), makeDemand(3, 1, 1),
+                         makeDemand(3, 1, 2), makeDemand(3, 1, 3),
+                         makeDemand(6, 1, 4), makeDemand(1, 1, 5)};
+      problem.conflicts = {PackingConflict{0, 1}, PackingConflict{2, 3}};
+      if (connected) {
+        problem.conflicts.clear();
+        for (unsigned lhs = 0; lhs < 5; ++lhs)
+          for (unsigned rhs = lhs + 1; rhs < 5; ++rhs)
+            problem.conflicts.push_back({lhs, rhs});
+      }
+      if (reverse) {
+        std::reverse(problem.demands.begin(), problem.demands.end());
+        for (auto &conflict : problem.conflicts) {
+          const unsigned lhs = 5 - conflict.rhsDemandIndex;
+          conflict.rhsDemandIndex = 5 - conflict.lhsDemandIndex;
+          conflict.lhsDemandIndex = lhs;
+        }
+      }
+      auto result = solveWithMiniMalloc(problem, /*searchNodeBudget=*/0);
+      ASSERT_EQ(result.status, PackingStatus::ProvenInfeasible);
+      EXPECT_EQ(result.searchNodes, 0u);
+      EXPECT_FALSE(hasExhaustivePacking(problem));
+      std::vector<unsigned> ordinals;
+      for (unsigned index : result.capacityConflictDemandIndices)
+        ordinals.push_back(problem.demands[index].stableOrdinal);
+      llvm::sort(ordinals);
+      EXPECT_EQ(ordinals, (std::vector<unsigned>{0, 1, 2, 3, 4}));
+      ASSERT_EQ(result.individuallyOversizedDemandIndices.size(), 1u);
+      EXPECT_EQ(
+          problem.demands[result.individuallyOversizedDemandIndices.front()]
+              .stableOrdinal,
+          4u);
+      problem.arena.end = connected ? 18 : 6;
+      auto feasible = packStaticMemory(problem);
+      ASSERT_TRUE(feasible.succeeded());
+      EXPECT_TRUE(hasExhaustivePacking(problem));
+      EXPECT_FALSE(validatePlacements(problem, feasible.placements));
+    }
+}
+
 TEST(MiniMallocPackingTest,
      InterleavedComponentsReuseNonzeroBaseWithoutCrossCoupling) {
   StaticPackingProblem problem;

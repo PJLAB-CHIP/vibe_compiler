@@ -27,10 +27,22 @@
 
 本节依据2026-09-13的代码、实际容量诊断和已有profile复核安排遗留工作，全部属于原`board-testing`。
 当前总状态和直接前置仍以[`progress`](../progress.md)为准；用户已要求完成前7步。第1步共用修复已通过变换回归，
-第2步已补共享reader、已选逐点融合及跨Region输入归因；第3步有界调度已实施，本轮全部默认search产品完成package/no-card。
+第2步已补共享reader、已选逐点融合及跨Region输入归因；第3步有界调度已实施，上一提交的全部默认search产品完成package/no-card。
 LLaMA默认预算首个可行解在第24次，14次预算仍无可行解；一次实卡PyTorch通过、91.415 ms仅恢复运行资格，性能仍未恢复。
 用户要求优先恢复基本可用性，本次在受影响主机门禁后提前重签该非风险产品的数值资格；不代签第5—7步。
 整体尚未完成。第8步风险设备测试不在本轮执行范围。
+2026-09-14已达到用户要求的同配置LLaMA历史约17 ms目标：本轮默认8/42得到9次accepted，
+完整fresh package/no-card及一次FP16实卡通过，设备14.179 ms、65,536个输出全部满足原PyTorch容差。
+通用修复包括访问不变性排序、修复/改进服务与其它结构探索交错，以及唯一allocator汇总原遍历已发现的容量证据；
+不按workload选择轴，不提高预算、不强制DTE。早期无可行候选修订保留为失败记录，不能与最终结果混用。
+Planning/Transforms/Driver组件及完整构建/no-op通过；动态Subview修复后再次通过完整Transforms/Driver，
+41项注册search产品及独立LLaMA FP16共42项完成本轮fresh package/no-card，无skip/unsupported测试结果。
+实际IR、编译wall/RSS、设备身份、结果及限制统一记录在性能文档；其它模型profile与完整预算曲线仍属未闭合边界。
+产品复验进一步暴露conv mixed-DAG两种dtype的动态Subview加载物化缺口：有效动态extent未传入allocation，
+导致后续候选使整个搜索退出。现按08号current-SSA合同保留其dynamic size，已有静态加载路径不变；
+两种dtype均已恢复默认预算package/no-card。最终LLaMA包的manifest/data/module与14.179 ms实测包逐文件相同，
+fresh source、输入与reference也精确一致；本轮共一次实际设备launch，不把相等性证明记作第二次板测。
+最终并行回归期间LLaMA编译wall19:40.87、峰值RSS2,789,868 KiB；主机编译开销仍未闭合。
 下方2026-09-12方案及更早表格保留各自版本的实现和验证记录，不再单独决定施工顺序，也不代签本轮验收。
 
 已完成的循环子集状态、嵌套提升和必执行路径分析保留原资格；本轮GEMM数值通过不代表LLaMA/conv或设备性能已闭合。

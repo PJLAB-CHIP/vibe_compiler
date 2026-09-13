@@ -29,6 +29,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -347,7 +348,12 @@ public:
           ++statistics->temporalBackpressureTurns;
         TemporalWork work = nextTemporalWork();
         if (!continuing) {
-          temporalPhase = (static_cast<unsigned>(work) + 1) % 4;
+          auto order = temporalWorkOrder();
+          for (unsigned offset = 0; offset < order.size(); ++offset)
+            if (order[(temporalPhase + offset) % order.size()] == work) {
+              temporalPhase = (temporalPhase + offset + 1) % order.size();
+              break;
+            }
           currentContinuation =
               work == TemporalWork::Repair ? CandidateContinuation::Repair
               : work == TemporalWork::Improve || work == TemporalWork::Resume
@@ -436,11 +442,23 @@ public:
                         "search-boundary-movement",
                         "selected algorithm has no current component");
       } else {
-        if (!choice.shareInput && !choice.pipeline &&
-            hasReadOnlyInputSharing(*candidate->module)) {
-          MovementChoice shared = choice;
-          shared.shareInput = true;
-          attempt.movements.push_back(std::move(shared));
+        if (!choice.shareInput && !choice.pipeline) {
+          if (statistics)
+            ++statistics->inputSharingQueries;
+          if (hasReadOnlyInputSharing(*candidate->module)) {
+            if (statistics) {
+              ++statistics->inputSharingEligible;
+              ++statistics->inputSharingQueued;
+            }
+            MovementChoice shared = choice;
+            shared.shareInput = true;
+            // Keep the base transport comparison, then serve proven input
+            // reuse before unrelated algorithm combinations of this point.
+            attempt.movements.insert(
+                attempt.movements.begin() +
+                    std::max(attempt.nextMovement, attempt.baseMovements),
+                std::move(shared));
+          }
         }
         if (choice.shareInput) {
           if (statistics)
@@ -591,6 +609,7 @@ public:
       if (choice.options.components.empty())
         temporal.observedTransports.insert(choice.options.transport);
       if (hasActualSPMCapacityRejection(compiled)) {
+        temporal.capacityObserved |= !capacityFeedback.coordinates.empty();
         bool refined = proposals->observeCapacity(temporal.choices,
                                                   capacityFeedback.coordinates);
         if (statistics) {
@@ -609,14 +628,35 @@ public:
           attempt.bestDuration = attempt.bestDuration
                                      ? std::min(*attempt.bestDuration, duration)
                                      : duration;
+          proposals->observeAccepted(temporal.choices, duration);
         }
       }
-      if (temporal.realizationOnly) {
+      if (!temporal.realizationOnly && compiled.isAccepted() &&
+          (!realization || !realization->bestDuration ||
+           (temporal.bestDuration &&
+            *temporal.bestDuration < *realization->bestDuration))) {
+        // Expose improvement immediately. The unvisited transport/closure
+        // siblings retain this very same actual prefix in the one realization
+        // slot; they no longer block another Temporal point. The executable
+        // itself is handed to the controller below, never reconstructed.
+        RegionAttempt invariant;
+        invariant.layoutInput = attempt.layoutInput;
+        invariant.placement = LayoutMaterializationPlacement::LoopInvariant;
+        invariant.merged = attempt.merged;
+        temporal.regions.push_back(std::move(invariant));
+        temporal.realizationOnly = true;
+        realization.emplace(std::move(temporal));
+        pending.pop_front();
+      } else if (temporal.realizationOnly) {
         if (temporal.bestDuration)
           proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
         auto visited = std::move(temporal.regions.front());
         temporal.regions.pop_front();
         temporal.regions.push_back(std::move(visited));
+        if (llvm::all_of(temporal.regions, [](const auto &region) {
+              return bool(region.layoutInput);
+            }))
+          temporal.tiled = {};
         realization.emplace(std::move(temporal));
         pending.pop_front();
       } else {
@@ -630,20 +670,27 @@ private:
   enum class Stage { SelectTemporal, PrepareRegion, EvaluateMovement };
   enum class TemporalWork { Proposal, Repair, Improve, Resume };
 
+  std::array<TemporalWork, 4> temporalWorkOrder() const {
+    return hasAcceptedCandidate
+               ? std::array{TemporalWork::Improve, TemporalWork::Resume,
+                            TemporalWork::Repair, TemporalWork::Proposal}
+               : std::array{TemporalWork::Repair, TemporalWork::Repair,
+                            TemporalWork::Proposal, TemporalWork::Resume};
+  }
+
   TemporalWork nextTemporalWork() {
     // Finish a bounded base comparison before starting another Temporal IR.
     if (!pending.empty())
       return TemporalWork::Resume;
     for (unsigned offset = 0; offset < 4; ++offset) {
-      auto work = static_cast<TemporalWork>((temporalPhase + offset) % 4);
+      auto work = temporalWorkOrder()[(temporalPhase + offset) % 4];
       if ((work == TemporalWork::Proposal && proposals &&
            proposals->prepareNext(TemporalProposalKind::Explore)) ||
           (work == TemporalWork::Repair && proposals &&
            proposals->prepareNext(TemporalProposalKind::Repair)) ||
           (work == TemporalWork::Improve && proposals &&
            proposals->prepareNext(TemporalProposalKind::Improve)) ||
-          (work == TemporalWork::Resume && realization &&
-           (hasAcceptedCandidate || !proposals->hasCapacityRoundInProgress())))
+          (work == TemporalWork::Resume && realization))
         return work;
     }
     return TemporalWork::Proposal;
@@ -690,6 +737,7 @@ private:
     std::set<BoundaryMovementTransport> observedTransports;
     std::optional<uint64_t> bestDuration;
     bool realizationOnly = false;
+    bool capacityObserved = false;
   };
 
   static bool appendMixedMovement(RegionAttempt &attempt) {
@@ -791,9 +839,9 @@ private:
     for (const auto &axis : axes)
       domains.push_back(&axis.domain);
     proposals.emplace(std::move(domains));
-    proposals->seed(joint, explorationStratum);
+    proposals->seed(joint);
     if (hasFusion)
-      proposals->seed(independent, explorationStratum);
+      proposals->seed(independent);
     return std::nullopt;
   }
 
@@ -1094,8 +1142,14 @@ private:
       invariant.layoutInput = region.layoutInput;
       invariant.placement = LayoutMaterializationPlacement::LoopInvariant;
       invariant.merged = region.merged;
-      anchor.regions.push_back(std::move(invariant));
+      const bool sharingQueued = llvm::any_of(
+          llvm::ArrayRef(region.movements).drop_front(region.nextMovement),
+          [](const auto &movement) { return movement.shareInput; });
       anchor.regions.push_back(std::move(region));
+      if (sharingQueued)
+        anchor.regions.push_back(std::move(invariant));
+      else
+        anchor.regions.push_front(std::move(invariant));
       realization.emplace(std::move(anchor));
     }
     pending.pop_front();
@@ -1137,7 +1191,10 @@ private:
     recordOwnership();
     stage = Stage::SelectTemporal;
     const auto status = classifyActualStatus(compiled.status);
-    hasAcceptedCandidate |= compiled.isAccepted();
+    if (!hasAcceptedCandidate && compiled.isAccepted()) {
+      hasAcceptedCandidate = true;
+      temporalPhase = 0;
+    }
     if (status == ActualCandidateStatus::CompilerBug ||
         compiled.failureScope ==
             ExecutableFailureScope::StructuralChoiceInvariant ||
@@ -1161,8 +1218,11 @@ private:
       result.compilation.emplace(std::move(compiled));
     TemporalWork next = nextTemporalWork();
     return {std::move(result), 1,
-            exhausted                      ? CandidateContinuation::Exhausted
-            : next == TemporalWork::Repair ? CandidateContinuation::Repair
+            exhausted ? CandidateContinuation::Exhausted
+            : next == TemporalWork::Repair ||
+                    (next == TemporalWork::Resume && !pending.empty() &&
+                     !hasAcceptedCandidate && pending.front().capacityObserved)
+                ? CandidateContinuation::Repair
             : next == TemporalWork::Improve ||
                     (next == TemporalWork::Resume && hasAcceptedCandidate)
                 ? CandidateContinuation::Improve
@@ -1399,6 +1459,9 @@ ExecutableCompilationResult compileSearchCurrentIR(
     searchCounter("shared-ddr-accepted", statistics->sharedDDRAccepted);
     searchCounter("input-sharing-candidates",
                   statistics->inputSharingCandidates);
+    searchCounter("input-sharing-queries", statistics->inputSharingQueries);
+    searchCounter("input-sharing-eligible", statistics->inputSharingEligible);
+    searchCounter("input-sharing-queued", statistics->inputSharingQueued);
     searchCounter("input-sharing-accepted", statistics->inputSharingAccepted);
   }
   if (statistics) {

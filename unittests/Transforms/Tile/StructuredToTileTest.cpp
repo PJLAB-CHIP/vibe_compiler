@@ -4497,6 +4497,78 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
       }
 }
 
+TEST_F(StructuredToTileTest, DDRSubviewLoadsPreserveDynamicExtentSSA) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool rankReduced : {false, true}) {
+      const std::string shape =
+          (rankReduced ? "1x2x" : "2x") + std::to_string(extent) + "x64xf16";
+      const std::string tensor = "tensor<" + shape + ">";
+      const std::string ddr =
+          "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+      const std::string spm =
+          "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+      const std::string window = "memref<2x?x64xf16, strided<[" +
+                                 std::to_string(extent * 64) +
+                                 ", 64, 1]>, #wafer.memory<spm, tensor>>";
+      const std::string owned =
+          "memref<2x?x64xf16, #wafer.memory<spm, tensor>>";
+      const std::string offsets = rankReduced ? "0, 0, 0, 0" : "0, 0, 0";
+      const std::string sizes =
+          rankReduced ? "1, 2, %size, 64" : "2, %size, 64";
+      const std::string strides = rankReduced ? "1, 1, 1, 1" : "1, 1, 1";
+      auto module =
+          parse("module { wafer.tile.module card_id = 0 tile_id = 0 { "
+                "func.func @entry(%arg: " +
+                ddr +
+                ", %count: index) { "
+                "%tensor = bufferization.to_tensor %arg restrict : " +
+                ddr + " wafer.tile.region(%tensor, %count : " + tensor +
+                ", index) -> () { "
+                "^bb0(%input: " +
+                tensor +
+                ", %size: index): "
+                "%spm = bufferization.to_memref %input : " +
+                spm + " %view = memref.subview %spm[" + offsets + "] [" +
+                sizes + "] [" + strides + "] : " + spm + " to " + window +
+                " %dst = memref.alloc(%size) : " + owned +
+                " wafer.tile.copy_into %view into %dst : " + window + " into " +
+                owned + " wafer.tile.yield } return } } }");
+      ASSERT_TRUE(module);
+      StructuredMaterializationRelations relations;
+      rebuildCurrentBufferOwnerRelations(*module, relations);
+      ASSERT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(movement.statistics.ddrLoads, 1u);
+      EXPECT_EQ(countOps<StorageLoadOp>(module->getOperation()), 1u);
+      module->walk([&](StorageLoadOp load) {
+        auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
+        ASSERT_TRUE(allocation);
+        EXPECT_EQ(allocation.getType().getShape(),
+                  (llvm::ArrayRef<int64_t>{2, mlir::ShapedType::kDynamic, 64}));
+        ASSERT_EQ(allocation.getDynamicSizes().size(), 1u);
+        auto region = load->getParentOfType<TileRegionOp>();
+        EXPECT_EQ(allocation.getDynamicSizes().front(),
+                  region.getBody().getArgument(1));
+        auto view = load.getSource().getDefiningOp<mlir::memref::SubViewOp>();
+        ASSERT_TRUE(view);
+        EXPECT_EQ(view.getType().getShape(), allocation.getType().getShape());
+        EXPECT_EQ(view.getSourceType().getRank(), rankReduced ? 4 : 3);
+        EXPECT_TRUE(llvm::any_of(relations.buffers, [&](const auto &owner) {
+          return owner.buffer == allocation.getResult() && owner.owner;
+        }));
+      });
+      ASSERT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+      // Dynamic allocation/load IR is valid. The existing descriptor consumer
+      // still rejects an unknown extent; this does not certify SPM capacity.
+      auto tile = *module->getOps<TileModuleOp>().begin();
+      auto entry = *tile.getOps<mlir::func::FuncOp>().begin();
+      auto region = *entry.getOps<TileRegionOp>().begin();
+      TileRegionToInstrLoweringSession session(*context);
+      EXPECT_TRUE(mlir::failed(convertTileRegionToInstr(region, session)));
+    }
+}
+
 TEST_F(StructuredToTileTest, RegionClosureIncludesOnlyPureLocalDependencies) {
   for (bool effect : {false, true}) {
     auto module = parse(makeSplitExchangeSource(1031));

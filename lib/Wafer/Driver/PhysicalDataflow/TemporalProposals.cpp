@@ -2,6 +2,7 @@
 
 #include "TemporalProposals.h"
 
+#include "Wafer/Planning/PhysicalDataflow/OperandReuse.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 
@@ -9,6 +10,7 @@
 
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <cassert>
@@ -194,29 +196,58 @@ bool TemporalProposals::materializeProbe(Probe probe,
   return changed && append(std::move(next), kind, std::move(probe));
 }
 
-void TemporalProposals::seed(const std::vector<TemporalChoice> &initial,
-                             size_t stratum) {
+void TemporalProposals::rankGroups(const std::vector<TemporalChoice> &choices,
+                                   std::vector<std::vector<Coordinate>> &groups,
+                                   bool shrinking) const {
+  for (auto &group : groups) {
+    const auto first = group.front();
+    const auto &scope = choices[first.domain].scopes[first.scope];
+    auto operands = getReadOperandProjections(scope.operation);
+    llvm::SmallVector<uint64_t> reuse(scope.iteratorTileSizes.size(), 0);
+    if (operands)
+      for (const auto &operand : *operands)
+        for (size_t axis = 0; axis < reuse.size(); ++axis)
+          if (axis < operand.iterators.size() && !operand.iterators.test(axis))
+            reuse[axis] = llvm::SaturatingAdd(reuse[axis], operand.bytes);
+    // Missing evidence leaves the ordinary size/axis order intact. These
+    // logical bytes never describe an allocation or authorize a rewrite.
+    llvm::sort(group, [&](Coordinate a, Coordinate b) {
+      if (reuse[a.iterator] != reuse[b.iterator])
+        return shrinking ? reuse[a.iterator] < reuse[b.iterator]
+                         : reuse[a.iterator] > reuse[b.iterator];
+      auto sizeA = scope.iteratorTileSizes[a.iterator];
+      auto sizeB = scope.iteratorTileSizes[b.iterator];
+      if (sizeA != sizeB)
+        return sizeA > sizeB;
+      return a < b;
+    });
+  }
+}
+
+void TemporalProposals::seed(const std::vector<TemporalChoice> &initial) {
   SeedFamily family{initial, coordinates(initial), {}};
   size_t levels = 0;
   for (Coordinate coordinate : family.coordinates) {
-    if (family.largest.empty() ||
-        family.largest.back().domain != coordinate.domain ||
-        family.largest.back().scope != coordinate.scope)
-      family.largest.push_back(coordinate);
-    else if (bounds(initial, coordinate).upper >
-             bounds(initial, family.largest.back()).upper)
-      family.largest.back() = coordinate;
+    if (family.groups.empty() ||
+        family.groups.back().front().domain != coordinate.domain ||
+        family.groups.back().front().scope != coordinate.scope)
+      family.groups.emplace_back();
+    family.groups.back().push_back(coordinate);
     const auto interval = bounds(initial, coordinate);
     int64_t size = initial[coordinate.domain]
                        .scopes[coordinate.scope]
                        .iteratorTileSizes[coordinate.iterator];
     size_t depth = 0;
     while (size > interval.lower) {
-      size = interval.lower + (size - interval.lower) / 2;
+      size = std::max(interval.lower, size / 2);
       ++depth;
     }
     levels = std::max(levels, depth);
   }
+  rankGroups(initial, family.groups, true);
+  size_t maximumAxes = 0;
+  for (const auto &group : family.groups)
+    maximumAxes = std::max(maximumAxes, group.size());
   const size_t index = seedFamilies.size();
   seedFamilies.push_back(std::move(family));
   const bool independent = llvm::all_of(initial, [](const auto &choice) {
@@ -225,14 +256,13 @@ void TemporalProposals::seed(const std::vector<TemporalChoice> &initial,
   std::deque<SeedPoint> fresh{{index, 0, SeedVariant::Full}};
   if (!independent)
     fresh.push_back({index, 0, SeedVariant::Kernel});
-  const std::array variants{SeedVariant::Largest, SeedVariant::Coupled,
-                            SeedVariant::All};
-  for (size_t offset = 0; offset < levels; ++offset) {
-    const size_t level = (stratum % levels + offset) % levels + 1;
-    for (size_t variant = 0; variant < variants.size(); ++variant)
-      fresh.push_back(
-          {index, level,
-           variants[(stratum % variants.size() + variant) % variants.size()]});
+  // Every structural family starts at the same coarse scale. The source
+  // access relation orders axes; a structural ordinal cannot shrink them.
+  for (size_t level = 1; level <= levels; ++level) {
+    for (size_t axis = 0; axis < maximumAxes; ++axis)
+      fresh.push_back({index, level, SeedVariant::Axis, axis});
+    fresh.push_back({index, level, SeedVariant::Coupled});
+    fresh.push_back({index, level, SeedVariant::All});
   }
   if (independent && fresh.size() > 1) {
     fresh.push_back(fresh.front());
@@ -292,14 +322,18 @@ bool TemporalProposals::appendSeedPoint() {
       if (!changed)
         continue;
     } else if (point.variant != SeedVariant::Full) {
-      const auto &selected = point.variant == SeedVariant::Largest
-                                 ? family.largest
-                                 : family.coordinates;
+      std::vector<Coordinate> selected;
+      if (point.variant == SeedVariant::Axis) {
+        for (const auto &group : family.groups)
+          selected.push_back(group[point.axis % group.size()]);
+      } else {
+        selected = family.coordinates;
+      }
       for (Coordinate coordinate : selected) {
         const auto interval = bounds(next, coordinate);
         int64_t &size = value(next, coordinate);
         for (size_t level = 0; level < point.level; ++level)
-          size = interval.lower + (size - interval.lower) / 2;
+          size = std::max(interval.lower, size / 2);
       }
     }
     if (point.variant == SeedVariant::Coupled ||
@@ -349,6 +383,7 @@ void TemporalProposals::observeAccepted(
       poll.groups.emplace_back();
     poll.groups.back().push_back(coordinate);
   }
+  rankGroups(choices, poll.groups, false);
   improvementPolls.push_back(std::move(poll));
   // A combination may improve even when every one-coordinate move worsens.
   // Its admission is independent of the single-coordinate observations.
@@ -369,14 +404,14 @@ bool TemporalProposals::advanceImprovementPoll() {
     bool preserveOrder = false;
     std::optional<std::vector<TemporalChoice>> next;
     if (poll.batch < 2 * (maximumAxes + 1)) {
-      const int direction = poll.batch % 2 == 0 ? -1 : 1;
+      const int direction = poll.batch % 2 == 0 ? 1 : -1;
       const size_t axis = poll.batch++ / 2;
-      if (!axis)
+      if (axis == maximumAxes)
         for (auto coordinate : poll.coordinates)
           changes.emplace_back(coordinate, direction);
       else
         for (const auto &group : poll.groups)
-          changes.emplace_back(group[(axis - 1) % group.size()], direction);
+          changes.emplace_back(group[axis % group.size()], direction);
     } else {
       bool selected = false;
       for (size_t offset = 0; offset < 4 && !selected; ++offset) {
@@ -541,6 +576,7 @@ bool TemporalProposals::observeCapacity(
   }
   if (poll.coordinates.empty())
     return false;
+  rankGroups(choices, poll.groups, true);
   if (!firstCapacityAnchor) {
     firstCapacityAnchor = *index;
     poll.initialRound = true;
@@ -551,8 +587,21 @@ bool TemporalProposals::observeCapacity(
 
 bool TemporalProposals::appendCapacityDirection() {
   while (!capacityPolls.empty()) {
-    auto poll = std::move(capacityPolls.front());
-    capacityPolls.pop_front();
+    auto selectedPoll = capacityPolls.begin();
+    if (preferFreshCapacity) {
+      // Advance the deepest observed repair chain alongside older siblings.
+      // Arrival order alone lets a later ordinary/shallow failure repeatedly
+      // displace the next step of an already advancing capacity repair.
+      for (auto candidate = capacityPolls.begin();
+           candidate != capacityPolls.end(); ++candidate)
+        if (candidate->batch == 0 &&
+            (selectedPoll->batch != 0 ||
+             entries[candidate->anchor].repairDepth >=
+                 entries[selectedPoll->anchor].repairDepth))
+          selectedPoll = candidate;
+    }
+    auto poll = std::move(*selectedPoll);
+    capacityPolls.erase(selectedPoll);
     size_t maximumAxes = 0;
     for (const auto &group : poll.groups)
       maximumAxes = std::max(maximumAxes, group.size());
@@ -589,6 +638,8 @@ bool TemporalProposals::appendCapacityDirection() {
       size = std::max(bounds(next, coordinate).lower, size / 2);
     }
     // Appending new feedback never displaces the unvisited sibling directions.
+    const uint64_t depth =
+        llvm::SaturatingAdd(entries[poll.anchor].repairDepth, uint64_t(1));
     capacityPolls.push_back(std::move(poll));
     auto previous = find(next);
     const bool queued = append(std::move(next), TemporalProposalKind::Repair);
@@ -598,8 +649,11 @@ bool TemporalProposals::appendCapacityDirection() {
       if (index && !entries[*index].taken)
         firstCapacityPending.insert(*index);
     }
-    if (queued)
+    if (queued) {
+      entries.back().repairDepth = depth;
+      preferFreshCapacity = !preferFreshCapacity;
       return true;
+    }
   }
   return false;
 }

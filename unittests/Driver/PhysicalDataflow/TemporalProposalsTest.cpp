@@ -167,6 +167,68 @@ TEST(TemporalProposalsTest, CapacityNewEvidenceCombinesWithoutLosingAxes) {
   }
 }
 
+TEST(TemporalProposalsTest, NewConflictsAdvanceAlongsideOriginalSiblings) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = makePointwise(*context, extent, 64);
+    auto built = buildTemporalDomain(regionOf(*module));
+    ASSERT_TRUE(built.succeeded());
+    TemporalProposals proposals({&*built.domain});
+    std::vector<TemporalChoice> initial{
+        *built.domain->getFirstChoice().getChoice()};
+    ASSERT_TRUE(proposals.visitRaw(initial));
+    ASSERT_TRUE(proposals.observeCapacity(initial, {{0, 0, 1}, {0, 0, 2}}));
+    auto first = proposals.take(TemporalProposalKind::Repair);
+    ASSERT_TRUE(proposals.observeCapacity(first, {{0, 0, 1}, {0, 0, 2}}));
+    auto sibling = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(sibling[0].scopes[0].iteratorTileSizes[1], extent / 2);
+    EXPECT_EQ(sibling[0].scopes[0].iteratorTileSizes[2], 64);
+    auto deeper = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(deeper[0].scopes[0].iteratorTileSizes[1], extent / 4);
+    EXPECT_EQ(deeper[0].scopes[0].iteratorTileSizes[2], 16);
+    auto other = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(other[0].scopes[0].iteratorTileSizes[1], extent);
+    EXPECT_EQ(other[0].scopes[0].iteratorTileSizes[2], 32);
+    for (const auto &point : {first, sibling, deeper, other})
+      EXPECT_TRUE(built.domain->contains(point[0]));
+  }
+}
+
+TEST(TemporalProposalsTest, LaterShallowFailuresDoNotDisplaceRepairDepth) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = makePointwise(*context, extent, 64);
+    auto built = buildTemporalDomain(regionOf(*module));
+    ASSERT_TRUE(built.succeeded());
+    TemporalProposals proposals({&*built.domain});
+    std::vector<TemporalChoice> initial{
+        *built.domain->getFirstChoice().getChoice()};
+    ASSERT_TRUE(proposals.visitRaw(initial));
+    const std::set<TemporalCoordinate> affected{{0, 0, 1}, {0, 0, 2}};
+    ASSERT_TRUE(proposals.observeCapacity(initial, affected));
+    auto first = proposals.take(TemporalProposalKind::Repair);
+    ASSERT_TRUE(proposals.observeCapacity(first, affected));
+    proposals.take(TemporalProposalKind::Repair); // Original parent sibling.
+    auto deeper = proposals.take(TemporalProposalKind::Repair);
+    ASSERT_TRUE(proposals.observeCapacity(deeper, affected));
+    auto shallow = proposals.take(TemporalProposalKind::Repair);
+    ASSERT_TRUE(proposals.observeCapacity(shallow, affected));
+    auto next = proposals.take(TemporalProposalKind::Repair);
+    EXPECT_EQ(next[0].scopes[0].iteratorTileSizes[1], extent / 8);
+    EXPECT_EQ(next[0].scopes[0].iteratorTileSizes[2], 8);
+    EXPECT_TRUE(built.domain->contains(next[0]));
+    // Shallow feedback remains represented; selecting its newest arrival
+    // instead would restart at extent/2 and 16, losing this advancing chain.
+    bool retained = false;
+    while (proposals.prepareNext(TemporalProposalKind::Repair)) {
+      auto sibling = proposals.take(TemporalProposalKind::Repair);
+      retained |= sibling[0].scopes[0].iteratorTileSizes[1] == extent / 2 &&
+                  sibling[0].scopes[0].iteratorTileSizes[2] == 16;
+    }
+    EXPECT_TRUE(retained);
+  }
+}
+
 TEST(TemporalProposalsTest, CapacityBatchesScopesAndRetainsMixedChoices) {
   auto context = createContext();
   for (int64_t extent : {1024, 1025, 1031}) {
@@ -269,22 +331,20 @@ TEST(TemporalProposalsTest,
     TemporalProposals proposals({&*a.domain, &*b.domain});
     ASSERT_TRUE(proposals.visitRaw(initial));
     proposals.observeAccepted(initial, 100);
-    auto lower = proposals.take(TemporalProposalKind::Improve);
-    auto upper = proposals.take(TemporalProposalKind::Improve);
-    for (size_t domain = 0; domain < 2; ++domain) {
-      EXPECT_EQ(lower[domain].scopes[0].iteratorTileSizes[1], 128);
-      EXPECT_EQ(lower[domain].scopes[0].iteratorTileSizes[2], 256);
-      EXPECT_EQ(upper[domain].scopes[0].iteratorTileSizes[1], 384);
-      EXPECT_EQ(upper[domain].scopes[0].iteratorTileSizes[2], 768);
-    }
     bool exchange = false, order = false, independent = false;
-    size_t visited = 2;
+    bool batchLower = false, batchUpper = false;
+    size_t visited = 0;
     while (proposals.prepareNext(TemporalProposalKind::Improve)) {
       auto point = proposals.take(TemporalProposalKind::Improve);
       ASSERT_LT(++visited, 1000u); // Finite neighborhood; no feedback is added.
       EXPECT_TRUE(a.domain->contains(point[0]));
       EXPECT_TRUE(b.domain->contains(point[1]));
       const auto &sizes = point[0].scopes[0].iteratorTileSizes;
+      const auto &other = point[1].scopes[0].iteratorTileSizes;
+      batchLower |= sizes[1] == 128 && sizes[2] == 256 && other[1] == 128 &&
+                    other[2] == 256;
+      batchUpper |= sizes[1] == 384 && sizes[2] == 768 && other[1] == 384 &&
+                    other[2] == 768;
       exchange |= sizes[1] == 128 && sizes[2] == 768 && point[1] == initial[1];
       independent |=
           sizes[1] == 128 && sizes[2] == 512 && point[1] == initial[1];
@@ -292,6 +352,7 @@ TEST(TemporalProposalsTest,
                point[0].scopes[0].loopOrder != initial[0].scopes[0].loopOrder;
     }
     EXPECT_TRUE(exchange && order && independent);
+    EXPECT_TRUE(batchLower && batchUpper);
   }
 }
 
@@ -314,8 +375,7 @@ TEST(TemporalProposalsTest, CapacityCannotShrinkAnUnrelatedLargerDimension) {
   }
 }
 
-TEST(TemporalProposalsTest,
-     StructuralStrataChangeOrderWithoutDroppingFamilies) {
+TEST(TemporalProposalsTest, SeedsStartAtOneHalvingAndRetainAxesAndFamilies) {
   auto context = createContext();
   for (int64_t extent : {1024, 1025, 1031}) {
     auto module = makePointwise(*context, extent, 64);
@@ -325,10 +385,10 @@ TEST(TemporalProposalsTest,
     auto initial = *domain.domain->getFirstChoice().getChoice();
     auto independent = *domain.domain->getFirstIndependentChoice().getChoice();
     std::vector<TemporalChoice> reference;
-    for (size_t stratum : {0, 1, 4, 100}) {
+    for (unsigned repetition = 0; repetition < 2; ++repetition) {
       TemporalProposals proposals({&*domain.domain});
-      proposals.seed({initial}, stratum);
-      proposals.seed({independent}, stratum);
+      proposals.seed({initial});
+      proposals.seed({independent});
       std::vector<TemporalChoice> points;
       while (proposals.prepareNext(TemporalProposalKind::Explore)) {
         auto point = proposals.take(TemporalProposalKind::Explore)[0];
@@ -341,20 +401,86 @@ TEST(TemporalProposalsTest,
       EXPECT_EQ(points[1].kind, TemporalTraversalKind::Independent);
       EXPECT_EQ(points[0], initial);
       EXPECT_FALSE(points[1] == independent);
+      EXPECT_EQ(points[1].scopes[0].iteratorTileSizes[1], extent / 2);
+      EXPECT_EQ(points[1].scopes[0].iteratorTileSizes[2], 64);
       EXPECT_TRUE(llvm::is_contained(points, independent));
-      if (!stratum) {
+      if (!repetition) {
         EXPECT_EQ(points[0], initial);
         reference = points;
       } else {
-        ASSERT_EQ(reference.size(), points.size());
-        for (const auto &point : reference)
-          EXPECT_TRUE(llvm::is_contained(points, point));
-        if (stratum == 1 || stratum == 4) {
-          EXPECT_FALSE(reference[2] == points[2]);
-        }
+        EXPECT_EQ(reference, points);
       }
+      EXPECT_TRUE(llvm::any_of(points, [&](const auto &point) {
+        const auto &sizes = point.scopes[0].iteratorTileSizes;
+        return sizes[1] == extent && sizes[2] == 32;
+      }));
     }
   }
+}
+
+TEST(TemporalProposalsTest,
+     AccessInvarianceOrdersSeedsRepairAndGrowthAcrossAxisPermutations) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool permuted : {false, true})
+      for (bool strided : {false, true}) {
+        const std::string m = std::to_string(extent);
+        const std::string input =
+            strided ? "tensor<1x2062x64xf16>" : "tensor<1x1031x64xf16>";
+        const std::string output =
+            "tensor<1x" + (permuted ? "1031x" + m : m + "x1031") + "x64xf16>";
+        const std::string order = permuted ? "b,n,m,k" : "b,m,n,k";
+        const std::string access = strided ? "b,2*n,k" : "b,n,k";
+        const std::string body =
+            "%e = tensor.empty() : " + output +
+            "\n%value = linalg.generic {indexing_maps = [affine_map<(" + order +
+            ")->(" + access + ")>, affine_map<(" + order + ")->(" + order +
+            ")>], iterator_types = "
+            "[\"parallel\",\"parallel\",\"parallel\",\"parallel\"]} "
+            "ins(%arg : " +
+            input + ") outs(%e : " + output +
+            ") { ^bb0(%x: f16, %old: f16): linalg.yield %x : f16 } -> " +
+            output;
+        auto module = parse(*context, body, input, output);
+        ASSERT_TRUE(module);
+        auto built = buildTemporalDomain(regionOf(*module));
+        ASSERT_TRUE(built.succeeded());
+        auto initial = *built.domain->getFirstChoice().getChoice();
+        const size_t reusedAxis = permuted ? 2 : 1;
+        const size_t varyingAxis = permuted ? 1 : 2;
+        TemporalProposals proposals({&*built.domain});
+        proposals.seed({initial});
+        EXPECT_EQ(proposals.take(TemporalProposalKind::Explore)[0], initial);
+        auto seed = proposals.take(TemporalProposalKind::Explore);
+        EXPECT_EQ(seed[0].scopes[0].iteratorTileSizes[reusedAxis], extent);
+        EXPECT_EQ(seed[0].scopes[0].iteratorTileSizes[varyingAxis], 515);
+        EXPECT_TRUE(built.domain->contains(seed[0]));
+
+        ASSERT_TRUE(proposals.observeCapacity(
+            {initial}, {{0, 0, reusedAxis}, {0, 0, varyingAxis}}));
+        // The batched all-related point remains available. A queued ordinary
+        // seed may already own the first single-axis sibling.
+        auto repair = proposals.take(TemporalProposalKind::Repair);
+        EXPECT_EQ(repair[0].scopes[0].iteratorTileSizes[reusedAxis],
+                  extent / 2);
+        EXPECT_EQ(repair[0].scopes[0].iteratorTileSizes[varyingAxis], 515);
+        bool restored = false;
+        while (proposals.prepareNext(TemporalProposalKind::Repair)) {
+          auto point = proposals.take(TemporalProposalKind::Repair);
+          restored |=
+              point[0].scopes[0].iteratorTileSizes[reusedAxis] == extent / 2 &&
+              point[0].scopes[0].iteratorTileSizes[varyingAxis] == 1031;
+        }
+        EXPECT_TRUE(restored);
+
+        proposals.observeAccepted(repair, 100);
+        auto growth = proposals.take(TemporalProposalKind::Improve);
+        EXPECT_GT(growth[0].scopes[0].iteratorTileSizes[reusedAxis],
+                  extent / 2);
+        EXPECT_EQ(growth[0].scopes[0].iteratorTileSizes[varyingAxis], 515);
+        EXPECT_EQ(growth[0].scopes[0].iteratorTileSizes[3], 64);
+        EXPECT_TRUE(built.domain->contains(growth[0]));
+      }
 }
 
 TEST(TemporalProposalsTest,

@@ -2,8 +2,9 @@
 
 本方案属于唯一的 `board-testing` work item，细化
 [`board-performance-optimization.md`](board-performance-optimization.md) 的容量反馈与搜索组织两步。
-状态以 [`progress.md`](../progress.md) 为准。用户已授权按本方案推进完成；当前先实施多轴容量修正和候选调度，
-再推进结构覆盖与性能搜索。既有测试不作为新实现的完成证据；设备验证在本轮主机/package/no-card门禁之后。
+状态以 [`progress.md`](../progress.md) 为准。用户已授权按本方案推进完成；多轴容量修正、复用排序与候选调度已实施，
+全部默认search产品完成本轮package/no-card，同配置LLaMA完成PyTorch实卡及历史性能目标。
+具体结果见性能记录。完整预算曲线、主机开销及其它模型性能边界仍按主计划管理，不由单个模型代签。
 
 ## 目标、输入与输出
 
@@ -24,7 +25,7 @@
 是三个不同边界，均不能单独代替 package/no-card 成功。有限预算不承诺任意输入全局最优或必定发现所有可行点；
 规定 workload 在默认预算无法产出产品，仍按验收失败处理。
 
-## 代码核对与方法选择
+## 初轮实现前的代码核对与方法选择
 
 | 已确认的现状 | 对方案的约束 |
 | --- | --- |
@@ -44,6 +45,14 @@
 | [Halide GPU](https://arxiv.org/abs/2012.07145) 的结构分组与代表采样 | 先覆盖切分方向与融合结构，再细化相似参数 | 按推算热点永久冻结算子，以及跨 IR epoch 的 schedule cache |
 | [Ansor](https://www.usenix.org/conference/osdi20/presentation/zheng) 的分层空间与后续精化 | 结构选择与数值参数分层，避免早期巨大笛卡尔积 | 演化种群、训练及额外调参框架 |
 | [NOMAD](https://nomad-4-user-guide.readthedocs.io/en/latest/Introduction.html) 的 search/poll 与尺度细化 | 单轴、联合方向和由粗到细的离散邻域 | 直接声称本仓非单调离散合法域具备 MADS 的数学收敛保证 |
+
+当前落实复用导向的提案与预算调度。共同算法依据还包括
+[Timeloop 的计算到数据投影](https://timeloop.csail.mit.edu/v4/input-formats/problem)：
+从实际 operand 的访问映射证明迭代维度不变性，而不是根据 GEMM、attention 或模型名称指定保留轴。
+逻辑重复需求只用于提案排序；实际加载、驻留、通信、completion 与容量仍由物化后的 IR 决定。
+只读输入及读取旧值的 destination 均按实际 payload use 分析；不支持的访问关系保留普通方向，不能当成零成本证明。
+同一 scope 内优先缩小损失复用较少的轴，放大时反向排序；平局依次按尺寸和 iterator 顺序确定。
+Spatial 继续保留不同切分方向以及共享友好的重复输入方向，不按独立 DDR 假设删除通信机会。
 
 ## 空间表达与 pipeline 顺序
 
@@ -85,7 +94,8 @@ PBQP 是对当前输入的布局求解器，默认不作为另一个由 outer se
    `1 <= p_i <= E_i`、`product(p_i) <= 可用 Tile 数`，继续使用现有精确 uneven 区间和 tail。
    不只枚举占满所有 Tile 的方案；UniformExtent、其它合法 placement、merge placement 保留 raw cursor。
 2. 按“哪些轴的 factor 大于1”分组。组按参与轴数和稳定 iterator 顺序惰性产生；每组先给一个代表，
-   再给同组不同 factor 比例。组内优先 Tile 利用率及现有源级 operand 重复读取指标；这些指标只排序，不能剪枝 SPM。
+   再给同组不同 factor 比例。组内首先保留高 Tile 利用率代表，其次访问逻辑重复读取最少的代表，随后继续其它比例；
+   前者保留可能通过通信获益的方向，后者不被相近的高利用率比例淹没。这些指标只排序，不能剪枝 SPM。
 3. 对完整图，先保留现有 canonical/reuse/双向传播起点。新增方向从完整 Spatial choice 改一个 root，
    再用现有 producer-first/consumer-first IndexRelation 传播与 closure 形成完整候选。
    按当前迭代域工作量排序 root，稳定 semantic key 打破平局；不同 root 的方向游标轮转，避免右侧 root 的数值后继耗尽预算。
@@ -115,6 +125,8 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
 实际 `TemporalDomain` 是参数来源。Tileable 轴继续覆盖原合法整数域，FullExtentOnly 保持完整；
 现有 exact reshape 限制、Joint/Independent 的参数推导和 loop precedence 继续有效。
 起点保留完整 extent、现有协调 state 入口及 Independent 数值入口；混合 traversal kind 的 raw 域不能因种子简单而消失。
+Joint/Independent 的数值尺度统一从一次减半开始，按层推进，不再用结构 session 序号旋转到 `/8` 等远处尺度。
+每层按复用损失排序各 scope 的单轴批量方向，再保留协调与全部可切轴方向；所有方向是同一父点的兄弟。
 
 容量粗搜索对选中的每个坐标使用自己的新值：`h(t_i) = max(lower_i, floor(t_i / 2))`，
 再验证完整 choice。不能给不同长度轴减去同一个 distance，也不能越过 domain 下界。
@@ -138,6 +150,12 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
 | 后续尺度与交换 | N/K各自更小尺度，或 N 增大且 K 减小 | 不能只允许所有轴持续变小 |
 
 容量关联只决定 Repair 的坐标集合。没有 M 的关联不对 M 声称因果修正；M 的普通探索仍存在。
+唯一actual allocator在原conflict graph遍历中保留所有已发现超容量clique的因果allocation，而非只返回第一个。
+否则多个独立Region的已存在冲突会被迫逐次重新编译才暴露，调度加深也无法消除这种串行反馈开销。
+不引入预计allocation、未来冲突或另一个容量判断；具体证据合同由09号拥有。
+方法仍沿用[MiniMalloc的固定问题搜索](https://research.google/pubs/minimalloc-a-lightweight-memory-allocator-for-hardware-accelerated-machine-learning/)，
+不改其canonical DFS或穷举极小不满足子集。只对原adapter已经构造、逐边验证的clique，按实际size/稳定次序线性收集
+互不相交的超容量前缀；每段都是该current graph的独立证据，未满的余项不能因此进入修复反馈。
 实际DMA来源相同、且全部structural reader的operand map都已证明时，关联集合允许覆盖多个scope；
 不把多reader本身当作来源未知，也不从其中任选一个假装唯一owner。存在无法分析的reader时不补归因。
 若另一次实际失败给出新的关联，生成新的修正方向；Unknown 不通过 shape 或“最大 tensor”补归因。
@@ -148,7 +166,7 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
 容量回调已经能合并各 Tile 的已证明坐标。按 `(domain, scope)` 保留每组关联轴，并生成两类批量方向：
 
 1. 所有已关联且可缩小的坐标各减半，作为较快抵达可行区域的方向；无关 scope 不修改。
-2. 每个受影响 scope 各选一个关联轴减半，各组按自己的稳定轴序轮转；保留原 anchor，
+2. 每个受影响 scope 各选一个关联轴减半，各组按复用损失、尺寸及稳定轴序轮转；保留原 anchor，
    使 N方向/K方向等兄弟候选能在一轮实际编译中同时处理多个失败 Tile。
 
 第二类只是在一个完整 choice 中同时调整多组独立参数，不证明不同 scope 的“第0轴”语义相同。
@@ -169,6 +187,10 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
   新失败 anchor 追加到队尾，不挤掉旧 anchor 尚未访问的轴。
 - 单轴方向和成组方向都应在继续穷尽某根轴之前获得访问。独立单坐标与更高阶组合惰性扩展，
   一次单轴失败不关闭组合；普通探索保证无法精确归因的 scope 仍能推进。
+- 修复揭示新的实际冲突时，将新冲突的首个批量方向与旧父点的未访问兄弟交错；不让所有旧父点的浅层方向
+  挡住修正深度。证据来自每次 actual allocator，不能外推尚未发生的冲突或提前修正其它输入。
+  首个批量方向优先已有修复链较深的失败点；深度只计实际容量反馈触发的已选修正步数，不估计剩余容量。
+  普通探索后来产生的浅层失败不能反复替换该推进机会，同深度优先较新反馈；旧父点仍由交错的FIFO通道服务。
 - 已有局部可行结果：围绕该点轮转各轴的增大/缩小、适用对齐邻居、恢复另一轴及成对交换。
   一轮无改善就缩小数值步长；改善后以实际新点作为 anchor，保留尚未访问的 sibling。
   新容量失败仍进入修正游标；持平/变差不证明邻域或组合不可行。
@@ -181,15 +203,21 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
 
 默认仍为 `width=8、trials=42`，不再增加每轴、每模型或每结构固定试次参数。
 
-1. 活动结构从一个 S/F 起点开始，按启动顺序轮转。每一外层轮次让当前活动结构各推进一个实际 leaf，
-   轮末尝试引入一个新 S/F。width 是上限，不能在首个结果前先物化 width 份重型程序。
+1. 活动结构从一个 S/F 起点开始；探索通道按启动顺序轮转，轮末尝试引入一个新 S/F。
+   无可行结果时每三个实际评估轮次优先两次最早活动结构的容量修复、一次探索；已有可行结果后，
+   同样优先两次局部改进、一次探索或修复。实际容量失败点尚未完成的基础比较属于修复推进，不伪装成新结构探索。
+   尚未完成首轮粗修正的结构保留这项服务，即使其本地游标下一步暂为普通提案或实现比较；否则内外两层配额相乘，
+   会再次延迟同一修复链。具体leaf仍按自己的Explore/Repair/realization类别记账。
+   空通道交给其它工作，阶段 yield 不推进轮次。width 是上限，不能在首个结果前先物化 width 份重型程序。
 2. 每个实际 pre-layout 分支默认只做一次 PBQP。已准备的分支先完成基础 Peer 和可用 SharedDDR 的实际尝试；
-   同一前缀再次获得调度时先访问尚未比较的基础 transport，再开始下一个 T。
+   尚未可行时同一前缀再次获得调度先访问尚未比较的基础 transport；接受后可将同一实际前缀转入单个 realization 槽，
+   保留未访问的 transport/closure 游标，与下一 T 的局部改进交错。
    二者均受 actual completion/SPM/target 检查并各自扣 trial；无 peer exchange 时不制造空 DDR 对照。
 3. Peer 是现有 peer 生成策略，不等于保证所有流量走 Direct DTE。实际 SSA boundary、topology 和闭合规则决定其产物。
    DDR 与 Peer 都能合法时按同一实际 Instr 标量估时选 winner，不按算子名或 shape 强制通信。
-4. Accepted 立即交给现有 controller 持有同一 actual owner，并记录局部最佳数值结果；
-   Capacity 立即排关联方向。下一 T 的运行只需等待当前基础 transport 对照结束，不等可选算法、共享和流水全部枚举。
+4. Accepted 立即交给现有 controller 持有同一 actual owner，并记录局部最佳数值结果及 Temporal 改进起点；
+   Capacity 立即排关联方向。新局部可行点不等待整组后端兄弟结束；原 actual executable 独立交 controller，
+   realization 持有可继续执行兄弟变换的原输入，不重建 winner。
 5. 一个结构的首轮成组/换轴粗探测尚未完成时保留其运行机会；满 width 时先推进现有轮次。
    可替换边界只在实际 leaf 和基础比较完成之后。优先退役重复结构方向，再按已有实际结果及稳定访问顺序选择；
    未完成域标为 Incomplete，不能登记为 infeasible/no-good。待处理修正不能永久锁住一个已经完成粗探测轮的槽位。
@@ -206,20 +234,22 @@ S 一旦改变，F 与 T 从新实际结构建立。旧物理 Tile 的 Temporal 
 ```text
 建立源级 S/F 游标；启动一个结构；incumbent 为空
 while 实际预算未用完且仍有活动或未访问工作:
-    按固定顺序访问本轮活动结构:
-        若当前基础前缀尚有 transport，继续它
-        否则从该结构的粗修正/换轴/探索或可行邻域取一个选择
-        实际变换、verify、fresh analysis，推进至一个 typed leaf outcome
-        Accepted → 保留实际 owner；Capacity → 排关联多轴方向
-        其它失败 → 保持 typed 分类；compiler contract failure 停止
-        结束基础评价后释放无用前缀；每个实际 leaf 扣一次预算
-    在空闲或已达到可替换边界的槽位引入下一个 S/F
+    三次实际评估中两次优先修复/改进；另一次按探索游标访问旧结构或引入新 S/F
+    未完成的阶段继续同一实际 owner，yield 不推进评估轮次
+    若所选结构的基础前缀尚有 transport，继续它
+    否则从该结构的粗修正/换轴/探索或可行邻域取一个选择
+    实际变换、verify、fresh analysis，推进至一个 typed leaf outcome
+    Accepted → 保留实际 owner；Capacity → 排关联多轴方向
+    其它失败 → 保持 typed 分类；compiler contract failure 停止
+    结束基础评价后释放无用前缀；每个实际 leaf 扣一次预算
 返回最佳实际 owner 和真实结束状态；执行剩余 package 门禁
 ```
 
 LoopInvariant copy placement、输入共享、流水及其它通信算法主要进入可行候选的局部实现邻域，
-在一轮基本 Temporal 邻域之后获得一次实际尝试。尚无可行点的结构完成一轮批量粗探测后，
-也给其已有 eligible realization 游标一次机会，防止必须改变实现选择才可行的分支永远进不了搜索；
+与 Temporal 改进轮转，不等待整个多轴邻域耗尽。已有共享候选在同一实现的其余可选算法之前比较。
+记录共享查询、具备条件、入队、执行、接受及实际移除加载，区分表达边界与调度覆盖。
+尚无可行点的结构也将已有 eligible realization 游标与修复、探索交错，
+防止必须改变实现选择才可行的分支永远进不了搜索；
 不为每个早期容量失败点展开全组合。
 混合 transport 先在当前可用 boundary component 上做单 component 改变，再惰性组合；算法、共享、流水的组合入口仍保留，
 不能因单项暂时不改善而排除组合。每次变化遵守自身输入依赖，closure 变化重新经过布局，movement 变化重做 completion/SPM。
@@ -250,6 +280,7 @@ LoopInvariant copy placement、输入共享、流水及其它通信算法主要�
 | rank≥3 的2/3个可切轴，1024/1025/1031；4/16 Tile | 单轴、多轴、比例、低于满 Tile 使用率，精确 uneven coverage、无重叠及 merge | Spatial materialization → actual Temporal/Instr/SPM |
 | 只有另一轴能成功；单轴均失败但组合成功 | 从原 anchor 换轴、不强制继承前次缩小；保留多轴组合 | 实际 allocation 失败证书 → 新 choice → 实际成功 offset |
 | 多 scope、多 Tile、不同长度及不同相关轴 | 批量修改仅涉及已证明坐标；独立与混合选择可达，不强制同序轴相等 | owner/input map → actual capacity callback → 全部目标 Tile 再验证 |
+| 多个不相交的实际冲突clique、单独超容量allocation与无冲突allocation共存 | 返回所有已发现证据的精确并集，不把并集bytes当峰值；排列与合法集合不变 | actual Instr/completion → MiniMalloc adapter → live allocation callback → 多scope修复 |
 | 共享输入、已选逐点融合、前序Region结果、未知producer | 完整reader集合及精确轴；跨Region结果不冒充原始输入访问；未知producer不隐藏未解释reader | 1024/1025/1031实际capacity证书；跨Region反例修复前0坐标、修复后精确4坐标；同一SPM gate不变 |
 | FullExtentOnly、exact reshape、Joint/Independent 和现有合法顺序 | 只生成原合法域内的完整 choice；证据失效；真实 block/wave/tail | temporal apply → layout/bufferization → target |
 | diamond、共享 producer、部分融合、归约 partial/merge | 中间融合入口与局部 incumbent refinement；quotient 无环、SSA/owner/输出完整 | S/F → actual Region → package |
@@ -257,7 +288,10 @@ LoopInvariant copy placement、输入共享、流水及其它通信算法主要�
 | Peer、SharedDDR、communication closure、单/多 component | 基础分支都获得尝试；eligible 的 actual DTE/DDR 指令、coverage/completion 正确 | movement → completion/SPM/target |
 | width1与8、连续 capacity、重复 choice、不同 yield 次数、预算中止 | 无死循环/重复计费；换轴与新结构续跑；14/42/126前缀一致；winner owner 不重建 | 真实 Driver 集成测试与产品导出 |
 | 有界多轴 oracle | 独立穷举合法集合及应保留邻域；小域用途仅为算法 oracle，配真实规模正例 | 足够宽度/预算的实际枚举集合、受限预算的明确未访问统计 |
+| 相同访问的轴置换、广播、转置、无复用与未知访问；1024/1025/1031 | 缩小方向随访问关系而非轴编号改变；完整父点与兄弟保持；不同结构序号不改变数值尺度 | 原 Temporal apply、实际容量反馈及全产品下游 |
+| accepted 后仍有其它结构、连续 stage yield 和后端兄弟 | 改进获得有界服务，探索保留机会；预算前缀和最佳 actual owner 不变 | 生产 scheduler 的有界 oracle 与 fresh workload 计数 |
 | 全注册普通 workload catalog；conv、LLaMA、prefill、decode | fresh source/config/dtype/reference；逐项列出 accepted、package、no-card 与设备状态 | 原统一 runner；新 package/no-card 后才进行受影响 PyTorch/guard/profile |
+| 已选Temporal产生动态extent的普通/rank-reduced末级view；1024/1025/1031 | DDR→SPM物化保留实际size SSA，不在部分rewrite后失败或猜测buffer上界 | verified Tile dataflow、现有typed descriptor/SPM gate；conv mixed-DAG默认预算产品 |
 
 预算报告沿用当前矩阵：全 catalog 的默认 none/search 产品资格；GEMM tail-1025、AllReduce tail-1031、
 LLaMA、decode两步及4K prefill的 width8/trials14/42/126 主机曲线。conv/异构先闭合默认预算，不扩大无证据的设备批次。

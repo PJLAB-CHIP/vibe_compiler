@@ -1961,3 +1961,21 @@
   Target校验同一ResourceId的存储描述，wrapper和runtime按实际行长计算prefix或indirect row范围。
 - 防复发：真实规模稀疏fanout检查无关Tile零binding、参与者exact coverage；不同长度行检查offset与invalidate字节数；
   shared descriptor冲突、额外或缺失ready binding拒绝。Package仅为资源分配一次，板测以完整PyTorch输出确认地址链。
+
+## 首个容量证据足以拒绝，但不足以高效指导多区域搜索
+
+- 根因：唯一allocator遇到单独超大allocation或第一个超容量clique就返回，使同一actual conflict graph中已经存在的其它冲突
+  只能在下次完整物化后逐个暴露。仅加预算、深化修复链或调整尺寸排序不能消除这种串行反馈。
+- 修复模式：在原edge-clique cover遍历中收集已证明的超容量子集。按实际size降序继续收集不相交的超容量前缀，
+  防止单个巨大allocation遮住同一clique中的其它冲突；不足的余项不算证据，不另行枚举clique或猜测未来allocation。
+  返回actual allocation的确定性去重并集，并从其存活owner/input map派生反馈；并集bytes不是同时存活峰值。
+- 防复发：固定问题穷举oracle与输入排列保持合法集合不变；rank3、1024/1025/1031的独立Region、超大allocation及无关allocation
+  混合输入检查exact反馈和live owner，修正后的actual IR通过同一SPM gate。搜索另检验深层修复、原兄弟和普通探索均能获得服务。
+
+## Subview的SSA动态extent必须保留到实际allocation
+
+- 根因：加载物化先创建DDR view，再因末级SPM类型含动态维而返回compiler failure，使一个后续候选终止已有可行结果的搜索。
+- 修复模式：从实际DDR view的对应维度读取dynamic size并传给局部`memref.alloc`；rank reduction后按结果维度取值，
+  不猜静态上界、不放大carrier。先交付verified Tile IR，再由原descriptor/SPM gate明确判断动态形态的支持范围。
+- 防复发：普通与rank-reduced view精确检查size SSA、load shape和owner，未知动态descriptor保留预期拒绝；
+  静态main/tail继续通过Instr/completion/SPM，生产搜索同时覆盖“已有accepted，后续出现动态窗口”的完整导出。

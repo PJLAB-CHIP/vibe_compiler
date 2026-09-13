@@ -1018,7 +1018,8 @@ planFunction(mlir::func::FuncOp funcOp, int64_t spmBase, int64_t spmLimit,
         }
         diagnostic << "; capacity_conflict_demands="
                    << packing.capacityConflictDemandIndices.size()
-                   << ", capacity_conflict_bytes=" << capacityConflictByteTotal;
+                   << ", capacity_conflict_union_bytes="
+                   << capacityConflictByteTotal;
       }
       if (!packing.individuallyOversizedDemandIndices.empty()) {
         uint64_t oversizedBytes = 0;

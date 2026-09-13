@@ -543,11 +543,151 @@ TEST(UnifiedSearchTest,
   ASSERT_GE(log.visits.size(), 5u);
   EXPECT_EQ(log.visits[0], std::make_pair(uint64_t(0), uint64_t(0)));
   EXPECT_EQ(log.visits[1], std::make_pair(uint64_t(0), uint64_t(1)));
-  EXPECT_EQ(log.visits[2], std::make_pair(uint64_t(1), uint64_t(0)));
-  EXPECT_EQ(log.visits[3], std::make_pair(uint64_t(0), uint64_t(2)));
-  // The second structure's repair gets its turn before the first structure's
-  // next improvement. Neither repair chain restarts at its first point.
-  EXPECT_EQ(log.visits[4], std::make_pair(uint64_t(1), uint64_t(1)));
+  EXPECT_EQ(log.visits[2], std::make_pair(uint64_t(0), uint64_t(2)));
+  EXPECT_EQ(log.visits[3], std::make_pair(uint64_t(0), uint64_t(3)));
+  // Once feasible, the first owner's local improvement gets explicit service.
+  // The other repair chain is still served by the exploration channel.
+  EXPECT_EQ(log.visits[4], std::make_pair(uint64_t(0), uint64_t(4)));
+  EXPECT_TRUE(
+      llvm::is_contained(log.visits, std::make_pair(uint64_t(1), uint64_t(1))));
+}
+
+TEST(UnifiedSearchTest, PendingRepairServiceSurvivesLocalExplorationTurns) {
+  // Scheduler oracle: the local cursor interleaves different leaf classes
+  // while its first actual capacity-repair round is still pending.
+  class Evaluator final : public StructuralCandidateEvaluator {
+    class Session final : public StructuralCandidateSession {
+    public:
+      Session(AttemptLog &log, uint64_t id) : log(log), id(id) {}
+      StructuralCandidateEvaluation advance() override {
+        if (yielded++ < log.yieldsPerLeaf)
+          return {{},
+                  0,
+                  CandidateContinuation::Explore,
+                  CandidateRetention::UnfinishedActualization};
+        yielded = 0;
+        log.visits.emplace_back(id, step++);
+        if (id == 0 && step == 10)
+          return {acceptedResult(), 1, CandidateContinuation::Exhausted};
+        ActualCandidateResult result;
+        result.status = ActualCandidateStatus::ExactRejection;
+        result.compilation.emplace();
+        result.compilation->status =
+            ExecutableCompilationStatus::ProvenExactRejection;
+        return {std::move(result), 1, CandidateContinuation::Explore,
+                CandidateRetention::PendingCapacityRepair};
+      }
+
+    private:
+      AttemptLog &log;
+      uint64_t id, step = 0, yielded = 0;
+    };
+
+  public:
+    explicit Evaluator(AttemptLog &log) : log(log) {}
+    std::unique_ptr<StructuralCandidateSession>
+    start(const RegionState &) override {
+      return std::make_unique<Session>(log, log.started++);
+    }
+
+  private:
+    AttemptLog &log;
+  };
+  std::vector<std::pair<uint64_t, uint64_t>> reference;
+  for (uint64_t yields : {0, 5}) {
+    auto parsed = parseProgram();
+    ASSERT_TRUE(parsed.module);
+    std::string detail, output;
+    llvm::raw_string_ostream diagnostics(output);
+    auto fixture = prepare(*parsed.module, diagnostics, detail);
+    ASSERT_TRUE(fixture.session) << detail;
+    AttemptLog log;
+    log.yieldsPerLeaf = yields;
+    Evaluator evaluator(log);
+    UnifiedSearchOptions options;
+    options.candidateActualizationCredits = 14;
+    options.termination = SearchTerminationPolicy::FirstAccepted;
+    options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
+    auto result = runUnifiedSearch(*fixture.session, evaluator, options);
+    ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+    EXPECT_LE(log.visits.size(), 14u);
+    EXPECT_GT(log.started, 1u);
+    EXPECT_EQ(log.visits.back(), std::make_pair(uint64_t(0), uint64_t(9)));
+    if (!yields)
+      reference = log.visits;
+    else
+      EXPECT_EQ(log.visits, reference);
+  }
+}
+
+TEST(UnifiedSearchTest,
+     FeasibleImprovementHasServiceWithoutStoppingExploration) {
+  // Bounded scheduler oracle on a real-size structural domain. Synthetic costs
+  // exercise scheduling only; actual Instr/SPM qualification is separate.
+  class Evaluator final : public StructuralCandidateEvaluator {
+    class Session final : public StructuralCandidateSession {
+    public:
+      Session(AttemptLog &log, uint64_t id) : log(log), id(id) {}
+      StructuralCandidateEvaluation advance() override {
+        if (yielded++ < log.yieldsPerLeaf)
+          return {{},
+                  0,
+                  CandidateContinuation::Improve,
+                  CandidateRetention::UnfinishedActualization};
+        yielded = 0;
+        log.visits.emplace_back(id, step++);
+        if (id == 0)
+          return {acceptedResult(1000 - step), 1,
+                  CandidateContinuation::Improve};
+        ActualCandidateResult result;
+        result.status = ActualCandidateStatus::Unsupported;
+        return {std::move(result), 1, CandidateContinuation::Exhausted};
+      }
+
+    private:
+      AttemptLog &log;
+      uint64_t id, step = 0, yielded = 0;
+    };
+
+  public:
+    explicit Evaluator(AttemptLog &log) : log(log) {}
+    std::unique_ptr<StructuralCandidateSession>
+    start(const RegionState &) override {
+      return std::make_unique<Session>(log, log.started++);
+    }
+
+  private:
+    AttemptLog &log;
+  };
+  std::vector<std::pair<uint64_t, uint64_t>> reference;
+  for (uint64_t yields : {0, 5}) {
+    auto parsed = parseProgram();
+    ASSERT_TRUE(parsed.module);
+    std::string detail, output;
+    llvm::raw_string_ostream diagnostics(output);
+    auto fixture = prepare(*parsed.module, diagnostics, detail);
+    ASSERT_TRUE(fixture.session) << detail;
+    AttemptLog log;
+    log.yieldsPerLeaf = yields;
+    Evaluator evaluator(log);
+    UnifiedSearchOptions options;
+    options.candidateActualizationCredits = 42;
+    options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
+    auto result = runUnifiedSearch(*fixture.session, evaluator, options);
+    ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+    ASSERT_EQ(log.visits.size(), 42u);
+    EXPECT_GT(log.started, 1u);
+    for (size_t start = 1; start + 2 < log.visits.size(); start += 3) {
+      unsigned improvements = 0;
+      for (size_t step = start; step < start + 3; ++step)
+        improvements += log.visits[step].first == 0;
+      EXPECT_GE(improvements, 2u);
+    }
+    if (!yields)
+      reference = log.visits;
+    else
+      EXPECT_EQ(log.visits, reference);
+  }
 }
 
 TEST(UnifiedSearchTest, StageYieldCountsDoNotChangeMultiOutcomeCandidateOrder) {

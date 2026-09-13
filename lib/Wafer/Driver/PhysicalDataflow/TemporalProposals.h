@@ -36,7 +36,7 @@ public:
   explicit TemporalProposals(std::vector<const TemporalDomain *> domains)
       : domains(std::move(domains)) {}
 
-  void seed(const std::vector<TemporalChoice> &initial, size_t stratum = 0);
+  void seed(const std::vector<TemporalChoice> &initial);
   /// Prepares at most one distinct point from a lazy direction cursor.
   bool prepareNext(TemporalProposalKind kind);
   std::vector<TemporalChoice> take(TemporalProposalKind kind);
@@ -75,16 +75,17 @@ private:
     size_t orderScope = 0;
     size_t orderPosition = 0;
   };
-  enum class SeedVariant { Full, Kernel, Largest, Coupled, All };
+  enum class SeedVariant { Full, Kernel, Axis, Coupled, All };
   struct SeedFamily {
     std::vector<TemporalChoice> initial;
     std::vector<Coordinate> coordinates;
-    std::vector<Coordinate> largest;
+    std::vector<std::vector<Coordinate>> groups;
   };
   struct SeedPoint {
     size_t family;
     size_t level;
     SeedVariant variant;
+    size_t axis = 0;
   };
   struct Entry {
     std::vector<TemporalChoice> choices;
@@ -92,6 +93,7 @@ private:
     std::optional<uint64_t> bestDuration;
     std::set<Coordinate> capacityObserved;
     bool taken = false;
+    uint64_t repairDepth = 0;
   };
   struct CapacityPoll {
     size_t anchor;
@@ -113,6 +115,9 @@ private:
   bool appendSeedPoint();
   bool advanceImprovementPoll();
   bool complete(std::vector<TemporalChoice> &choices) const;
+  void rankGroups(const std::vector<TemporalChoice> &choices,
+                  std::vector<std::vector<Coordinate>> &groups,
+                  bool shrinking) const;
   std::vector<Coordinate>
   coordinates(const std::vector<TemporalChoice> &choices) const;
   TemporalSizeInterval bounds(const std::vector<TemporalChoice> &choices,
@@ -129,6 +134,7 @@ private:
   std::array<std::deque<size_t>, 3> queues;
   std::array<std::deque<Probe>, 3> probeQueues;
   std::deque<CapacityPoll> capacityPolls;
+  bool preferFreshCapacity = true;
   std::deque<ImprovementPoll> improvementPolls;
   std::vector<SeedFamily> seedFamilies;
   std::deque<SeedPoint> seedPoints;

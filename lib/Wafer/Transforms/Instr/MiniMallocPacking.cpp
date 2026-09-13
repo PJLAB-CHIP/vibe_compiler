@@ -114,7 +114,6 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
     // Any single member is also a size-one over-capacity clique certificate.
     result.capacityConflictDemandIndices.push_back(*result.demandIndex);
     result.placements.clear();
-    return result;
   }
 
   // Canonicalize positive-size demands independently of input vector order.
@@ -185,10 +184,14 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
 
   // A clique whose raw byte sum exceeds the usable arena is already a
   // complete fixed-problem infeasibility proof.  Keep a deterministic,
-  // size-descending minimal prefix as a causal certificate for the upstream
-  // joint search.  This is derived from the exact final lifetime conflict
+  // size-descending over-capacity prefixes as causal certificates for the
+  // upstream search. A large demand must not hide another over-capacity subset
+  // of the very same witnessed clique. This uses the exact lifetime conflict
   // graph; it neither estimates residency nor changes which packing problems
   // are legal.
+  llvm::BitVector reportedConflicts(problem.demands.size(), false);
+  for (unsigned index : result.capacityConflictDemandIndices)
+    reportedConflicts.set(index);
   auto recordOverCapacityClique =
       [&](llvm::ArrayRef<unsigned> canonicalClique) {
         llvm::SmallVector<unsigned, 8> originals;
@@ -215,12 +218,17 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
           if (totalBytes <= arenaCapacity)
             continue;
           result.status = PackingStatus::ProvenInfeasible;
-          result.demandIndex = certificate.front();
-          result.capacityConflictDemandIndices = std::move(certificate);
+          if (!result.demandIndex)
+            result.demandIndex = certificate.front();
+          for (unsigned index : certificate)
+            if (!reportedConflicts.test(index)) {
+              reportedConflicts.set(index);
+              result.capacityConflictDemandIndices.push_back(index);
+            }
           result.placements.clear();
-          return true;
+          totalBytes = 0;
+          certificate.clear();
         }
-        return false;
       };
   for (unsigned root = 0; root < originalForCanonical.size(); ++root) {
     if (componentForCanonical[root] != kNotCanonical)
@@ -274,8 +282,7 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
         for (size_t rhs = lhs + 1; rhs < clique.size(); ++rhs)
           if (!adjacency[clique[lhs]].test(clique[rhs]))
             return makeFailure(PackingStatus::InvalidSolverResult);
-      if (recordOverCapacityClique(clique))
-        return result;
+      recordOverCapacityClique(clique);
       for (unsigned member : clique)
         activeSlots[member].push_back(nextSlot);
       for (size_t lhs = 0; lhs < clique.size(); ++lhs) {
@@ -298,6 +305,8 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
   for (const CanonicalConflict &conflict : conflicts)
     if (uncovered[conflict.lhs].test(conflict.rhs))
       return makeFailure(PackingStatus::InvalidSolverResult);
+  if (result.status == PackingStatus::ProvenInfeasible)
+    return result;
 
   mm::Problem miniProblem;
   miniProblem.capacity = problem.arena.end;

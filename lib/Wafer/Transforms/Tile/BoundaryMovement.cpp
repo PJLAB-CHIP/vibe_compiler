@@ -1710,10 +1710,15 @@ materializeSubviewLoad(mlir::memref::SubViewOp subview, mlir::Value ddrSource,
         return mlir::failure();
   } else {
     auto oldType = mlir::cast<mlir::MemRefType>(subview.getType());
-    if (!oldType.hasStaticShape())
-      return mlir::failure();
+    llvm::SmallVector<mlir::Value> dynamicSizes;
+    for (int64_t dimension = 0; dimension < oldType.getRank(); ++dimension)
+      if (oldType.isDynamicDim(dimension))
+        dynamicSizes.push_back(rewriter.createOrFold<mlir::memref::DimOp>(
+            subview.getLoc(), ddrSubview.getResult(), dimension));
+    // A view's current extent is an allocation operand, not a guessed bound.
+    // The downstream descriptor/SPM gate owns support for dynamic extents.
     auto allocation = rewriter.create<mlir::memref::AllocOp>(
-        subview.getLoc(), getOwnedSPMType(oldType));
+        subview.getLoc(), getOwnedSPMType(oldType), dynamicSizes);
     rewriter.create<StorageLoadOp>(subview.getLoc(), ddrSubview.getResult(),
                                    allocation.getResult());
     retargetSubviewUsers(subview.getResult(), allocation.getResult(), rewriter);

@@ -461,6 +461,14 @@ Interval {
    demand不占地址范围，由adapter按absolute alignment直接安置；受管core保持正高度buffer前提，
    两类边界都不向core传empty lifespan/rectangle。
 
+   失败反馈收集本次同一actual conflict graph的所有已发现超容量clique，以及所有单独超容量allocation；
+   不在首个clique或首批单独超容量allocation后提前丢弃其它独立冲突。每个clique仍由原edge-clique cover生成，
+   其按实际size降序连续收集互不相交的超容量前缀，每段总bytes都必须超过arena；不足的末段不构成证据。
+   这样单个巨大allocation不会遮住同一clique中其它已存在的冲突，不新增clique枚举或重复求解。
+   `capacityConflictDemandIndices`是这些已证明前缀的确定性去重并集；该集合的总bytes不表示同时存活峰值。
+   consumer只需已证实冲突的actual allocation集合，仍从各自current owner/input map派生反馈。
+   这只扩充同一失败的因果信息，不改变合法集合、offset求解、alignment或资源耗尽分类。
+
 4. 以absolute address求解：nonzero SPM base由fixed prefix range表达，不能先求相对offset再无条件加
    base，否则会破坏absolute alignment。每个conflict component使用一个offset=0、仅覆盖该component
    连续slot区间的prefix；不同prefix在activity time上不相交，因而既约束所有有效placement大于等于

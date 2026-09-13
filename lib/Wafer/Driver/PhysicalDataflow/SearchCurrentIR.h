@@ -46,6 +46,9 @@ struct SearchCurrentIRStatistics {
   uint64_t sharedDDRCandidates = 0;
   uint64_t sharedDDRAccepted = 0;
   uint64_t inputSharingCandidates = 0;
+  uint64_t inputSharingQueries = 0;
+  uint64_t inputSharingEligible = 0;
+  uint64_t inputSharingQueued = 0;
   uint64_t inputSharingAccepted = 0;
   uint64_t layoutInvocations = 0;
   uint64_t layoutFeasibleFallbacks = 0;

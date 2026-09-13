@@ -60,8 +60,9 @@ struct PackingResult {
   llvm::SmallVector<Placement, 8> placements;
   uint64_t searchNodes = 0;
   std::optional<unsigned> demandIndex;
-  /// Deterministic exact capacity certificate. Every listed demand belongs to
-  /// one conflict-graph clique whose byte sum exceeds the usable arena.
+  /// Deterministic union of witnessed capacity-conflict certificates. Every
+  /// demand belongs to a proved over-capacity clique prefix. The union itself
+  /// need not be a clique, and its byte sum is not a coexistence peak.
   llvm::SmallVector<unsigned, 8> capacityConflictDemandIndices;
   /// Actual demands that individually exceed the usable arena.
   llvm::SmallVector<unsigned, 8> individuallyOversizedDemandIndices;

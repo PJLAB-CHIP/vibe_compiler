@@ -42,6 +42,7 @@ struct SPMMemoryPlanningFailure {
   };
 
   llvm::SmallVector<DemandEvidence, 4> largestDemands;
+  /// Union of witnessed over-capacity subsets, not one coexistence peak.
   llvm::SmallVector<DemandEvidence, 8> capacityConflictDemands;
   llvm::SmallVector<DemandEvidence, 8> individuallyOversizedDemands;
 };

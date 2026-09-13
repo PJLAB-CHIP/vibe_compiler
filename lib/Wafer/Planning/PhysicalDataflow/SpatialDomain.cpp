@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/OperandReuse.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -472,51 +473,6 @@ enum class BalancedAxisSelection : uint8_t {
   Constructive,
   AllPartitionable,
 };
-
-struct OperandProjection {
-  llvm::SmallBitVector iterators;
-  uint64_t bytes = 0;
-};
-
-std::optional<llvm::SmallVector<OperandProjection, 4>>
-getReadOperandProjections(mlir::Operation *operation) {
-  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
-  if (!linalg)
-    return std::nullopt;
-  llvm::SmallVector<OperandProjection, 4> result;
-  for (mlir::OpOperand &operand : linalg->getOpOperands()) {
-    if (!linalg.payloadUsesValueFromOperand(&operand))
-      continue;
-    mlir::AffineMap map = linalg.getMatchingIndexingMap(&operand);
-    if (!map.isProjectedPermutation())
-      return std::nullopt;
-    mlir::Type element = operand.get().getType();
-    uint64_t elements = 1;
-    if (auto shaped = mlir::dyn_cast<mlir::ShapedType>(element)) {
-      if (!shaped.hasStaticShape())
-        return std::nullopt;
-      for (int64_t extent : shaped.getShape()) {
-        if (extent <= 0)
-          return std::nullopt;
-        elements =
-            llvm::SaturatingMultiply(elements, static_cast<uint64_t>(extent));
-      }
-      element = shaped.getElementType();
-    }
-    if (!element.isIntOrFloat())
-      return std::nullopt;
-    OperandProjection projection;
-    projection.bytes = llvm::SaturatingMultiply(
-        elements,
-        static_cast<uint64_t>((element.getIntOrFloatBitWidth() + 7) / 8));
-    projection.iterators.resize(map.getNumDims(), false);
-    for (mlir::AffineExpr expression : map.getResults())
-      projection.iterators.set(
-          mlir::cast<mlir::AffineDimExpr>(expression).getPosition());
-    result.push_back(std::move(projection));
-  }
-  return result;
-}
 
 // This ranks explicit source-domain partitions, before any movement exists.
 // It is neither an actual traffic inventory nor a memory-admission estimate.
@@ -1361,6 +1317,29 @@ SpatialPlanDomain::getNextDirectionPlan(const SpatialPlan &anchor,
         return std::lexicographical_compare(b.begin(), b.end(), a.begin(),
                                             a.end());
       });
+      if (operands && ratios.size() > 1) {
+        // Keep the high-parallelism representative, including partitions that
+        // may benefit from sharing. Also visit the least duplicated-read
+        // representative before all near-identical high-utilization ratios.
+        // Neither representative is a traffic estimate or a pruning rule.
+        auto reuse =
+            llvm::min_element(ratios, [&](const auto &a, const auto &b) {
+              const auto bytesA = getRepeatedOperandBytes(*operands, a);
+              const auto bytesB = getRepeatedOperandBytes(*operands, b);
+              if (bytesA != bytesB)
+                return bytesA < bytesB;
+              const auto cellsA =
+                  *getCellCount(root.iteratorExtents, a, available.size());
+              const auto cellsB =
+                  *getCellCount(root.iteratorExtents, b, available.size());
+              if (cellsA != cellsB)
+                return cellsA > cellsB;
+              return std::lexicographical_compare(b.begin(), b.end(), a.begin(),
+                                                  a.end());
+            });
+        if (reuse != ratios.begin())
+          std::rotate(ratios.begin() + 1, reuse, std::next(reuse));
+      }
       state.maximumRatios = std::max(state.maximumRatios, ratios.size());
       if (state.ratio >= ratios.size())
         continue;

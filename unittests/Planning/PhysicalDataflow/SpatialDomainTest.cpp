@@ -20,6 +20,7 @@
 
 #include "gtest/gtest.h"
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -1093,6 +1094,28 @@ TEST_F(SpatialDomainTest,
           ASSERT_FALSE(proposals.empty());
           const unsigned mAxis = permuted ? 2 : 1;
           const unsigned nAxis = mAxis + 1;
+          SpatialDirectionCursor cursor;
+          std::map<unsigned, std::vector<int64_t>> singleAxisFactors;
+          for (unsigned probe = 0;
+               probe < 32 && (singleAxisFactors[mAxis].size() < 2 ||
+                              singleAxisFactors[nAxis].size() < 2);
+               ++probe) {
+            auto next =
+                built->domain.getNextDirectionPlan(proposals.front(), cursor);
+            ASSERT_EQ(next.kind, SpatialPlanSuccessorKind::Successor);
+            const auto &node = next.plan->nodes.front();
+            llvm::SmallVector<unsigned> cut;
+            for (const auto &axis : node.axes)
+              if (axis.parameter > 1)
+                cut.push_back(axis.iterator);
+            if (cut.size() == 1 && (cut[0] == mAxis || cut[0] == nAxis))
+              singleAxisFactors[cut[0]].push_back(node.axes[cut[0]].parameter);
+          }
+          for (unsigned axis : {mAxis, nAxis}) {
+            ASSERT_GE(singleAxisFactors[axis].size(), 2u);
+            EXPECT_EQ(singleAxisFactors[axis][0], tiles);
+            EXPECT_EQ(singleAxisFactors[axis][1], 2);
+          }
           const auto &first = proposals.front().nodes.front();
           EXPECT_EQ(first.embedding.size(), static_cast<size_t>(tiles));
           const int64_t balanced = tiles == 4 ? 2 : 4;

@@ -421,6 +421,8 @@ struct UnifiedSearchSession::Impl {
     branch.lastVisit = ++visit;
     remainingActualizationCredits -= evaluation.actualizations;
     work.candidateActualizations += evaluation.actualizations;
+    if (evaluation.actualizations)
+      servicePhase = (servicePhase + 1) % 3;
     if (evaluation.actualizations) {
       recordStructuralCandidateMetrics(work.candidateActualizations - 1,
                                        branch.state.getRegionPlan(), evaluation,
@@ -432,6 +434,10 @@ struct UnifiedSearchSession::Impl {
         evaluation.continuation == CandidateContinuation::Exhausted;
     const auto actualStatus = evaluation.result->status;
     if (evaluation.result->isAccepted()) {
+      if (!hasAccepted) {
+        hasAccepted = true;
+        servicePhase = 0;
+      }
       auto objective = deriveExecutableSearchObjective(
           *evaluation.result->compilation->executable, costCohort);
       if (!branch.objective ||
@@ -497,6 +503,32 @@ struct UnifiedSearchSession::Impl {
         }
       fail("yielded actualization lost its owning branch");
       return;
+    }
+    // Give repair/local improvement explicit service, without consuming the
+    // exploration cursor. A yielded stage continues above and is not another
+    // service turn. Selection uses actual outcomes and complete tie-breaks.
+    const bool preferContinuation = servicePhase < 2;
+    if (preferContinuation) {
+      const auto wanted = hasAccepted ? CandidateContinuation::Improve
+                                      : CandidateContinuation::Repair;
+      std::optional<size_t> selected;
+      for (size_t index = 0; index < branches.size(); ++index) {
+        const auto &branch = branches[index];
+        if (branch.next != wanted &&
+            (hasAccepted ||
+             branch.retention != CandidateRetention::PendingCapacityRepair))
+          continue;
+        if (!selected ||
+            (!hasAccepted && branch.identity < branches[*selected].identity) ||
+            (hasAccepted && std::tie(branch.lastVisit, branch.identity) <
+                                std::tie(branches[*selected].lastVisit,
+                                         branches[*selected].identity)))
+          selected = index;
+      }
+      if (selected) {
+        evaluate(*selected);
+        return;
+      }
     }
     while (!round.empty()) {
       uint64_t identity = round.front();
@@ -600,6 +632,8 @@ struct UnifiedSearchSession::Impl {
   std::vector<Branch> branches;
   std::vector<LocalBest> localBest;
   uint64_t visit = 0;
+  unsigned servicePhase = 0;
+  bool hasAccepted = false;
   std::deque<uint64_t> round;
   std::optional<uint64_t> runningBranch;
   bool introduceNext = true;

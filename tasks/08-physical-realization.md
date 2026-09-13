@@ -139,12 +139,17 @@ Layout/structured rewrite可能消除某个远端分片的最后一次读取。�
 已选择shared-DDR route的cross-Tile输入与本地DDR输入共用actual subview加载：当payload仍使用完整carrier坐标、没有recursive aggregate slot，
 且全部ToMemref bridge只被Subview读取时，在各Subview的当前位置建立对应DDR view与所选layout的局部SPM allocation/load。
 若Subview仅继续派生Subview，则继续沿同一SSA树建立DDR views，只在首次实际数据使用处建立SPM allocation/load；
-中间view出现整体读取时在该处加载，不能越过真实需求。静态size和动态offset均来自同一current SSA，不要求把动态起点变成常数，不重新决定tile size或route。
+中间view出现整体读取时在该处加载，不能越过真实需求。size和offset均来自同一current SSA，不要求把动态起点变成常数，不重新决定tile size或route。
+若末级view保留动态extent，局部`memref.alloc`的对应dynamic size取该实际DDR view的维度值，保持rank reduction后的维度次序；
+不能在创建DDR view后因extent非静态报compiler failure，也不能猜测上界或分配完整carrier。输出仍是verified Tile dataflow，
+直接下游Tile→Instr与唯一SPM规划决定实际动态descriptor/容量是否支持，未支持的形态保持typed unsupported。
 已rebase的公共静态窗口以实际payload view为递归起点，DDR binding必须与该view逻辑shape一致；子view沿用相对坐标，不能重复叠加原始窗口offset。
 有whole-buffer use的输入仍按完整需求物化。直接DTE选择继续执行其message/receive合同。
 
 覆盖1024/1025/1031、4/16 Tile、main/tail和多个wave，检查本地/跨Tile读的完整DDR坐标、每次load的SPM extent、owner及实际Instr/completion/SPM；
 whole-buffer use和已有静态payload重定位不能误走该路径。完整block使用fresh source作产品witness，不能从某个较小shape推算SPM合法。
+动态extent补充rank3、1024/1025/1031的普通及rank-reduced view，精确检查load源/目的shape、allocation size SSA和owner；
+现有静态main/tail矩阵继续完成Instr/SPM，动态形态的下游拒绝与compiler contract error区分。
 
 Movement结束前，write-only SPM输出carrier可按实际写入流式存到一个或多个既有DDR出口。所有terminal store必须读同一allocation的完整值，
 位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy目的端和这些terminal读取。

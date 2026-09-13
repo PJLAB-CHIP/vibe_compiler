@@ -257,6 +257,98 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
       << diagnostics;
 }
 
+TEST_F(TileMemoryPlanningTest,
+       CapacityObserverIncludesIndependentRegionConflicts) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool repaired : {false, true}) {
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(
+          "module { func.func @entry() { return } }", context.get());
+      ASSERT_TRUE(module);
+      auto function = *module->getOps<mlir::func::FuncOp>().begin();
+      mlir::OpBuilder builder(context.get());
+      auto location = builder.getUnknownLoc();
+      llvm::SmallVector<mlir::Value> conflicting, unrelated;
+      for (unsigned part = 0; part < 4; ++part) {
+        builder.setInsertionPoint(function.getBody().front().getTerminator());
+        auto region = builder.create<wafer::TileRegionOp>(
+            location, mlir::TypeRange{}, mlir::ValueRange{});
+        builder.setInsertionPointToStart(&region.getBody().emplaceBlock());
+        int64_t channels = part == 3   ? 16
+                           : repaired  ? 128
+                           : part == 2 ? 1024
+                                       : 384;
+        auto type = mlir::MemRefType::get(
+            {2, extent, channels}, builder.getF16Type(),
+            mlir::MemRefLayoutAttrInterface{},
+            wafer::MemoryAttr::get(context.get(), wafer::MemorySpace::SPM,
+                                   wafer::MemLayout::Tensor));
+        auto input = builder.create<mlir::memref::AllocOp>(location, type);
+        auto zero = builder.create<mlir::arith::ConstantOp>(
+            location, builder.getF16FloatAttr(0.0));
+        builder.create<wafer::InstrFillOp>(location, input, zero,
+                                           wafer::FillDomainAttr{});
+        (part == 3 ? unrelated : conflicting).push_back(input);
+        if (part < 2) {
+          auto output = builder.create<mlir::memref::AllocOp>(location, type);
+          builder.create<wafer::InstrElementwiseOp>(
+              location, wafer::InstrElementwiseKind::Neg,
+              mlir::ValueRange{input.getResult()}, output);
+          conflicting.push_back(output);
+          // The memory fixture explicitly completes each release to establish
+          // independent lifetime components; scheduling is not under test.
+          builder.create<wafer::SyncNCCJoinOp>(location,
+                                               wafer::NCCWorker::Worker0);
+          builder.create<mlir::memref::DeallocOp>(location, output);
+        } else {
+          builder.create<wafer::SyncNCCJoinOp>(location,
+                                               wafer::NCCWorker::Worker0);
+        }
+        builder.create<mlir::memref::DeallocOp>(location, input);
+        builder.create<wafer::TileYieldOp>(location, mlir::ValueRange{});
+      }
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      wafer::StructuredMaterializationRelations relations;
+      wafer::compiler::detail::rebuildCurrentBufferOwnerRelations(*module,
+                                                                  relations);
+      unsigned observed = 0;
+      auto observer =
+          [&](const wafer::SPMMemoryPlanningFailure &failure,
+              const wafer::StructuredMaterializationRelations &owners) {
+            ++observed;
+            EXPECT_EQ(failure.kind,
+                      wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+            std::string evidenceText;
+            llvm::raw_string_ostream evidence(evidenceText);
+            for (const auto &demand : failure.capacityConflictDemands) {
+              evidence << " allocation="
+                       << std::distance(
+                              conflicting.begin(),
+                              llvm::find(conflicting, demand.allocation))
+                       << " bytes=" << demand.bytes;
+            }
+            if (failure.capacityConflictDemands.size() != 5)
+              function.print(evidence);
+            ASSERT_EQ(failure.capacityConflictDemands.size(), 5u)
+                << evidence.str();
+            for (const auto &demand : failure.capacityConflictDemands) {
+              EXPECT_TRUE(llvm::is_contained(conflicting, demand.allocation));
+              EXPECT_FALSE(llvm::is_contained(unrelated, demand.allocation));
+              EXPECT_TRUE(llvm::any_of(owners.buffers, [&](const auto &owner) {
+                return owner.buffer == demand.allocation && owner.owner;
+              }));
+            }
+            ASSERT_EQ(failure.individuallyOversizedDemands.size(), 1u);
+            EXPECT_EQ(failure.individuallyOversizedDemands.front().allocation,
+                      conflicting.back());
+          };
+      wafer::compiler::detail::TileMemoryPlanningFailure failure;
+      auto planned = wafer::compiler::detail::planTileMemory(
+          std::move(module), &failure, &relations, false, observer);
+      EXPECT_EQ(mlir::succeeded(planned), repaired);
+      EXPECT_EQ(observed, repaired ? 0u : 1u);
+    }
+}
+
 TEST_F(TileMemoryPlanningTest, CapacityObserverReadsLiveActualOwnersOnly) {
   // Rank-three, full allocation geometry distinguishes a live proof from a
   // copied byte-count report. No Tile dataflow op reaches this memory gate.

@@ -785,6 +785,9 @@ module {{
         diagnostics, data, options, &statistics);
     ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
     EXPECT_GT(statistics.inputSharingCandidates, 0u);
+    EXPECT_GE(statistics.inputSharingQueries, statistics.inputSharingEligible);
+    EXPECT_EQ(statistics.inputSharingEligible, statistics.inputSharingQueued);
+    EXPECT_GE(statistics.inputSharingQueued, statistics.inputSharingCandidates);
     EXPECT_GT(statistics.inputSharingAccepted, 0u);
     EXPECT_GT(statistics.acceptedCandidates, statistics.inputSharingAccepted);
     EXPECT_EQ(statistics.traversal.candidateActualizations, 42u);
@@ -1053,6 +1056,17 @@ TEST(ExecutableCompilationPolicyTest,
   options.termination =
       wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
   options.downstream.tilePipelineParallelism = 1;
+  uint64_t capacityCallbacks = 0;
+  auto observeCapacity =
+      [&](wafer::CardId, wafer::TileId,
+          const wafer::SPMMemoryPlanningFailure &failure,
+          const wafer::StructuredMaterializationRelations &) {
+        EXPECT_EQ(failure.kind,
+                  wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+        EXPECT_GT(failure.demandCount, 0u);
+        ++capacityCallbacks;
+      };
+  options.downstream.capacityObserver = observeCapacity;
   wafer::compiler::detail::SearchCurrentIRStatistics search;
   wafer::compiler::detail::ExecutableLoweringStatistics executable;
 
@@ -1067,13 +1081,17 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_GT(search.traversal.resumedCandidates, 0u);
   EXPECT_GT(search.exactRejectedCandidates, 0u);
   EXPECT_EQ(search.acceptedCandidates, 1u);
-  EXPECT_EQ(search.temporalCandidateActualizations,
-            search.exactRejectedCandidates + 1);
-  EXPECT_EQ(search.layoutInvocations, search.temporalCandidateActualizations);
+  EXPECT_GT(capacityCallbacks, 0u);
+  EXPECT_GT(search.actualCapacityRefinements, 0u);
+  EXPECT_LE(search.actualCapacityRefinements, capacityCallbacks);
+  EXPECT_GT(search.temporalCandidateActualizations, 1u);
+  // A retained realization may evaluate another layout placement at the same
+  // Temporal point; every actual candidate still reaches the common gate.
+  EXPECT_GE(search.layoutInvocations, search.temporalCandidateActualizations);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations,
-            search.temporalCandidateActualizations);
+            search.exactRejectedCandidates + search.acceptedCandidates);
   EXPECT_EQ(search.movementCandidateActualizations,
-            search.temporalCandidateActualizations);
+            executable.actualMemoryTargetGateInvocations);
   EXPECT_EQ(search.recursiveDoublingCandidates, 0u);
 }
 
@@ -1147,11 +1165,11 @@ TEST(ExecutableCompilationPolicyTest,
     ASSERT_TRUE(result.isAccepted()) << result.detail << text;
     ASSERT_TRUE(result.executable && result.physicalIRInventory);
     EXPECT_EQ(search.peakSessionTemporalPrefixes, 1u);
-    // The third Spatial direction redistributes shards. Both base transports
-    // finish before advancing Temporal, even when some imported shards become
-    // unused after slice folding.
-    EXPECT_EQ(search.sharedDDRCandidates, 1u);
-    EXPECT_EQ(search.temporalBackpressureTurns, 1u);
+    // Accepted prefixes are retained in the realization slot while another
+    // Temporal point improves. This small budget need not reach the third
+    // Spatial direction that introduces a SharedDDR exchange.
+    EXPECT_GT(search.temporalCandidateActualizations, 1u);
+    EXPECT_LE(search.peakSessionIRModules, 10u);
     EXPECT_GT(search.traversal.stageYields, 0u);
     EXPECT_EQ(search.traversal.candidateActualizations, 8u);
     EXPECT_EQ(search.controller.accepted, 8u) << text;
