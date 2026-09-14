@@ -758,3 +758,42 @@ GDB的8/1诊断也已完成93次demand检查，两次规划栈采样分别在spa
 主机1060.77秒，RSS 2,849,620 KiB。source与初始快版本相同，包三个文件及48份最终IR与上一轮逐字节一致。
 前序局部常量/SPM修改相对初始实卡快包的设备回归仍待恢复，本次产物相等不代签该门禁。
 详见[投影读取证据](../../docs/data/board-performance/projected-tensor-reads-20260914.json)。
+
+
+### 2026-09-14 运行时索引范围与下一物化边界
+
+范围证明已按14号合同实现：固定宽度整数及integer/index cast使用pinned MLIR整数区间接口，未知load保留完整类型值域，
+原clamp提供地址范围，截断、signed/unsigned和wrap不按数学整数混算。局部postorder查询复用共享SSA，
+4,096层共享DAG不递归展开路径。Unsigned branch不能把负数位型排除后误签地址合法。
+原checked index循环算术及typed overflow保留，未知i32转index的负例现在明确报告可能负值；该输入仍拒绝。
+
+新增8项测试共38组，含1,536个穷举位型，覆盖rank3/1024/1025/1031、i32/i64 load、F16/BF16目标view、
+截断/扩展/回绕、i128夹界、IR mutation后fresh查询、深共享DAG及unsigned branch。目标正例检查实际LLVM clamp、
+stride及地址SSA；越界反例检查精确坐标诊断和输入未修改。目标pipeline的函数参数仍只接受DDR binding及既有managed参数，
+因此目标正例用实际loop→integer→index链；data-dependent load本身在分析层验证，尚未冒称整个load→目标链闭合。
+
+主机组件Analysis/Conversion/Transforms/Planning/Pipeline的115/26/406/127/5项及lit 29项已实际通过；
+完整canonical增量构建和Ninja no-op通过。最初新fixture的格式/diagnostic断言已修正后重跑；旧未夹界负例同步更新失败类别。
+固定FP16 LLaMA本轮默认8/42完整package/no-card通过，9 accepted、33容量、0 unsupported/indeterminate。
+主机1018.61秒，compiler transaction 996238.642 ms，RSS 2857592 KiB；仅作本轮编译记录，不作为性能提升结论。
+原始source的14文件与初始快版本相同，包三文件和全部48份最终IR与上一轮逐字节一致。
+前序修改相对初始实卡快包的设备门禁仍待恢复，当前没有实卡动作。详见[运行时索引证据](../../docs/data/board-performance/runtime-index-bounds-20260914.json)。
+
+后续实施按两个边界推进，不能把下面的调查结论写成已实现能力：
+
+1. 动态读取：先闭合现有`memref.load`的SPM读取、typed effect/completion、target与host consumer。
+   不能把源i64 tensor端口改成产品不支持的任意scalar参数，也不能用完整表SPM allocation绕开按需读取。
+   当前mapped-SPM硬件文档、`NCCJoinPlacement`的value-associated同步观察以及`LifetimeAnalysis`的标准memref读取跟踪是已有基础；
+   CPU映射地址/有序读取和host执行消费者仍须实际实现与验证。
+   当前生产`GatherScatter`只有三层stride/iteration，没有索引数组operand；确定运行时索引后，连续维应复用现有RDMA窗口搬运，
+   标量读取只承担索引值。其它原始硬件模式仍无本项证据，不以名称相似推定支持。
+   随后在selected candidate中保留实际index/clamp SSA、建立动态source view和局部destination；
+   外部不可变Tensor引用的availability与精确静态元素需求必须区分。现有`RootBoundaryWork.requiredDomain`的空值用于invariant输入，
+   不能只放开shaped capture检查就假定表的传输/存储已经成立；producer产生的表还必须保留真实DAG/owner依赖。
+2. 重复搜索：`PlanningSession::evaluateAndQueue`目前把所有RootWork unsupported都当作当前spatial choice失败，继续枚举。
+   可行修复点是保留失败的作用范围：直接root capture只依赖同一不可变source IR，首次有执行work的typed拒绝可结束该source的session；
+   support recipe相关capture及其它choice相关unsupported继续访问其它方向。该区分应由唯一产生失败的owner给出，
+   不解析错误字符串，不缓存猜测合法性，也不重复新增一套capture verifier。实际实现前需覆盖零执行root、support选择及不同source transaction，
+   确保局部失败不会错误终止其它可行方向。
+
+完整LM动态读取、数值、package/no-card，以及三轮性能调优与最终板端资格仍未完成。

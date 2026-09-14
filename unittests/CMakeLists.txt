@@ -75,6 +75,7 @@ wafer_add_component_unit_test(WaferAnalysisUnitTests
   SOURCES
     Analysis/Module/DirectCallGraphAnalysisTest.cpp
     Analysis/Instr/NCCCompletionAnalysisTest.cpp
+    Analysis/Instr/StaticIndexRangeTest.cpp
     Analysis/Linalg/IndexRelationTest.cpp
     Analysis/Linalg/TensorResultIndexingTest.cpp
     Analysis/Instr/ScheduleCostAnalysisTest.cpp

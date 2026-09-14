@@ -2053,3 +2053,12 @@
   捕获init仍读取原Tensor SSA，不能替换为可能已更新的归约accumulator argument。
 - 防复发：1024/1025/1031逐bit数据、main/tail实际切片和exact覆盖，验证真实producer→consumer DAG边及semantic key。
   数据相关table读取仍保留原索引、clamp和capture；没有动态访问合同不能伪造affine map或宣称完整gather已闭合。
+
+## 地址范围证明必须保留整数位宽与比较语义
+
+- 根因：只分析循环index及数学整数加减，会丢失integer/index cast之前的实际clamp，或错误穿过trunc/wrap。
+  未知load不能提供具体值，但其整数类型有完整值域；后续实际clamp可独立证明地址范围。
+- 修复模式：固定宽度SSA用pinned `InferIntRangeInterface`传播signed/unsigned区间，未知leaf保留完整类型范围；
+  用局部迭代postorder复用共享SSA，checked index循环路径继续单独处理。区间仅证明地址安全，不作精确元素需求或SPM合法性。
+- 防复发：穷举小位宽位型核对cast、wrap和夹界，配合真实规模view检查最终LLVM字节地址及越界拒绝。
+  Unsigned比较`ugt(x, 0)`允许负数位型，不能据此将signed地址范围收紧为正数；只在两端已非负时复用signed区间比较。

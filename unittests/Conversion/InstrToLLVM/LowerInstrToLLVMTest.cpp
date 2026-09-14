@@ -1733,4 +1733,158 @@ module {
       << diagnostics;
 }
 
+TEST(LowerInstrToTargetLLVMTest,
+     PreservesClampedRuntimeIndicesAndExactRankThreeByteAddresses) {
+  for (int64_t rows : {1024, 1025, 1031})
+    for (llvm::StringRef dtype : {"f16", "bf16"})
+      for (unsigned width : {32u, 64u}) {
+        SCOPED_TRACE(llvm::formatv("{0}:{1}:i{2}", rows, dtype, width).str());
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        auto text = llvm::formatv(R"mlir(
+          module {{
+            func.func @read(%input: memref<2x{0}x64x{1}, #wafer.memory<ddr, tensor>>) {{
+              %zero = arith.constant 0 : index
+              %one = arith.constant 1 : index
+              %end = arith.constant {0} : index
+              scf.for %position = %zero to %end step %one {{
+              %token = arith.index_cast %position : index to i{2}
+              %lo = arith.constant 0 : i{2}
+              %hi = arith.constant {3} : i{2}
+              %lower = arith.maxsi %token, %lo : i{2}
+              %clamp = arith.minsi %lower, %hi : i{2}
+              %row = arith.index_cast %clamp : i{2} to index
+              %view = memref.subview %input[1, %row, 8] [1, 1, 16] [1, 1, 1]
+                  : memref<2x{0}x64x{1}, #wafer.memory<ddr, tensor>>
+                 to memref<1x1x16x{1}, strided<[{4}, 64, 1], offset: ?>, #wafer.memory<ddr, tensor>>
+              %local = memref.alloc() {{wafer.spm.offset = #wafer.spm_offset<65536>}
+                  : memref<1x1x16x{1}, #wafer.memory<spm, tensor>>
+              wafer.instr.rdma %view to %local
+                  {{byte_count = 32 : i64, inner_bytes = 32 : i64,
+                    src_strides = array<i64: 0, 0, 0>, src_iterations = array<i64: 1, 1, 1>}
+                  : memref<1x1x16x{1}, strided<[{4}, 64, 1], offset: ?>, #wafer.memory<ddr, tensor>>
+                 to memref<1x1x16x{1}, #wafer.memory<spm, tensor>>
+              wafer.instr.ncc_join [0]
+              }
+              return
+            }
+          })mlir",
+                                  rows, dtype, width, rows - 1, rows * 64)
+                        .str();
+        auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(source) << text;
+        mlir::PassManager manager(&context);
+        manager.addPass(wafer::createLowerInstrToTargetLLVMPass({}));
+        ASSERT_TRUE(mlir::succeeded(manager.run(*source)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+        EXPECT_EQ(countOps<mlir::memref::SubViewOp>(*source), 0u);
+        EXPECT_EQ(countOps<mlir::LLVM::SMaxOp>(*source), 1u);
+        EXPECT_EQ(countOps<mlir::LLVM::SMinOp>(*source), 1u);
+        auto function = source->lookupSymbol<mlir::LLVM::LLVMFuncOp>("read");
+        ASSERT_TRUE(function);
+        mlir::LLVM::CallOp rdma;
+        source->walk([&](mlir::LLVM::CallOp call) {
+          if (call.getCallee() == "wafer_tx81_rdma")
+            rdma = call;
+        });
+        ASSERT_TRUE(rdma);
+        auto address = rdma.getOperand(0).getDefiningOp<mlir::LLVM::AddOp>();
+        ASSERT_TRUE(address);
+        auto base = address.getLhs().getDefiningOp<mlir::LLVM::AddOp>();
+        auto delta = address.getRhs().getDefiningOp<mlir::LLVM::MulOp>();
+        ASSERT_TRUE(base);
+        ASSERT_TRUE(delta);
+        EXPECT_EQ(base.getLhs(), function.getArgument(0));
+        auto constant = [](mlir::Value value) -> std::optional<int64_t> {
+          auto op = value.getDefiningOp<mlir::LLVM::ConstantOp>();
+          if (op)
+            if (auto attr = mlir::dyn_cast<mlir::IntegerAttr>(op.getValue()))
+              return attr.getInt();
+          return std::nullopt;
+        };
+        EXPECT_EQ(constant(base.getRhs()), rows * 128 + 16);
+        EXPECT_EQ(constant(delta.getRhs()), 128);
+        mlir::Value row = delta.getLhs();
+        if (width == 32) {
+          auto extend = row.getDefiningOp<mlir::LLVM::SExtOp>();
+          ASSERT_TRUE(extend);
+          row = extend.getArg();
+        }
+        auto clamp = row.getDefiningOp<mlir::LLVM::SMinOp>();
+        ASSERT_TRUE(clamp);
+        auto lower = clamp.getOperand(0).getDefiningOp<mlir::LLVM::SMaxOp>();
+        ASSERT_TRUE(lower);
+        mlir::Value token = lower.getOperand(0);
+        if (width == 32) {
+          auto truncate = token.getDefiningOp<mlir::LLVM::TruncOp>();
+          ASSERT_TRUE(truncate);
+          token = truncate.getArg();
+        }
+        EXPECT_TRUE(mlir::isa<mlir::BlockArgument>(token));
+        EXPECT_NE(token.getParentBlock(), &function.getBody().front());
+        EXPECT_EQ(constant(lower.getOperand(1)), 0);
+        EXPECT_EQ(constant(clamp.getOperand(1)), rows - 1);
+      }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     RejectsOutOfBoundsRuntimeClampWithoutMutatingInput) {
+  for (int64_t rows : {1024, 1025, 1031}) {
+    mlir::DialectRegistry registry;
+    registerTargetConversionDialects(registry);
+    mlir::MLIRContext context(registry);
+    context.loadAllAvailableDialects();
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(
+        llvm::formatv(R"mlir(
+        module {{ func.func @outside(%input: memref<2x{0}x64xf16, #wafer.memory<ddr, tensor>>) {{
+          %zero = arith.constant 0 : index
+          %one = arith.constant 1 : index
+          %end = arith.constant {2} : index
+          scf.for %position = %zero to %end step %one {{
+          %x = arith.index_cast %position : index to i32
+          %lo = arith.constant 0 : i32
+          %hi = arith.constant {0} : i32
+          %lower = arith.maxsi %x, %lo : i32
+          %clamp = arith.minsi %lower, %hi : i32
+          %row = arith.index_cast %clamp : i32 to index
+          %view = memref.subview %input[1, %row, 8] [1, 1, 16] [1, 1, 1]
+              : memref<2x{0}x64xf16, #wafer.memory<ddr, tensor>>
+             to memref<1x1x16xf16, strided<[{1}, 64, 1], offset: ?>, #wafer.memory<ddr, tensor>>
+          }
+          return
+        } })mlir",
+                      rows, rows * 64, rows + 1)
+            .str(),
+        &context);
+    ASSERT_TRUE(source);
+    auto print = [&]() {
+      std::string text;
+      llvm::raw_string_ostream stream(text);
+      source->print(stream);
+      return text;
+    };
+    std::string before = print();
+    std::string diagnostics;
+    mlir::ScopedDiagnosticHandler handler(&context, [&](mlir::Diagnostic &d) {
+      llvm::raw_string_ostream stream(diagnostics);
+      d.print(stream);
+      return mlir::success();
+    });
+    mlir::PassManager manager(&context);
+    manager.addPass(wafer::createLowerInstrToTargetLLVMPass({}));
+    EXPECT_TRUE(mlir::failed(manager.run(*source)));
+    EXPECT_NE(diagnostics.find(llvm::formatv(
+                                  "target_geometry_mismatch: dynamic tensor "
+                                  "subview dimension #1 may access source "
+                                  "coordinate {0} outside static extent {0}",
+                                  rows)
+                                  .str()),
+              std::string::npos)
+        << diagnostics;
+    EXPECT_EQ(before, print());
+  }
+}
+
 } // namespace

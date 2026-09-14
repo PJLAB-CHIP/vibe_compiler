@@ -1700,3 +1700,31 @@ Generic同时从实际output permutation反解迭代坐标，修复转置输出�
 实卡保持停止，完整LM数值差异仍待解决。
 本轮不计入三轮设备调优，所有身份、测试和诊断见
 [投影读取证据](data/board-performance/projected-tensor-reads-20260914.json)。
+
+
+### 2026-09-14 运行时整数索引的地址证明（仅主机）
+
+完整LM动态词表访问的下游缺口之一，是地址分析无法穿过integer/index cast：即使current SSA已显式夹界，
+仍被当成未知索引。现按14号合同复用pinned MLIR整数范围接口，保留实际位宽、signed/unsigned、trunc/extension和wrap；
+未知load只给出完整类型值域，后续原clamp提供边界。共享SSA在局部postorder内只推导一次；原index循环checked算术不改。
+同步修正unsigned branch的区间收紧，避免把`ugt(x, 0)`错误解读为signed地址非负。
+
+8项新增测试共38组，包括1,536个穷举位型、4,096层共享DAG、rank3/1024/1025/1031、F16/BF16目标view、
+i32/i64动态值及i128夹界、fresh mutation和越界拒绝。目标正例使用现有DDR-only参数ABI中的loop→integer→index链，
+检查clamp的实际SSA依赖、相对offset、byte stride与RDMA地址，并实际完成LLVM translation；
+分析正例中的`memref.load`内容仍未知，不将本节宣称为scalar load或完整gather的target闭合。
+
+本轮rank3 F16 witness读取`[2,1025,64]`中的`[1,1,16]`窗口，地址为
+`source + 131216 + sext(clamp(trunc_i32(index), 0, 1024)) * 128`，每次32 bytes。
+直接target转换所在进程0.01秒、RSS 21376 KiB；这是资格检查，没有可信的优化前同输入计时，不报告加速倍数。
+首个scalar参数诊断被既有函数ABI拒绝，未进入地址分析，已明确排除出前后性能比较。
+
+Analysis/Conversion/Transforms/Planning/Pipeline的115/26/406/127/5项与lit 29项实际通过，无skip；
+canonical完整增量构建和Ninja no-op通过。固定FP16 LLaMA block默认8/42完整no-card通过：5个结构、42次actual、
+9 accepted、33容量拒绝、0 unsupported/indeterminate，主机1018.61秒，RSS 2857592 KiB。
+source 14文件与初始正确快版本相同，包三文件及48份最终IR与上一轮全同。本轮没有改变该block的编译产物，
+也没有运行设备、执行算术或取得数值readback；前序局部常量/SPM修改相对初始实卡快包的回归仍待板卡恢复。
+
+完整LM仍需动态词表需求/按需物化、索引scalar读取及target/host消费者、数值与完整package/no-card；
+source相关unsupported的作用范围也尚待修复。本节不计为三轮板端性能调优。
+可复核身份、测试与产物见[运行时索引范围证据](data/board-performance/runtime-index-bounds-20260914.json)。

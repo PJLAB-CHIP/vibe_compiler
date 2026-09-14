@@ -70,6 +70,33 @@ MLIR的[subview定义](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview
 | 动态child、rank reduction、SPM/DDR | 继续使用同一stride字节化和有界offset证明；不重新分配或复制view | 现有dynamic subview及shape-view lowering矩阵 |
 | 未知offset/动态stride/size、越界、CX/NCx动态view | 原typed拒绝仍成立；继承动态地址的静态child也检查直接source范围；地址发射与bounds verification共用同一动态地址判定 | 新增静态child越界反例、现有负例与target verifier |
 
+### 运行时整数索引的范围证明
+
+输入是current Instr中实际SSA整数运算、`arith.index_cast/index_castui`和Tensor subview；
+只读范围分析输出有符号闭区间或typed failure，直接供同一DDR地址检查、Direct-DTE范围检查和Target LLVM地址检查消费。
+none/search及named target pipeline调用同一实现；没有新op、pass、ABI或搜索选择。
+
+固定宽度整数使用pinned MLIR `InferIntRangeInterface`与`ConstantIntRanges`，按实际位宽同时传播signed/unsigned范围；
+`trunci`、扩展、位运算及整数回绕不能当无限精度整数算术。未知输入、内存读取及没有接口的op结果使用其类型的完整值域，
+只有后续实际clamp等运算已证明地址非负且整个view位于source内时才通过。只遍历所查询值的无region整数SSA依赖，
+迭代postorder并在一次查询中复用共享值；不启动整函数dataflow，不沿未知控制流推测值，不把index循环表达式改成位宽回绕规则。
+既有constant-bounded循环、checked index算术和ValueBounds路径保持原合同。
+跨整数/index转换使用接口的实际signed/unsigned和截断规则；结果不能表示为int64、可能负值、或view上界越界继续拒绝。
+Enclosing branch的unsigned比较仅在operand区间与常量均已非负时按有符号闭区间收紧；不能用`ugt(x, 0)`排除负数位型。
+
+这一规则借鉴MLIR的[整数范围分析](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp)，
+采用同一接口的局部依赖查询；比为每种clamp另写识别分支更能保持[整数cast语义](https://mlir.llvm.org/docs/Dialects/ArithOps/#arithindex_cast-arithindexcastop)。
+范围仅是地址安全证明，不是精确元素需求、allocation或SPM合法性证明；不据此宣称动态gather、scalar load、完整LM或板端已闭合。
+
+| 覆盖 | exact结果 / typed failure | 直接下游 |
+| --- | --- | --- |
+| rank3整数load、1024/1025/1031行；同规模F16/BF16目标view中的loop→i32/i64→index夹界 | load内容保持未知、只证明clamp区间；目标stride字节化一次，LLVM保留实际cast/clamp依赖 | 范围查询；沿已有DDR-only函数ABI的fresh Instr→Target LLVM→LLVM translation，不冒充scalar load已lower |
+| signed/unsigned cast、截断、扩展、整数回绕、共享深SSA DAG | 位型有界oracle检查区间包含全部实际值；不递归展开共享路径 | 同一范围查询及地址检查 |
+| 未夹界、负值、截断后符号变化、source范围越界 | 精确failure类别，target preflight失败保持原IR | 既有DDR/DTE/target负例 |
+| 原循环index算术与固定FP16 LLaMA | 既有范围/overflow失败不变；相关组件及默认search完整no-card回归 | actual package及最终IR身份对照；设备资格待实卡 |
+
+完成条件为上述主机矩阵实际执行、canonical完整增量构建及no-op通过；本节不改变板端完成门禁。
+
 ## 2. 稳定对象与身份
 
 CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。

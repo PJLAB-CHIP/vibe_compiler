@@ -27,6 +27,7 @@ add_mlir_library(WaferAnalysis
   MLIRDestinationStyleOpInterface
   MLIRFuncDialect
   MLIRIR
+  MLIRInferIntRangeInterface
   MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRPresburger

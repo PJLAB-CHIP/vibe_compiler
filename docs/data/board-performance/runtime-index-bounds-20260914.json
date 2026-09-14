@@ -1,0 +1,172 @@
+{
+  "work_item": "board-testing",
+  "date": "2026-09-14",
+  "scope": "仅主机；用户已确认板卡尚未恢复",
+  "root_cause": {
+    "missing_proof": "原地址范围查询不能穿过integer/index cast，已显式clamp的数据相关索引仍被拒绝。",
+    "implementation": "固定宽度整数SSA使用pinned InferIntRangeInterface；未知leaf为完整类型值域，局部postorder复用共享SSA，保持截断与signed/unsigned语义。",
+    "unsigned_branch": "仅在操作数范围和比较常量均非负时将unsigned比较用于signed地址区间；ugt(x,0)不能排除负数位型。",
+    "non_goals": [
+      "不更改数值或容差",
+      "不新增scalar参数ABI",
+      "不声称已lower memref.load或完整动态gather",
+      "不把地址区间当精确元素需求或SPM合法性"
+    ]
+  },
+  "validation": {
+    "new_gtests": 8,
+    "configurations": 38,
+    "exhaustive_bit_patterns": 1536,
+    "deep_shared_dag_nodes": 4096,
+    "deep_dag_note": "4096个有共享operand的addi，加常量/clamp/cast；只证明有界查询，不声称最紧区间。",
+    "component_gtests": {
+      "Analysis": 115,
+      "Conversion": 26,
+      "Transforms": 406,
+      "Planning": 127,
+      "Pipeline": 5
+    },
+    "component_total": 679,
+    "skipped": 0,
+    "lit_passed": 29,
+    "test_note": "首轮fixture brace、FileCheck LABEL变量及错误诊断断言修正；Conversion组件用最终test binary重跑26项全通过。其余4组件未改源码，首轮均通过。旧未夹界整数负例仍拒绝，失败分类更新为NegativeRange。",
+    "analysis_focused": {
+      "path": "build/test/model-performance/runtime-index-analysis-focused.log",
+      "bytes": 1502,
+      "sha256": "1a35bf63cea66398425eb83f76213e6ad6ea33974d3b86abb62fb25e3aff4633"
+    },
+    "components": {
+      "path": "build/test/model-performance/runtime-index-component-details.log",
+      "bytes": 143685,
+      "sha256": "3f3b4ec839e2461bf0b8b71c10ba939f0e65f3ae583c52a7d04d2fca797b345f"
+    },
+    "conversion_final": {
+      "path": "build/test/model-performance/runtime-index-conversion-final.log",
+      "bytes": 6270,
+      "sha256": "e619770bd70eda2b94ffdd984c0b34ec9892a91158b37aed6cf0849d8c281ea3"
+    },
+    "lit": {
+      "path": "build/test/model-performance/runtime-index-lit.log",
+      "bytes": 2771,
+      "sha256": "91eec1d3cf3406351f504174c55c0f308698775a59d106e299157958c6f6ff41"
+    }
+  },
+  "target_witness": {
+    "input": {
+      "path": "build/test/model-performance/runtime-index-source.mlir",
+      "bytes": 1284,
+      "sha256": "c949df76b60bf9519fcd712644f78cb950835d621377460b1369c7760a640c20"
+    },
+    "target_ir": {
+      "path": "build/test/model-performance/runtime-index-target.mlir",
+      "bytes": 1787,
+      "sha256": "7fc66101cd361558135e1769a4969771ee72c1ee98b064f16db8c385c7191014"
+    },
+    "log": {
+      "path": "build/test/model-performance/runtime-index-target.log",
+      "bytes": 726,
+      "sha256": "4a3da7d826c9e0d0c3c2edbdbfb9a8d06131c620cf2daef6df1f62122ed3c099"
+    },
+    "dtype": "float16",
+    "source_shape": [
+      2,
+      1025,
+      64
+    ],
+    "view_shape": [
+      1,
+      1,
+      16
+    ],
+    "address": "source + 131216 + sext(clamp(trunc_i32(index), 0, 1024)) * 128",
+    "bytes_per_read": 32,
+    "wall_seconds": 0.01,
+    "max_rss_kib": 21376,
+    "scope": "输入沿当前DDR-only ABI；loop转整数再clamp/cast。真实memref.load的未知内容范围在分析测试验证，scalar load target仍待实现。",
+    "invalid_initial_diagnostic": {
+      "path": "build/test/model-performance/runtime-index-scalar-abi-rejection.log",
+      "bytes": 2550,
+      "sha256": "953b375d4c22485fac5caebc218e2054b37a4003b835506f546ddfab033056db"
+    },
+    "initial_diagnostic_note": "任意scalar函数参数先被既有ABI拒绝，未检验地址范围；不作优化前性能基线。"
+  },
+  "build": {
+    "canonical": {
+      "path": "build/test/model-performance/runtime-index-build-final.log",
+      "bytes": 2990,
+      "sha256": "7ffad7388bb6fabe95b02a0a30212533ce419ef610201563f0034669bc967012"
+    },
+    "final_test_update": {
+      "path": "build/test/model-performance/runtime-index-build-tests-final.log",
+      "bytes": 225,
+      "sha256": "1fe0275c6b5782cdd24a50aaea17f78f5b0cb0e5140b9bfca3e3af5bd8fc0ff9"
+    },
+    "no_op": {
+      "path": "build/test/model-performance/runtime-index-build-no-op.log",
+      "bytes": 63,
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "compiler": {
+      "path": "build/bin/wafer-compile",
+      "bytes": 85542888,
+      "sha256": "c3f865c0bea1fb03e151037398d037bbd4df01d31eed5a7290ff17c44f610487"
+    },
+    "optimizer": {
+      "path": "build/bin/wafer-opt",
+      "bytes": 62626272,
+      "sha256": "5b3333ed85cb4d0b2184e72b36374481372cbe779255aaee5eb0bc2cdfeb3681"
+    },
+    "running_compiler_matches_final_binary": true
+  },
+  "llama_regression": {
+    "status": "passed package/no-card",
+    "case": "llama-2-7b-block",
+    "dtype": "float16",
+    "seed": 20260803,
+    "policy": "search",
+    "width": 8,
+    "trials": 42,
+    "actual_candidates": 42,
+    "structural": 5,
+    "accepted": 9,
+    "capacity_rejected": 33,
+    "unsupported": 0,
+    "indeterminate": 0,
+    "runner_wall_seconds": 1018.61,
+    "transaction_wall_ms": 996238.642,
+    "max_rss_kib": 2857592,
+    "fresh_source_files": 14,
+    "source_equal_initial_fast": true,
+    "package_files": 3,
+    "package_equal_previous": true,
+    "final_ir_files": 48,
+    "final_ir_equal_previous": true,
+    "initial_fast_note": "source及data相同；manifest/module及IR有前序变更，设备回归仍待恢复。本轮与上一接受版本全相同，不代签初始快包设备门禁。",
+    "torch_eager_reference": true,
+    "arithmetic_execution": false,
+    "completion_execution": false,
+    "numeric_readback": false,
+    "device_executed": false,
+    "log": {
+      "path": "build/test/model-performance/runtime-index-llama-current.log",
+      "bytes": 6191237,
+      "sha256": "cc68abbd7098c3c3d40228ef9fadc675e3e44613fd4db0e741ac8820c2f733ac"
+    },
+    "identities": {
+      "path": "build/test/model-performance/runtime-index-llama-identities.json",
+      "bytes": 9204,
+      "sha256": "80da770df2e0bd014f0f2da88bb479bfe6b3c14f5f8d5f7c7db133c2e18df742"
+    },
+    "package_sha256": {
+      "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+      "manifest.json": "f2e518c40aa69a25243b97c46f5976383bcdc29e4ce1df8d5497353092c00396",
+      "modules/module_00000.so": "33a717f64d78d34ce2a5e6d9c7199366b7d0b7a985cfade11e54ad94e85d6d2b"
+    }
+  },
+  "remaining": [
+    "完整LM的动态需求、按需物化、scalar读取与target/host消费者",
+    "不随spatial选择改变的typed unsupported作用范围",
+    "完整LM数值及package/no-card",
+    "设备恢复后的回归、三轮调优和最终全矩阵"
+  ]
+}

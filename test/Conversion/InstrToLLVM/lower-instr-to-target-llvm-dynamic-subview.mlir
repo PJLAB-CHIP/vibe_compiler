@@ -164,7 +164,7 @@ func.func @reject_unsupported_dynamic_offset(
   return
 }
 
-// UNKNOWN: unsupported_target_address: dynamic tensor subview offset {{.*}} must be a supported statically bounded index expression
+// UNKNOWN: unsupported_target_address: dynamic tensor subview offset {{.*}} range must be non-negative
 
 //--- dynamic-bound.mlir
 

@@ -41,6 +41,9 @@ struct StaticIndexRangeResult {
 /// multiplication with at least one singleton operand, static unsigned
 /// division, signed min/max interval expressions, and identity-preserving
 /// wafer.tile.region block/result edges.
+/// Fixed-width integer SSA and integer/index casts use InferIntRangeInterface
+/// with full type ranges for unknown leaves. Only a proven non-negative final
+/// range is accepted; finite-width truncation and wrapping are preserved.
 /// When `use` is present, constant integer comparisons on enclosing scf.if
 /// paths refine the same SSA values before arithmetic is evaluated. Unknown
 /// expressions and arithmetic overflow fail closed.

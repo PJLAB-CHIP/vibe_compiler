@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -111,14 +112,12 @@ private:
     llvm_unreachable("unhandled integer comparison predicate");
   }
 
-  void constrainMinimum(mlir::Value value, int64_t minimum) {
-    Constraint &constraint = constraints[value];
+  static void constrainMinimum(Constraint &constraint, int64_t minimum) {
     if (!constraint.minimum || minimum > *constraint.minimum)
       constraint.minimum = minimum;
   }
 
-  void constrainMaximum(mlir::Value value, int64_t maximum) {
-    Constraint &constraint = constraints[value];
+  static void constrainMaximum(Constraint &constraint, int64_t maximum) {
     if (!constraint.maximum || maximum < *constraint.maximum)
       constraint.maximum = maximum;
   }
@@ -127,30 +126,39 @@ private:
                                mlir::arith::CmpIPredicate predicate,
                                int64_t constant) {
     using Predicate = mlir::arith::CmpIPredicate;
+    bool isUnsigned =
+        predicate == Predicate::ult || predicate == Predicate::ule ||
+        predicate == Predicate::ugt || predicate == Predicate::uge;
+    // The stored interval is signed. An unsigned comparison only refines it
+    // when both the operand interval and constant are known non-negative.
+    if (isUnsigned && constant < 0)
+      return;
+    Constraint &constraint =
+        isUnsigned ? unsignedConstraints[value] : constraints[value];
     switch (predicate) {
     case Predicate::eq:
-      constrainMinimum(value, constant);
-      constrainMaximum(value, constant);
+      constrainMinimum(constraint, constant);
+      constrainMaximum(constraint, constant);
       return;
     case Predicate::ne:
       return;
     case Predicate::slt:
     case Predicate::ult:
       if (constant != std::numeric_limits<int64_t>::min())
-        constrainMaximum(value, constant - 1);
+        constrainMaximum(constraint, constant - 1);
       return;
     case Predicate::sle:
     case Predicate::ule:
-      constrainMaximum(value, constant);
+      constrainMaximum(constraint, constant);
       return;
     case Predicate::sgt:
     case Predicate::ugt:
       if (constant != std::numeric_limits<int64_t>::max())
-        constrainMinimum(value, constant + 1);
+        constrainMinimum(constraint, constant + 1);
       return;
     case Predicate::sge:
     case Predicate::uge:
-      constrainMinimum(value, constant);
+      constrainMinimum(constraint, constant);
       return;
     }
     llvm_unreachable("unhandled integer comparison predicate");
@@ -192,22 +200,24 @@ private:
   Result applyConstraint(mlir::Value value, Result result) const {
     if (!result.succeeded() || result.range.empty)
       return result;
-    auto it = constraints.find(value);
-    if (it == constraints.end())
-      return result;
-    if (it->second.minimum)
-      result.range.min = std::max(result.range.min, *it->second.minimum);
-    if (it->second.maximum)
-      result.range.max = std::min(result.range.max, *it->second.maximum);
+    auto apply = [&](const auto &bounds) {
+      auto it = bounds.find(value);
+      if (it == bounds.end())
+        return;
+      if (it->second.minimum)
+        result.range.min = std::max(result.range.min, *it->second.minimum);
+      if (it->second.maximum)
+        result.range.max = std::min(result.range.max, *it->second.maximum);
+    };
+    apply(constraints);
+    if (result.range.min >= 0)
+      apply(unsignedConstraints);
     if (result.range.min > result.range.max)
       result.range = StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true};
     return result;
   }
 
   Result evaluateImpl(mlir::Value value) {
-    if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
-      return Result{StaticIndexRange{*constant, *constant, /*empty=*/false}};
-
     auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value);
     if (blockArg && blockArg.getOwner()) {
       if (mlir::Value entry =
@@ -225,6 +235,16 @@ private:
                     : mlir::scf::ForOp{};
     if (loop && value == loop.getInductionVar())
       return evaluateLoopInductionVariable(loop);
+
+    // Integer values have finite-width, signed/unsigned semantics. In
+    // particular, an index_cast must not lose a clamp on a runtime integer or
+    // treat a preceding truncation/wrapping add as mathematical arithmetic.
+    if (mlir::isa<mlir::IntegerType>(value.getType()) ||
+        value.getDefiningOp<mlir::arith::IndexCastOp>() ||
+        value.getDefiningOp<mlir::arith::IndexCastUIOp>())
+      return evaluateIntegerRange(value);
+    if (std::optional<int64_t> constant = mlir::getConstantIntValue(value))
+      return Result{StaticIndexRange{*constant, *constant, /*empty=*/false}};
 
     if (auto add = value.getDefiningOp<mlir::arith::AddIOp>())
       return evaluateAdd(add);
@@ -248,6 +268,59 @@ private:
     // covers affine.apply without treating an unbounded block argument as a
     // zero or guessed range.
     return evaluateInterfaceBounds(value);
+  }
+
+  Result evaluateIntegerRange(mlir::Value root) {
+    using mlir::ConstantIntRanges;
+    auto getModel = [](mlir::Value value) -> mlir::InferIntRangeInterface {
+      mlir::Operation *op = value.getDefiningOp();
+      if (!op || op->getNumRegions() != 0 ||
+          (!mlir::isa<mlir::IntegerType>(value.getType()) &&
+           !mlir::isa<mlir::arith::IndexCastOp, mlir::arith::IndexCastUIOp>(
+               op)) ||
+          !llvm::all_of(op->getOperandTypes(),
+                        [](mlir::Type type) { return type.isIntOrIndex(); }))
+        return {};
+      return mlir::dyn_cast<mlir::InferIntRangeInterface>(op);
+    };
+
+    // Unknown leaves retain the full type range. The regionless SSA cone is
+    // acyclic; an explicit postorder stack avoids recursion on long cast/index
+    // chains. Shared operands are inferred once per query, not once per path.
+    llvm::DenseMap<mlir::Value, ConstantIntRanges> ranges;
+    llvm::SmallVector<std::pair<mlir::Value, bool>, 16> pending{{root, false}};
+    while (!pending.empty()) {
+      auto [value, ready] = pending.pop_back_val();
+      if (ranges.contains(value))
+        continue;
+      auto model = getModel(value);
+      if (model && !ready) {
+        pending.emplace_back(value, true);
+        for (mlir::Value operand : model->getOperands())
+          if (!ranges.contains(operand))
+            pending.emplace_back(operand, false);
+        continue;
+      }
+      auto maximum = ConstantIntRanges::maxRange(
+          ConstantIntRanges::getStorageBitwidth(value.getType()));
+      if (model) {
+        llvm::SmallVector<ConstantIntRanges, 4> operands;
+        for (mlir::Value operand : model->getOperands())
+          operands.push_back(ranges.find(operand)->second);
+        model.inferResultRanges(
+            operands, [&](mlir::Value result, const ConstantIntRanges &range) {
+              if (result == value)
+                maximum = range;
+            });
+      }
+      ranges.try_emplace(value, std::move(maximum));
+    }
+    const ConstantIntRanges &range = ranges.find(root)->second;
+    if (!range.smin().isSignedIntN(64) || !range.smax().isSignedIntN(64))
+      return failed(Failure::UnsupportedExpression);
+    return Result{StaticIndexRange{range.smin().getSExtValue(),
+                                   range.smax().getSExtValue(),
+                                   /*empty=*/false}};
   }
 
   Result evaluateInterfaceBounds(mlir::Value value) {
@@ -490,6 +563,7 @@ private:
   llvm::DenseMap<mlir::Value, Result> cache;
   llvm::DenseSet<mlir::Value> active;
   llvm::DenseMap<mlir::Value, Constraint> constraints;
+  llvm::DenseMap<mlir::Value, Constraint> unsignedConstraints;
 };
 
 } // namespace
