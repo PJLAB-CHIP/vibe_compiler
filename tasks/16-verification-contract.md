@@ -123,6 +123,33 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 | 原始视觉模型 | managed torchvision的ResNet-18保留整网及全部1000 logits，224/1024/1025输入；ViT EncoderBlock保留12 heads、768 hidden、3072 MLP及1024/1025全部tokens；eval、固定参数、FP16/default容差 | 同一原始module产生source及CPU eager reference，正式search/no-card与实卡分别登记；缺失算子不能删去或替换计算 |
 | DTE贡献组装、完整view/紧凑buffer、layout materialization、copy_into | 从actual SSA追踪16个来源及全局/局部窗口；缺来源、重复来源、错窗口均拒绝 | 正式通信资格入口、1024/1025/1031及注入负例 |
 
+#### 混合dtype端口与完整单层LM
+
+- Upstream IR / input：原始framework module、CPU运行时tensor tuple和同一module的全部eager输出；
+  `case.dtype`只描述模型采用的计算/参数精度，各端口type由实际tensor决定。
+- Current stage responsibility：在case边界检查CPU和已支持的manifest dtype，不把整数ID或实际F32输出转换为模型dtype；
+  source metadata、payload及manifest按每个端口的shape/dtype/role逐项闭合。整数输出按exact比较，不消费浮点容差。
+- Output IR / files：同一portable source、原dtype的raw输入和全部reference、按实际端口绑定的runner参数；无第二份dtype表。
+- Downstream consumer：生产`wafer-compile`与原`prepare_runtime_payloads`、`wafer-run`及完整PyTorch比较。
+- User-level driver / named pipeline：原PyTorch case registry和唯一board runner；source/no-card与实卡资格继续分别登记。
+- Explicit non-goals：不新增runtime dtype/ABI，不做host embedding，不裁剪词表/输出位置，不新增runner、不改变原block或参考容差。
+- Completion criteria：混合端口真实export→metadata→payload的dtype/shape/角色闭合，整数误差1必须拒绝；
+  新LM保留实际embedding、一个原始decoder、final RMSNorm及全部LM logits；source/lowering/package未闭合时不签board-ready。
+
+完整单层LM使用pinned HF `LlamaForCausalLM`，原LLaMA2配置仅固定`num_hidden_layers=1`、eval/无cache/无loss，
+`logits_to_keep=0`，不进行采样。输入i64 IDs `[1,S]`，输出所有位置、所有32000词的`[1,S,32000]` logits，
+包含重复ID、0及31999。原hidden4096、MLP11008、32 heads和context4096不变，embedding与LM head不共享权重。
+S16为主配置并覆盖FP16/BF16，S1024/1025为真实规模整除/尾部；case只组织typed输入并选择既定完整输出。
+实际API以pinned实现为准，依据[官方HF调用合同](https://huggingface.co/docs/transformers/model_doc/llama#transformers.LlamaForCausalLM.forward)。
+
+| 覆盖输入/分支 | exact要求、失败与直接witness |
+| --- | --- |
+| rank3+、1024/1025/1031的浮点数据与i32/i64 IDs，多种输出dtype | 原module→真实export的metadata逐端口一致；原raw字节及manifest绑定，无隐式cast |
+| 整数大值、相邻值和错误尾元素 | 既有浮点容差不能掩盖整数误差；大于F32/F64精确整数范围的i64仍逐bit可区分，审计不先转浮点再计算 |
+| dtype/shape/角色不符、非CPU或不支持的dtype | 在设备launch前拒绝；不改dtype以绕过未实现合同 |
+| 单层LM S16、1024/1025及BF16补充 | 原HF所有logits及source输入i64、实际embedding gather和完整词表投影；同一source改ID会改变reference，越界ID在host失败 |
+| 原FP16/BF16 block及其它同dtype case | 构造、reference和原source保持；此处解除的是runner的人为同dtype限制，不为编译器补猜测的索引语义 |
+
 ### 3.2 Canonical build gate
 
 ```text

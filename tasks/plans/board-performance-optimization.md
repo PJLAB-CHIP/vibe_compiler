@@ -9,7 +9,7 @@
 
 用户新增的ResNet、YOLOv5、ViT block、带embedding/LM head的单层LLaMA2、4096³ GEMM及选定补充case，
 统一按[扩展板测矩阵与三轮性能调优](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
-新矩阵和三轮方案已进入正确性压测：四类主配置及补充共10个配置已接入，首轮失败边界及修复检查点见扩展矩阵；
+新矩阵和三轮方案已进入正确性压测，已注册模型的失败边界及修复检查点见扩展矩阵；
 它们仍属于本work item，不另建网络或通信板测任务。
 后续GQA的多轴contraction、状态协调及metadata view局部加载已通用修复，1024/1025在原默认预算下完成package/no-card；
 长cache的tensor assembly输入需求归因已通用修复，两步4094→4095→4096在原默认预算下各有15个accepted并通过完整package/no-card，达到board-ready；GQA整除/尾部配置本轮复验通过。板端数值和三轮调优保持未完成。
@@ -20,8 +20,11 @@ IR和原有计数完全相同；该修改的LLaMA完整no-card通过，package�
 后续Region提案已减少重复合法性查询和FM计分，定向及组件门禁通过；该修改的LLaMA no-card通过且包与初始快版本相同，ResNet整网资格继续验证。
 ResNet另有temporal重复全module校验及窗口max归约lowering缺口；这些主机结果不计作已完成的板端性能优化轮次。
 ViT的GELU公开扩展和LayerNorm opmath入口已通用修复，1024/1025 source通过；1024已到含attention的structured IR，
-整块后续编译尚未结束。独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
+整块后续编译达到1,800秒主机期限：One-Shot循环状态分析单次活跃至少1,628秒，内部根因继续定位。
+独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
 这些证据只闭合入口缺口，不代签整块数值、设备性能或三轮调优。
+混合dtype端口及整数exact比较已补通用runner验证；完整单层LM已注册，S16 FP16/BF16的全部logits CPU oracle通过。
+完整HF导出受pinned PyTorch装饰器/ModuleList追踪问题阻塞，尚无source/package；其余范围保持扩展矩阵原合同。
 
 ## 输入、输出与边界
 

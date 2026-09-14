@@ -1,0 +1,167 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "混合端口和单层LM主机接入；不签发package/board-ready或性能轮次",
+  "parent_commit": "88f5f2a0af6ebb80511ea98f9eab6d1af91354e5",
+  "dependencies": {
+    "torch": "2.5.0+cpu",
+    "torch-xla": "2.5.0",
+    "transformers": "5.14.1"
+  },
+  "checkpoint_sources_sha256": {
+    "test/Board/PyTorch/wafer_pytorch_board_cases.py": "a789c2ea3c4e77a920826261ef8533efeffc0da74853982ab29ca1f97bb513c1",
+    "test/Board/PyTorch/wafer_pytorch_board_common.py": "2d07b8d65631eef29a2e6962591cc708ce01e2b3246dee3b01982f04aef12e4c",
+    "test/Board/PyTorch/wafer_board_pytorch_test.py": "3bad79b16fe58f5da737c9aa0e2288e48458d0db38ca8c0e3323d240bdc214f0",
+    "test/Board/PyTorch/wafer_pytorch_board_cases_test.py": "ef0b2813834a71c52244017a85a5669d2f44ee624165263621037d2c2bd30898",
+    "test/Board/PyTorch/wafer_pytorch_board_common_test.py": "4a2dc943a3db320619766a5a7a63105cfd733d2258318f07e9fe50748babb26c",
+    "test/Tools/Inputs/hf/llama-2-7b-block-config.json": "9842a80570738e3f2456024d1479d5034df8efa151dbd208cdb7ebb371dfcef7"
+  },
+  "mixed_ports": {
+    "extents": [
+      1024,
+      1025,
+      1031
+    ],
+    "dtype_pairs": [
+      [
+        "float16",
+        "int64"
+      ],
+      [
+        "bfloat16",
+        "int32"
+      ]
+    ],
+    "source_configurations_passed": 6,
+    "integer_raw_configurations_passed": 12,
+    "tensor_shapes": [
+      "[1,2,S,8] float data",
+      "[1,2,S] integer IDs",
+      "[1024,8] embedding weight"
+    ],
+    "output_dtypes": [
+      "float32",
+      "original integer dtype"
+    ],
+    "coverage": [
+      "real torch export to portable StableHLO and metadata",
+      "runtime input_arg bindings",
+      "manifest port fixture to original raw payload/reference",
+      "wrong dtype/shape/bytes/role rejected",
+      "non-CPU and unsupported dtype rejected",
+      "i32/i64/u8/u32 exact one-unit tail error rejection independent of float tolerance",
+      "integer audit does not cast to float"
+    ],
+    "executable_package_verified": false
+  },
+  "single_layer_lm": {
+    "seed": 20260803,
+    "layers": 1,
+    "hidden": 4096,
+    "intermediate": 11008,
+    "q_heads": 32,
+    "kv_heads": 32,
+    "context": 4096,
+    "vocabulary": 32000,
+    "embedding_and_head_tied": false,
+    "logits_to_keep": 0,
+    "use_cache": false,
+    "registered_configurations": [
+      "S16 float16",
+      "S16 bfloat16",
+      "S1024 float16",
+      "S1025 float16"
+    ],
+    "cpu_complete_logits_passed": [
+      "S16 float16",
+      "S16 bfloat16"
+    ],
+    "input_shape": [
+      1,
+      16
+    ],
+    "input_dtype": "int64",
+    "output_shape": [
+      1,
+      16,
+      32000
+    ],
+    "changed_final_id_changes_final_logits": true,
+    "earlier_logits_exact_unchanged": true,
+    "out_of_range_host_rejection": [
+      -1,
+      32000
+    ],
+    "default_strict_export": {
+      "result": "failed",
+      "error": "Unsupported func.__code__.co_varnames closure access",
+      "wall_seconds": 22.61,
+      "rss_kib": 2392664
+    },
+    "isolated_non_strict_export": {
+      "result": "failed",
+      "error": "ModuleList slice AttrProxy.__init__ missing path",
+      "wall_seconds": 14.82,
+      "rss_kib": 2393104,
+      "production_mode_changed": false
+    },
+    "source_ready": false,
+    "package_ready": false,
+    "no_card_passed": false,
+    "board_ready": false,
+    "limit": "source identity at probe launch was not recorded; checkpoint source hashes identify current reproducible implementation only"
+  },
+  "minimal_dependency_repros": {
+    "input_shape": [
+      1,
+      1024,
+      8
+    ],
+    "decorator_co_varnames": {
+      "strict": "Unsupported",
+      "non_strict": "passed with changed input"
+    },
+    "module_list_slice": {
+      "strict": "passed with changed input",
+      "non_strict": "TypeError missing path"
+    },
+    "wafer_compiler_invoked": false
+  },
+  "tests": {
+    "focused_tests_passed": 11,
+    "focused_wall_seconds": 44.53,
+    "focused_rss_kib": 3506748,
+    "ctest_executed": 2,
+    "python_tests_executed": 47,
+    "unexpected_skips": 0,
+    "case_suite_wall_seconds": 89.76,
+    "case_suite_timeout_seconds_after_registration_update": 180,
+    "canonical_build": "passed",
+    "second_build": "Ninja no-op",
+    "registered_full_lm_no_card_cases": "not executed; actual default export already fails before source publication",
+    "final_exact_payload_test": "passed, six source configurations with zero-tolerance raw verification"
+  },
+  "device": {
+    "boot_id": "f0bc038d-2b5e-42fa-9959-9d3aa265e993",
+    "launched": false,
+    "reason": "先前QKV真实device timeout，会话未恢复"
+  },
+  "logs": {
+    "build/test/model-performance/mixed-ports-tests.log": "48de877ecf9494697b3eb1bb32463e5eb86e80b017c27c80460cc8d2c2e11082",
+    "build/test/model-performance/mixed-ports-ctest.log": "02d37996437e8b6793d74f23c92b05c528271272e9d36896b230469077b304a4",
+    "build/test/model-performance/mixed-ports-build.log": "d890f3580c962e632b10d49b17dcd7a9e49ace94d0968b177bc4a7fb2099cd97",
+    "build/test/model-performance/mixed-ports-build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/mixed-ports-ctest-registration.json": "7c6fe14cc23f6570e225d9c0b91384eed7f9a2c852fbbce603ccc518fd5b0460",
+    "build/test/model-performance/single-layer-lm-source-probe.log": "91ace83455a23695bd3d0cec036d1508bc118958285d5ea8269066e95ce82de5",
+    "build/test/model-performance/single-layer-lm-export-mode-probe.log": "ceaa486a08d27597062f0d95dd786c23c06d4f34d221bdf77c14c328d9289991",
+    "build/test/model-performance/framework-export-repros.log": "9370dc9eb94248240894c1662fb933b388a81ef1419acf61ca0bd26a6d632860",
+    "build/test/model-performance/mixed-ports-exact-payload.log": "ec3d662cdd0ca7ef57fee566a2bf6933b7d343da11b80eaec5ec2b0e819fe7ec",
+    "build/test/model-performance/mixed-ports-final-build.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "build/test/model-performance/mixed-ports-final-build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+  },
+  "remaining": [
+    "完整LM source、索引lowering、1024/1025、package/no-card及板端",
+    "ViT One-Shot慢调用的内部根因与完整产品",
+    "原BF16 LLaMA与其它矩阵缺口、三轮profile优化、最终全矩阵实卡"
+  ]
+}

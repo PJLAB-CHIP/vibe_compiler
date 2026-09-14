@@ -58,11 +58,12 @@ class PyTorchBoardCase:
         outputs = self.expected_outputs_factory()
         if not outputs:
             raise RuntimeError(f"PyTorch board case {self.name} has no outputs")
-        for tensor in outputs:
-            if tensor.device.type != "cpu" or tensor.dtype != self.dtype:
+        for index, tensor in enumerate(outputs):
+            if (tensor.device.type != "cpu"
+                    or tensor.dtype not in common.MANIFEST_DTYPES.values()):
                 raise RuntimeError(
-                    f"PyTorch board case {self.name} eager oracle must preserve "
-                    f"CPU dtype {self.dtype}"
+                    f"PyTorch board case {self.name} output {index} requires "
+                    f"a supported CPU tensor, got {tensor.device}/{tensor.dtype}"
                 )
         return outputs
 
@@ -777,6 +778,70 @@ def _llama_2_7b_block(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
     )
 
 
+def _llama_2_7b_single_layer_lm(
+    dtype: torch.dtype, seed: int, *, sequence_length: int = 16
+) -> PyTorchBoardCase:
+    """Original HF LM forward with one decoder and the complete vocabulary."""
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    if dtype not in {torch.float16, torch.bfloat16}:
+        raise RuntimeError("single-layer Llama LM requires float16 or bfloat16")
+    config = dict(capture.load_hf_transformer_config(HF_LLAMA2_7B_CONFIG))
+    if not 3 <= sequence_length <= int(config["max_position_embeddings"]):
+        raise ValueError("single-layer Llama LM sequence must fit its original context")
+    config["num_hidden_layers"] = 1
+    config["torch_dtype"] = str(dtype).removeprefix("torch.")
+    config["use_cache"] = False
+    hf_config = LlamaConfig(**config)
+    hf_config._attn_implementation = "eager"
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed + 1)
+        original = LlamaForCausalLM(hf_config).to(dtype=dtype).eval()
+
+    class FullLogits(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = original
+
+        def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+            return self.model(input_ids=input_ids, use_cache=False,
+                              logits_to_keep=0).logits
+
+    module = FullLogits().eval()
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    vocabulary = int(config["vocab_size"])
+    input_ids = torch.randint(vocabulary, (1, sequence_length),
+                              dtype=torch.int64, generator=generator)
+    input_ids[0, :3] = torch.tensor([0, vocabulary - 1, 0], dtype=torch.int64)
+    inputs = (input_ids,)
+
+    def validate_ids() -> None:
+        # Outside the exported module: runtime IDs still feed HF's embedding.
+        if (input_ids.dtype != torch.int64 or input_ids.device.type != "cpu"
+                or torch.any(input_ids < 0) or torch.any(input_ids >= vocabulary)):
+            raise ValueError("Llama token IDs must be CPU i64 values within the vocabulary")
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        validate_ids()
+        with torch.no_grad():
+            logits = module(*inputs)
+        if (logits.shape != (1, sequence_length, vocabulary)
+                or logits.dtype != dtype or not torch.isfinite(logits).all()):
+            raise RuntimeError("single-layer Llama LM must return all finite logits in model dtype")
+        return (logits,)
+
+    def export_program(output: pathlib.Path) -> None:
+        validate_ids()
+        _save_exported_program(output, module, inputs)
+
+    return PyTorchBoardCase(
+        name=f"llama-2-7b-single-layer-lm-{sequence_length}",
+        num_partitions=1, dtype=dtype, inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=export_program, comparison_policy=HF_LLAMA2_7B_COMPARISON,
+    )
+
+
 def _read_only_attention(
     dtype: torch.dtype,
     seed: int,
@@ -1283,6 +1348,13 @@ CASE_FACTORIES: dict[
         dtype, seed, past_length=4094, name="attention-decode-kv-cache-long-4096"
     ),
     "llama-2-7b-block": _llama_2_7b_block,
+    "llama-2-7b-single-layer-lm": _llama_2_7b_single_layer_lm,
+    "llama-2-7b-single-layer-lm-1024": lambda dtype, seed: _llama_2_7b_single_layer_lm(
+        dtype, seed, sequence_length=1024
+    ),
+    "llama-2-7b-single-layer-lm-tail-1025": lambda dtype, seed: _llama_2_7b_single_layer_lm(
+        dtype, seed, sequence_length=1025
+    ),
 }
 
 
@@ -1291,9 +1363,11 @@ def make_case(name: str, *, dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         case = CASE_FACTORIES[name](dtype, seed)
     except KeyError as error:
         raise RuntimeError(f"unknown PyTorch board case: {name}") from error
-    for tensor in case.inputs:
-        if tensor.device.type != "cpu" or tensor.dtype != dtype:
+    for index, tensor in enumerate(case.inputs):
+        if (tensor.device.type != "cpu"
+                or tensor.dtype not in common.MANIFEST_DTYPES.values()):
             raise RuntimeError(
-                f"PyTorch board case {name} must preserve CPU dtype {dtype}"
+                f"PyTorch board case {name} input {index} requires a supported "
+                f"CPU tensor, got {tensor.device}/{tensor.dtype}"
             )
     return case

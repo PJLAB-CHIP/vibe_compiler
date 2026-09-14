@@ -132,6 +132,13 @@ def assert_tensor_matches(
             f"{context} dtype mismatch: actual={actual.dtype} "
             f"expected={expected.dtype}"
         )
+    if not (actual.dtype.is_floating_point or actual.dtype.is_complex):
+        if not torch.equal(actual, expected):
+            mismatches = int(torch.count_nonzero(actual != expected).item())
+            raise AssertionError(
+                f"{context}: integer output differs in {mismatches}/{actual.numel()} elements"
+            )
+        return
     options = {
         "equal_nan": policy.equal_nan,
         "check_device": True,

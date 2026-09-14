@@ -105,7 +105,24 @@
     "package_ready": false,
     "compile_state_at_checkpoint": "running",
     "running_pid": 948120,
-    "running_compiler_sha256": "9c885cebc916445003e38157d3286324fef2a6773bf91e3893330ba1016a9259"
+    "running_compiler_sha256": "9c885cebc916445003e38157d3286324fef2a6773bf91e3893330ba1016a9259",
+    "terminal_followup": {
+      "status": "host_compile_timeout",
+      "compile_deadline_seconds": 1800,
+      "runner_exit_code": 1,
+      "runner_wall_seconds": 1822.76,
+      "runner_rss_kib": 903408,
+      "analyze_module_last_active_elapsed_ms": 1628034,
+      "build_spatial_proposals_ms": 122908.028,
+      "source_to_tensor_program_ms": 2924.565,
+      "analysis_owner": "lib/Wafer/Transforms/Tile/LayoutOptimization.cpp",
+      "call": "mlir::bufferization::analyzeModuleOp",
+      "internal_root_cause_proven": false,
+      "package_ready": false,
+      "device_launch": false,
+      "log": "build/test/model-performance/source-math-vit-no-card.log",
+      "log_sha256": "2a4c2b46cdd09c58ccd265b71943c2e161a84339a97986a5a8498ce7f044449a"
+    }
   },
   "oracle_limits": [
     "pinned CPU torch.erf多线程冷调用独立出现重复差异，定向数值测试仅在自己的进程内使用一个CPU worker，之后恢复。",

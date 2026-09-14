@@ -168,6 +168,13 @@ def file_sha256(path: pathlib.Path) -> str:
 
 
 def summarize_output_error(actual: torch.Tensor, expected: torch.Tensor) -> dict:
+    if not expected.dtype.is_floating_point:
+        mismatches = int(torch.count_nonzero(actual != expected).item())
+        return {
+            "shape": list(expected.shape), "dtype": str(expected.dtype),
+            "elements": expected.numel(), "mismatched_elements": mismatches,
+            "max_abs_error": 0 if mismatches == 0 else None,
+        }
     maximum = (actual.float() - expected.float()).abs().max().item()
     return {
         "shape": list(expected.shape), "dtype": str(expected.dtype),

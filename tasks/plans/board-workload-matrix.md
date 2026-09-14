@@ -43,10 +43,12 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 1. `wafer_pytorch_board_cases.py`已接入ResNet-18、ViT EncoderBlock、大GEMM和batch共享RHS及其补充配置；
    GQA已通过source/reference及默认search package/no-card；长cache两步4094→4095→4096也已通过完整package/no-card，
    actual tensor assembly输入需求反馈已修复，设备结果接续和完整数值仍待实卡验收。
-   YOLO与单层完整LM尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
-   它不能覆盖token embedding、final RMSNorm、LM head，也不能给新网络签发ready资格。
-2. `wafer_pytorch_board_common.py`已支持i32/i64 raw传输，但case构造仍要求所有input与case浮点dtype一致。
-   必须改成逐输入/输出typed合同，整数索引保持整数；raw支持不证明动态索引已能lower到设备。
+   单层完整LM已注册S16 FP16/BF16及1024/1025 FP16，S16两种dtype的完整eager oracle通过；
+   原始HF wrapper在pinned PyTorch导出时失败，尚无source/package。原block仍是hidden states输入/输出，不能代签完整LM。
+   YOLO尚未接入。
+2. case构造已改成逐端口CPU及manifest支持dtype检查，整数ID、实际F32输出不再被模型精度限制；
+   整数输出始终exact。六组混合dtype/整除尾部配置通过真实export、metadata及payload文件边界检查；
+   这些证据不代签动态索引的完整lowering、package或板端资格。
 3. 当前ViT原始EncoderBlock包含LayerNorm、MultiheadAttention、GELU MLP和两次残差；当前HF LM head无loss时不强制升为F32。
    接入时按实际framework返回dtype保留结果，不能为沿用旧runner而插入额外cast。
 4. `CompilerTesting.cpp`中的 `SharedInput` 仅接受none policy，开启 `shareReadOnlyInputs`；baseline及search都调用
@@ -580,7 +582,34 @@ canonical完整增量构建及Ninja no-op通过。独立FP16 GELU `[1,1024,16]`�
 85.41秒生成16 Tile包，`wafer-run --no-card`通过；没有设备执行或数值回读，不签发板端资格。
 
 原始ViT 1024/1025的source均通过正式入口；1024的当前编译已输出verified structured IR，无StableHLO/CHLO残留，
-含1个attention op，检查点时后续编译仍在运行。整块package/no-card、1025的05号下游及全部实卡验收仍未完成。
+含1个attention op。该次编译随后达到1,800秒主机期限并退出：runner总计1,822.76秒、RSS903408 KiB；
+`loop-state-binding`的单次`analyzeModuleOp`最后活跃记录为1,628,034 ms，调用位置是
+`LayoutOptimization.cpp`中的官方One-Shot bufferization分析。空间提案122,908.028 ms，前端2,924.565 ms。
+已定位主要慢调用，尚未证明其内部具体根因；没有package或设备launch。1025的05号下游及全部实卡验收仍未完成。
 原FP16 LLaMA重新export的14个源文件与初始正确快版本逐字节相同；本项未重编LLaMA整块或复签设备性能。
 CPU数值oracle的多线程冷调用及oneDNN特殊值边界在02号合同和证据中单独记录，板测reference/容差保持不变。
 完整检查点见[数学源输入记录](../../docs/data/board-performance/source-math-ingestion-20260914.json)。
+
+### 2026-09-14 混合端口与完整单层LM检查点
+
+16号合同中的逐端口dtype检查已落实。`case.dtype`仍是模型精度；CPU输入/输出按已有manifest dtype集合检查，
+不把ID转换成浮点，也不把framework的F32输出转窄。整数比较独立于浮点容差，并按整数不等计数生成审计，
+避免大i64先转成F32/F64后丢失误差。1024/1025/1031 × FP16+i64、BF16+i32共六组真实Embedding导出及payload验证通过，
+包括dtype/shape/byte数/端口角色错误；i32/i64/u8/u32的十二组raw往返及末元素误差1拒绝通过。
+
+完整单层LM的四个规定配置已进入原case registry及source/no-card注册。S16 FP16/BF16都执行原始
+`LlamaForCausalLM`，验证全部`[1,16,32000]` logits、独立embedding/head、单decoder及原hidden/context配置；
+改变末token会改变该位置logits，先前位置保持，越界ID在host拒绝。它们仅有完整CPU前向资格，未导出成功。
+
+导出阻塞可在不使用Wafer的两个rank3 `[1,1024,8]`最小原生PyTorch模块中复现：
+
+- 默认strict导出不支持装饰器闭包的`func.__code__.co_varnames`访问；完整HF的配置合并装饰器正好经过该路径。
+- 按[PyTorch官方导出说明](https://docs.pytorch.org/tutorials/recipes/torch_export_challenges_solutions.html)做非严格模式隔离诊断，
+  能通过上述装饰器，但pinned PyTorch 2.5在`ModuleList[:...]`追踪中触发
+  `AttrProxy.__init__`缺`path`错误；完整HF与最小原生ModuleList均复现。最小切片模块的strict模式通过。
+
+因此尚不能用切换模式闭合完整LM，生产导出模式保持原状，没有删除HF包装或改写模型计算。
+完整LM的source、整数lookup lowering、package/no-card、1024/1025及板端数值仍待完成。
+本次定向11项测试及原runner两个完整CTest通过；模型suite实测89.76秒，因新增完整LM oracle已接近旧90秒期限，
+将该纯主机suite期限调整为180秒，设备watchdog及compiler期限不变。完整canonical构建及no-op按本次提交门禁验收。
+以上是正确性准备，不计为三轮性能调优；详见[混合端口证据](../../docs/data/board-performance/mixed-ports-lm-20260914.json)。

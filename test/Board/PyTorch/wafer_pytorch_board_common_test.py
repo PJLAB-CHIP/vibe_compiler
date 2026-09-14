@@ -32,6 +32,34 @@ class CompilerIRDumpTest(unittest.TestCase):
 
 
 class PyTorchBoardCommonTest(unittest.TestCase):
+    def test_integer_ports_preserve_large_values_and_reject_one_bit_errors(self) -> None:
+        # Exercise real-size/tail buffers and values above floating-point exact
+        # integer ranges. Neither raw transport nor comparison may cast them.
+        for extent in (1024, 1025, 1031):
+            for dtype, value in ((torch.int32, 10000), (torch.int64, 2**60),
+                                 (torch.uint8, 200), (torch.uint32, 2**31)):
+                with self.subTest(extent=extent, dtype=dtype):
+                    expected = torch.full((1, extent, 4), value, dtype=dtype)
+                    actual = expected.clone()
+                    actual[0, -1, -1] = value + 1
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = pathlib.Path(directory) / "integer.raw"
+                        common.write_tensor_raw(path, expected)
+                        common.assert_raw_capture_matches(path, expected, context="integer raw")
+                        common.write_tensor_raw(path, actual)
+                        for policy in (common.PYTORCH_DEFAULT,
+                                       common.ComparisonPolicy(rtol=0.002, atol=0.004)):
+                            with self.assertRaisesRegex(AssertionError, "1/.* elements"):
+                                common.assert_raw_capture_matches(
+                                    path, expected, context="integer tail", policy=policy,
+                                )
+                    error = board_runner.summarize_output_error(actual, expected)
+                    self.assertEqual(error["mismatched_elements"], 1)
+                    self.assertIsNone(error["max_abs_error"])
+                    self.assertEqual(
+                        board_runner.summarize_output_error(expected, expected)["max_abs_error"], 0,
+                    )
+
     def test_round_trip_preserves_dtype(self) -> None:
         generator = torch.Generator(device="cpu").manual_seed(20260803)
         for dtype in (

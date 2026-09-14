@@ -1533,3 +1533,33 @@ CPU数值检查另发现两项外部实现边界：pinned `torch.erf`多线程�
 证据、源文件及运行包身份见[数学源输入检查点](data/board-performance/source-math-ingestion-20260914.json)。
 ViT整块search/package、尾部的05号下游、全部设备数值和性能仍待完成。设备会话仍因先前QKV真实timeout保持停止；
 本次已确认boot identity未改变，未retry/reset或发起设备launch。
+
+## 2026-09-14：混合端口、完整单层LM及ViT编译终态
+
+本次继续扩展矩阵的主机正确性准备，未执行设备，不计作三轮性能调优或新性能基线。
+
+runner原来要求每个输入和输出都等于模型浮点dtype，导致合法整数ID及混合dtype输出在进入compiler之前被拒绝。
+现按实际CPU tensor和已有manifest dtype集合逐端口校验，raw及manifest继续由同一套接口消费。
+另修复整数结果验证：浮点相对容差会掩盖整数误差，例如i32的10000→10001或i64的2^60→2^60+1；
+现用整数exact比较，审计按整数不等计数，不先转换为浮点。
+
+| 本轮验证 | 实际结果与限制 |
+| --- | --- |
+| 混合dtype真实source/payload | 1024/1025/1031 × FP16数据+i64索引、BF16数据+i32索引，共六组原始Embedding模块；输出F32及原整数dtype，真实export/metadata/raw通过，dtype/shape/byte数/角色错误均拒绝；此处manifest是端口文件fixture，不签发完整package资格 |
+| 整数正确性 | 十二组i32/i64/u8/u32 × 长度组合，包含超出F32/F64精确范围的大整数；raw往返通过，末元素误差1在默认或浮点容差下都被拒绝 |
+| 完整单层LLaMA2 CPU前向 | S16 FP16/BF16均通过原HF全部`[1,16,32000]` logits、独立embedding/head及原decoder配置检查；改变末token后该位置输出变化、先前位置exact不变，非法ID在host拒绝 |
+| 完整LM默认导出 | pinned Transformers的配置装饰器经过`func.__code__.co_varnames`，PyTorch 2.5 strict export报Unsupported；初始完整前向/导出进程22.61秒、RSS2392664 KiB，无source/package |
+| 非严格模式隔离诊断 | 不改生产入口，按官方方案单独探测；随后在原HF `ModuleList`切片追踪中报`AttrProxy.__init__`缺少`path`，14.82秒、RSS2393104 KiB，无source/package，不能作为修法验收 |
+| 依赖问题的最小复现 | 两个纯PyTorch模块，输入均`[1,1024,8]`：装饰器访问在strict失败、非严格通过；ModuleList切片相反。成功分支另验证变更输入的全部输出，未使用Wafer或模型名分支 |
+| 主机门禁 | 定向11项通过；原runner两项CTest实际执行8+39=47项Python测试通过，无skip，模型suite89.76秒；canonical完整增量构建及第二次Ninja no-op通过 |
+
+新LM的四个规定配置已注册到原case及source/no-card入口；当前只完成S16两种dtype的完整CPU oracle，
+source、整数lookup lowering、1024/1025、package/no-card和设备结果仍未完成。生产导出模式保持原状，
+没有移除HF计算或为过测试预计算embedding。纯主机模型suite因新增完整LM oracle接近原90秒期限，调整为180秒；
+设备watchdog和compiler期限不变。检查点与日志身份见[混合端口记录](data/board-performance/mixed-ports-lm-20260914.json)。
+
+上节ViT的在途编译现已收齐终态：1800秒主机期限退出，runner1822.76秒、RSS903408 KiB。
+`loop-state-binding/analyzeModuleOp`单次最后活跃计时为1628.034秒，空间提案122.908秒，source→TensorProgram 2.925秒。
+慢调用在`LayoutOptimization.cpp`中进入官方One-Shot bufferization分析；这是调用级定位，内部具体根因仍未证明。
+之前的verified structured IR保留，整块没有生成package或触发设备执行。
+终态追加到[数学源输入记录](data/board-performance/source-math-ingestion-20260914.json)，历史“当时仍在运行”的检查点保持其时间含义。

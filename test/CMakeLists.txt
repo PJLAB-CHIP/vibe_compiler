@@ -143,8 +143,9 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   set_tests_properties(wafer-pytorch-board-cases-python PROPERTIES
     LABELS "runtime;no-card;pytorch;source;huggingface;card-local"
     ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python:${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
-    # Includes two full 32-Q/8-KV-head eager/export GQA references.
-    TIMEOUT 90
+    # Includes full GQA references and FP16/BF16 single-layer LM logits.
+    # The latter owns the original 32000x4096 embedding and head weights.
+    TIMEOUT 180
   )
 
   function(wafer_add_pytorch_source_no_card_test
@@ -223,11 +224,15 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
 
   foreach(_wafer_model_case IN ITEMS
       resnet18 resnet18-large-1024 resnet18-tail-1025
-      vit-encoder-block vit-encoder-block-tail-1025)
+      vit-encoder-block vit-encoder-block-tail-1025
+      llama-2-7b-single-layer-lm llama-2-7b-single-layer-lm-1024
+      llama-2-7b-single-layer-lm-tail-1025)
     wafer_add_pytorch_source_no_card_test(
       ${_wafer_model_case} float16 fp16 search)
   endforeach()
   unset(_wafer_model_case)
+  wafer_add_pytorch_source_no_card_test(
+    llama-2-7b-single-layer-lm bfloat16 bf16 search)
 
   foreach(_wafer_alltoall_case IN ITEMS
       alltoall-transpose alltoall-transpose-tail-1025 alltoall-transpose-tail-1031)

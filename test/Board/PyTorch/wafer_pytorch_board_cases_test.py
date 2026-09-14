@@ -41,6 +41,164 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_mixed_ports_export_and_payload_preserve_runtime_integer_indices(self):
+        class Lookup(torch.nn.Module):
+            def __init__(self, dtype):
+                super().__init__()
+                weight = torch.arange(1024 * 8).reshape(1024, 8).float() / 2048
+                self.embedding = torch.nn.Embedding.from_pretrained(weight.to(dtype))
+
+            def forward(self, data, indices):
+                return self.embedding(indices).float() + data.float(), indices.clone()
+
+        for extent in (1024, 1025, 1031):
+            for dtype, index_dtype in ((torch.float16, torch.int64),
+                                       (torch.bfloat16, torch.int32)):
+                with self.subTest(extent=extent, dtype=dtype):
+                    module = Lookup(dtype).eval()
+                    indices = (torch.arange(2 * extent) % 1024).to(index_dtype).reshape(1, 2, extent)
+                    inputs = (torch.ones((1, 2, extent, 8), dtype=dtype), indices)
+                    case = cases.PyTorchBoardCase(
+                        name="mixed-ports", num_partitions=1, dtype=dtype, inputs=inputs,
+                        expected_outputs_factory=lambda: module(*inputs),
+                        export_program=lambda path: cases._save_exported_program(path, module, inputs),
+                        comparison_policy=cases.common.PYTORCH_DEFAULT,
+                    )
+                    with mock.patch.dict(cases.CASE_FACTORIES, {"mixed-ports": lambda _dtype, _seed: case}):
+                        self.assertIs(cases.make_case("mixed-ports", dtype=dtype, seed=0), case)
+                    expected = case.materialize_expected_outputs()
+                    self.assertEqual(tuple(t.dtype for t in expected), (torch.float32, index_dtype))
+                    torch.testing.assert_close(expected[1], indices, rtol=0, atol=0)
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = pathlib.Path(directory)
+                        source = root / "source"
+                        case.export_program(source)
+                        metadata = json.loads((source / "functions/forward.meta").read_text())
+                        runtime_signatures = {
+                            location["position"]: signature
+                            for signature, location in zip(metadata["input_signature"], metadata["input_locations"])
+                            if location["type_"] == "input_arg"
+                        }
+                        for index, tensor in enumerate(inputs):
+                            self.assertEqual(runtime_signatures[index]["dtype"], str(tensor.dtype).removeprefix("torch."))
+                            self.assertEqual(runtime_signatures[index]["shape"], list(tensor.shape))
+                        for signature, tensor in zip(metadata["output_signature"], expected):
+                            self.assertEqual(signature["dtype"], str(tensor.dtype).removeprefix("torch."))
+                            self.assertEqual(signature["shape"], list(tensor.shape))
+                        self.assertEqual(len(metadata["output_signature"]), len(expected))
+                        self.assertIn("stablehlo.gather", read_portable_stablehlo(source))
+
+                        # Exercise the existing manifest/file boundary. This is
+                        # a port fixture, not an ExecutablePackage qualification.
+                        dtype_names = {value: key for key, value in cases.common.MANIFEST_DTYPES.items()}
+                        manifest = {
+                            "card_count": 1, "tile_count": board_runner.PHYSICAL_TILE_COUNT,
+                            "target": {"identity": board_runner.TARGET_IDENTITY},
+                            "entries": [{"card_id": 0, "tile_id": tile, "launch_slot": tile,
+                                         "completion": "return_after_local_drain"}
+                                        for tile in range(board_runner.PHYSICAL_TILE_COUNT)],
+                        }
+                        for table, tensors in (("inputs", inputs), ("outputs", expected)):
+                            manifest[table] = [
+                                {"id": index + (10 if table == "outputs" else 0), "role_index": index,
+                                 "dtype": dtype_names[tensor.dtype], "shape": list(tensor.shape),
+                                 "bytes": cases.common.tensor_nbytes(tensor)}
+                                for index, tensor in enumerate(tensors)
+                            ]
+                        package = root / "ports"
+                        package.mkdir()
+                        (package / "manifest.json").write_text(json.dumps(manifest))
+                        args, captures, output_ids, _ = board_runner.prepare_runtime_payloads(
+                            root, source, package, case, expected,
+                        )
+                        self.assertEqual(output_ids, {10, 11})
+                        for index, tensor in enumerate(inputs):
+                            path = next(pathlib.Path(value.split("=", 1)[1]) for value in args
+                                        if value.startswith(f"{index}="))
+                            cases.common.assert_raw_capture_matches(
+                                path, tensor, context="mixed input payload", policy=cases.common.EXACT,
+                            )
+                        self.assertEqual(len(captures), len(expected))
+                        for index, tensor in enumerate(expected):
+                            path = root / "raw" / f"card_00_output_{index}.expected.{dtype_names[tensor.dtype]}.raw"
+                            cases.common.assert_raw_capture_matches(
+                                path, tensor, context="mixed reference payload", policy=cases.common.EXACT,
+                            )
+                        for field, bad in (("dtype", "f16"), ("shape", [1, 2, extent - 1]),
+                                           ("bytes", 0), ("role_index", 4)):
+                            corrupted = json.loads(json.dumps(manifest))
+                            corrupted["inputs"][1][field] = bad
+                            (package / "manifest.json").write_text(json.dumps(corrupted))
+                            work = root / field
+                            work.mkdir()
+                            with self.assertRaises(RuntimeError):
+                                board_runner.prepare_runtime_payloads(work, source, package, case, expected)
+
+    def test_case_rejects_unsupported_port_dtype_and_non_cpu_tensor(self):
+        for invalid in (torch.zeros((1, 1024, 1), dtype=torch.float64),
+                        torch.empty((1, 1024, 1), dtype=torch.float16, device="meta")):
+            for role in ("input", "output"):
+                with self.subTest(role=role, dtype=invalid.dtype, device=invalid.device):
+                    valid = torch.zeros((1, 1024, 1), dtype=torch.float16)
+                    case = cases.PyTorchBoardCase(
+                        name="invalid-port", num_partitions=1, dtype=torch.float16,
+                        inputs=(invalid if role == "input" else valid,),
+                        expected_outputs_factory=lambda: (invalid if role == "output" else valid,),
+                        export_program=lambda _path: None,
+                        comparison_policy=cases.common.PYTORCH_DEFAULT,
+                    )
+                    with mock.patch.dict(cases.CASE_FACTORIES, {"invalid-port": lambda _dtype, _seed: case}):
+                        with self.assertRaisesRegex(RuntimeError, f"{role} 0 requires"):
+                            case = cases.make_case("invalid-port", dtype=torch.float16, seed=0)
+                            case.materialize_expected_outputs()
+
+    def test_single_layer_lm_keeps_embedding_decoder_norm_and_all_logits(self):
+        import transformers
+
+        constructor = transformers.LlamaForCausalLM
+        initialize = constructor.__init__
+        # S16 is the specified primary LM configuration. Large/tail exports
+        # have separate registered source/no-card cases; this checks the oracle.
+        for dtype in (torch.float16, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                models = []
+
+                def construct(model, config):
+                    initialize(model, config)
+                    models.append(model)
+
+                with mock.patch.object(constructor, "__init__", autospec=True, side_effect=construct):
+                    case = cases.make_case("llama-2-7b-single-layer-lm", dtype=dtype, seed=20260803)
+                original, = models
+                self.assertEqual(len(original.model.layers), 1)
+                self.assertEqual(original.model.embed_tokens.weight.shape, (32000, 4096))
+                self.assertEqual(original.lm_head.weight.shape, (32000, 4096))
+                self.assertIsNot(original.model.embed_tokens.weight, original.lm_head.weight)
+                self.assertEqual(original.config.intermediate_size, 11008)
+                self.assertEqual(original.config.num_attention_heads, 32)
+                self.assertEqual(original.config.max_position_embeddings, 4096)
+                self.assertEqual(case.inputs[0].dtype, torch.int64)
+                self.assertEqual(case.inputs[0][0, :3].tolist(), [0, 31999, 0])
+                expected, = case.materialize_expected_outputs()
+                with torch.no_grad():
+                    actual = original(input_ids=case.inputs[0], use_cache=False, logits_to_keep=0).logits
+                self.assertEqual(actual.shape, (1, 16, 32000))
+                self.assertEqual(actual.dtype, dtype)
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                case.inputs[0][0, -1] = (case.inputs[0][0, -1] + 1) % 32000
+                changed, = case.materialize_expected_outputs()
+                self.assertFalse(torch.equal(changed[:, -1], expected[:, -1]))
+                torch.testing.assert_close(changed[:, :-1], expected[:, :-1], rtol=0, atol=0)
+                for invalid in (-1, 32000):
+                    case.inputs[0][0, -1] = invalid
+                    with self.assertRaisesRegex(ValueError, "within the vocabulary"):
+                        case.materialize_expected_outputs()
+                    with tempfile.TemporaryDirectory() as directory:
+                        destination = pathlib.Path(directory) / "source"
+                        with self.assertRaisesRegex(ValueError, "within the vocabulary"):
+                            case.export_program(destination)
+                        self.assertFalse(destination.exists())
+
     def test_gemm_wide_partial_oracle_matches_full_pytorch(self):
         import wafer_instruction_family_catalog as catalog
 
