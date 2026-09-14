@@ -41,7 +41,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 本次检查的current代码事实：
 
 1. `wafer_pytorch_board_cases.py`已接入ResNet-18、ViT EncoderBlock、大GEMM和batch共享RHS及其补充配置；
-   GQA已通过source/reference及默认search package/no-card；长cache已接入并通过两步source/reference，正式第一步仍被actual SPM容量拒绝。
+   GQA已通过source/reference及默认search package/no-card；长cache两步4094→4095→4096也已通过完整package/no-card，
+   actual tensor assembly输入需求反馈已修复，设备结果接续和完整数值仍待实卡验收。
    YOLO与单层完整LM尚未接入。当前LLaMA输入是hidden states，仅输出block hidden states。
    它不能覆盖token embedding、final RMSNorm、LM head，也不能给新网络签发ready资格。
 2. `wafer_pytorch_board_common.py`已支持i32/i64 raw传输，但case构造仍要求所有input与case浮点dtype一致。
@@ -51,8 +52,9 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 4. `CompilerTesting.cpp`中的 `SharedInput` 仅接受none policy，开启 `shareReadOnlyInputs`；baseline及search都调用
    同一个 `materializeReadOnlyInputSharing`。现有接口不保证可以对任意search winner直接生成固定其所有其它选择的A/B。
 5. ResNet首轮的20个 `stablehlo.batch_norm_inference`残留已补通用合法化，PyTorch导出同时保留官方F32 opmath分解；
-   直接source→Linalg及定向主机数值已通过，整网package/no-card尚未闭合。ViT的GELU导出为
-   `stablehlo.custom_call @mhlo.erf`，当前source verifier拒绝。YOLO上采样/拼接/Detect及LLaMA整数输入的完整产品链仍待验证。
+   直接source→Linalg及定向主机数值已通过，整网package/no-card尚未闭合。ViT的GELU公开`mhlo.erf`扩展和
+   LayerNorm opmath已补通用入口合法化，整除/尾部source通过；1024真实输入已到带attention的structured IR，
+   整块search/package仍未完成。YOLO上采样/拼接/Detect及LLaMA整数输入的完整产品链仍待验证。
    源码缺少专门op名字不能作为“不支持”的结论；应以实际导出图、正式lowering与typed结果确定缺口。
 
 ## 主配置矩阵
@@ -561,8 +563,24 @@ GQA完整runner为309.28/359.53秒、峰值RSS 3,438,760/3,436,556 KiB；本轮�
 长cache达到board-ready，设备未恢复，所有新数值与性能资格仍待实卡；本项不计入三轮性能调优。
 证据及完整产物身份见[插入需求与容量反馈记录](../../docs/data/board-performance/insert-demand-capacity-feedback-20260914.json)。
 
-
 固定FP16 LLaMA本轮独立no-card通过，wall 1,060.62秒、RSS 2,808,176 KiB，仍有9个accepted。
 14个source文件与原快版本及上轮view修改版本一致；完整运行包的manifest、module和data与上轮无卡包逐字节相同，
 temporal选择计数无变化。本轮保存全部16 Tile的final dataflow、Instr和target LLVM，补齐上轮未保留final IR的证据入口。
 这证明本项反馈修复未进一步改变该LLaMA产物；上轮view修改与初始正确快包之间的实卡数值、性能matched A/B仍待恢复后执行。
+
+### 2026-09-14 数学源输入与ViT检查点
+
+GELU在pinned XLA中以公开`mhlo.erf` v1 custom-call编码，而原入口只接受纯StableHLO；
+低精度GELU及LayerNorm的复合边界还需在export前保留framework opmath。按02号合同，在唯一ingestion中核对
+完整外部协议并复用官方CHLO分解，PyTorch侧复用官方GELU/LayerNorm decomposition；未知调用仍拒绝。
+
+12组Erf dtype/长度组合通过独立数值oracle及正式StableHLO→Linalg，错误合同与无关source保持分支通过。
+30个GELU/LayerNorm配置完成真实export/ingestion，另有outer LayerNorm数值覆盖；原frontend的8项lit及3个组件CTest通过，
+canonical完整增量构建及Ninja no-op通过。独立FP16 GELU `[1,1024,16]`用默认8/42得到41个accepted、1个unsupported，
+85.41秒生成16 Tile包，`wafer-run --no-card`通过；没有设备执行或数值回读，不签发板端资格。
+
+原始ViT 1024/1025的source均通过正式入口；1024的当前编译已输出verified structured IR，无StableHLO/CHLO残留，
+含1个attention op，检查点时后续编译仍在运行。整块package/no-card、1025的05号下游及全部实卡验收仍未完成。
+原FP16 LLaMA重新export的14个源文件与初始正确快版本逐字节相同；本项未重编LLaMA整块或复签设备性能。
+CPU数值oracle的多线程冷调用及oneDNN特殊值边界在02号合同和证据中单独记录，板测reference/容差保持不变。
+完整检查点见[数学源输入记录](../../docs/data/board-performance/source-math-ingestion-20260914.json)。

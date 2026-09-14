@@ -18,6 +18,8 @@ inline constexpr llvm::StringLiteral kStableHLOProgramArtifact =
     "functions/forward.stablehlo.bc";
 
 /// Reads the single portable StableHLO authority from a program directory.
+/// Legalizes supported public XLA math extensions in the owned module before
+/// returning it for strict source verification and downstream consumption.
 /// Text MLIR and generic MLIR bytecode are not fallback inputs.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 deserializeStableHLOProgramDirectory(llvm::StringRef programDirectory,

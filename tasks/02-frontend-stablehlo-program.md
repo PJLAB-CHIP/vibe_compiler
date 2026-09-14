@@ -13,13 +13,15 @@ Pipeline position:
   `functions/forward.stablehlo.bc`是唯一IR authority。显式text module只进入IR-local frontend verifier，
   不是`wafer-compile`的第二种production输入。
 - Current stage responsibility:
-  parse并verify StableHLO module；校验单entry function与`forward.meta`的shape/dtype/arg-role关系；校验
+  parse并verify外部StableHLO module，在owned module中合法化下述已定义的数学扩展，再做严格source验证；
+  校验单entry function与`forward.meta`的shape/dtype/arg-role关系；校验
   parameter/external captured-constant NPY payload；对post-SPMD program校验canonical `forward.meta.distributed_boundary`、
   parameter shard metadata、logical card-partition domain和payload coverage；拒绝graph break、eager fallback、无界
   dynamic shape及不安全路径。当前program-directory入口只接受static ranked boundary；bounded dynamic仅由
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
 - Output IR / files:
-  verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
+  verified current StableHLO module及program directory的metadata/payload；磁盘portable source保持原字节，
+  下游消费已合法化的owned module。它仍由IR、`forward.meta`和必要payload共同组成，不是
   `TensorProgram`、top-level TileModule set、`DeviceExecutable`、target module或`ExecutablePackage`。
 - Downstream consumer:
   compiler transaction在owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
@@ -133,6 +135,42 @@ mutation复用的“verified path”。旧测试generator调用产品export/save
 产品adapter和source verifier必须复用同一ingestion实现；advisory verifier只报告当前路径是否通过检查，compiler仍在自己的
 transaction中重新打开、拥有并验证全部输入。参数内容的`ProgramDataSource`/`ProgramDataRange`生命周期由本文件2.1节负责；
 产品adapter不重建参数管理层或plugin registry。
+
+#### 外部数学扩展的输入合法化
+
+- Upstream IR / input：同一portable artifact反序列化得到的verifier-valid外部StableHLO；包含pinned XLA公开扩展协议编码的数学调用。
+- Current stage responsibility：在ingestion拥有的module中核对完整外部合同，将支持的数学扩展转成CHLO，再用pinned官方
+  `chlo-legalize-to-stablehlo`分解；之后仍运行原严格source verifier。文件和metadata不改，失败的module整体销毁。
+- Output IR / files：只有builtin/func/StableHLO语义的current module，原function signature、参数/常量身份及dtype保持；不输出新文件格式。
+- Downstream consumer：metadata/payload校验及SPMD helper；helper的输入必须从该current module序列化，不能重读原始扩展后绕过合法化。
+- User-level driver / named pipeline：同一`deserializeStableHLOProgramDirectory`供advisory和生产compiler调用；不增加第二个导出runner或宽松source入口。
+- Explicit non-goals：不接受任意external call，不增加设备数学ABI，不根据模型名识别，不从低精度primitive图反推PyTorch opmath，
+  不改变GELU的approximate选择、不手写另一套erf多项式。
+- Completion criteria：支持项完整合同验证、官方分解、数值/特殊值及真实framework source到下游；未知target/version、effect、alias和附加配置拒绝。
+
+本项支持XLA `mhlo.erf`、`mhlo.version=1`、空`mhlo.attributes`的公开编码：恰好一个静态浮点tensor输入和相同type的结果，
+无side effect、called computation、alias、backend config或layout约定，API为原始默认形式。
+允许的float为pinned CHLO明确支持的F16/BF16/F32/F64；低精度erf的内部计算采用官方F32分解，结果保持调用本身的dtype。
+未知扩展仍被拒绝；名字在此处是外部协议显式的`call_target_name`字段，不用于恢复其它operation或workload语义。
+无该扩展的source不运行分解pipeline，保持原IR。
+
+PyTorch的typed `aten.gelu`与`aten.native_layer_norm`另在export前复用pinned `torch._decomp`官方分解，显式保留算子opmath和
+完整结果dtype。它们输入是仍保有原算子边界的ExportedProgram，输出直接交同一PyTorch/XLA exporter；已有primitive计算不重排。
+GELU的none/tanh选择、LayerNorm的normalized axes、affine参数及mean/rstd端口按原调用保存，不依据module名称或shape分派。
+
+覆盖矩阵：rank3+、1024/1025/1031、F16/BF16/F32，GELU none/tanh、正负/近零/饱和与非有限值；
+LayerNorm单/多normalized axes、affine有/无、三个结果、参数不变及无相关算子的no-op分支。
+扩展格式另覆盖F64、错误version/target/shape/effect/alias/config与混合合法/非法调用，失败不发布部分产物。
+真实ViT整除/尾部source必须经过同一ingestion和05号下游；source通过不代签package、实卡数值或性能。
+
+数值oracle边界：普通有限GELU输入对照原默认PyTorch eager；非有限输入对照同版本ATen kernel及官方分解。
+pinned oneDNN在BF16/F32的GELU none中将正无穷返回NaN，而ATen与官方reference返回正无穷，不能将此后端差异
+当作数学扩展的合同。定向CPU测试只在自己的进程内选择ATen检查特殊值，不改变板测runner的默认reference或容差。
+
+算法依据：XLA的[公开扩展编码](https://github.com/openxla/xla/blob/main/xla/mlir_hlo/mhlo/transforms/hlo_legalize_to_stablehlo/hlo_legalize_to_stablehlo.cc)
+与[StableHLO/CHLO分解边界](https://openxla.org/stablehlo/spec#dialect-interop)，具体格式和API以pinned源码确认。
+相较于放开opaque调用或替换GELU为tanh，本项消解已定义的数学扩展并保留原算子选择；opmath复用
+[PyTorch官方reference实现](https://github.com/pytorch/pytorch/blob/v2.5.0/torch/_refs/nn/functional/__init__.py)，不维护第二套数值算法。
 
 ### 2.3 低精度算子的内部计算边界
 

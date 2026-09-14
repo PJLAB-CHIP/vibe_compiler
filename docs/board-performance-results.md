@@ -1503,8 +1503,33 @@ canonical完整增量和Ninja no-op通过。长cache两步仍有653/691次无法
 设备会话仍未恢复，本节无实卡执行、输出数值、时间或profile，不计入三轮调优；长cache现在只签board-ready。
 完整证据及产物hash见[插入需求与容量反馈记录](data/board-performance/insert-demand-capacity-feedback-20260914.json)。
 
-
 固定FP16 LLaMA本轮fresh package/no-card通过，runner wall 1,060.62秒、RSS 2,808,176 KiB，9个accepted。
 14个source文件与初始快版本相同；完整运行包与上轮view修改后的无卡包逐字节相同，temporal选择计数也未改变。
 本轮已保存16 Tile的final dataflow、Instr及target LLVM。反馈修复没有进一步改变LLaMA产物，但上轮view修改相对初始快包的
 设备数值与性能matched A/B尚未执行，不能把原快版本计时标为本轮性能。
+
+## 2026-09-14：ViT数学输入合法化与主机资格
+
+本项是扩展矩阵的编译正确性准备，没有新增实卡测量，不占三轮性能调优。
+
+根因：pinned XLA以公开的`mhlo.erf` v1扩展编码GELU中的Erf，原严格入口拒绝所有custom-call；
+直接将低精度复合算子交给exporter还会丢失GELU/LayerNorm的内部opmath边界。通用修复在02号frontend owner完成：
+按外部协议字段核对数学调用，转成CHLO并复用官方StableHLO分解；PyTorch侧在仍有typed算子边界时复用官方decomposition。
+未知调用仍拒绝，不新增模型特判、硬件ABI或数学多项式，也不改变GELU的none/tanh选择。
+
+| 本轮验证 | 结果与范围 |
+| --- | --- |
+| Erf源输入与直接下游 | F16/BF16/F32/F64 × 1024/1025/1031，共12组，rank3；独立libm数值oracle、NaN/Inf/有符号零、完整合同拒绝及正式StableHLO→Linalg通过 |
+| PyTorch复合边界 | 18个GELU和12个三结果LayerNorm配置通过数值/export/ingestion；12个LayerNorm到Linalg，另补outer LayerNorm和无关primitive不变分支 |
+| 独立GELU默认search | FP16 `[1,1024,16]`、none approximation、width8/trials42，41 accepted/1 unsupported；85.41秒、RSS478728 KiB，16 Tile完整包及no-card通过；未执行算术或设备回读 |
+| 原始ViT EncoderBlock | FP16 `[1,1024,768]`及1025尾部source均通过；1024当前生产编译已得到无StableHLO/CHLO残留、含1个attention的verified structured IR；检查点时后续编译仍在运行，整块包/数值未通过 |
+| FP16 LLaMA防退化入口检查 | 本轮重新export的14个源文件与初始正确快版本逐字节相同；未重编整块，未重签设备性能 |
+| 主机门禁 | frontend 8项lit及3个组件CTest实际执行通过，无skip；完整canonical增量构建通过，第二次Ninja no-op |
+
+CPU数值检查另发现两项外部实现边界：pinned `torch.erf`多线程冷调用会出现重复差异，定向测试在自己的进程内用一个CPU worker，
+之后恢复；pinned oneDNN的BF16/F32 GELU none对正无穷返回NaN，ATen及官方reference返回Inf，特殊值明确以ATen为oracle。
+普通有限输入仍对照原默认PyTorch，板测runner的reference及容差没有改变。这些主机观察不能解释板端误差。
+
+证据、源文件及运行包身份见[数学源输入检查点](data/board-performance/source-math-ingestion-20260914.json)。
+ViT整块search/package、尾部的05号下游、全部设备数值和性能仍待完成。设备会话仍因先前QKV真实timeout保持停止；
+本次已确认boot identity未改变，未retry/reset或发起设备launch。

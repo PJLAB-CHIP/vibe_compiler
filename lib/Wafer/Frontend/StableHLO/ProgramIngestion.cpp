@@ -2,15 +2,21 @@
 
 #include "Wafer/Frontend/StableHLO/ProgramIngestion.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/Serialization.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Pass/PassManager.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -19,6 +25,76 @@
 #include <functional>
 
 namespace wafer::frontend {
+
+namespace {
+
+mlir::LogicalResult legalizeSourceMath(mlir::ModuleOp module,
+                                       llvm::raw_ostream &diagnostics) {
+  llvm::SmallVector<mlir::stablehlo::CustomCallOp> calls;
+  module.walk(
+      [&](mlir::stablehlo::CustomCallOp call) { calls.push_back(call); });
+  if (calls.empty())
+    return mlir::success();
+  // This is the pinned XLA public extension encoding, not an opaque device
+  // call. Check every contract before changing the ingestion-owned module.
+  for (auto call : calls) {
+    auto version = call->getAttrOfType<mlir::IntegerAttr>("mhlo.version");
+    auto attributes =
+        call->getAttrOfType<mlir::DictionaryAttr>("mhlo.attributes");
+    bool supported =
+        call.getCallTargetName() == "mhlo.erf" && version &&
+        version.getType().isInteger(64) && version.getInt() == 1 &&
+        attributes && attributes.empty() && !call.getHasSideEffect() &&
+        !call.getBackendConfig() &&
+        call.getApiVersion() ==
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_ORIGINAL &&
+        call.getCalledComputations().empty() &&
+        call.getOutputOperandAliases().empty() && !call.getOperandLayouts() &&
+        !call.getResultLayouts() && call.getNumOperands() == 1 &&
+        call.getNumResults() == 1 &&
+        call->getParentOfType<mlir::func::FuncOp>();
+    for (const auto &attribute : call->getDiscardableAttrs())
+      supported &= attribute.getName() == "mhlo.version" ||
+                   attribute.getName() == "mhlo.attributes";
+    if (supported) {
+      auto type =
+          mlir::dyn_cast<mlir::RankedTensorType>(call.getOperand(0).getType());
+      supported =
+          type && type.hasStaticShape() && type == call.getResult(0).getType();
+      if (supported) {
+        auto element = type.getElementType();
+        supported = element.isF16() || element.isBF16() || element.isF32() ||
+                    element.isF64();
+      }
+    }
+    if (!supported) {
+      diagnostics << "portable StableHLO program rejected: unsupported "
+                     "stablehlo.custom_call source contract for '"
+                  << call.getCallTargetName() << "'\n";
+      return mlir::failure();
+    }
+  }
+  module.getContext()->getOrLoadDialect<mlir::chlo::ChloDialect>();
+  mlir::IRRewriter rewriter(module.getContext());
+  for (auto call : calls) {
+    rewriter.setInsertionPoint(call);
+    rewriter.replaceOpWithNewOp<mlir::chlo::ErfOp>(
+        call, call.getResult(0).getType(), call.getOperand(0));
+  }
+  if (mlir::failed(mlir::verify(module)))
+    return mlir::failure();
+  mlir::PassManager manager(module.getContext());
+  manager.addNestedPass<mlir::func::FuncOp>(
+      mlir::stablehlo::createChloLegalizeToStablehloPass());
+  if (mlir::failed(manager.run(module)) || mlir::failed(mlir::verify(module))) {
+    diagnostics << "portable StableHLO program rejected: mathematical source "
+                   "extension legalization failed\n";
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+} // namespace
 
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 deserializeStableHLOProgramDirectory(llvm::StringRef programDirectory,
@@ -54,6 +130,8 @@ deserializeStableHLOProgramDirectory(llvm::StringRef programDirectory,
                    "compatible with the pinned StableHLO reader\n";
     return mlir::failure();
   }
+  if (mlir::failed(legalizeSourceMath(*module, diagnostics)))
+    return mlir::failure();
   return std::move(module);
 }
 

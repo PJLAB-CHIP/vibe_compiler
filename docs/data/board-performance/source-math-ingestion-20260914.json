@@ -1,0 +1,132 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "数学源输入合法化与opmath主机检查点；不是板端或性能验收",
+  "parent_commit": "c906e413c3a0b2da10351830e3b7920a61a7c3f3",
+  "current_compiler_sha256": "9c885cebc916445003e38157d3286324fef2a6773bf91e3893330ba1016a9259",
+  "tests": {
+    "component_ctest_executed": 3,
+    "source_math_gtest_cases": 5,
+    "erf_dtype_extent_combinations": 12,
+    "erf_direct_downstream": "official StableHLO to Linalg, verified with no StableHLO/CHLO residual",
+    "gelu_numeric_and_export": 18,
+    "native_layer_norm_three_outputs_numeric_and_export": 12,
+    "outer_layer_norm_numeric": 1,
+    "frontend_lit_executed": 8,
+    "frontend_lit_unexpected_skips": 0,
+    "source_config_count": 30,
+    "canonical_build": "passed",
+    "second_build": "Ninja no-op"
+  },
+  "gelu": {
+    "shape": [
+      1,
+      1024,
+      16
+    ],
+    "dtype": "float16",
+    "approximate": "none",
+    "policy": "search",
+    "width": 8,
+    "trials": 42,
+    "search": {
+      "accepted-candidates": 41,
+      "trials-used": 42,
+      "unsupported-candidates": 1
+    },
+    "compile_wall_seconds": 85.41,
+    "compile_rss_kib": 478728,
+    "package_files": {
+      "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "manifest.json": "e87c31bee29ff92d617f84c90519f598c52752594e2725d667927932703c5180",
+      "modules/module_00000.so": "bd2e04c6a5b7999c9432383276a16fbf898328435197356f7156282e6600102c"
+    },
+    "no_card": "passed",
+    "arithmetic_execution": false,
+    "completion_execution": false,
+    "numeric_readback": false,
+    "board_execution": false,
+    "compiler_sha256_at_launch": null,
+    "identity_limit": "此独立主机诊断未在launch前保存compiler文件digest；current_compiler_sha256仅标识本检查点构建，不能代签该进程二进制身份。"
+  },
+  "sources": {
+    "llama-2-7b-block": {
+      "source": "build/test/model-performance/source-math-llama-source",
+      "files": {
+        "data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "data/decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "data/decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "data/decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "data/decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "data/decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "data/decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343",
+        "data/rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "data/rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "functions/forward.meta": "83366ad13c971c888242a2518f76193891b360977b892ad388eb0c883156d62b",
+        "functions/forward.stablehlo.bc": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b"
+      },
+      "baseline_source_equal": true
+    },
+    "vit-encoder-block-tail-1025": {
+      "source": "build/test/model-performance/source-math-vit-tail-source",
+      "files": {
+        "data/ln_1.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "data/ln_1.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+        "data/ln_2.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "data/ln_2.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+        "data/mlp.0.bias": "5ecd36358ef2b296c1937bfa305471c0976fd98f2955dc5e5d77091f731c9ba7",
+        "data/mlp.0.weight": "e771ee2c6ea6a5cddfc54d73b9e7fccfa9c75a76b809d9943800a422f2e6e45e",
+        "data/mlp.3.bias": "5f7ab4b262f5966beccb919e8d586672d59bb26309202d665d39106323552b8c",
+        "data/mlp.3.weight": "6125ce13de6bf757f35f9d3fbab4bdf952d254b8c4d07c78734c43619cd3a999",
+        "data/self_attention.in_proj_bias": "29f18070ac1594a87ea114e193c9683669f8107763144e9d76c4db9c5f5c040b",
+        "data/self_attention.in_proj_weight": "84fa6f95ea5e9d137548a9824397ae4a3d44ac1c3d40fd6d76ede4dde0595dcb",
+        "data/self_attention.out_proj.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "data/self_attention.out_proj.weight": "8dab6a985560a49aaebcd9a3e00db94d00063edefbaa8606727112969211c795",
+        "functions/forward.meta": "c6ef1728837a87e2bd0014bb3fdb761fe358e7775b0fa97e5d76f09d69cb1bcd",
+        "functions/forward.stablehlo.bc": "bc985ffb0799e3cff560380afcf2547a3f56cb5132d8890ae3534bc638413308"
+      }
+    }
+  },
+  "vit_main": {
+    "shape": [
+      1,
+      1024,
+      768
+    ],
+    "source_verification": "passed, 12 parameters",
+    "actual_structured_witness": "build/test/model-performance/source-math-vit-structured-witness.mlir",
+    "actual_structured_sha256": "f378330bff0689caa60a2e08ca099f066bdf6cf0360a373ff6179e99ad7081d1",
+    "stablehlo_residual": false,
+    "chlo_residual": false,
+    "attention_ops": 1,
+    "package_ready": false,
+    "compile_state_at_checkpoint": "running",
+    "running_pid": 948120,
+    "running_compiler_sha256": "9c885cebc916445003e38157d3286324fef2a6773bf91e3893330ba1016a9259"
+  },
+  "oracle_limits": [
+    "pinned CPU torch.erf多线程冷调用独立出现重复差异，定向数值测试仅在自己的进程内使用一个CPU worker，之后恢复。",
+    "普通有限GELU对照默认PyTorch；正无穷的BF16/F32 none分支，pinned oneDNN返回NaN，ATen及官方reference返回Inf，特殊值显式使用ATen oracle；板测reference不变。"
+  ],
+  "device": {
+    "boot_id": "f0bc038d-2b5e-42fa-9959-9d3aa265e993",
+    "launched": false,
+    "reason": "先前QKV真实device timeout，会话尚未确认恢复"
+  },
+  "logs": {
+    "source-math-components.log": "abfc31e4da811a6b523a91621a81a2b8bd368abd7eed659d7ec659c43473ed61",
+    "source-math-frontend-final.log": "0b1b483b47db7aab321d1d1c3a4658245c638e49cb4d8b54a29c7ea139a022ae",
+    "source-math-build.log": "4adb8ce9d07a56c6c725ddefa25f9ca0cebf1ad9ae05a735c8bd2f060e8b1aff",
+    "source-math-build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "source-math-gelu-compile.log": "fb8c399b8a89467afd6917faf887790e5b038359b661f06ce3f7cf8a6b3f11a1",
+    "source-math-gelu-no-card.log": "60f3621405e0c387bfc10642e428abec2ec596d129fe1a9d060d6152557f0d03",
+    "source-math-source-regression.log": "7ff157fcad26ca5108d58fdd56892504b61fdf4824cb9de8d72ddd1f66476ac6"
+  },
+  "remaining": [
+    "ViT整块search/package/no-card及实卡数值未完成；1025仅source验收。",
+    "全矩阵正确性收口、原BF16 LLaMA错误、三轮profile性能调优、最后全矩阵实卡验收均未完成。"
+  ]
+}

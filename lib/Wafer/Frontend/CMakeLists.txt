@@ -24,10 +24,15 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
     StableHLO/ProgramIngestion.cpp
 
     LINK_LIBS PUBLIC
+    ChloOps
     LLVMSupport
     MLIRFuncDialect
     MLIRIR
+    MLIRPass
+    MLIRRewrite
     MLIRSupport
+    StablehloOps
+    StablehloPasses
     StablehloSerialization
     WaferFrontend
   )

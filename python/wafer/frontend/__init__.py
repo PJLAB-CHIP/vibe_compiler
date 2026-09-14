@@ -102,9 +102,26 @@ def _decompose_batch_norm_inference(torch: Any, exported_program: Any) -> Any:
     return exported_program.run_decompositions(decompositions)
 
 
+def _decompose_composite_opmath(torch: Any, exported_program: Any) -> Any:
+    """Keep framework GELU/LayerNorm opmath before exporter op boundaries vanish."""
+    operations = (torch.ops.aten.gelu.default, torch.ops.aten.native_layer_norm.default)
+    # Functionalization presents layer_norm as native_layer_norm. Include the
+    # outer operation only in detection; the official decomposition owns math.
+    if not any(
+        node.op == "call_function"
+        and node.target in (*operations, torch.ops.aten.layer_norm.default)
+        for node in exported_program.graph.nodes
+    ):
+        return exported_program
+    from torch._decomp import get_decompositions
+
+    return exported_program.run_decompositions(get_decompositions(operations))
+
+
 def _export_stablehlo(torch: Any, stablehlo: Any, exported_program: Any) -> Any:
     exported_program = _promote_biased_convolution(torch, exported_program)
     exported_program = _decompose_batch_norm_inference(torch, exported_program)
+    exported_program = _decompose_composite_opmath(torch, exported_program)
     options = stablehlo.StableHLOExportOptions()
     options.export_weights = True
     options.save_weights = True

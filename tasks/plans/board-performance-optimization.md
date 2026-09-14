@@ -19,6 +19,9 @@ Dynamic e-graph重复展开已补request-local read-set复用，同一source的n
 IR和原有计数完全相同；该修改的LLaMA完整no-card通过，package三文件与原正确快版本完全相同。当前ResNet正式前端已到TensorProgram，
 后续Region提案已减少重复合法性查询和FM计分，定向及组件门禁通过；该修改的LLaMA no-card通过且包与初始快版本相同，ResNet整网资格继续验证。
 ResNet另有temporal重复全module校验及窗口max归约lowering缺口；这些主机结果不计作已完成的板端性能优化轮次。
+ViT的GELU公开扩展和LayerNorm opmath入口已通用修复，1024/1025 source通过；1024已到含attention的structured IR，
+整块后续编译尚未结束。独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
+这些证据只闭合入口缺口，不代签整块数值、设备性能或三轮调优。
 
 ## 输入、输出与边界
 

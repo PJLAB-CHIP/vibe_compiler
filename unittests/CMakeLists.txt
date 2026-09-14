@@ -173,7 +173,8 @@ wafer_add_component_unit_test(WaferFrontendUnitTests
 if(WAFER_ENABLE_IMPORTER_DEPS)
   wafer_add_component_unit_test(WaferStableHLOFrontendUnitTests
     SOURCES Frontend/ProgramIngestionTest.cpp
-    LINK_LIBS WaferFrontend WaferStableHLOProgram WaferIR)
+    LINK_LIBS WaferFrontend WaferStableHLOProgram WaferStableHLOToLinalg WaferIR
+      StablehloOps StablehloSerialization StablehloReferenceApi)
 endif()
 
 wafer_add_component_unit_test(WaferSimulatorUnitTests

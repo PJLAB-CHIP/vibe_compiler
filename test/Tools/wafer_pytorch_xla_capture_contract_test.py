@@ -67,7 +67,12 @@ class FakeTorch(types.ModuleType):
         )
         self.ops = types.SimpleNamespace(aten=types.SimpleNamespace(**{
             name: types.SimpleNamespace(default=object())
-            for name in ("convolution", "conv1d", "conv2d", "conv3d")
+            for name in (
+                "convolution", "conv1d", "conv2d", "conv3d",
+                "_native_batch_norm_legit_no_training", "native_batch_norm",
+                "_native_batch_norm_legit", "_native_batch_norm_legit_functional",
+                "gelu", "native_layer_norm", "layer_norm",
+            )
         }))
         self.export_calls = []
         self.empty_calls = []

@@ -11,7 +11,11 @@ import subprocess
 
 import torch
 
-from wafer.frontend import _decompose_batch_norm_inference, export_pytorch_program
+from wafer.frontend import (
+    _decompose_batch_norm_inference,
+    _decompose_composite_opmath,
+    export_pytorch_program,
+)
 
 
 class StaticModel(torch.nn.Module):
@@ -163,6 +167,114 @@ def check_batch_norm_precision(output_root: pathlib.Path) -> None:
     print("batch_norm_inference: numeric_cases=8 source_to_linalg=6 unrelated_unchanged=true")
 
 
+def check_composite_precision(output_root: pathlib.Path) -> None:
+    # The pinned CPU MKL erf first call is not reproducible with the default
+    # worker pool (observed independently of export). Use one CPU worker for
+    # this numerical oracle, including cold calls, and restore the test process.
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        for dtype in (torch.float16, torch.bfloat16, torch.float32):
+            for extent in (1024, 1025, 1031):
+                for approximate in ("none", "tanh"):
+                    model = torch.nn.GELU(approximate=approximate).eval()
+                    value = torch.linspace(-6, 6, extent * 16).reshape(1, extent, 16).to(dtype)
+                    exported = torch.export.export(model, (value,))
+                    decomposed = _decompose_composite_opmath(torch, exported)
+                    torch.testing.assert_close(decomposed.module()(value), model(value))
+                    special = value.clone()
+                    special.flatten()[:7] = torch.tensor(
+                        [-float("inf"), float("inf"), float("nan"), -0., 0., -1e-6, 1e-6],
+                        dtype=dtype,
+                    )
+                    # Pinned oneDNN GELU returns NaN for +Inf in BF16/F32,
+                    # unlike PyTorch's ATen kernel and official decomposition.
+                    # Qualify special values against ATen explicitly; finite
+                    # acceptance above still uses the unchanged default backend.
+                    with torch.backends.mkldnn.flags(enabled=False):
+                        torch.testing.assert_close(decomposed.module()(special), model(special), equal_nan=True)
+                    for node in decomposed.graph.nodes:
+                        if node.op == "call_function" and node.target in (
+                            torch.ops.aten.erf.default, torch.ops.aten.tanh.default,
+                            torch.ops.aten.mul.Tensor, torch.ops.aten.add.Tensor,
+                        ) and node.meta["val"].dtype != torch.float32:
+                            raise RuntimeError("GELU lost framework opmath")
+                    directory = output_root / f"composite-gelu-{dtype}-{extent}-{approximate}"
+                    export_pytorch_program(model, (value,), directory)
+                    text = subprocess.check_output([
+                        os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                        str(directory / "functions" / "forward.stablehlo.bc"),
+                    ], text=True)
+                    nonlinear = [line for line in text.splitlines()
+                                 if "@mhlo.erf(" in line or "stablehlo.tanh " in line]
+                    if len(nonlinear) != 1 or not nonlinear[0].rstrip().endswith("xf32>"):
+                        raise RuntimeError("GELU portable source lost its opmath/approximation")
+                    if ("@mhlo.erf(" in text) != (approximate == "none"):
+                        raise RuntimeError("GELU approximation choice changed")
+
+        for dtype, extent in ((torch.float16, 1024), (torch.bfloat16, 1025),
+                              (torch.float32, 1031)):
+            for multiple_axes in (False, True):
+                for affine in (False, True):
+                    normalized = (8, extent) if multiple_axes else (extent,)
+
+                    class NativeLayerNorm(torch.nn.Module):
+                        def __init__(self):
+                            super().__init__()
+                            self.norm = torch.nn.LayerNorm(normalized, eps=1e-5,
+                                                           elementwise_affine=affine).to(dtype)
+                            if affine:
+                                with torch.no_grad():
+                                    self.norm.weight.copy_(torch.linspace(.7, 1.3, self.norm.weight.numel())
+                                                           .reshape(normalized))
+                                    self.norm.bias.copy_(torch.linspace(-.2, .1, self.norm.bias.numel())
+                                                         .reshape(normalized))
+
+                        def forward(self, value):
+                            return torch.ops.aten.native_layer_norm.default(
+                                value, self.norm.normalized_shape, self.norm.weight,
+                                self.norm.bias, self.norm.eps)
+
+                    model = NativeLayerNorm().eval()
+                    value = (torch.arange(8 * extent).reshape(1, 8, extent).float().sin() + .7).to(dtype)
+                    before = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+                    exported = torch.export.export(model, (value,))
+                    decomposed = _decompose_composite_opmath(torch, exported)
+                    with torch.no_grad():
+                        torch.testing.assert_close(decomposed.module()(value), model(value))
+                    if any(node.op == "call_function" and node.target == torch.ops.aten.native_layer_norm.default
+                           for node in decomposed.graph.nodes):
+                        raise RuntimeError("native LayerNorm was not decomposed")
+                    directory = output_root / f"composite-layer-norm-{dtype}-{multiple_axes}-{affine}"
+                    export_pytorch_program(model, (value,), directory)
+                    text = subprocess.check_output([
+                        os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                        str(directory / "functions" / "forward.stablehlo.bc"),
+                    ], text=True)
+                    if "stablehlo.batch_norm" in text or "stablehlo.custom_call" in text:
+                        raise RuntimeError("LayerNorm source left opaque/statistics operations")
+                    lowered = subprocess.check_output([
+                        "wafer-opt", "--wafer-lower-stablehlo-to-linalg",
+                    ], input=text, text=True)
+                    if "stablehlo." in lowered or "linalg.generic" not in lowered:
+                        raise RuntimeError("LayerNorm did not reach structured arithmetic")
+                    for name, tensor in model.state_dict().items():
+                        torch.testing.assert_close(tensor, before[name], rtol=0, atol=0)
+
+        # The public LayerNorm module exposes the outer schema and only output;
+        # qualify that detection independently of the three-result native schema.
+        value = torch.ones((1, 1025, 16), dtype=torch.float16)
+        model = torch.nn.LayerNorm(16).half().eval()
+        exported = torch.export.export(model, (value,))
+        torch.testing.assert_close(_decompose_composite_opmath(torch, exported).module()(value), model(value))
+        unrelated = torch.export.export(StaticBranch(), (value,))
+        if _decompose_composite_opmath(torch, unrelated) is not unrelated:
+            raise RuntimeError("composite policy changed unrelated primitive IR")
+    finally:
+        torch.set_num_threads(threads)
+    print("composite_opmath: gelu=18 layer_norm=13 source_layer_norm_to_linalg=12 unrelated_unchanged=true")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=pathlib.Path, required=True)
@@ -187,6 +299,7 @@ def main() -> None:
         raise RuntimeError("product frontend API exposes non-frontend policy")
     check_convolution_precision(args.output_root)
     check_batch_norm_precision(args.output_root)
+    check_composite_precision(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")
     except Exception:
