@@ -359,6 +359,32 @@ offset grid、静态size及步长满足生成合同。重叠window或其它无�
 | reshape后的多Tile fragment assembly，1024/1025/1031 | 每个actual来源独立合并、精确offset/size/coverage；insert数随片段而非行数增长 | spatial materializer→verifier、layout/bufferization及既有actual Instr/SPM门禁 |
 | 原模型source、固定预算与dtype | ViT编译work/timing及剩余typed结果；LLaMA无卡产物/actual结构回归 | 完整模型package仍须独立验收，主机改善不代签实卡性能 |
 
+#### 已选局部需求中的均匀常量
+
+- Upstream IR / input：spatial choice已物化的TileRegion，含均匀dense tensor constant及实际extract_slice、reshape或cast。
+- Current stage responsibility：在把splat literal变成`tensor.empty`与`linalg.fill`之前，使用现有Tensor fold解释当前view链，
+  将能精确折叠的结果物化在原view位置；只为仍被使用的常量生成fill。
+- Output IR / files：保持原scalar attribute、dtype和结果type的局部constant/fill；无use的完整常量不生成allocation。
+- Downstream consumer：原temporal域及其initializer切片、layout/bufferization、Instr/completion和唯一SPM规划。
+- User-level driver / named pipeline：正式search的`materializeSpatialRegions`；测试调用同一实现。
+- Explicit non-goals：不折叠非均匀dense内容，不改算术或dtype，不按模型/数值/容量选择切片，不改变layout/transport，
+  不引入全图canonicalizer或e-graph旁路，不推测任何尚未生成的buffer。
+- Completion criteria：多Tile、1024/1025/1031及temporal主块/尾块保留精确coverage与scalar位模式，
+  selected局部常量经过实际Instr/SPM成功；完整值仍有消费者时保留其语义。整网可行性另行验证。
+
+对照[MLIR局部fold](https://mlir.llvm.org/docs/Canonicalization/)与pinned Tensor `ExtractSliceOp::fold`、
+reshape fold：splat的切片可直接重塑同一scalar attribute，不必枚举元素。使用`OpBuilder::tryFold`在当前view位置生成结果，
+避免`OperationFolder`把常量提升到TileRegion外；按SSA定义顺序只访问当前view一次，再收集并物化存活常量。
+下游已有initializer tiling不承担修复上游完整常量的责任，尤其是无需进一步temporal切分的Region。
+
+| 输入等价类 | 精确输出/保留要求 | 下游witness |
+| --- | --- | --- |
+| rank3、1024/1025/1031、FP16/BF16及F32 opmath、多个spatial轴 | 每个consumer的fill尺寸与实际slice一致；scalar attribute逐bit保持；完整范围无重叠无遗漏 | spatial verifier、layout及actual Instr/SPM |
+| 非unit reshape、expand/collapse链、多use、不同窗口 | 各结果type和原view值完全一致；不串用窗口，死完整常量不物化 | 直接消费者与buffer relation verifier |
+| temporal主块/尾块、动态offset且静态result | 沿用实际slice和原initializer tiling，不为完整常量生成SPM buffer | 多block/tail后actual allocator成功 |
+| 非splat、未折叠view、完整值仍被使用 | 不误改数值或擅自缩小真实需求；现有pow指数处理保持 | 负向保留与正式consumer回归 |
+| 原ViT及固定FP16 LLaMA | 默认预算、原始source/dtype；记录实际候选与包，无卡不代签板端 | 完整模型编译/no-card及原包/IR对账 |
+
 ### 5.3 Temporal tiling
 
 

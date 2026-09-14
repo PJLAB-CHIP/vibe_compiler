@@ -648,6 +648,31 @@ validateRegionChoice(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
 }
 
 mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
+  mlir::IRRewriter rewriter(module.getContext());
+  // Fold the selected views while their sources still carry splat attributes.
+  // Once replaced with fills, full-shape literals would become allocations even
+  // in Regions that need no further temporal tiling. Keep folded constants at
+  // the view, inside its current Region, rather than hoisting them with a
+  // folder.
+  module.walk([&](mlir::Operation *view) {
+    if (!mlir::isa<mlir::tensor::ExtractSliceOp, mlir::tensor::ExpandShapeOp,
+                   mlir::tensor::CollapseShapeOp, mlir::tensor::CastOp>(view) ||
+        !view->getParentOfType<TileRegionOp>())
+      return;
+    auto constant =
+        view->getOperand(0).getDefiningOp<mlir::arith::ConstantOp>();
+    if (!constant)
+      return;
+    auto value = mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
+    auto type =
+        mlir::dyn_cast<mlir::RankedTensorType>(view->getResult(0).getType());
+    if (!value || !value.isSplat() || !type || !type.hasStaticShape())
+      return;
+    rewriter.setInsertionPoint(view);
+    llvm::SmallVector<mlir::Value, 1> folded;
+    if (mlir::succeeded(rewriter.tryFold(view, folded)) && !folded.empty())
+      rewriter.replaceOp(view, folded);
+  });
   llvm::SmallVector<mlir::arith::ConstantOp, 8> constants;
   module.walk([&](mlir::arith::ConstantOp constant) {
     auto type = mlir::dyn_cast<mlir::RankedTensorType>(constant.getType());
@@ -656,8 +681,11 @@ mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
         constant->getParentOfType<TileRegionOp>())
       constants.push_back(constant);
   });
-  mlir::IRRewriter rewriter(module.getContext());
   for (mlir::arith::ConstantOp constant : constants) {
+    if (constant->use_empty()) {
+      rewriter.eraseOp(constant);
+      continue;
+    }
     auto type = mlir::cast<mlir::RankedTensorType>(constant.getType());
     auto value = mlir::cast<mlir::DenseElementsAttr>(constant.getValue());
     auto scalarValue = value.getSplatValue<mlir::TypedAttr>();

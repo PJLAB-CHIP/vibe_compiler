@@ -99,14 +99,153 @@
       "functions/forward.stablehlo.bc": "2ee826e066c81f2bb32b80326f538265b058957ad42aad2095b54d1d20f01790"
     },
     "fresh_source_equal_baseline": true,
-    "checkpoint": "host compiler running; no completion claimed"
+    "checkpoint": "terminal: compile exited 1, not timeout; no accepted candidate or package",
+    "runner_wall_seconds": 869.35,
+    "runner_rss_kib": 3418808,
+    "compiler_transaction_wall_ms": 845144.909,
+    "search": {
+      "actual": 42,
+      "structural": 5,
+      "accepted": 0,
+      "capacity": 39,
+      "unsupported": 3,
+      "indeterminate": 0,
+      "capacity_refinements": 12,
+      "unavailable_capacity_refinements": 27
+    },
+    "one_shot": {
+      "calls": 30,
+      "cumulative_wall_ms": 12536.062,
+      "max_wall_ms": 616.216
+    },
+    "capacity_feedback": {
+      "input_coordinates": 2560,
+      "unavailable_input_demands": 53611,
+      "ambiguous_inputs": 0,
+      "shared_input_demands": 0
+    },
+    "unsupported_gate": "shared-ddr-completion",
+    "unsupported_detail": "shared DDR and DTE completion dependencies contain a cycle",
+    "log": "build/test/model-performance/exact-box-vit.log",
+    "log_sha256": "372f4f41da14fdbbd297d5b9de50d111deb16ed7440ce5e236911026c9031dda",
+    "package_ready": false,
+    "no_card": false,
+    "capacity_diagnostic": {
+      "method": "Host GDB stopped first planSPMMemoryModule; dump actual current Instr; kill inferior after allocator return. Debugger time excluded.",
+      "input": "build/test/model-performance/exact-box-vit-capacity-input.mlir",
+      "input_bytes": 1803636,
+      "input_sha256": "5176b27a1335ecc3dd7c01111ccfd65dd05361d4bd0279a943e5264406ff956b",
+      "input_verifier": "passed with current wafer-opt",
+      "available_spm_begin": 65536,
+      "available_spm_end": 3080192,
+      "available_spm_bytes": 3014656,
+      "full_shape_f32_spm_allocations": 19,
+      "full_shape": [
+        1,
+        1024,
+        3072
+      ],
+      "allocation_bytes_each": 12582912,
+      "observed_use": "wafer.instr.fill scalar splat -> gather_scatter selected [1,512,384] -> pointwise",
+      "selected_window_bytes": 786432,
+      "allocator_result": "LogicalResult failure; no retry of device or second full search",
+      "root": "Spatial literal materialization converts original full-shape splat to fill before selected tensor view can fold. Temporal initializer localization returns early when no dimension is tiled.",
+      "gdb_log": "build/test/model-performance/exact-box-vit-capacity-gdb.log",
+      "limitations": [
+        "One actual candidate on one Tile; not all capacity outcomes classified",
+        "Shared-DDR/DTE cycle failures remain separate",
+        "No hardware execution"
+      ]
+    },
+    "completion_cycle_diagnostics": {
+      "source": "same actual rejection log; no re-execution",
+      "cycles": [
+        {
+          "rejection_index": 0,
+          "edge_kinds": {
+            "tile-order": 106,
+            "ddr-publication": 6,
+            "recv-ready": 2,
+            "token-completion": 1
+          },
+          "tiles": [
+            1,
+            3,
+            4,
+            8,
+            9,
+            11,
+            12,
+            13,
+            15
+          ],
+          "publication_resource_ids": [
+            131,
+            36,
+            661,
+            704,
+            670,
+            5
+          ],
+          "reported_static_loop_cuts": 0
+        },
+        {
+          "rejection_index": 1,
+          "edge_kinds": {
+            "tile-order": 106,
+            "ddr-publication": 6,
+            "recv-ready": 2,
+            "token-completion": 1
+          },
+          "tiles": [
+            1,
+            3,
+            4,
+            8,
+            9,
+            11,
+            12,
+            13,
+            15
+          ],
+          "publication_resource_ids": [
+            131,
+            36,
+            661,
+            704,
+            670,
+            5
+          ],
+          "reported_static_loop_cuts": 0
+        },
+        {
+          "rejection_index": 2,
+          "edge_kinds": {
+            "tile-order": 28,
+            "token-completion": 1,
+            "ddr-publication": 1,
+            "recv-ready": 1
+          },
+          "tiles": [
+            0,
+            3,
+            4
+          ],
+          "publication_resource_ids": [
+            360
+          ],
+          "reported_static_loop_cuts": 0
+        }
+      ],
+      "interpretation": "Reported current-IR cycles contain both DDR publication and Direct DTE edges; separate from constant allocation capacity failures. Producer root requires further tracing."
+    }
   },
   "llama": {
     "case": "llama-2-7b-block",
     "dtype": "float16",
     "search_width": 8,
     "search_trials": 42,
-    "checkpoint": "fresh no-card runner started; no completion claimed",
+    "checkpoint": "terminal: complete package/no-card passed; no device execution",
     "fresh_source_files": {
       "data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
       "data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
@@ -123,7 +262,28 @@
       "functions/forward.meta": "83366ad13c971c888242a2518f76193891b360977b892ad388eb0c883156d62b",
       "functions/forward.stablehlo.bc": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b"
     },
-    "source_equal_initial_and_previous": true
+    "source_equal_initial_and_previous": true,
+    "runner_wall_seconds": 1054.2,
+    "runner_rss_kib": 2825364,
+    "compiler_transaction_wall_ms": 1031054.756,
+    "search": {
+      "actual": 42,
+      "accepted": 9,
+      "capacity": 33,
+      "unsupported": 0
+    },
+    "package": {
+      "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+      "manifest.json": "e9b5dfa066bfdeab153ac199b019ebc74b1c4feffd4df6c963bfec1d1acb1a6c",
+      "modules/module_00000.so": "0135e335aaa04435da27c98cf8c0f56034ade05a1df0299748d3699f299bba82"
+    },
+    "package_equal_previous": true,
+    "package_equal_initial": false,
+    "final_ir_files": 48,
+    "final_ir_equal_previous": true,
+    "log": "build/test/model-performance/exact-box-llama.log",
+    "package_ready": true,
+    "no_card": true
   },
   "board": {
     "executed": false,
@@ -131,11 +291,11 @@
     "user_confirmed": "尚未恢复，继续主机工作"
   },
   "limits": [
-    "ViT package/no-card not yet verified",
-    "LLaMA host regression not yet complete",
-    "No device timing or numerical readback",
-    "Original matrix and three matched tuning rounds remain incomplete",
-    "Host model runs overlap; wall/RSS provide qualification evidence, not matched isolated compiler benchmarks."
+    "ViT One-Shot bottleneck removed, but default search still has no executable candidate",
+    "LLaMA package and final IR match the previous no-card version; that version still differs from the initial board-qualified fast package",
+    "No device timing or numerical readback; card remains unrecovered",
+    "Host model runs overlapped; total wall differences are not matched isolated compiler benchmarks",
+    "Original matrix and three matched tuning rounds remain incomplete"
   ],
   "references": [
     "https://github.com/llvm/llvm-project/issues/81959",

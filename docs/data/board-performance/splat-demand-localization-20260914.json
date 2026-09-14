@@ -1,0 +1,265 @@
+{
+  "work_item": "board-testing",
+  "date": "2026-09-14",
+  "scope": "host-only; board explicitly unrecovered",
+  "root": {
+    "upstream": "selected spatial tensor splat -> extract_slice/reshape",
+    "incorrect_materialization": "full-shape splat replaced by fill before local Tensor fold",
+    "downstream_gap": "applyTemporalTiling returns before initializer tile materialization when no dimension is tiled",
+    "baseline_evidence": "exact-box-coalescing-20260914.json#vit.capacity_diagnostic"
+  },
+  "implementation": {
+    "owner": "lib/Wafer/Transforms/Linalg/SpatialRegionMaterialization.cpp",
+    "rule": "Fold current static splat views with pinned OpBuilder::tryFold at the view insertion point, then materialize only live constants",
+    "no_numeric_reordering": true,
+    "no_shape_policy": true,
+    "no_budget_change": true
+  },
+  "focused": {
+    "gtests": 2,
+    "passed": 2,
+    "actual_instr_spm_configurations": 54,
+    "extent": [
+      1024,
+      1025,
+      1031
+    ],
+    "dtype": [
+      "f16",
+      "bf16",
+      "f32"
+    ],
+    "shape": "[1,S,3072]",
+    "tiles": [
+      4,
+      16
+    ],
+    "views": [
+      "direct",
+      "non-unit collapse",
+      "expand/collapse with negative zero"
+    ],
+    "temporal": "4 Tiles: multi-axis 32 tiling with main/tail; 16 Tiles: no active temporal axis",
+    "exact_checks": [
+      "Cartesian spatial window coverage exactly once",
+      "fill shape equals actual input slice",
+      "scalar attr including negative zero unchanged",
+      "actual completion/SPM/executable accepted",
+      "Actual specialized temporal tails for non-divisible extents"
+    ],
+    "retention_configurations": 4,
+    "retention": [
+      "shared constant with different consumer axes",
+      "full value still used",
+      "non-splat dense unchanged",
+      "pow exponent behavior preserved"
+    ],
+    "wall_ms": 1973,
+    "log": "build/test/model-performance/splat-demand-focused-final.log",
+    "runner_wall_seconds": 1.98,
+    "rss_kib": 69400
+  },
+  "canonical_build": {
+    "status": "passed",
+    "wall_seconds": 40.33,
+    "rss_kib": 1465388,
+    "second_build": "Ninja no-op",
+    "log": "build/test/model-performance/splat-demand-build.log",
+    "final_test_only_build": "passed, followed by Ninja no-op; compiler binary unchanged"
+  },
+  "component_regression": {
+    "status": "passed",
+    "ctest_executed": 3,
+    "ctest_passed": 3,
+    "gtest_executed": 647,
+    "transforms": 393,
+    "planning": 127,
+    "driver": 127,
+    "unexpected_skips": 0,
+    "wall_seconds": 625.04,
+    "log": "build/test/model-performance/splat-demand-components.log",
+    "test_strengthening": "After component run, only exact row-size/tail assertions strengthened; full incremental build/no-op and both affected tests passed, compiler SHA unchanged."
+  },
+  "vit": {
+    "case": "vit-encoder-block",
+    "dtype": "float16",
+    "seed": 20260803,
+    "shape": [
+      1,
+      1024,
+      768
+    ],
+    "search_width": 8,
+    "search_trials": 42,
+    "status": "normal compile failure; no timeout",
+    "runner_wall_seconds": 842.0,
+    "runner_rss_kib": 3392512,
+    "compiler_transaction_wall_ms": 817674.52,
+    "source_equal_previous": true,
+    "source_files": 14,
+    "search": {
+      "accepted": 0,
+      "capacity": 39,
+      "unsupported": 3,
+      "capacity_refinements": 12,
+      "unavailable_capacity_refinements": 27
+    },
+    "one_shot": {
+      "calls": 30,
+      "wall_ms": 10460.404,
+      "max_wall_ms": 575.214
+    },
+    "package_ready": false,
+    "no_card": false,
+    "log": "build/test/model-performance/splat-demand-vit.log",
+    "diagnostic": {
+      "method": "Host GDB captures first splat materialization before/after, then first actual planSPMMemoryModule input; allocator returns failure and inferior killed. No full search rerun or device operation. Timing records removed from dumps before verification.",
+      "artifacts": {
+        "literal-input": {
+          "path": "build/test/model-performance/splat-demand-vit-literal-input.mlir",
+          "bytes": 3155534,
+          "sha256": "6b92706a734eabadedfe31a57cb575cfb650dab769b5dc017e6af78a0fe763e8",
+          "verifier": "passed"
+        },
+        "literal-output": {
+          "path": "build/test/model-performance/splat-demand-vit-literal-output.mlir",
+          "bytes": 3144966,
+          "sha256": "82bd37d70d1996201241b704bba35f60dd5e99d81020574b21d3963885bff9c9",
+          "verifier": "passed"
+        },
+        "capacity-input": {
+          "path": "build/test/model-performance/splat-demand-vit-capacity-input.mlir",
+          "bytes": 1788473,
+          "sha256": "767bf827fab1a48348793b0c66fde85d1ce2cd83f7709b58d1e981dcf05ab1a8",
+          "verifier": "passed"
+        }
+      },
+      "log": "build/test/model-performance/splat-demand-vit-diagnostic.log",
+      "full_shape_f32_constant_spm_allocations": 0,
+      "previous_full_shape_f32_constant_spm_allocations": 19,
+      "largest_actual_spm_buffer_bytes": 6291456,
+      "largest_actual_spm_buffer_shape": [
+        1,
+        1024,
+        3072
+      ],
+      "largest_actual_spm_buffer_dtype": "f16",
+      "observed_remaining_use": "local [1,512,384] cast -> GS insert into full [1,1024,3072] carrier -> per-row WDMA to [1,256,384] output; another full carrier assembles input pieces",
+      "remaining_oversized": [
+        {
+          "shape": [
+            768,
+            3072
+          ],
+          "dtype": "f16",
+          "count": 1
+        },
+        {
+          "shape": [
+            3,
+            1024,
+            1,
+            768
+          ],
+          "dtype": "f16",
+          "count": 4
+        },
+        {
+          "shape": [
+            3072,
+            768
+          ],
+          "dtype": "f16",
+          "count": 1
+        },
+        {
+          "shape": [
+            1,
+            1024,
+            768
+          ],
+          "dtype": "f32",
+          "count": 2
+        }
+      ],
+      "next_boundary": "Trace actual full result/assembly carrier creation and typed region output consumers; do not relax allocator or increase trials."
+    }
+  },
+  "llama": {
+    "case": "llama-2-7b-block",
+    "dtype": "float16",
+    "search_width": 8,
+    "search_trials": 42,
+    "no_card": true,
+    "runner_wall_seconds": 1063.74,
+    "runner_rss_kib": 2734036,
+    "package": {
+      "manifest.json": "f2e518c40aa69a25243b97c46f5976383bcdc29e4ce1df8d5497353092c00396",
+      "modules/module_00000.so": "33a717f64d78d34ce2a5e6d9c7199366b7d0b7a985cfade11e54ad94e85d6d2b",
+      "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+    },
+    "package_equal_previous": false,
+    "final_ir_files": 48,
+    "final_ir_equal_previous": false,
+    "source_equal_previous": true,
+    "log": "build/test/model-performance/splat-demand-llama.log",
+    "search": {
+      "accepted": 9,
+      "capacity": 33,
+      "unsupported": 0
+    },
+    "compiler_transaction_wall_ms": 1040013.667,
+    "previous_ir_dir": "build/test/model-performance/exact-box-llama-current/compiler-ir",
+    "current_ir_dir": "build/test/model-performance/splat-demand-llama-current/ir",
+    "final_ir_changed_files": 48,
+    "previous_static_instruction_counts": {
+      "convert": 560,
+      "ddr_acquire": 3600,
+      "ddr_publish": 1808,
+      "elementwise": 720,
+      "fill": 336,
+      "gather_scatter": 10512,
+      "gemm": 256,
+      "ncc_join": 5424,
+      "rdma": 6144,
+      "reduce": 64,
+      "wdma": 4544
+    },
+    "current_static_instruction_counts": {
+      "convert": 560,
+      "ddr_acquire": 3600,
+      "ddr_publish": 1808,
+      "elementwise": 720,
+      "fill": 304,
+      "gather_scatter": 10512,
+      "gemm": 256,
+      "ncc_join": 5424,
+      "rdma": 6144,
+      "reduce": 64,
+      "wdma": 4544
+    },
+    "ir_observation": "32 static fill operations removed; remaining instruction-kind counts identical. Local constant shapes and actual SPM offsets change. Static counts are not dynamic performance."
+  },
+  "board": {
+    "executed": false,
+    "user_confirmed": "尚未恢复，继续主机工作"
+  },
+  "limits": [
+    "This fix does not classify all capacity failures or repair shared completion cycles",
+    "Full matrix and three profile tuning rounds remain incomplete",
+    "ViT full constant buffers eliminated but remaining full result/assembly carriers and other oversized buffers still reject capacity",
+    "LLaMA package differs from prior no-card and initial board baseline; device numerical/performance regression pending"
+  ],
+  "references": [
+    "https://mlir.llvm.org/docs/Canonicalization/",
+    "third_party/llvm-project/mlir/lib/IR/Builders.cpp",
+    "third_party/llvm-project/mlir/lib/Dialect/Tensor/IR/TensorOps.cpp"
+  ],
+  "compiler_sha256": "ad0260df028865bd5a5d1143796745c6aedaf1619a98ef21ea3fce962befa938",
+  "host_launch_preflight": {
+    "failure": "clang++ absent from runner child PATH",
+    "action": "source repository build-env.sh in each child; re-export source and launch no-card again",
+    "before_compiler_search": true,
+    "device_executed": false
+  }
+}

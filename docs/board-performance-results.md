@@ -1579,8 +1579,47 @@ GDB暂停和调试器自身的线程池等待不计为compiler耗时；比较基
 [长insert_slice链的非线性分析](https://github.com/llvm/llvm-project/issues/81959)，其计时不当作本仓实测。
 
 7项几何测试及真实四Tile reshape/分区测试通过，1024/1025/1031每配置16次来源片段拷贝、全需求exact覆盖；
-layout/bufferization通过。原ViT与固定FP16 LLaMA的8/42完整主机复验在途，当前没有新的整块设备时间或数值回读。
+layout/bufferization通过。原ViT与固定FP16 LLaMA的8/42主机复验已取得终态，当前没有新的整块设备时间或数值回读。
 四组件754项实际测试全部通过，无skip；完整增量构建及第二次Ninja no-op通过。LLaMA本轮14个源文件与初始快版本、
 上次接受的无卡版本一致；ViT本轮14个源文件与旧诊断输入一致。主机模型运行存在重叠，不能把总wall差直接签为编译性能A/B。
 板卡由用户确认尚未恢复，继续主机工作。完整身份和后续终态进入
 [精确box合并证据](data/board-performance/exact-box-coalescing-20260914.json)。
+
+本轮终态：ViT compiler transaction 845.145秒、runner 869.35秒、RSS 3,418,808 KiB，未超时；
+One-Shot共30次累计12.536秒、最长0.616秒，旧长链瓶颈已解除。搜索完成42次，仍为39容量拒绝、
+3共享DDR/DTE完成依赖成环、0合法候选；容量细分12次、unavailable 27次，继续检查actual失败buffer及反馈。
+LLaMA完整no-card通过，runner 1,054.20秒、RSS 2,825,364 KiB，9合法候选；包三文件和48份final IR
+与上轮无卡版本逐字节相同。module SHA为`0135e335aaa04435da27c98cf8c0f56034ade05a1df0299748d3699f299bba82`。
+该版本与初始实卡快包的差异未扩大，原差异的设备数值/性能资格仍待验。完整日志身份见同一[合并证据](data/board-performance/exact-box-coalescing-20260914.json)。
+
+
+## 2026-09-14 已选局部常量与SPM容量
+
+对上轮ViT首个actual容量失败进行无卡GDB定位，获得verifier通过的canonical Instr输入：
+同一Tile有19个`[1,1024,3072]` F32 SPM allocation，每个12 MiB，均由scalar fill生成；
+后续GS只取`[1,512,384]`、768 KiB窗口。实际可用SPM为2.875 MiB，allocator正常返回容量失败。
+该证据只覆盖所抓取的一个候选，不把其它容量拒绝或共享完成依赖环一并归因。输入身份及诊断方法见
+[原始容量证据](data/board-performance/exact-box-coalescing-20260914.json)。
+
+根因位于spatial literal物化：完整dense splat在其已选slice折叠前变成fill；
+下游temporal在没有活跃分块轴时直接返回，已有initializer局部化没有机会执行。
+修复在同一spatial materializer中先使用pinned Tensor fold解释当前static slice/reshape，再仅对存活常量生成fill。
+该规则保持scalar attribute、dtype和真实消费者需求，结果留在原view位置，不按模型、容量或固定tile参数触发。
+
+54组`[1,S,3072]`、S=1024/1025/1031、FP16/BF16/F32、4/16 Tile的实际Instr/completion/SPM通过；
+覆盖无活跃temporal轴、多轴32分块/尾部、非unit reshape、expand/collapse和负零。
+另4组多use、不同spatial轴、完整值保留、非splat及pow指数行为通过。最终加强的定向验证为2项、1.98秒、RSS69400 KiB。
+完整canonical构建及第二次Ninja no-op通过；Planning/Transforms/Driver共647项实际测试通过，无skip。
+组件之后仅加强新测试的row-size/tail断言，增量构建/no-op及两项定向验证通过，compiler SHA未变。
+本轮两个模型各14个源文件与上轮相同，仍用默认8/42、原seed和FP16；板卡未恢复，没有新设备数值或性能结论。
+ViT本轮正常结束：runner842.00秒、RSS3,392,512 KiB，仍为39容量拒绝、3共享完成依赖环，无package。
+重新捕获literal物化前后及首个SPM规划输入并全部通过verifier，确认19个12 MiB F32常量allocation已全部消失。
+当前最大单buffer变为6 MiB的FP16完整中间张量：局部cast结果先GS写入完整`[1,1024,3072]`，再逐行WDMA搬至
+`[1,256,384]`输出；另有完整形状的输入assembly及权重buffer。下一步追踪这些actual carrier及直接consumer，
+不能仅扩大预算或放松allocator。GDB在首个allocator返回后终止，仅作主机诊断，无第二次完整搜索或设备执行。
+
+固定FP16 LLaMA完整no-card通过，runner1,063.74秒、RSS2,734,036 KiB；仍9 accepted、33 capacity。
+source/权重不变，运行包及48份final IR改变：静态fill从336降至304，其它指令类别计数相同；
+实际差异包括移除不再使用的square指数fill、缩小局部常量以及重新规划SPM offset。这些静态计数不等于动态性能，
+相对上轮无卡包和初始实卡快包的设备数值/性能均待恢复后重签。
+完整身份与终态见[局部常量证据](data/board-performance/splat-demand-localization-20260914.json)。

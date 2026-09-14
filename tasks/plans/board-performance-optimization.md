@@ -20,7 +20,11 @@ IR和原有计数完全相同；该修改的LLaMA完整no-card通过，package�
 后续Region提案已减少重复合法性查询和FM计分，定向及组件门禁通过；该修改的LLaMA no-card通过且包与初始快版本相同，ResNet整网资格继续验证。
 ResNet另有temporal重复全module校验及窗口max归约lowering缺口；这些主机结果不计作已完成的板端性能优化轮次。
 ViT的GELU公开扩展和LayerNorm opmath入口已通用修复，1024/1025 source通过；1024已到含attention的structured IR，
-整块旧编译达到1,800秒主机期限；actual分析输入有26,976个insert_slice且无scf.for，两次栈采样定位到长subset链的反向读写冲突查询。精确box合并已按06号合同实现，定向范围/多Tile/layout验证通过；本轮四组件回归通过，原ViT/LLaMA主机回归正在执行。
+整块旧编译达到1,800秒主机期限；actual分析输入有26,976个insert_slice且无scf.for，两次栈采样定位到长subset链的反向读写冲突查询。精确box合并已按06号合同实现，定向范围/多Tile/layout验证通过；本轮四组件回归通过；ViT编译正常结束但42次仍无合法候选（39容量、3共享完成依赖成环），One-Shot最长0.62秒；LLaMA完整no-card通过，包及final IR与上轮相同。
+随后actual容量定位发现完整splat物化问题；按06号修复后54组actual Instr/SPM及三个组件647项通过，
+ViT首个候选的19个12 MiB F32常量buffer已消除。整块仍因完整result/assembly carrier等容量和共享完成依赖环失败；
+下一步继续查该carrier的producer与typed输出/输入关系。固定LLaMA本轮完整no-card通过，静态fill减少32、其它指令类别计数相同，
+包和SPM offset已改变，设备回归仍待恢复；详见扩展矩阵及局部常量证据。
 独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
 这些证据只闭合入口缺口，不代签整块数值、设备性能或三轮调优。
 混合dtype端口及整数exact比较已补通用runner验证；完整单层LM已注册，S16 FP16/BF16的全部logits CPU oracle通过。

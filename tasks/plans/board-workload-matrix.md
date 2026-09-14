@@ -632,8 +632,32 @@ CPU数值oracle的多线程冷调用及oneDNN特殊值边界在02号合同和证
 Analysis/Planning/Transforms/Driver四个组件的109/127/391/127项实际测试全部通过，无skip；
 完整canonical增量构建及随后的Ninja no-op通过。组件墙钟625.16秒，模型编译有并行主机工作，不作隔离性能A/B。
 
-本轮ViT重新导出的14个source文件与旧诊断输入相同，原默认8/42与FP16保持；ViT及固定FP16 LLaMA的完整
-主机复验仍在执行，尚无本轮整块package/no-card或设备结论。用户再次确认板卡尚未恢复，实卡批次保持停止。
-LLaMA重新导出的14个source文件与初始正确快版本及上轮无卡版本都相同，待核对本轮package/actual结果。
+本轮ViT重新导出的14个source文件与旧诊断输入相同，原默认8/42与FP16保持。编译正常以失败退出，未达到主机期限：
+transaction 845.145秒，runner 869.35秒、RSS 3,418,808 KiB。One-Shot共30次累计12.536秒、最长0.616秒，
+旧长链瓶颈已解除；5个结构、42次actual尝试仍为0 accepted、39 capacity、3 shared-ddr-completion依赖成环。
+容量反馈只有12次成功生成细分、27次unavailable；输入归因未发现歧义，但有53,611次unavailable demand计数，
+需要继续查看actual allocation及owner/访问关系，不能据此归为单纯预算不足。ViT没有package/no-card或设备执行。
+
+固定FP16 LLaMA本轮完整no-card通过，runner 1,054.20秒、RSS 2,825,364 KiB，9 accepted、33 capacity、0 unsupported。
+14个source与初始正确快版本、上轮无卡版本相同；运行包三文件与全部48份final IR均与上轮无卡版本逐字节相同。
+本项没有进一步改变其产物；上轮包仍不同于初始实卡快包，二者设备回归待恢复。用户再次确认板卡尚未恢复，实卡批次保持停止。
 本项仍是正确性/编译资格准备，不能计入三轮设备性能调优。证据见
 [精确box合并记录](../../docs/data/board-performance/exact-box-coalescing-20260914.json)。
+
+
+### 2026-09-14 已选常量需求的物化修复
+
+ViT旧actual Instr显示同一Tile生成19个完整`[1,1024,3072]` F32 fill allocation，单个12 MiB，
+然后才切出768 KiB窗口；可用SPM只有2.875 MiB。原因是spatial阶段提前把splat literal变成fill，
+而无活跃temporal轴时直接返回，不能依靠其initializer局部化补救。
+按06号“已选局部需求中的均匀常量”合同，在原materializer中先折叠实际splat view，再物化存活constant；
+不改dtype、搜索预算、layout或transport，不把所有容量失败归为同一根因。
+54组大shape/dtype/reshape/4与16 Tile的actual Instr/completion/SPM通过，另4组共享/完整/非splat/pow保留通过；
+定向测试还明确检查空间窗口exact coverage及temporal尾部。完整构建/no-op通过，Planning/Transforms/Driver共647项通过，
+无skip；最后仅加强新测试断言并重签两项定向验证，compiler不变。两项source各14文件与上轮相同。
+ViT仍正常结束于39容量拒绝、3共享完成依赖环；fresh GDB的literal前后和SPM输入均通过verifier，
+19个12 MiB F32常量allocation已经全部消失。新的最大buffer是6 MiB FP16完整result/assembly carrier，
+仍存在“局部写入完整中间张量→再切片搬出”的路径；后续查该carrier producer、typed输出关系及直接consumer。
+固定LLaMA完整no-card通过、9 accepted，包和48份final IR改变：静态fill减少32，其它指令类别计数相同，
+常量形状与SPM offset变化。不能以该静态差异代签相对上轮无卡包和最初快包的设备回归。
+板卡仍未恢复，设备数值与性能验收不变更；证据见[局部常量记录](../../docs/data/board-performance/splat-demand-localization-20260914.json)。

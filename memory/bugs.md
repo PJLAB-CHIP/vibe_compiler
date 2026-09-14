@@ -7,6 +7,16 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 均匀常量必须先应用已选局部view再物化
+
+- 现象：compute已切成局部窗口，actual SPM仍出现完整张量的fill，继续缩小其它temporal参数不能降低该allocation。
+- 根因：spatial materializer把完整splat literal提前变成fill，丢失Tensor fold可直接使用的常量属性；
+  下游initializer tiling只有活跃分块时才执行，不能替上游保证所有Region都生成局部常量。
+- 修复模式：在literal物化入口先调用pinned Tensor fold解释当前static slice/reshape，结果保留在原view位置；
+  只将仍有use的常量变成fill。使用scalar attribute原位模式，不枚举dense元素、不把常量提升到Region外，也不以容量估算选择切片。
+- 防复发：覆盖无活跃temporal轴及多block/tail、FP16/BF16/F32、reshape和负零；检查局部fill与actual输入需求一致并走
+  Instr/completion/SPM。共享常量、完整值仍被使用及非splat必须保留原语义，不能将合法性结论建立在dead full-type包装的形状上。
+
 ## 完整tensor循环state会放大buffer type递归
 
 - 现象：合法分段计算在One-Shot的extract bufferization内长时间工作，栈反复穿过SCF init/yield类型推导。
