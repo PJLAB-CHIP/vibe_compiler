@@ -797,3 +797,45 @@ stride及地址SSA；越界反例检查精确坐标诊断和输入未修改。�
    确保局部失败不会错误终止其它可行方向。
 
 完整LM动态读取、数值、package/no-card，以及三轮性能调优与最终板端资格仍未完成。
+
+### 2026-09-14 机器交接：已实现边界与继续入口
+
+用户要求机器后续交其他人使用，将现有代码及进度提交远程；本次收尾后不继续开发、编译或设备批次。
+板卡仍按用户最后确认的未恢复状态处理。本项保持未完成，不能将这次提交作为正确性压测或三轮调优的完成标记。
+
+已提交的前序工作包括产品直接XLA导出（`5f248da9`）、常量按需读取（`ef2ec16f`）、
+generic投影读取转真实DPS input（`1e968743`）和运行时整数范围证明（`a27e35a3`）。
+本次收尾实现host TargetCall frontend对scalar `llvm.smin/smax/umin/umax`的执行支持，
+使用原LLVM JIT的整数语义；vector overload、其它intrinsic及未知native操作仍在sink开始前拒绝。
+实际边界与覆盖矩阵在17号设计；没有新增scalar load、CRT符号或设备运行能力。
+
+本轮4项新增测试覆盖i8/i16/i32/i64/i128、signed/unsigned和位型边界，以及F16/BF16的
+`[2,S,64]`、S=1024/1025/1031、16 Tiles、64行block与tail。核对1,920个整数结果的2,304个64-bit片段，
+以及3,200次decoded窗口调用的地址、计数、Tile身份和逐行无重叠覆盖。
+Simulator组件70项、SystemC 17个可执行测试、public link smoke与source organization检查实际通过，无skip；
+canonical完整增量构建及Ninja no-op通过。初次新增测试中`llvm::Expected`的GTest bool转换编译错误已修正，
+以上结果来自最终binary。两个compiler binary哈希与上一轮相同，本次未重复编译LLaMA；
+上一轮完整no-card证据仍是最近一次结果，不能据此新增实卡资格。
+
+进一步调查已复现`NCCJoinPlacement`中的通用循环同步问题，尚未修复：
+
+| current IR结构，rank3、S=1024/1025/1031 | 本轮实际生成结果 | 缺口 |
+| --- | --- | --- |
+| 循环外worker0写A；循环内读取A并累加到返回值 | 全函数无join | 后续迭代重写删除了入口首次读取必需的worker0等待 |
+| 同上，循环内另由worker0写无别名B | 每轮读取前join0，返回前另join0 | 入口等待因无关同worker工作而被保留成每轮等待 |
+| 循环外worker0写A；循环内worker1写A | 仅返回前join1 | 首次跨worker WAW所需join0丢失 |
+| 循环外worker0写A；循环内仍worker0写A | 仅返回前join0 | 同worker issue order对照成立，无steady-state join |
+
+根因在同一body上交替进行入口/回边状态分析与原地join增删：后续没有pending worker不代表入口没有依赖；
+仅保留静态join也可能把入口依赖重复执行。继续时先修此处的分析/物化边界，分别保留入口、回边、零次执行的真实控制流证据，
+检查first-only与steady-state的动态次数、participant、lifetime及fresh重建幂等性。
+不能用固定全局drain、永久保留每轮join、按case判断或直接删除memory observer来绕过。
+目前没有证据证明该问题就是此前QKV超时或模型性能回退的原因。
+
+其后的直接工作仍是SPM scalar读取与target/host消费者、动态表availability和精确需求的边界、局部窗口物化、
+source-invariant typed failure作用范围，以及完整LM数值/package/no-card闭合。ViT、ResNet、大GEMM、共享RHS、YOLO和
+BF16 LLaMA的既有缺口仍按本计划前述矩阵推进；正确性收口后才能冻结B0并开始三轮性能调优。
+恢复设备验证前须取得用户确认；风险项目最后执行，最终冻结版本后全矩阵实卡验收一次。
+
+可移机复现的12组同步诊断输入/实际IR、测试与binary身份见
+[主机执行及交接证据](../../docs/data/board-performance/scalar-host-execution-20260914.json)。

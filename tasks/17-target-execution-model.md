@@ -90,6 +90,25 @@ TargetCall frontend是final target LLVM到typed transaction的唯一host桥：
 内部 `wafer_target_call_dispatch`只完成JIT call interception。它不是package export、runtime ABI、serialized schema或
 用户入口，也不拥有physical-dataflow scheduling语义。
 
+#### 标量整数夹界的主机执行合同
+
+输入为final target LLVM中的标量整数SSA及`llvm.smin/smax/umin/umax`；本层验证完整module后，
+由同一LLVM host JIT执行原intrinsic，输出仍是原bitwidth的SSA值，直接用于TargetCall地址/字段或控制流。
+生产target-model入口与component测试使用同一个frontend。没有新TargetCall、CRT符号、数值backend或第二解释器。
+依据[LLVM整数min/max语义](https://llvm.org/docs/LangRef.html#llvm-smax-intrinsic)和pinned
+`Intrinsics.td`，只开放这四个无内存effect、可返回的标量整数intrinsic；signed/unsigned、位宽和截断保持原LLVM语义。
+pinned `ArithToLLVM.cpp`将`arith.minsi/maxsi/minui/maxui`直接映射到这四种操作，因此不能将合法的夹界与
+任意外部调用一起拒绝。其它intrinsic、vector overload、指针解引用和未知外部调用保持原拒绝边界，失败必须发生在sink `begin`之前。
+
+本项不新增SPM scalar load、不改变completion/search/device code，也不宣称动态词表、完整LM数值或实卡已通过。
+完成条件为下表实际执行、直接Simulator组件及canonical完整增量构建/no-op通过。
+
+| 输入等价类 | exact输出 / failure | 直接下游witness |
+| --- | --- | --- |
+| i8/i16/i32/i64/i128标量min/max；signed/unsigned、相等、零、符号边界、最大值 | 运行时参数保留位型；逐项核对四种运算的结果，不能靠IRBuilder常量折叠 | host JIT→同一TargetCall decoder→记录sink；scalar oracle是位宽语义的有界测试 |
+| rank3 F16/BF16 `[2,S,64]`、S=1024/1025/1031、16 Tiles、64行block及tail | 每个实际窗口的clamp地址、计数、Tile身份和调用顺序精确；所有行恰好一次 | final target LLVM→JIT→实际decoded RDMA参数；不代签DMA执行或数值readback |
+| vector min/max、其它intrinsic及既有native负例 | 精确unsupported诊断；sink未begin、无partial结果 | 同一host frontend |
+
 ## 3. SystemC functional-event architecture
 
 ### 3.1 Process model

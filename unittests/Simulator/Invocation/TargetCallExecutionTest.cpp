@@ -44,6 +44,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -1375,6 +1377,309 @@ TEST(TargetCallExecutionTest, LateTileFailureAbortsTheWholeInvocation) {
   EXPECT_FALSE(sink.invocationCompleted);
   EXPECT_TRUE(sink.commands.empty());
   EXPECT_TRUE(sink.completedLaunchSlots.empty());
+}
+
+// Scalar bitwidth oracles deliberately use scalar LLVM and a recording sink;
+// the rank-three window test below covers the direct address consumer at scale.
+TEST(TargetCallExecutionTest, NativeIntegerMinMaxPreservesRuntimeBitPatterns) {
+  for (unsigned width : {8u, 16u, 32u, 64u, 128u}) {
+    SCOPED_TRACE(width);
+    std::string diagnostics;
+    auto modules = compileElementwiseTargetModules(diagnostics);
+    ASSERT_TRUE(static_cast<bool>(modules))
+        << llvm::toString(modules.takeError());
+    llvm::APInt zero(width, 0), one(width, 1);
+    llvm::APInt signedMin = llvm::APInt::getSignedMinValue(width);
+    llvm::APInt signedMax = llvm::APInt::getSignedMaxValue(width);
+    llvm::APInt unsignedMax = llvm::APInt::getMaxValue(width);
+    const std::array<std::pair<llvm::APInt, llvm::APInt>, 6> operands = {
+        {{zero, zero},
+         {one, zero},
+         {signedMin, signedMax},
+         {unsignedMax, one},
+         {signedMax, unsignedMax},
+         {signedMin, zero}}};
+    const std::array<llvm::Intrinsic::ID, 4> operations = {
+        llvm::Intrinsic::smin, llvm::Intrinsic::smax, llvm::Intrinsic::umin,
+        llvm::Intrinsic::umax};
+    std::vector<uint64_t> expected;
+    for (const auto &owner : modules->getModules()) {
+      llvm::Module &module = const_cast<llvm::Module &>(owner.getModule());
+      llvm::Function *entry = module.getFunction("main");
+      entry->deleteBody();
+      llvm::IRBuilder<> builder(
+          llvm::BasicBlock::Create(module.getContext(), "entry", entry));
+      llvm::Type *type = llvm::IntegerType::get(module.getContext(), width);
+      // This is a runtime ABI value, not an IRBuilder constant. Its actual
+      // value is zero for this invocation; each pair adds its test bitpattern.
+      uint64_t address =
+          0x100000 + owner.getLaunchSlotId().getValue() * 0x100000;
+      llvm::Value *runtime =
+          builder.CreateSub(entry->getArg(0), builder.getInt64(address));
+      runtime = builder.CreateZExtOrTrunc(runtime, type);
+      llvm::Function *rdma = module.getFunction("wafer_tx81_rdma");
+      ASSERT_NE(rdma, nullptr);
+      const auto &descriptor =
+          wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
+      auto raw = makeDecodableArguments(descriptor);
+      for (const auto &[lhs, rhs] : operands) {
+        llvm::Value *value = builder.CreateAdd(
+            runtime, llvm::ConstantInt::get(module.getContext(), lhs));
+        for (auto operation : operations) {
+          llvm::Function *intrinsic =
+              llvm::Intrinsic::getDeclaration(&module, operation, {type});
+          llvm::Value *result = builder.CreateCall(
+              intrinsic,
+              {value, llvm::ConstantInt::get(module.getContext(), rhs)});
+          bool selectLHS = operation == llvm::Intrinsic::smin   ? lhs.slt(rhs)
+                           : operation == llvm::Intrinsic::smax ? lhs.sgt(rhs)
+                           : operation == llvm::Intrinsic::umin ? lhs.ult(rhs)
+                                                                : lhs.ugt(rhs);
+          llvm::APInt oracle = selectLHS ? lhs : rhs;
+          for (unsigned half = 0; half < (width > 64 ? 2u : 1u); ++half) {
+            llvm::Value *bits = half ? builder.CreateLShr(result, 64) : result;
+            bits = builder.CreateZExtOrTrunc(bits, builder.getInt64Ty());
+            llvm::SmallVector<llvm::Value *> arguments;
+            for (auto [index, parameter] : llvm::enumerate(rdma->args()))
+              arguments.push_back(index == 0
+                                      ? bits
+                                      : llvm::ConstantInt::get(
+                                            parameter.getType(), raw[index]));
+            builder.CreateCall(rdma, arguments);
+            expected.push_back(
+                oracle.lshr(half * 64).zextOrTrunc(64).getZExtValue());
+          }
+        }
+      }
+      builder.CreateRetVoid();
+    }
+    RecordingSink sink;
+    auto result = wafer::compiler::executeTargetCalls(
+        *modules, makeInvocationArguments(*modules), sink);
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    ASSERT_EQ(sink.commands.size(), expected.size());
+    EXPECT_EQ(result->completedTileCount, 16);
+    for (auto [command, value] : llvm::zip_equal(sink.commands, expected)) {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetStridedDMACommand>(
+              command.payload));
+      EXPECT_EQ(
+          std::get<wafer::target::TargetStridedDMACommand>(command.payload)
+              .source,
+          value);
+    }
+  }
+}
+
+static llvm::Expected<wafer::compiler::TargetLLVMModules>
+makeRuntimeWindowModules(uint64_t rows, wafer::LogicalFormat format) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  if (!config)
+    return config.takeError();
+  auto launch = wafer::RuntimeLaunchContract::createKernel(
+      wafer::KernelLaunchForm::Grid,
+      wafer::KernelEntryABI::TileMajorPointerTable,
+      {wafer::RuntimeLaunchPhaseRole::Main});
+  if (!launch)
+    return launch.takeError();
+  const auto &descriptor =
+      wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
+  const auto *encoding =
+      wafer::findTargetFormatEncoding(wafer::TargetFormatEngine::RDMA, format);
+  if (!encoding)
+    return llvm::createStringError("missing runtime window test format");
+  std::vector<wafer::compiler::TargetLLVMModule> modules;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto module = std::make_unique<llvm::Module>("runtime-windows", *context);
+    module->setTargetTriple("riscv64-unknown-unknown-elf");
+    llvm::Type *i64 = llvm::Type::getInt64Ty(*context);
+    auto *entry = llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getVoidTy(*context), {i64}, false),
+        llvm::GlobalValue::ExternalLinkage, "main", *module);
+    auto *start = llvm::BasicBlock::Create(*context, "entry", entry);
+    auto *batch = llvm::BasicBlock::Create(*context, "batch", entry);
+    auto *window = llvm::BasicBlock::Create(*context, "window", entry);
+    auto *nextBatch = llvm::BasicBlock::Create(*context, "next_batch", entry);
+    auto *finish = llvm::BasicBlock::Create(*context, "finish", entry);
+    llvm::IRBuilder<> builder(start);
+    builder.CreateBr(batch);
+    builder.SetInsertPoint(batch);
+    auto *batchIndex = builder.CreatePHI(i64, 2);
+    batchIndex->addIncoming(builder.getInt64(0), start);
+    builder.CreateBr(window);
+    builder.SetInsertPoint(window);
+    auto *row = builder.CreatePHI(i64, 2);
+    row->addIncoming(builder.getInt64(0), batch);
+    auto minMax = [&](llvm::Intrinsic::ID id, llvm::Value *lhs,
+                      llvm::Value *rhs) -> llvm::Value * {
+      return builder.CreateCall(
+          llvm::Intrinsic::getDeclaration(module.get(), id, {i64}), {lhs, rhs});
+    };
+    llvm::Value *remaining = builder.CreateSub(builder.getInt64(rows), row);
+    llvm::Value *count =
+        minMax(llvm::Intrinsic::umin, remaining, builder.getInt64(64));
+    count = minMax(llvm::Intrinsic::umax, count, builder.getInt64(1));
+    llvm::Value *startRow = builder.CreateAdd(
+        row, builder.getInt64(static_cast<uint64_t>(tile % 3 - 1)));
+    startRow = minMax(llvm::Intrinsic::smax, startRow, builder.getInt64(0));
+    startRow = minMax(llvm::Intrinsic::smin, startRow,
+                      builder.CreateSub(builder.getInt64(rows), count));
+    llvm::Value *batchOffset =
+        builder.CreateMul(batchIndex, builder.getInt64(rows));
+    llvm::Value *sourceOffset = builder.CreateMul(
+        builder.CreateAdd(batchOffset, startRow), builder.getInt64(128));
+    llvm::Value *destination = builder.CreateMul(
+        builder.CreateAdd(batchOffset, row), builder.getInt64(128));
+    llvm::Value *bytes = builder.CreateTrunc(
+        builder.CreateMul(count, builder.getInt64(128)), builder.getInt32Ty());
+    llvm::SmallVector<llvm::Type *> types;
+    for (auto scalar : descriptor.arguments)
+      types.push_back(scalar == wafer::TargetCallScalarType::I64
+                          ? i64
+                          : builder.getInt32Ty());
+    auto rdma = module->getOrInsertFunction(
+        descriptor.symbol,
+        llvm::FunctionType::get(builder.getVoidTy(), types, false));
+    builder.CreateCall(
+        rdma,
+        {builder.CreateAdd(entry->getArg(0), sourceOffset), destination, bytes,
+         bytes, builder.getInt32(0), builder.getInt32(0), builder.getInt32(0),
+         builder.getInt32(1), builder.getInt32(1), builder.getInt32(1),
+         builder.getInt32(encoding->dataFormatCode), builder.getInt32(0)});
+    llvm::Value *nextRow = builder.CreateAdd(row, builder.getInt64(64));
+    row->addIncoming(nextRow, window);
+    builder.CreateCondBr(builder.CreateICmpULT(nextRow, builder.getInt64(rows)),
+                         window, nextBatch);
+    builder.SetInsertPoint(nextBatch);
+    llvm::Value *next = builder.CreateAdd(batchIndex, builder.getInt64(1));
+    batchIndex->addIncoming(next, nextBatch);
+    builder.CreateCondBr(builder.CreateICmpULT(next, builder.getInt64(2)),
+                         batch, finish);
+    builder.SetInsertPoint(finish);
+    builder.CreateRetVoid();
+    wafer::compiler::TileEntryArgument slot;
+    slot.ordinal = 0;
+    slot.kind = wafer::compiler::TileEntryArgumentKind::ExternalInput;
+    slot.resourceIndex = 0;
+    slot.name = "table";
+    slot.dtype = format;
+    slot.layout = wafer::MemLayout::Tensor;
+    slot.shape = {2, static_cast<int64_t>(rows), 64};
+    slot.byteSize = rows * 256;
+    slot.alignment = 8;
+    slot.access = wafer::compiler::TileEntryArgumentAccess::ReadOnly;
+    modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
+        wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
+        "main", wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        wafer::kCurrentTargetModuleFormat, {std::move(slot)},
+        std::move(context), std::move(module)));
+  }
+  return wafer::compiler::TargetLLVMModulesBuilder::makeModules(
+      *config, std::move(*launch), std::move(modules));
+}
+
+TEST(TargetCallExecutionTest,
+     NativeClampedWindowsPreserveEveryTileBlockAndTail) {
+  for (uint64_t rows : {1024u, 1025u, 1031u}) {
+    for (auto format :
+         {wafer::LogicalFormat::F16, wafer::LogicalFormat::BF16}) {
+      SCOPED_TRACE(rows);
+      SCOPED_TRACE(static_cast<unsigned>(format));
+      auto modules = makeRuntimeWindowModules(rows, format);
+      ASSERT_TRUE(static_cast<bool>(modules))
+          << llvm::toString(modules.takeError());
+      RecordingSink sink;
+      auto result = wafer::compiler::executeTargetCalls(
+          *modules, makeInvocationArguments(*modules), sink);
+      ASSERT_TRUE(static_cast<bool>(result))
+          << llvm::toString(result.takeError());
+      EXPECT_EQ(result->completedTileCount, 16);
+      ASSERT_EQ(sink.commands.size(), 16 * 2 * ((rows + 63) / 64));
+      size_t ordinal = 0;
+      for (int64_t tile = 0; tile < 16; ++tile) {
+        std::vector<unsigned> coverage(2 * rows, 0);
+        uint64_t base = 0x100000 + tile * 0x100000;
+        for (uint64_t batch = 0; batch < 2; ++batch) {
+          for (uint64_t row = 0; row < rows; row += 64) {
+            const auto &command = sink.commands[ordinal++];
+            EXPECT_EQ(command.cardId.getValue(), 0);
+            EXPECT_EQ(command.tileId.getValue(), tile);
+            EXPECT_EQ(command.launchSlotId.getValue(), tile);
+            ASSERT_TRUE(
+                std::holds_alternative<wafer::target::TargetStridedDMACommand>(
+                    command.payload));
+            const auto &dma = std::get<wafer::target::TargetStridedDMACommand>(
+                command.payload);
+            uint64_t count = std::min<uint64_t>(64, rows - row);
+            int64_t start = std::clamp<int64_t>(
+                static_cast<int64_t>(row) + tile % 3 - 1, 0, rows - count);
+            EXPECT_EQ(dma.source, base + (batch * rows + start) * 128);
+            EXPECT_EQ(dma.destination, (batch * rows + row) * 128);
+            EXPECT_EQ(dma.byteCount, count * 128);
+            EXPECT_EQ(dma.innerBytes, count * 128);
+            EXPECT_EQ(dma.format, format);
+            EXPECT_EQ(dma.direction, wafer::target::TargetDMADirection::Read);
+            ASSERT_LE(dma.destination / 128 + count, coverage.size());
+            for (uint64_t i = 0; i < count; ++i)
+              ++coverage[dma.destination / 128 + i];
+          }
+        }
+        EXPECT_TRUE(
+            llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
+      }
+    }
+  }
+}
+
+TEST(TargetCallExecutionTest, NativeVectorMinMaxFailsBeforeSinkBegin) {
+  for (auto operation : {llvm::Intrinsic::smin, llvm::Intrinsic::smax,
+                         llvm::Intrinsic::umin, llvm::Intrinsic::umax}) {
+    std::string diagnostics;
+    auto modules = compileElementwiseTargetModules(diagnostics);
+    ASSERT_TRUE(static_cast<bool>(modules))
+        << llvm::toString(modules.takeError());
+    llvm::Module &module =
+        const_cast<llvm::Module &>(modules->getModules().front().getModule());
+    llvm::Function *entry = module.getFunction("main");
+    llvm::IRBuilder<> builder(&entry->getEntryBlock().front());
+    llvm::Type *type = llvm::FixedVectorType::get(builder.getInt32Ty(), 4);
+    llvm::Function *intrinsic =
+        llvm::Intrinsic::getDeclaration(&module, operation, {type});
+    builder.CreateCall(intrinsic, {llvm::Constant::getNullValue(type),
+                                   llvm::Constant::getNullValue(type)});
+    RecordingSink sink;
+    auto result = wafer::compiler::executeTargetCalls(
+        *modules, makeInvocationArguments(*modules), sink);
+    ASSERT_FALSE(static_cast<bool>(result));
+    EXPECT_NE(llvm::toString(result.takeError()).find("unsupported intrinsic"),
+              std::string::npos);
+    EXPECT_FALSE(sink.began);
+    EXPECT_TRUE(sink.commands.empty());
+  }
+}
+
+TEST(TargetCallExecutionTest, NativeOtherIntegerIntrinsicFailsBeforeSinkBegin) {
+  std::string diagnostics;
+  auto modules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(modules))
+      << llvm::toString(modules.takeError());
+  llvm::Module &module =
+      const_cast<llvm::Module &>(modules->getModules().front().getModule());
+  llvm::Function *entry = module.getFunction("main");
+  llvm::IRBuilder<> builder(&entry->getEntryBlock().front());
+  llvm::Function *intrinsic = llvm::Intrinsic::getDeclaration(
+      &module, llvm::Intrinsic::abs, {builder.getInt64Ty()});
+  builder.CreateCall(intrinsic, {entry->getArg(0), builder.getFalse()});
+  RecordingSink sink;
+  auto result = wafer::compiler::executeTargetCalls(
+      *modules, makeInvocationArguments(*modules), sink);
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError()).find("unsupported intrinsic"),
+            std::string::npos);
+  EXPECT_FALSE(sink.began);
+  EXPECT_TRUE(sink.commands.empty());
 }
 
 TEST(TargetCallExecutionTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {

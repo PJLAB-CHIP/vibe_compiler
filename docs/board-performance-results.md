@@ -1728,3 +1728,17 @@ source 14文件与初始正确快版本相同，包三文件及48份最终IR与�
 完整LM仍需动态词表需求/按需物化、索引scalar读取及target/host消费者、数值与完整package/no-card；
 source相关unsupported的作用范围也尚待修复。本节不计为三轮板端性能调优。
 可复核身份、测试与产物见[运行时索引范围证据](data/board-performance/runtime-index-bounds-20260914.json)。
+
+### 2026-09-14 主机夹界执行与同步缺口交接
+
+host TargetCall frontend已接通scalar整数`min/max`的LLVM JIT执行，原signed/unsigned和位宽语义保持不变。
+5种整数位宽的1,920个结果与rank3 F16/BF16、1024/1025/1031、16 Tiles的3,200次窗口调用通过精确检查；
+这是target LLVM到decoded参数的主机验证，不是DMA数值执行或板卡性能数据。Simulator 70项、SystemC 17个可执行测试、
+public link smoke及source organization检查通过，完整增量构建与Ninja no-op通过。
+compiler binary未变化，本次未重编LLaMA或运行设备，最近一次LLaMA no-card及尚待完成的设备门禁见上一节。
+
+另外用12组新生成的实际Instr复现了循环同步问题：循环外写入的首次读取/跨worker等待可能在回边分析中被删掉；
+有无关同worker工作时也可能变为每轮等待。根因是入口与后续迭代状态在同一body上反复改写join，尚未修复。
+没有证据将其归因到历史QKV超时，不能报告设备加速或退化数字。具体输入、实际输出和继续边界见
+[交接证据](data/board-performance/scalar-host-execution-20260914.json)及矩阵计划最新交接节。
+用户要求交出机器，当前收尾提交远程；完整矩阵正确性、三轮调优与最终实卡验收仍未完成。

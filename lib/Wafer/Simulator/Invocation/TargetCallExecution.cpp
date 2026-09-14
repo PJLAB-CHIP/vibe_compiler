@@ -13,6 +13,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -166,10 +167,25 @@ verifyNativeInstruction(const llvm::Instruction &instruction) {
     llvm::Function *callee = call->getCalledFunction();
     if (!callee)
       return llvm::createStringError("target module contains an indirect call");
-    if (callee->isIntrinsic())
+    if (callee->isIntrinsic()) {
+      // ArithToLLVM emits these exact, pure integer operations for runtime
+      // bounds. Keep their bitwidth and signedness in the native JIT; memory,
+      // vector and other intrinsic families remain outside this frontend.
+      if (call->getType()->isIntegerTy()) {
+        switch (callee->getIntrinsicID()) {
+        case llvm::Intrinsic::smin:
+        case llvm::Intrinsic::smax:
+        case llvm::Intrinsic::umin:
+        case llvm::Intrinsic::umax:
+          return llvm::Error::success();
+        default:
+          break;
+        }
+      }
       return llvm::createStringError(
           "target module contains unsupported intrinsic @%s",
           callee->getName().str().c_str());
+    }
     return llvm::Error::success();
   }
 

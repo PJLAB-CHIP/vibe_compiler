@@ -1,0 +1,242 @@
+{
+  "work_item": "board-testing",
+  "date": "2026-09-14",
+  "scope": "主机收尾交接；用户确认板卡未恢复，机器将交其他人使用，停止继续开发及测试批次",
+  "completed": {
+    "change": "host TargetCall frontend允许scalar llvm.smin/smax/umin/umax由LLVM JIT按原整数语义执行；没有修改compiler、CRT或completion实现",
+    "new_gtests": 4,
+    "integer_widths": [
+      8,
+      16,
+      32,
+      64,
+      128
+    ],
+    "integer_logical_results": 1920,
+    "integer_result_64bit_chunks": 2304,
+    "window_shapes": [
+      [
+        2,
+        1024,
+        64
+      ],
+      [
+        2,
+        1025,
+        64
+      ],
+      [
+        2,
+        1031,
+        64
+      ]
+    ],
+    "window_dtypes": [
+      "float16",
+      "bfloat16"
+    ],
+    "tiles": 16,
+    "block_rows": 64,
+    "decoded_window_calls": 3200,
+    "validation_boundary": "target LLVM → host JIT → shared TargetCall decoder → recording sink；地址/位型精确验证，不是DMA执行、完整LM数值或板测",
+    "negative_boundary": "4种vector overload与scalar abs拒绝，既有trap/未知调用/指针native负例仍通过"
+  },
+  "validation": {
+    "ctest_passed": 19,
+    "simulator_unit_tests": 70,
+    "systemc_executables": 17,
+    "public_link_smoke": 1,
+    "skipped": 0,
+    "lit_passed": 1,
+    "canonical_build": "完整增量构建通过，随后Ninja no-op",
+    "initial_build_failure": "新测试的ASSERT_TRUE需要显式转换llvm::Expected为bool，已修复并用最终测试binary通过完整组件",
+    "logs": [
+      {
+        "path": "build/test/model-performance/scalar-read-current/components.log",
+        "bytes": 3457,
+        "sha256": "8694d2dd8da30a95bf41c6045561ba6480f3ada055125d01ab3c6be7dcb9b2b5"
+      },
+      {
+        "path": "build/test/model-performance/scalar-read-current/component-details.log",
+        "bytes": 35808,
+        "sha256": "b74c1ba77f78d9e22bb64cecd6a748e37c598d4dae2221ce7041d3031b682905"
+      },
+      {
+        "path": "build/test/model-performance/scalar-read-current/lit.log",
+        "bytes": 165,
+        "sha256": "1aaa4f1058a82cc6a9aebbba2bac0f6b02fea96854d964035d12be9c28cdbde8"
+      },
+      {
+        "path": "build/test/model-performance/scalar-read-current/build-final.log",
+        "bytes": 224,
+        "sha256": "dab446d9e1ea22651e68e2f2806f88268ed49d895ecb2584af626024f1487ab0"
+      },
+      {
+        "path": "build/test/model-performance/scalar-read-current/build-tests-final.log",
+        "bytes": 224,
+        "sha256": "dab446d9e1ea22651e68e2f2806f88268ed49d895ecb2584af626024f1487ab0"
+      },
+      {
+        "path": "build/test/model-performance/scalar-read-current/build-no-op.log",
+        "bytes": 63,
+        "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+      }
+    ]
+  },
+  "compiler_identity": {
+    "wafer_compile": {
+      "path": "build/bin/wafer-compile",
+      "bytes": 85542888,
+      "sha256": "c3f865c0bea1fb03e151037398d037bbd4df01d31eed5a7290ff17c44f610487"
+    },
+    "wafer_opt": {
+      "path": "build/bin/wafer-opt",
+      "bytes": 62626272,
+      "sha256": "5b3333ed85cb4d0b2184e72b36374481372cbe779255aaee5eb0bc2cdfeb3681"
+    },
+    "unchanged_from": "runtime-index-bounds-20260914.json",
+    "llama_note": "本次只改host执行器，两个compiler binary哈希与上一轮一致；未重复编译LLaMA，未增加板端资格"
+  },
+  "unresolved_completion": {
+    "owner": "lib/Wafer/Transforms/Instr/NCCJoinPlacement.cpp",
+    "root_cause": "同一循环body在入口与后续迭代状态下反复原地改写join；后续没有pending worker时会删除入口必需join，或把入口join保留为每轮等待无关同worker工作。",
+    "reproduction_command": [
+      "build/bin/wafer-opt",
+      "--pass-pipeline=builtin.module(func.func(wafer-rebuild-required-ncc-joins))",
+      "INPUT.mlir",
+      "-o",
+      "OUTPUT.mlir"
+    ],
+    "cases": [
+      {
+        "name": "read-1024",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1024 : index\n    %a = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    %result = scf.for %i = %c0 to %upper step %c1 iter_args(%sum = %zero) -> (f16) {\n      %v = memref.load %a[%c0, %i, %c0] : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n      %next = arith.addf %sum, %v : f16\n      scf.yield %next : f16\n    }\n    return %result : f16\n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1024 = arith.constant 1024 : index\n    %alloc = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    %0 = scf.for %arg1 = %c0 to %c1024 step %c1 iter_args(%arg2 = %arg0) -> (f16) {\n      %1 = memref.load %alloc[%c0, %arg1, %c0] : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n      %2 = arith.addf %arg2, %1 : f16\n      scf.yield %2 : f16\n    }\n    return %0 : f16\n  }\n}\n\n",
+        "join_lines": [],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "read-independent-worker-1024",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1024 : index\n    %a = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    %b = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\nwafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    %result = scf.for %i = %c0 to %upper step %c1 iter_args(%sum = %zero) -> (f16) {\n      %v = memref.load %a[%c0, %i, %c0] : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n      %next = arith.addf %sum, %v : f16\n      wafer.instr.fill %b, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n      scf.yield %next : f16\n    }\n    return %result : f16\n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1024 = arith.constant 1024 : index\n    %alloc = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    %alloc_0 = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    %0 = scf.for %arg1 = %c0 to %c1024 step %c1 iter_args(%arg2 = %arg0) -> (f16) {\n      wafer.instr.ncc_join [0]\n      %1 = memref.load %alloc[%c0, %arg1, %c0] : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n      %2 = arith.addf %arg2, %1 : f16\n      wafer.instr.fill %alloc_0, %arg0 : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n      scf.yield %2 : f16\n    }\n    wafer.instr.ncc_join [0]\n    return %0 : f16\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [0]",
+          "wafer.instr.ncc_join [0]"
+        ],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "cross-worker-1024",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1024 : index\n    %a = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %i = %c0 to %upper step %c1 {\n      wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker1>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    return \n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1024 = arith.constant 1024 : index\n    %alloc = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %arg1 = %c0 to %c1024 step %c1 {\n      wafer.instr.fill %alloc, %arg0 {worker = #wafer.ncc_worker<worker1>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    wafer.instr.ncc_join [1]\n    return\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [1]"
+        ],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "same-worker-1024",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1024 : index\n    %a = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %i = %c0 to %upper step %c1 {\n      wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    return \n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1024 = arith.constant 1024 : index\n    %alloc = memref.alloc() : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %arg1 = %c0 to %c1024 step %c1 {\n      wafer.instr.fill %alloc, %arg0 : memref<1x1024x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    wafer.instr.ncc_join [0]\n    return\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [0]"
+        ],
+        "status": "同worker有序issue对照"
+      },
+      {
+        "name": "read-1025",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1025 : index\n    %a = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    %result = scf.for %i = %c0 to %upper step %c1 iter_args(%sum = %zero) -> (f16) {\n      %v = memref.load %a[%c0, %i, %c0] : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n      %next = arith.addf %sum, %v : f16\n      scf.yield %next : f16\n    }\n    return %result : f16\n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1025 = arith.constant 1025 : index\n    %alloc = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    %0 = scf.for %arg1 = %c0 to %c1025 step %c1 iter_args(%arg2 = %arg0) -> (f16) {\n      %1 = memref.load %alloc[%c0, %arg1, %c0] : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n      %2 = arith.addf %arg2, %1 : f16\n      scf.yield %2 : f16\n    }\n    return %0 : f16\n  }\n}\n\n",
+        "join_lines": [],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "read-independent-worker-1025",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1025 : index\n    %a = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    %b = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\nwafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    %result = scf.for %i = %c0 to %upper step %c1 iter_args(%sum = %zero) -> (f16) {\n      %v = memref.load %a[%c0, %i, %c0] : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n      %next = arith.addf %sum, %v : f16\n      wafer.instr.fill %b, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n      scf.yield %next : f16\n    }\n    return %result : f16\n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1025 = arith.constant 1025 : index\n    %alloc = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    %alloc_0 = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    %0 = scf.for %arg1 = %c0 to %c1025 step %c1 iter_args(%arg2 = %arg0) -> (f16) {\n      wafer.instr.ncc_join [0]\n      %1 = memref.load %alloc[%c0, %arg1, %c0] : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n      %2 = arith.addf %arg2, %1 : f16\n      wafer.instr.fill %alloc_0, %arg0 : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n      scf.yield %2 : f16\n    }\n    wafer.instr.ncc_join [0]\n    return %0 : f16\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [0]",
+          "wafer.instr.ncc_join [0]"
+        ],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "cross-worker-1025",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1025 : index\n    %a = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %i = %c0 to %upper step %c1 {\n      wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker1>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    return \n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1025 = arith.constant 1025 : index\n    %alloc = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %arg1 = %c0 to %c1025 step %c1 {\n      wafer.instr.fill %alloc, %arg0 {worker = #wafer.ncc_worker<worker1>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    wafer.instr.ncc_join [1]\n    return\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [1]"
+        ],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "same-worker-1025",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1025 : index\n    %a = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %i = %c0 to %upper step %c1 {\n      wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    return \n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1025 = arith.constant 1025 : index\n    %alloc = memref.alloc() : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %arg1 = %c0 to %c1025 step %c1 {\n      wafer.instr.fill %alloc, %arg0 : memref<1x1025x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    wafer.instr.ncc_join [0]\n    return\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [0]"
+        ],
+        "status": "同worker有序issue对照"
+      },
+      {
+        "name": "read-1031",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1031 : index\n    %a = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    %result = scf.for %i = %c0 to %upper step %c1 iter_args(%sum = %zero) -> (f16) {\n      %v = memref.load %a[%c0, %i, %c0] : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n      %next = arith.addf %sum, %v : f16\n      scf.yield %next : f16\n    }\n    return %result : f16\n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1031 = arith.constant 1031 : index\n    %alloc = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    %0 = scf.for %arg1 = %c0 to %c1031 step %c1 iter_args(%arg2 = %arg0) -> (f16) {\n      %1 = memref.load %alloc[%c0, %arg1, %c0] : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n      %2 = arith.addf %arg2, %1 : f16\n      scf.yield %2 : f16\n    }\n    return %0 : f16\n  }\n}\n\n",
+        "join_lines": [],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "read-independent-worker-1031",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1031 : index\n    %a = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    %b = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\nwafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    %result = scf.for %i = %c0 to %upper step %c1 iter_args(%sum = %zero) -> (f16) {\n      %v = memref.load %a[%c0, %i, %c0] : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n      %next = arith.addf %sum, %v : f16\n      wafer.instr.fill %b, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n      scf.yield %next : f16\n    }\n    return %result : f16\n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) -> f16 {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1031 = arith.constant 1031 : index\n    %alloc = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    %alloc_0 = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    %0 = scf.for %arg1 = %c0 to %c1031 step %c1 iter_args(%arg2 = %arg0) -> (f16) {\n      wafer.instr.ncc_join [0]\n      %1 = memref.load %alloc[%c0, %arg1, %c0] : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n      %2 = arith.addf %arg2, %1 : f16\n      wafer.instr.fill %alloc_0, %arg0 : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n      scf.yield %2 : f16\n    }\n    wafer.instr.ncc_join [0]\n    return %0 : f16\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [0]",
+          "wafer.instr.ncc_join [0]"
+        ],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "cross-worker-1031",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1031 : index\n    %a = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %i = %c0 to %upper step %c1 {\n      wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker1>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    return \n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1031 = arith.constant 1031 : index\n    %alloc = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %arg1 = %c0 to %c1031 step %c1 {\n      wafer.instr.fill %alloc, %arg0 {worker = #wafer.ncc_worker<worker1>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    wafer.instr.ncc_join [1]\n    return\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [1]"
+        ],
+        "status": "未修复的同步反例"
+      },
+      {
+        "name": "same-worker-1031",
+        "returncode": 0,
+        "input": "module {\n  func.func @loop_boundary(%zero: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %upper = arith.constant 1031 : index\n    %a = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %i = %c0 to %upper step %c1 {\n      wafer.instr.fill %a, %zero {worker = #wafer.ncc_worker<worker0>} : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    return \n  }\n}\n",
+        "output": "module {\n  func.func @loop_boundary(%arg0: f16) {\n    %c0 = arith.constant 0 : index\n    %c1 = arith.constant 1 : index\n    %c1031 = arith.constant 1031 : index\n    %alloc = memref.alloc() : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>\n    wafer.instr.fill %alloc, %arg0 : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    scf.for %arg1 = %c0 to %c1031 step %c1 {\n      wafer.instr.fill %alloc, %arg0 : memref<1x1031x64xf16, #wafer.memory<spm, tensor>>, f16\n    }\n    wafer.instr.ncc_join [0]\n    return\n  }\n}\n\n",
+        "join_lines": [
+          "wafer.instr.ncc_join [0]"
+        ],
+        "status": "同worker有序issue对照"
+      }
+    ],
+    "board_causality": "未证明与之前QKV超时或任何模型性能回退相关；本轮未执行设备",
+    "fix_status": "未修改该实现，需先闭合入口/回边/零次执行的typed completion；不能新增每轮全局drain绕过"
+  },
+  "remaining": [
+    "循环入口/回边completion修复",
+    "SPM scalar读取及target/host消费者",
+    "动态表availability/元素需求与按需物化",
+    "source-invariant typed failure作用范围",
+    "完整LM数值与package/no-card",
+    "扩展矩阵其他缺口",
+    "三轮性能调优和最终全矩阵实卡验收"
+  ],
+  "device_execution": false
+}
