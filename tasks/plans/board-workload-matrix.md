@@ -25,6 +25,25 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 ## 模型来源与当前接入事实
 
+用户当前优先级为统一直接Torch XLA抓图并先打通ResNet-18。共享板测helper和reference/GEMM/MLP工具统一调用02号产品入口；
+先用原始224输入推进到完整1000类logits、package及no-card，沿实际停点补Pool和其它直接阻塞。保留原seed、参数和数值容差，
+不再开展其它模型的扩展批次。前序embedding的24项数值/no-card和固定FP16 block通过属于旧ExportedProgram→XLA入口，
+不能代签统一入口后的模型资格。真实设备继续按用户最后确认的未恢复状态处理。
+
+本轮pooling检查点：统一`wafer.tile.pool(kind)`已复用既有Instr Pool/SDK ABI；max/min/sum的窗口由current maps、iterator、
+payload及shape证明，rank2/3缺失的N/C通过单位维与显式layout转换处理。AvgPool的sum与原除数计算分别保留；
+边界计数的实际双值矩形literal由06号既有fill/insert_slice路径物化，不删除活跃常量或新增隐式global地址。
+原始MaxPool/AvgPool的FP16/BF16 × 1024/1025共8项完整数值、verified package与16 Tile no-card通过；
+24项直接XLA抓图检查覆盖count_include_pad、自定义divisor及global/local adaptive。Native avg kind已连到Instr，
+plain模型的raw native Avg仍未扩展；本轮AvgPool数值来自实际F32 sum及原归一化指令。
+
+ResNet-18的baseline完整编译、package与16 Tile no-card现已通过，真实224输入、20个Conv及完整1000类输出端口均保留，
+本轮完整runner为245.640秒。七维展开已改为局部归约，temporal全局关系校验已移至批次边界；默认8/42 search仍在重签，
+旧版本1800秒期限及其候选拒绝只作诊断历史，不作为当前结果。直接XLA CPU完整输出相对原PyTorch还有180/1000
+元素超默认容差；首层卷积有978个不同位型但均在容差内，后续残差层逐层放大；独立FC有1/1000超容差。
+不调整原模型、dtype或容差，不将这一主机差异直接归因为Wafer代码。默认search、设备数值及性能仍待各自验证；
+baseline构包通过不代签实卡完成。
+
 - ResNet选择 **ResNet-18**，ViT选择 **ViT-B参数的单个EncoderBlock**，使用仓库managed torchvision 0.20.0原始module。
   定义见[ResNet源码](https://docs.pytorch.org/vision/0.20/_modules/torchvision/models/resnet.html)及
   [ViT源码](https://docs.pytorch.org/vision/0.20/_modules/torchvision/models/vision_transformer.html)。
@@ -867,3 +886,26 @@ BF16 LLaMA的既有缺口仍按本计划前述矩阵推进；正确性收口后�
 
 修复优先级：先把全局关系核验归到完整候选/批次边界并保留局部变换的精确校验，再修partial-reduction表示及实际混合通信顺序。
 本次新增只读关系校验计时；canonical完整增量构建、no-op及两个直接调用者回归通过。此前未提交的实现保持原样，不在本次诊断提交中收尾。
+
+### 局部归约与temporal批次修复
+
+输入为既有spatial choice选定的iteration rectangles及current TileRegion；输出为保留原reduction iterators的局部Linalg、
+output形状的partial与原scalar combiner构成的merge SSA链，直接交layout、Tile/Instr及actual SPM规划。
+旧的expanded partial及完整contribution stack由同一`materializePartialReductionTile`与merge调用链替换；
+不新增七维elementwise lowering，不改原dtype、scalar运算、DPS init、owner或同步合同。06号定义通用规则与覆盖矩阵。
+
+none/search的temporal调用者均改为一次提交同一candidate的所有Region request。入口预检全部choice，
+每Region保留局部verifier，关系listener只建立/收尾一次，全局Module与关系核验在批次入口/出口进行。
+静态Pad的late fusion通过同一SCF/Linalg worklist证明loop bound并清理已知guard，full-extent仍保持IR字节不变。
+
+| 本轮输入 | 结果与直接下游 |
+| --- | --- |
+| Generic/named GEMM与conv，1024/1025/1031，4/16 Tile及非identity init | exact贡献覆盖、置换输出坐标、init单次消费；compact partial通过actual Instr/SPM与executable gate |
+| 2D卷积，1024/1025，分别切KH、KW、C，3/4 Tile | 每块保留三个归约轴，所有tensor结果rank≤4；局部卷积进入`ComputeConvOp`及physical Tile verifier |
+| Temporal多Region，1024/1025 | 批次与逐个调用IR一致；非法后续choice、重复Region、跨Module均首次mutation前拒绝 |
+| 原始Torch XLA ResNet-18，FP16，224×224，全部1000 logits | baseline source→verified package→16 Tile strict no-card通过；本轮重新生成PyTorch reference和payload；无算术执行或设备回读 |
+
+本轮baseline source编译238.496秒，runner总计245.640秒、峰值RSS 3,426,984 KiB；TensorProgram→DeviceExecutable为70.563秒，
+目标模块编译/链接155.290秒。两个temporal批次累计10.653秒，其中full-extent批次0.213秒；
+这些scope相互嵌套，不累加作总时间，也不将none与旧search的总wall比较成策略加速比。
+421项Transforms、127项Driver回归及新增kernel-axis/跨Module分支通过；canonical完整增量构建和第二次Ninja no-op通过。

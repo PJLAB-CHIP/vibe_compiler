@@ -2143,7 +2143,7 @@ TEST_F(StructuredToTileTest, MultiAxisContractionsReachInstrWithTemporalTails) {
       choice.scopes[0].loopOrder = {2};
       ASSERT_TRUE(domain.domain->contains(choice));
       ASSERT_TRUE(mlir::succeeded(
-          applyTemporalTiling(*domain.domain, choice, relations)));
+          applyTemporalTiling({{*domain.domain, choice}}, relations)));
     }
     auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
     ASSERT_TRUE(layout.succeeded()) << layout.detail;
@@ -4754,7 +4754,7 @@ TEST_F(StructuredToTileTest, SharedDDRLoadsEachCurrentConsumerSubview) {
             choice.scopes[0].loopOrder = {1};
             ASSERT_TRUE(domain.domain->contains(choice));
             ASSERT_TRUE(mlir::succeeded(
-                applyTemporalTiling(*domain.domain, choice, relations)));
+                applyTemporalTiling({{*domain.domain, choice}}, relations)));
           }
         auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
         ASSERT_TRUE(layout.succeeded()) << layout.detail;

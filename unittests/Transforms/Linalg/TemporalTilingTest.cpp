@@ -20,6 +20,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
@@ -150,7 +152,7 @@ TEST(TemporalTilingTest, AlignedAndRaggedOrdinaryLoopsHaveOnlyOneTail) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->tiledTraversals, 1u);
     EXPECT_EQ(tiled->loops, 1u);
@@ -214,7 +216,7 @@ TEST(TemporalTilingTest, SlicedUnitCollapseReadsOnlyTheSelectedInputTile) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->loops, 1u);
     EXPECT_EQ(tiled->specializedTails, extent % 128 == 0 ? 0u : 1u);
@@ -323,7 +325,8 @@ TEST(TemporalTilingTest, TwoRaggedAxesProduceAtMostFourStaticBodies) {
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->loops, 2u);
   EXPECT_EQ(tiled->specializedTails, 2u);
@@ -372,7 +375,8 @@ TEST(TemporalTilingTest, ExactSingleUseChainFusesWithoutFullShardClone) {
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->fusedProducers, 1u);
   EXPECT_EQ(countOps<mlir::linalg::GenericOp>(module->getOperation()), 4u);
@@ -436,7 +440,7 @@ TEST(TemporalTilingTest,
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
   mlir::FailureOr<TemporalTilingStatistics> tiled =
-      applyTemporalTiling(*domain.domain, choice, relations, &failure);
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->tiledTraversals, 2u);
   EXPECT_EQ(tiled->fusedProducers, 0u);
@@ -537,7 +541,7 @@ TEST(TemporalTilingTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->viewTransparentProducers, 1u);
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -649,7 +653,7 @@ TEST(TemporalTilingTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     mlir::FailureOr<TemporalTilingStatistics> tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->viewTransparentProducers, 1u);
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -724,7 +728,7 @@ TEST(TemporalTilingTest,
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
   mlir::FailureOr<TemporalTilingStatistics> tiled =
-      applyTemporalTiling(*domain.domain, choice, relations, &failure);
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->viewTransparentProducers, 1u);
   EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -787,7 +791,7 @@ TEST(TemporalTilingTest,
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
   mlir::FailureOr<TemporalTilingStatistics> tiled =
-      applyTemporalTiling(*domain.domain, choice, relations, &failure);
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->viewTransparentProducers, 1u);
   EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -861,7 +865,8 @@ TEST(TemporalTilingTest, RankFiveViewChainUsesTheSameExactFusionPath) {
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->viewTransparentProducers, 1u);
   module->walk([&](mlir::linalg::GenericOp operation) {
@@ -925,12 +930,13 @@ TEST(TemporalTilingTest, TensorPadUsesItsPinnedTilingInterfaceInConsumerLoop) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->fusedProducers, 1u);
     EXPECT_EQ(tiled->viewTransparentProducers, 0u);
     EXPECT_EQ(tiled->decomposedPads, 1u);
-    EXPECT_EQ(tiled->decomposedConstantGenerates, 1u);
+    EXPECT_EQ(tiled->decomposedConstantGenerates, 0u);
+    EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
     EXPECT_EQ(countOps<mlir::tensor::PadOp>(module->getOperation()), 0u);
     EXPECT_EQ(countOps<mlir::tensor::GenerateOp>(module->getOperation()), 0u);
     module->walk([&](mlir::linalg::FillOp fill) {
@@ -954,6 +960,59 @@ TEST(TemporalTilingTest, TensorPadUsesItsPinnedTilingInterfaceInConsumerLoop) {
       EXPECT_LE(fullOutputAllocations, 1u);
       EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
     }
+  }
+}
+
+TEST(TemporalTilingTest, LatePadFusionUsesTheSelectedLoopInterval) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    std::string input = "tensor<2x" + std::to_string(extent - 1) + "x128xf16>";
+    std::string padded = "tensor<2x" + std::to_string(extent) + "x128xf16>";
+    std::string output = "tensor<2x" + std::to_string(extent) + "x4xf16>";
+    std::string body;
+    llvm::raw_string_ostream os(body);
+    os << "%zero = arith.constant 0.0 : f16\n"
+       << "%padded = tensor.pad %arg low[0, 1, 0] high[0, 0, 0] {\n"
+       << "^bb0(%b: index, %m: index, %n: index): tensor.yield %zero : f16\n"
+       << "} : " << input << " to " << padded << "\n"
+       << "%selected = tensor.extract_slice %padded[0, 0, 0] [2, " << extent
+       << ", 4] [1, 1, 1] : " << padded << " to " << output << "\n"
+       << "%empty = tensor.empty() : " << output << "\n"
+       << "%value = linalg.generic {indexing_maps = ["
+       << "affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>],"
+       << "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]}"
+       << " ins(%selected : " << output << ") outs(%empty : " << output
+       << ") {\n"
+       << "^bb0(%x: f16, %unused: f16): %next = arith.addf %x, %x : f16\n"
+       << "linalg.yield %next : f16\n} -> " << output;
+    auto module = parseModule(*context, body, input, output);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = selectTileSizes(*domain.domain, {2, extent, 2});
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    TemporalTilingFailure failure;
+    auto tiled =
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+    EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 1u);
+    region.walk([&](mlir::scf::ForOp loop) {
+      EXPECT_EQ(mlir::getConstantIntValue(loop.getLowerBound()), 0);
+      EXPECT_EQ(mlir::getConstantIntValue(loop.getUpperBound()), 4);
+      EXPECT_EQ(mlir::getConstantIntValue(loop.getStep()), 2);
+    });
+    region.walk([&](mlir::linalg::GenericOp op) {
+      auto type =
+          mlir::cast<mlir::RankedTensorType>(op.getDpsInputs()[0].getType());
+      EXPECT_TRUE(type.hasStaticShape());
+      EXPECT_EQ(type.getShape(), (llvm::ArrayRef<int64_t>{2, extent, 2}));
+    });
+    auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   }
 }
 
@@ -1010,7 +1069,7 @@ TEST(TemporalTilingTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->fusedProducers, 2u);
     EXPECT_EQ(tiled->viewTransparentProducers, 0u);
@@ -1131,7 +1190,7 @@ TEST(TemporalTilingTest, ConcatInsertChainBuildsOnlyRequestedConsumerTile) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     const uint64_t variants = extent == 1024 ? 1 : 2;
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -1214,7 +1273,8 @@ TEST(TemporalTilingTest,
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->tileLocalAssemblies, 2u);
   EXPECT_EQ(tiled->assembledSegments, 3u);
@@ -1353,7 +1413,8 @@ TEST(TemporalTilingTest,
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->tiledTraversals, 1u);
   EXPECT_EQ(tiled->fusedProducers, 3u);
@@ -1509,7 +1570,7 @@ TEST(TemporalTilingTest,
       relations.structuralOutputs.push_back({index, region.getResult(index)});
     TemporalTilingFailure failure;
     mlir::FailureOr<TemporalTilingStatistics> tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->tiledTraversals, useCount);
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -1596,7 +1657,7 @@ TEST(TemporalTilingTest, BroadcastProducerIsOutsideEveryInvariantConsumerLoop) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->tiledTraversals, 1u);
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -1707,7 +1768,7 @@ TEST(TemporalTilingTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->tiledTraversals, 1u);
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -1808,7 +1869,8 @@ TEST(TemporalTilingTest,
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->tiledTraversals, 2u);
   EXPECT_EQ(tiled->fusedProducers, 0u);
@@ -1919,7 +1981,7 @@ TEST(TemporalTilingTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->tiledTraversals, 1u);
     EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -1998,7 +2060,8 @@ TEST(TemporalTilingTest, FusedContractionRetainsItsInnerReductionChoice) {
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->fusedProducers, 1u);
   EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(module->getOperation()), 2u);
@@ -2036,7 +2099,8 @@ TEST(TemporalTilingTest,
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, choice, relations, &failure);
+  auto tiled =
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->loops, 2u);
   EXPECT_EQ(tiled->specializedTails, 2u);
@@ -2116,7 +2180,7 @@ TEST(TemporalTilingTest, OnlineK2CarriesThreeStatesThroughMainAndTail) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->loops, 1u);
     EXPECT_EQ(tiled->specializedTails, keyValueExtent == 1024 ? 0u : 1u);
@@ -2138,6 +2202,134 @@ TEST(TemporalTilingTest, OnlineK2CarriesThreeStatesThroughMainAndTail) {
     });
     EXPECT_EQ(countOps<LinalgExtAttentionOp>(module->getOperation()), 0u);
   }
+}
+
+TEST(TemporalTilingTest, BatchedRegionsMatchSeparateInvocations) {
+  for (int64_t extent : {1024, 1025}) {
+    auto context = createContext();
+    std::string type = "tensor<2x" + std::to_string(extent) + "x8xf16>";
+    std::string body =
+        "%empty = tensor.empty() : " + type +
+        "\n%value = linalg.generic {indexing_maps = "
+        "[affine_map<(b,m,n)->(b,m,n)>,"
+        "affine_map<(b,m,n)->(b,m,n)>], iterator_types = "
+        "[\"parallel\",\"parallel\",\"parallel\"]}"
+        " ins(%arg : " +
+        type + ") outs(%empty : " + type +
+        ") { ^bb0(%x: f16, %old: f16): %y = arith.addf %x, %x : f16"
+        "\nlinalg.yield %y : f16\n} -> " +
+        type;
+    std::string separateIR;
+    for (bool batch : {false, true}) {
+      auto module = parseModule(*context, body, type, type);
+      ASSERT_TRUE(module);
+      auto tile = *module->getOps<TileModuleOp>().begin();
+      mlir::OpBuilder builder(tile);
+      builder.setInsertionPointAfter(tile);
+      mlir::IRMapping mapping;
+      auto second = mlir::cast<TileModuleOp>(builder.clone(*tile, mapping));
+      second.setTileIdAttr(builder.getI64IntegerAttr(1));
+      std::vector<TemporalDomain> domains;
+      std::vector<TemporalChoice> choices;
+      StructuredMaterializationRelations relations;
+      llvm::SmallVector<TileRegionOp, 2> regions;
+      module->walk([&](TileRegionOp region) { regions.push_back(region); });
+      ASSERT_EQ(regions.size(), 2u);
+      for (auto region : regions) {
+        auto domain = buildTemporalDomain(region);
+        ASSERT_TRUE(domain.succeeded());
+        choices.push_back(selectTileSizes(*domain.domain, {2, 128, 8}));
+        domains.push_back(std::move(*domain.domain));
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+      }
+      llvm::SmallVector<TemporalTilingRequest, 2> requests;
+      for (auto [domain, choice] : llvm::zip_equal(domains, choices))
+        requests.push_back({domain, choice});
+      TemporalTilingFailure failure;
+      if (batch) {
+        ASSERT_TRUE(
+            mlir::succeeded(applyTemporalTiling(requests, relations, &failure)))
+            << failure.detail;
+      } else {
+        for (const auto &request : requests)
+          ASSERT_TRUE(mlir::succeeded(
+              applyTemporalTiling({request}, relations, &failure)))
+              << failure.detail;
+      }
+      std::string ir;
+      llvm::raw_string_ostream stream(ir);
+      module->print(stream);
+      if (batch)
+        EXPECT_EQ(ir, separateIR);
+      else
+        separateIR = ir;
+      EXPECT_TRUE(mlir::succeeded(
+          checkStructuredBufferRelationsCurrent(*module, relations)));
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    }
+  }
+}
+
+TEST(TemporalTilingTest, BatchRejectsLaterInvalidChoiceBeforeAnyMutation) {
+  auto context = createContext();
+  const std::string type = "tensor<2x1025x8xf16>";
+  auto module =
+      parseModule(*context,
+                  "%empty = tensor.empty() : " + type +
+                      "\n%value = linalg.add ins(%arg, %arg : " + type + ", " +
+                      type + ") outs(%empty : " + type + ") -> " + type,
+                  type, type);
+  ASSERT_TRUE(module);
+  auto tile = *module->getOps<TileModuleOp>().begin();
+  mlir::OpBuilder builder(tile);
+  builder.setInsertionPointAfter(tile);
+  mlir::IRMapping mapping;
+  auto second = mlir::cast<TileModuleOp>(builder.clone(*tile, mapping));
+  second.setTileIdAttr(builder.getI64IntegerAttr(1));
+  llvm::SmallVector<TileRegionOp, 2> regions;
+  module->walk([&](TileRegionOp region) { regions.push_back(region); });
+  auto firstDomain = buildTemporalDomain(regions[0]);
+  auto secondDomain = buildTemporalDomain(regions[1]);
+  ASSERT_TRUE(firstDomain.succeeded() && secondDomain.succeeded());
+  auto first = selectTileSizes(*firstDomain.domain, {2, 128, 8});
+  auto invalid = selectTileSizes(*secondDomain.domain, {2, 128, 8});
+  invalid.scopes[0].iteratorTileSizes[1] = 0;
+  StructuredMaterializationRelations relations;
+  for (auto region : regions)
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+  std::string before;
+  llvm::raw_string_ostream beforeStream(before);
+  module->print(beforeStream);
+  TemporalTilingFailure failure;
+  EXPECT_TRUE(mlir::failed(applyTemporalTiling(
+      {{*firstDomain.domain, first}, {*secondDomain.domain, invalid}},
+      relations, &failure)));
+  EXPECT_EQ(failure.kind, TemporalTilingFailureKind::BrokenContract);
+  EXPECT_TRUE(mlir::failed(applyTemporalTiling(
+      {{*firstDomain.domain, first}, {*firstDomain.domain, first}}, relations,
+      &failure)));
+  EXPECT_EQ(failure.kind, TemporalTilingFailureKind::BrokenContract);
+  std::string after;
+  llvm::raw_string_ostream afterStream(after);
+  module->print(afterStream);
+  EXPECT_EQ(after, before);
+
+  mlir::IRMapping foreignMapping;
+  auto foreignModule = mlir::OwningOpRef<mlir::ModuleOp>(
+      mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(foreignMapping)));
+  auto foreignRegion = mlir::cast<TileRegionOp>(
+      foreignMapping.lookup(regions.front().getOperation()));
+  auto foreignDomain = buildTemporalDomain(foreignRegion);
+  ASSERT_TRUE(foreignDomain.succeeded());
+  auto foreignChoice = selectTileSizes(*foreignDomain.domain, {2, 128, 8});
+  EXPECT_TRUE(mlir::failed(applyTemporalTiling(
+      {{*firstDomain.domain, first}, {*foreignDomain.domain, foreignChoice}},
+      relations, &failure)));
+  EXPECT_EQ(failure.kind, TemporalTilingFailureKind::BrokenContract);
+  after.clear();
+  module->print(afterStream);
+  EXPECT_EQ(after, before);
 }
 
 TEST(TemporalTilingTest, FullExtentChoiceIsByteIdentical) {
@@ -2169,7 +2361,7 @@ TEST(TemporalTilingTest, FullExtentChoiceIsByteIdentical) {
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
-  auto tiled = applyTemporalTiling(*domain.domain, *first.getChoice(),
+  auto tiled = applyTemporalTiling({{*domain.domain, *first.getChoice()}},
                                    relations, &failure);
   ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
   EXPECT_EQ(tiled->tiledTraversals, 0u);
@@ -2210,7 +2402,7 @@ TEST(TemporalTilingTest, InvalidChoiceFailsBeforeMutation) {
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
   EXPECT_TRUE(mlir::failed(
-      applyTemporalTiling(*domain.domain, choice, relations, &failure)));
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure)));
   EXPECT_EQ(failure.kind, TemporalTilingFailureKind::BrokenContract);
   std::string after;
   llvm::raw_string_ostream afterStream(after);
@@ -2354,7 +2546,7 @@ TEST(TemporalTilingTest, CoupledConsumerKeepsUnprovenTraversalsSeparate) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto result =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
     EXPECT_EQ(result->fusedProducers, 0u);
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
@@ -2422,8 +2614,8 @@ TEST(TemporalTilingTest, CoupledStateFinalizesInsideOutputTile) {
         StructuredMaterializationRelations relations;
         relations.structuralOutputs.push_back({0, region.getResult(0)});
         TemporalTilingFailure failure;
-        auto tiled =
-            applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        auto tiled = applyTemporalTiling({{*domain.domain, choice}}, relations,
+                                         &failure);
         ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
         EXPECT_EQ(tiled->fusedProducers, 1u);
         unsigned onlineBodies = 0;
@@ -2665,8 +2857,8 @@ TEST(TemporalTilingTest, FusedReductionsAndConvolutionUseCurrentInnerChoices) {
         StructuredMaterializationRelations relations;
         relations.structuralOutputs.push_back({0, region.getResult(0)});
         TemporalTilingFailure failure;
-        auto tiled =
-            applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        auto tiled = applyTemporalTiling({{*domain.domain, choice}}, relations,
+                                         &failure);
         ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
         ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
         int64_t covered = 0;
@@ -2790,8 +2982,8 @@ TEST(TemporalTilingTest, CoupledProposalKeepsBroadcastDimensionsWhole) {
         StructuredMaterializationRelations relations;
         relations.structuralOutputs.push_back({0, region.getResult(0)});
         TemporalTilingFailure failure;
-        auto result =
-            applyTemporalTiling(*built.domain, *proposal, relations, &failure);
+        auto result = applyTemporalTiling({{*built.domain, *proposal}},
+                                          relations, &failure);
         ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
         EXPECT_EQ(result->fusedProducers, 1u);
         EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
@@ -2851,7 +3043,7 @@ TEST(TemporalTilingTest, OrdinaryTwoResultStateUsesTheCommonConsumerTraversal) {
       relations.structuralOutputs.push_back({0, region.getResult(0)});
       TemporalTilingFailure failure;
       auto result =
-          applyTemporalTiling(*domain.domain, choice, relations, &failure);
+          applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
       ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
       EXPECT_EQ(result->fusedProducers, 1u);
       EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
@@ -2938,7 +3130,7 @@ TEST(TemporalTilingTest, ViewFusionPreservesReductionChoiceAndNonzeroInit) {
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto result =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
     module->walk([&](mlir::linalg::BatchMatmulOp op) {
       auto type =
@@ -3048,7 +3240,7 @@ TEST(TemporalTilingTest, InputProducerChainsStayInsideTheReductionTile) {
       relations.structuralOutputs.push_back({0, region.getResult(0)});
       TemporalTilingFailure failure;
       auto result =
-          applyTemporalTiling(*domain.domain, choice, relations, &failure);
+          applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
       ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
       int64_t covered = 0;
       module->walk([&](mlir::linalg::GenericOp op) {
@@ -3126,7 +3318,7 @@ TEST(TemporalTilingTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure failure;
     auto result =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
     int64_t covered = 0;
     module->walk([&](mlir::linalg::GenericOp op) {
@@ -3181,7 +3373,7 @@ TEST(TemporalTilingTest,
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   TemporalTilingFailure failure;
   auto result =
-      applyTemporalTiling(*domain.domain, choice, relations, &failure);
+      applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
   ASSERT_TRUE(mlir::succeeded(result)) << failure.detail;
   unsigned reductions = 0;
   module->walk([&](mlir::linalg::GenericOp op) {
@@ -3301,8 +3493,8 @@ TEST(TemporalTilingTest,
         StructuredMaterializationRelations relations;
         relations.structuralOutputs.push_back({0, region.getResult(0)});
         TemporalTilingFailure failure;
-        auto tiled =
-            applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        auto tiled = applyTemporalTiling({{*domain.domain, choice}}, relations,
+                                         &failure);
         ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
         ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
         int64_t producerElements = 0, outputElements = 0;
@@ -3474,8 +3666,8 @@ TEST(TemporalTilingTest, SharedWindowsUseOneGroupForAllViewTopologies) {
           for (unsigned i = 0; i < 2; ++i)
             relations.structuralOutputs.push_back({i, region.getResult(i)});
           TemporalTilingFailure failure;
-          auto tiled =
-              applyTemporalTiling(*domain.domain, choice, relations, &failure);
+          auto tiled = applyTemporalTiling({{*domain.domain, choice}},
+                                           relations, &failure);
           ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
           ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
           EXPECT_EQ(tiled->fusedProducers, 1u);
@@ -3568,7 +3760,7 @@ TEST(TemporalTilingTest, SharedPackConsumersUseTheCommonTilingInterfaceLoop) {
       relations.structuralOutputs.push_back({i, region.getResult(i)});
     TemporalTilingFailure failure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &failure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
     EXPECT_EQ(tiled->fusedProducers, 1u);
     EXPECT_EQ(countOps<mlir::tensor::PackOp>(module->getOperation()), 0u);

@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/AffineCanonicalizationUtils.h"
@@ -1781,6 +1782,13 @@ canonicalizeTiledRegion(TileRegionOp region,
   mlir::RewritePatternSet patterns =
       mlir::linalg::getLinalgTilingCanonicalizationPatterns(
           region.getContext());
+  // Pinned Pad tiling guards empty source slices with scf.if. Peeling can
+  // make its condition constant while casts still hide the static branch
+  // shape. Normalize that control flow before the existing type refinement.
+  mlir::scf::IfOp::getCanonicalizationPatterns(patterns, region.getContext());
+  // Affine composition can expose an IV only after a previous rewrite.
+  // Keep its loop-range proof in the same worklist, including late fusion.
+  mlir::scf::populateSCFForLoopCanonicalizationPatterns(patterns);
   patterns.add<SimplifySlicedUnitCollapse>(region.getContext());
   mlir::tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);
   mlir::tensor::populateReassociativeReshapeFoldingPatterns(patterns);
@@ -2414,23 +2422,15 @@ mlir::LogicalResult tileStateConsumer(mlir::IRRewriter &rewriter,
 
 } // namespace
 
-mlir::FailureOr<TemporalTilingStatistics>
-applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
-                    const compiler::detail::TemporalChoice &choice,
-                    StructuredMaterializationRelations &relations,
-                    TemporalTilingFailure *failure) {
+static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
+    const compiler::detail::TemporalDomain &domain,
+    const compiler::detail::TemporalChoice &choice,
+    StructuredMaterializationRelations &relations,
+    compiler::detail::StructuredBufferReplacementListener &listener,
+    TemporalTilingFailure *failure) {
   if (failure)
     *failure = {};
   TileRegionOp region = domain.getRegion();
-  if (!region || !domain.contains(choice) || mlir::failed(mlir::verify(region)))
-    return fail<TemporalTilingStatistics>(
-        failure, TemporalTilingFailureKind::BrokenContract,
-        "temporal apply requires one live choice from an unchanged TileRegion");
-  if (mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(
-          region->getParentOfType<mlir::ModuleOp>(), relations)))
-    return fail<TemporalTilingStatistics>(
-        failure, TemporalTilingFailureKind::BrokenContract,
-        "temporal apply received stale structural endpoint relations");
 
   llvm::DenseMap<mlir::Operation *,
                  const compiler::detail::TemporalScopeDescriptor *>
@@ -2457,7 +2457,6 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
   if (!hasAnyActiveDimension)
     return TemporalTilingStatistics{};
 
-  compiler::detail::StructuredBufferReplacementListener listener(relations);
   LiveFusionSources liveSources(&listener);
   mlir::IRRewriter rewriter(region.getContext(), &liveSources);
   TemporalTilingStatistics statistics;
@@ -2990,15 +2989,68 @@ applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
   mlir::DominanceInfo dominance(region);
   mlir::eliminateCommonSubExpressions(rewriter, dominance, region);
   eraseDeadOperations(rewriter, region);
-  if (!listener.finalizeAfterRewrite() || mlir::failed(mlir::verify(region)) ||
-      mlir::failed(verifyStructuralTileRegions(
-          region->getParentOfType<mlir::ModuleOp>())) ||
-      mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(
-          region->getParentOfType<mlir::ModuleOp>(), relations)))
+  if (mlir::failed(mlir::verify(region)))
     return fail<TemporalTilingStatistics>(
         failure, TemporalTilingFailureKind::CompilerFailure,
         "temporal tiling produced invalid current structural IR");
   return statistics;
+}
+
+mlir::FailureOr<TemporalTilingStatistics>
+applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
+                    StructuredMaterializationRelations &relations,
+                    TemporalTilingFailure *failure) {
+  if (failure)
+    *failure = {};
+  TemporalTilingStatistics total;
+  if (requests.empty())
+    return total;
+  auto first = requests.front().domain.getRegion();
+  auto module =
+      first ? first->getParentOfType<mlir::ModuleOp>() : mlir::ModuleOp{};
+  if (!module || mlir::failed(mlir::verify(module)) ||
+      mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(
+          module, relations)))
+    return fail<TemporalTilingStatistics>(
+        failure, TemporalTilingFailureKind::BrokenContract,
+        "temporal batch requires verified current IR and live relations");
+  llvm::DenseSet<mlir::Operation *> regions;
+  for (const auto &request : requests) {
+    auto region = request.domain.getRegion();
+    if (!region || region->getParentOfType<mlir::ModuleOp>() != module ||
+        !regions.insert(region.getOperation()).second ||
+        !request.domain.contains(request.choice))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::BrokenContract,
+          "temporal batch requires distinct live regions and unchanged choices "
+          "in one Module");
+  }
+  compiler::detail::StructuredBufferReplacementListener listener(relations);
+  for (const auto &request : requests) {
+    auto applied = applyRegionTemporalTiling(request.domain, request.choice,
+                                             relations, listener, failure);
+    if (mlir::failed(applied))
+      return mlir::failure();
+    for (auto field : {&TemporalTilingStatistics::tiledTraversals,
+                       &TemporalTilingStatistics::loops,
+                       &TemporalTilingStatistics::specializedTails,
+                       &TemporalTilingStatistics::specializedConcatBoundaries,
+                       &TemporalTilingStatistics::fusedProducers,
+                       &TemporalTilingStatistics::viewTransparentProducers,
+                       &TemporalTilingStatistics::tileLocalAssemblies,
+                       &TemporalTilingStatistics::assembledSegments,
+                       &TemporalTilingStatistics::decomposedPads,
+                       &TemporalTilingStatistics::decomposedConstantGenerates})
+      total.*field += (*applied).*field;
+  }
+  if (!listener.finalizeAfterRewrite() || mlir::failed(mlir::verify(module)) ||
+      mlir::failed(verifyStructuralTileRegions(module)) ||
+      mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(
+          module, relations)))
+    return fail<TemporalTilingStatistics>(
+        failure, TemporalTilingFailureKind::CompilerFailure,
+        "temporal batch produced invalid current structural IR");
+  return total;
 }
 
 } // namespace wafer

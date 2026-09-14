@@ -1304,7 +1304,7 @@ TEST(SpatialRegionMaterializationTest,
       ASSERT_TRUE(domain.domain->contains(choice));
       wafer::TemporalTilingFailure failure;
       auto tiled = wafer::applyTemporalTiling(
-          *domain.domain, choice, materialized->relations, &failure);
+          {{*domain.domain, choice}}, materialized->relations, &failure);
       ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
       createdLoops += tiled->loops;
     }
@@ -1490,7 +1490,17 @@ module {
   EXPECT_FALSE(materialized->relations.boundaryRelations.empty());
   EXPECT_EQ(
       countOps<mlir::linalg::ReduceOp>(materialized->module->getOperation()),
-      2u);
+      0u);
+  unsigned localReductions = 0;
+  materialized->module->walk([&](mlir::linalg::LinalgOp op) {
+    if (op.getNumReductionLoops()) {
+      ++localReductions;
+      EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType())
+                    .getRank(),
+                2);
+    }
+  });
+  EXPECT_EQ(localReductions, 4u);
   unsigned initRegionOperands = 0;
   materialized->module->walk([&](wafer::TileRegionOp region) {
     for (mlir::Value operand : region.getInputs())
@@ -1680,27 +1690,41 @@ TEST(SpatialRegionMaterializationTest,
       ASSERT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
       std::vector<unsigned> coverage(extent);
       unsigned contributions = 0;
-      actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
-        auto type =
-            mlir::cast<mlir::RankedTensorType>(insert.getDest().getType());
-        if (type.getShape() != llvm::ArrayRef<int64_t>{3, extent, 2})
+      actual->module->walk([&](mlir::linalg::LinalgOp op) {
+        if (!op.getNumReductionLoops())
           return;
         ++contributions;
-        auto offsets = insert.getStaticOffsets();
-        auto sizes = insert.getStaticSizes();
-        EXPECT_EQ(offsets[0], 0);
-        EXPECT_EQ(offsets[2], 0);
-        EXPECT_EQ(sizes[0], 3);
-        EXPECT_EQ(sizes[2], 2);
-        EXPECT_EQ(insert.getStaticStrides(),
-                  (llvm::ArrayRef<int64_t>{1, 1, 1}));
-        ASSERT_GE(offsets[1], 0);
-        ASSERT_LE(offsets[1] + sizes[1], extent);
-        EXPECT_EQ(
-            mlir::cast<mlir::RankedTensorType>(insert.getSource().getType())
-                .getShape(),
-            (llvm::ArrayRef<int64_t>{3, sizes[1], 2}));
-        for (int64_t k = offsets[1]; k < offsets[1] + sizes[1]; ++k)
+        EXPECT_EQ(op.getNumReductionLoops(), 1u);
+        EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType())
+                      .getShape(),
+                  (llvm::ArrayRef<int64_t>{3, 2}));
+        mlir::Value input = op.getDpsInputs()[0];
+        auto inputType = mlir::cast<mlir::RankedTensorType>(input.getType());
+        int64_t offset = 0;
+        while (true) {
+          if (auto slice =
+                  input.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+            EXPECT_EQ(slice.getStaticStrides(),
+                      (llvm::ArrayRef<int64_t>{1, 1, 1}));
+            ASSERT_GE(slice.getStaticOffsets()[1], 0);
+            offset += slice.getStaticOffsets()[1];
+            input = slice.getSource();
+          } else if (auto cast = input.getDefiningOp<mlir::tensor::CastOp>()) {
+            input = cast.getSource();
+          } else if (auto argument =
+                         mlir::dyn_cast<mlir::BlockArgument>(input)) {
+            auto region = mlir::dyn_cast<wafer::TileRegionOp>(
+                argument.getOwner()->getParentOp());
+            if (!region)
+              break;
+            input = region.getInputs()[argument.getArgNumber()];
+          } else {
+            break;
+          }
+        }
+        ASSERT_GE(offset, 0);
+        ASSERT_LE(offset + inputType.getDimSize(1), extent);
+        for (int64_t k = offset; k < offset + inputType.getDimSize(1); ++k)
           ++coverage[k];
       });
       EXPECT_EQ(contributions, static_cast<unsigned>(parts));
@@ -2554,7 +2578,7 @@ TEST(SpatialRegionMaterializationTest,
               if (op.getNumReductionLoops())
                 ++mergeBodies;
             });
-            EXPECT_EQ(mergeBodies, mode == 4 ? 2u : 1u);
+            EXPECT_EQ(mergeBodies, 4u);
           }
           if (mode >= 2) {
             EXPECT_GE(actual->relations.boundaryRelations.size(), 5u);
@@ -2585,7 +2609,7 @@ TEST(SpatialRegionMaterializationTest,
             }
             ASSERT_TRUE(temporal.domain->contains(choice));
             TemporalTilingFailure failure;
-            auto tiled = applyTemporalTiling(*temporal.domain, choice,
+            auto tiled = applyTemporalTiling({{*temporal.domain, choice}},
                                              actual->relations, &failure);
             ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
             loops += tiled->loops;
@@ -2636,46 +2660,99 @@ TEST(SpatialRegionMaterializationTest,
                 {}, &downstream, &executable);
             EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
             EXPECT_GT(downstream.instructionOperations, 0u);
-            if (mode == 3) {
-              ASSERT_TRUE(compiled.isAccepted())
-                  << compiled.gate << ": " << compiled.detail << "\n"
-                  << diagnosticsText;
-              EXPECT_EQ(executable.deviceExecutablesProduced, 1u);
-            } else {
-              // This deliberately large materialized partial is rejected by
-              // actual allocation/lifetime planning, not a shape estimate.
-              ASSERT_TRUE(compiled.isProvenExactRejection())
-                  << compiled.gate << ": " << compiled.detail;
-              ASSERT_FALSE(compiled.tileFailures.empty());
-              bool capacityWitness = false;
-              for (const auto &failure : compiled.tileFailures)
-                if (isProvenExactTileMemoryPlanningFailure(
-                        failure.memoryPlanning)) {
-                  EXPECT_FALSE(failure.memoryPlanning.spmCapacityConflictDemands
-                                   .empty());
-                  capacityWitness = true;
-                }
-              EXPECT_TRUE(capacityWitness);
-              EXPECT_FALSE(compiled.executable);
-              // The failed coordinate must not be confused with an unsupported
-              // input program. Exercise the production search on this same IR.
-              wafer::compiler::ProgramDataHandoff searchData;
-              SearchCurrentIROptions options;
-              options.termination = SearchTerminationPolicy::FirstAccepted;
-              ExecutableLoweringStatistics acceptedStatistics;
-              auto searched = compileSearchCurrentIR(
-                  *source, program, wafer::compiler::testing::executionConfig(),
-                  diagnostics, searchData, options, nullptr,
-                  &acceptedStatistics);
-              ASSERT_TRUE(searched.isAccepted())
-                  << searched.gate << ": " << searched.detail << "\n"
-                  << diagnosticsText;
-              EXPECT_GT(acceptedStatistics.actualMemoryTargetGateInvocations,
-                        0u);
-              EXPECT_EQ(acceptedStatistics.deviceExecutablesProduced, 1u);
-            }
+            // Compact local partials now reach the actual memory/target gate
+            // without the former expanded reduction tensor.
+            ASSERT_TRUE(compiled.isAccepted())
+                << compiled.gate << ": " << compiled.detail << "\n"
+                << diagnosticsText;
+            EXPECT_EQ(executable.deviceExecutablesProduced, 1u);
           }
         }
+}
+
+TEST(SpatialRegionMaterializationTest,
+     ConvolutionPartialsKeepLocalWindowReductions) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (int64_t width : {1024, 1025}) {
+    for (unsigned splitAxis : {4u, 5u, 6u}) {
+      SCOPED_TRACE(std::to_string(width) + ":" + std::to_string(splitAxis));
+      const unsigned parts = splitAxis == 6 ? 4 : 3;
+      auto context = createContext();
+      std::string input = "tensor<1x5x" + std::to_string(width + 2) + "x4xf16>";
+      std::string output = "tensor<1x3x" + std::to_string(width) + "x8xf16>";
+      std::string text;
+      llvm::raw_string_ostream os(text);
+      os << R"mlir(module {
+  wafer.target.topology @target {card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+      unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%image: )mlir"
+         << input << ", %weight: tensor<3x3x4x8xf16>, %init: " << output
+         << ") -> " << output << " {\n"
+         << "%result = linalg.conv_2d_nhwc_hwcf ins(%image, %weight : " << input
+         << ", tensor<3x3x4x8xf16>) outs(%init : " << output << ") -> "
+         << output << "\nreturn %result : " << output << "\n}}\n";
+      auto source =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(source);
+      SpatialRegionMaterializationFailure failure;
+      std::string detail;
+      auto actual = materializeWithSpatialDomainPlan(
+          *source,
+          [&](const SpatialRootDomainFacts &root, SpatialPlan &plan,
+              std::string &reason) {
+            auto &node = plan.nodes.front();
+            for (auto &axis : node.axes) {
+              axis.scheme = IteratorPartitionScheme::BalancedParts;
+              axis.parameter = axis.iterator == splitAxis ? parts : 1;
+            }
+            node.embedding.clear();
+            for (unsigned tile = 0; tile != parts; ++tile)
+              node.embedding.push_back(TileId(tile));
+            auto groups =
+                deriveSpatialReductionGroups(root, node.axes, &reason);
+            if (mlir::failed(groups))
+              return;
+            node.reductionMerges.clear();
+            for (const auto &group : *groups)
+              node.reductionMerges.push_back({group, TileId(15)});
+          },
+          failure, detail);
+      ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+      unsigned partials = 0;
+      actual->module->walk([&](mlir::linalg::LinalgOp op) {
+        if (!op.getNumReductionLoops())
+          return;
+        ++partials;
+        EXPECT_EQ(op.getNumReductionLoops(), 3u);
+        EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType())
+                      .getShape(),
+                  (llvm::ArrayRef<int64_t>{1, 3, width, 8}));
+      });
+      EXPECT_EQ(partials, parts);
+      actual->module->walk([&](mlir::Operation *op) {
+        for (mlir::Type type : op->getResultTypes()) {
+          if (auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(type)) {
+            EXPECT_LE(tensor.getRank(), 4);
+          }
+        }
+      });
+      auto layout =
+          resolveCurrentLayoutsAndBufferize(*actual->module, actual->relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto lowered =
+          lowerStructuredComputeToTile(*actual->module, actual->relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeConvOp>(*actual->module), parts);
+      EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(*actual->module), 0u);
+      auto movement =
+          materializeTileBoundaryMovement(*actual->module, actual->relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*actual->module)));
+    }
+  }
 }
 
 TEST(SpatialRegionMaterializationTest, AssemblesHaloInExactConsumerWindow) {
@@ -2826,7 +2903,7 @@ TEST(SpatialRegionMaterializationTest, AssemblesHaloInExactConsumerWindow) {
           }
           ASSERT_TRUE(temporal.domain->contains(choice));
           TemporalTilingFailure failure;
-          auto tiled = applyTemporalTiling(*temporal.domain, choice,
+          auto tiled = applyTemporalTiling({{*temporal.domain, choice}},
                                            actual->relations, &failure);
           ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
           loops += tiled->loops;
@@ -3025,7 +3102,7 @@ TEST(SpatialRegionMaterializationTest, MaterializesSplatAtSelectedDemand) {
               }
               ASSERT_TRUE(temporal.domain->contains(choice));
               TemporalTilingFailure failure;
-              auto tiled = applyTemporalTiling(*temporal.domain, choice,
+              auto tiled = applyTemporalTiling({{*temporal.domain, choice}},
                                                actual->relations, &failure);
               ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
               loops += tiled->loops;

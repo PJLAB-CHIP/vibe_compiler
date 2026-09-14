@@ -900,6 +900,10 @@ private:
     if (mlir::failed(candidate))
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "search-temporal-clone", detail);
+    std::vector<TemporalDomain> remappedDomains;
+    std::vector<TemporalChoice> remappedChoices;
+    remappedDomains.reserve(axes.size());
+    remappedChoices.reserve(axes.size());
     for (auto [axis, choice] : llvm::zip(axes, choices)) {
       auto region = mlir::dyn_cast_or_null<TileRegionOp>(
           mapping.lookupOrNull(axis.domain.getRegion().getOperation()));
@@ -912,14 +916,20 @@ private:
       if (mlir::failed(domain) || mlir::failed(remapped))
         return fail(ExecutableCompilationStatus::CompilerFailure,
                     "search-temporal-remap", detail);
-      TemporalTilingFailure failure;
-      if (mlir::failed(applyTemporalTiling(*domain, *remapped,
-                                           candidate->relations, &failure)))
-        return fail(ExecutableCompilationStatus::CompilerFailure,
-                    "search-temporal-apply", failure.detail);
-      if (statistics)
-        ++statistics->temporalApplications;
+      remappedDomains.push_back(std::move(*domain));
+      remappedChoices.push_back(std::move(*remapped));
     }
+    llvm::SmallVector<TemporalTilingRequest, 32> requests;
+    for (auto [domain, choice] :
+         llvm::zip_equal(remappedDomains, remappedChoices))
+      requests.push_back({domain, choice});
+    TemporalTilingFailure temporalFailure;
+    if (mlir::failed(applyTemporalTiling(requests, candidate->relations,
+                                         &temporalFailure)))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "search-temporal-apply", temporalFailure.detail);
+    if (statistics)
+      statistics->temporalApplications += requests.size();
     SpatialRegionMaterializationFailure failure;
     auto availability = analyzeCommunicationRegionClosure(
         *candidate->module, candidate->relations, &failure);

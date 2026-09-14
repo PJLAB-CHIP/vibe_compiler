@@ -380,8 +380,16 @@ module {
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(materialized->reductionDimensions, (llvm::SmallVector<int, 2>{2}));
   ASSERT_EQ(materialized->partialOperations.size(), 1u);
-  EXPECT_TRUE(mlir::isa<mlir::linalg::GenericOp>(
+  EXPECT_TRUE(mlir::isa<mlir::linalg::MatmulOp>(
       materialized->partialOperations.front()));
+  EXPECT_EQ(mlir::cast<mlir::linalg::LinalgOp>(
+                materialized->partialOperations.front())
+                .getNumReductionLoops(),
+            1u);
+  EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(
+                materialized->partialValues.front().getType())
+                .getRank(),
+            2);
   ASSERT_EQ(materialized->mergeOperations.size(), 1u);
   EXPECT_TRUE(mlir::isa<mlir::linalg::GenericOp>(
       materialized->mergeOperations.front()));

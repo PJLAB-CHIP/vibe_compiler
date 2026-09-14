@@ -210,8 +210,22 @@ BalancedParts/UniformExtent精确表示的边界不产生协调候选。新targe
 
 普通partial reduction的DPS init只在merge处消费一次。ExactDemand与RootUseId使用`DemandDestination`明确区分compute shard和
 reduction group；init的需求来自该merge完整contribution迭代域的精确像，目标Tile为已选择的merge owner。RootWork、RegionPlan、
-replica与materializer消费同一typed use，group依赖排序因而包含init producer到merge的SSA边。partial贡献仍使用接口生成identity；
+replica与materializer消费同一typed use，group依赖排序因而包含init producer到merge的SSA边。partial贡献从原scalar combiner取得neutral element作为identity；
 不向每个贡献广播原init，不在merge物化时按shape或位置补找source，也不偷偷重算init producer。
+
+普通归约的空间贡献保留原局部计算与归约轴：每个contribution以identity初始化，按当前iteration rectangle调用标准TilingInterface，
+其结果shape等于该贡献的output tile，不把C/KH/KW或其它原归约轴扩进数据结果。跨Tile传递的只是已局部归约的partial结果。
+Merge仍检查原贡献iteration rectangles的无重叠、精确覆盖和输出坐标一致；按这些坐标的确定顺序，使用原scalar combiner逐个合并
+同shape的partial，原DPS init作为这条SSA链的初值只消费一次，不另外分配完整contribution stack。结果再按原output domain发布。
+没有新增IR、运行时ABI或模型名分支。
+这里改变的是已选择的分布式归约表示，保留原scalar操作、dtype与init合同；SPM仍只验证实际生成的buffer/lifetime，不按结果shape预判容量。
+
+| 局部贡献输入 | 分支 | exact输出和直接下游 |
+| --- | --- | --- |
+| rank3+，1024/1025/1031，GEMM/conv与generic等价 | parallel/reduction分片、kernel轴、多Tile | contribution结果只有原output维；卷积保持局部归约和native conv消费者，不生成七维乘积buffer |
+| 普通sum/max/min，scalar及多维结果 | identity/非identity原init、乱序贡献、非整除 | 每段归约贡献消费一次，原init只合并一次，原scalar combiner和dtype保留 |
+| 重叠/缺失贡献、输出domain不一致、未知combiner | typed failure | 不发布伪造partial/merge，不通过shape猜owner或容量 |
+| 原始ResNet-18 | 默认none/search直接产品路径 | 从source到actual局部Conv/Instr/SPM及package/no-card；实卡仍待恢复 |
 下游elementwise lowering通过pinned Linalg `getOpOperandsMatchingBBargs`读取body参数与operand的对应，不能假定每个body都有DPS init参数。
 Selected tile产生的静态unit轴可在索引表达式内折为0（如`m+w`且`extent(w)=1`）；重建的projected map必须逐轴匹配当前operand/result shape，
 不能因output map为identity而绕过input map检查或发出verifier-invalid Tile op。
@@ -266,12 +280,29 @@ relation仍精确分析，普通物化负责创建完整计算。动态extent和
 | relation构造预算不足 | rank17、静态主维1025，超默认变量预算 | none/search均indeterminate，不误判unsupported | 正式driver分类 |
 | 已有domain但operand relation不支持 | 静态Linalg，合法result map | 当前choice unsupported，非compiler bug；后继仍可访问 | PlanningSession |
 | producer → GEMM/conv及generic等价 | 1024/1025/1031，4/16 Tile，parallel/reduction分支 | 精确Cartesian coverage、重建merge group/owner、完整contributions | RootWork与actual spatial region、Instr/SPM |
-| partial init来自实际producer | 1024/1025/1031，merge owner在contribution Tile或独立Tile | init只归属merge；60组actual region/temporal；较大partial保留typed capacity冲突证据，同一输入经正式search成功 | Instr、SPM及accepted executable |
+| partial init来自实际producer | 1024/1025/1031，merge owner在contribution Tile或独立Tile | init只归属merge；actual region/temporal保留output大小的partial，同一current IR经过实际容量规划，不沿用旧展开buffer的capacity预期 | Instr、SPM及accepted executable |
 | GEMM/conv → pointwise及反向producer需求 | 1024/1025/1031，投影/实际view链、重复需求 | full reduction fiber、重复矩形合并、稳定placement | exact demand与actual region |
 | 多consumer一致/冲突 | 相同及置换访问 | 一致才协调；冲突保留seed；两种顺序均保留原seed | source不变、domain合法 |
 | halo部分重叠、反向仿射、work limit | 1024/1025，矩形不可表示/unknown | 不伪造partition，原seed保留 | 独立区间期望及relation结果 |
 
 ### 5.2 TileRegion formation
+
+#### Temporal批次的验证边界
+
+- 输入：同一actual candidate Module内互不重复的TileRegion，各自当前TemporalDomain与完整choice，以及同一份current关系。
+- 职责：批次入口一次核验Module与全部关系，并在首次mutation前验证所有choice；逐Region只执行本地变换和本地verifier，
+  所有replacement交给同一次调用拥有的listener。listener索引只建立一次、批次末收尾一次，不在每个Region上重建全体关系索引。
+  即使某个choice为full-extent no-op，也不额外扫描整个Module。批次出口一次核验全局结构、关系与Module。
+- 输出与下游：同一candidate-owned Module及已retarget的关系，直接交layout/bufferization；失败candidate仍由调用者销毁。
+- 入口：none/search与直接调用者使用同一批次API；单Region调用是一元素批次，不保留绕过检查的第二入口或skip-validation开关。
+- 非目标：不缓存跨mutation的live集合，不删除必要的全局检查，不改变tiling、SPM准入、数值或同步。
+- 完成条件：单批与逐个一元素批次的最终IR一致；后续request非法时整批首次mutation前拒绝；真实ResNet有界诊断中全局检查次数不随Region数增长。
+
+| 输入 | 分支 | exact输出与下游 |
+| --- | --- | --- |
+| rank3+，1024/1025，多Region/Tile | full-extent、活跃分块、tail | 单批与逐个结果相同，关系和local verifier通过，layout直接消费 |
+| 后续choice失效、重复Region、不同Module | 输入拒绝 | 原Module字节不变，无部分改写 |
+| 原始ResNet-18 | none/search共用批次 | 全局入口/出口检查为固定次数；记录本轮实际编译停点 |
 
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种
 结构选择：位于Region外、在Region内实际存在一次、或明确允许为selected consumer实际复制。它不选择top-level/nested、stored/direct、
@@ -553,7 +584,12 @@ segments的有限exact交集做tile-local assembly。Static segment边界落在�
 full-interior与boundary cases；每个case的extract/insert size必须是由static interval和canonical loop grid算出的常量，offset可以继续使用
 current loop IV。Case数量随segment边界而不是loop trip count增长，不能用`arith.min/max/sub`结果作为shaped op的dynamic size，也不能把
 static concat降成dynamic tensor。Constant Pad的非零padding轴必须在derived consumer scope保持full extent，避免把static
-source变成无法被直接下游消费的dynamic padded tile；其局部Pad及pinned mechanics产生的constant `tensor.generate`在本stage确定性降为
+source变成无法被直接下游消费的dynamic padded tile；pinned Pad tiling为可能空的source slice生成`scf.if`，
+main/tail specialization后在owned TileRegion内复用SCF/Linalg标准pattern消除已证明的常量分支，
+由现有typed refinement读取实际branch value的static shape。Late producer fusion还会新建源extent与当前IV的min/max，
+必须在同一有界rewrite worklist中复用pinned SCF loop canonicalization进行精确简化：affine composition会在前一次改写后才暴露IV，
+一次性扫描旧operation/operand集合不足以完成证明。不能用原source extent代替当前loop bounds。
+未知条件与真实动态尺寸仍保留，不根据目标shape猜测或改写分支。其局部Pad及pinned mechanics产生的constant `tensor.generate`在本stage确定性降为
 tile-local Linalg fill/insert。Pack/UnPack在main/tail type收紧后使用pinned simplify pattern降为local reshape；fused producer的
 `tensor.empty` destination折成tile-local empty，不能保留完整intermediate allocation。`linalg.fill`继续作为DPS destination初始化，不增加
 独立search axis。collective、nonconstant Pad与dynamic shape不在本项范围。

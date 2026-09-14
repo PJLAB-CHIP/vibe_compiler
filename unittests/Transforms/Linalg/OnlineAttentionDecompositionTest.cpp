@@ -235,7 +235,7 @@ TEST(OnlineAttentionDecompositionTest,
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     TemporalTilingFailure tilingFailure;
     auto tiled =
-        applyTemporalTiling(*domain.domain, choice, relations, &tilingFailure);
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &tilingFailure);
     ASSERT_TRUE(mlir::succeeded(tiled)) << tilingFailure.detail;
     const unsigned onlineBefore =
         countOps<LinalgExtOnlineAttentionOp>(module->getOperation());
@@ -368,7 +368,7 @@ TEST(OnlineAttentionDecompositionTest, ScoreRoundingSurvivesMainAndTail) {
         relations.structuralOutputs.push_back({0, region.getResult(0)});
         auto choice = selectK2Tile(*domain.domain, 128);
         ASSERT_TRUE(mlir::succeeded(
-            applyTemporalTiling(*domain.domain, choice, relations)));
+            applyTemporalTiling({{*domain.domain, choice}}, relations)));
         unsigned updates = 0;
         module->walk([&](LinalgExtOnlineAttentionOp op) {
           EXPECT_EQ(signature(op.getScoreRegion().front()), expected);
@@ -411,7 +411,7 @@ TEST(OnlineAttentionDecompositionTest,
     StructuredMaterializationRelations relations;
     relations.structuralOutputs.push_back({0, region.getResult(0)});
     ASSERT_TRUE(mlir::succeeded(
-        applyTemporalTiling(*domain.domain, choice, relations)));
+        applyTemporalTiling({{*domain.domain, choice}}, relations)));
     const unsigned onlineBefore =
         countOps<LinalgExtOnlineAttentionOp>(module->getOperation());
     auto decomposed = decomposeOnlineAttention(*module, relations);

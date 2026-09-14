@@ -7,6 +7,7 @@
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/ArrayRef.h"
 
 #include <cstdint>
 #include <string>
@@ -37,13 +38,20 @@ struct TemporalTilingStatistics {
   uint64_t decomposedConstantGenerates = 0;
 };
 
-/// Immediately applies one query-local temporal choice to the same unchanged
-/// TileRegion from which `domain` was built. The domain and choice are invalid
-/// after this call, regardless of success. On post-mutation failure the caller
-/// must discard the complete candidate owner.
+struct TemporalTilingRequest {
+  const compiler::detail::TemporalDomain &domain;
+  const compiler::detail::TemporalChoice &choice;
+};
+
+/// Applies a batch of choices to distinct regions of one current candidate.
+/// All choices and global relations are checked before the first mutation;
+/// global output checks and replacement-listener finalization run once after
+/// the batch. Each region still runs its local verifier and reports every
+/// replacement to the same invocation-owned listener. Domains/choices are
+/// invalid after this call; on post-mutation failure discard the complete
+/// candidate owner.
 mlir::FailureOr<TemporalTilingStatistics>
-applyTemporalTiling(const compiler::detail::TemporalDomain &domain,
-                    const compiler::detail::TemporalChoice &choice,
+applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
                     StructuredMaterializationRelations &relations,
                     TemporalTilingFailure *failure = nullptr);
 

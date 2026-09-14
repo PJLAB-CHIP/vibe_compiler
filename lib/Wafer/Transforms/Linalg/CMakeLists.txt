@@ -23,11 +23,14 @@ add_mlir_library(WaferLinalgTransforms
   WaferPlanning
   WaferTileTransforms
   MLIRAffineDialect
+  MLIRAnalysis
   MLIRArithDialect
+  MLIRArithUtils
   MLIRDialectUtils
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRLinalgUtils
   MLIRMathDialect
   MLIRPass

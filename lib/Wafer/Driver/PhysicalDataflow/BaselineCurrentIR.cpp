@@ -211,6 +211,14 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     return fail(ExecutableCompilationStatus::CompilerFailure, "baseline-input",
                 "baseline requires current TensorProgram and positive work "
                 "limits");
+  auto timedQuery = [](llvm::StringRef name, auto &&query) {
+    support::ScopedCompileTimingSpan timing("query", "physical-baseline", name);
+    return query();
+  };
+  auto timedStage = [](llvm::StringRef name, auto &&transform) {
+    support::ScopedCompileTimingSpan timing("stage", "physical-baseline", name);
+    return transform();
+  };
   mlir::FailureOr<mlir::func::FuncOp> function =
       getProgramFunction(tensorProgram);
   if (mlir::failed(function))
@@ -228,15 +236,19 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     return fail(ExecutableCompilationStatus::CompilerFailure, "baseline-input",
                 "baseline requires verifier-valid normalized TensorProgram");
 
-  auto structured = analyzeStructuredProgram(tensorProgram, program,
-                                             executionConfig, diagnostics);
+  auto structured = timedQuery("structured-analysis", [&] {
+    return analyzeStructuredProgram(tensorProgram, program, executionConfig,
+                                    diagnostics);
+  });
   if (mlir::failed(structured))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "structured-analysis",
                 "cannot derive baseline structured program facts");
   std::string detail;
-  auto spatial = buildCanonicalSpatialAssignment(
-      (*structured)->dag, (*structured)->availableTileIds, &detail);
+  auto spatial = timedQuery("canonical-spatial-assignment", [&] {
+    return buildCanonicalSpatialAssignment(
+        (*structured)->dag, (*structured)->availableTileIds, &detail);
+  });
   if (mlir::failed(spatial))
     return fail(ExecutableCompilationStatus::UnsupportedFailure,
                 "baseline-spatial", detail);
@@ -246,8 +258,9 @@ ExecutableCompilationResult compileBaselineCurrentIR(
   if (mlir::failed(demandSession))
     return fail(ExecutableCompilationStatus::CompilerFailure, "baseline-demand",
                 detail);
-  analysis::ExactDemandOutcome demand =
-      demandSession->query(spatial->assignment);
+  analysis::ExactDemandOutcome demand = timedQuery("exact-demand", [&] {
+    return demandSession->query(spatial->assignment);
+  });
   const analysis::ExactDemandProof *proof =
       analysis::getExactDemandProof(demand);
   if (!proof) {
@@ -267,14 +280,17 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     }
     return fail(status, "baseline-demand", demandFailureDetail(demand));
   }
-  auto rootDomain =
-      RootWorkDomain::create((*structured)->dag, spatial->assignment, *proof,
-                             (*structured)->availableTileIds, &detail);
+  auto rootDomain = timedQuery("root-work-domain", [&] {
+    return RootWorkDomain::create((*structured)->dag, spatial->assignment,
+                                  *proof, (*structured)->availableTileIds,
+                                  &detail);
+  });
   demandSession->close();
   if (mlir::failed(rootDomain))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "baseline-root-work", detail);
-  RootWorkCollectionOutcome rootWork = collectRootWorks(*rootDomain);
+  RootWorkCollectionOutcome rootWork = timedQuery(
+      "collect-root-work", [&] { return collectRootWorks(*rootDomain); });
   const RootWorkCollection *rootWorks = getRootWorkCollection(rootWork);
   if (!rootWorks) {
     const bool indeterminate =
@@ -284,11 +300,14 @@ ExecutableCompilationResult compileBaselineCurrentIR(
                     : ExecutableCompilationStatus::CompilerFailure,
                 "baseline-root-work", rootWorkFailureDetail(rootWork));
   }
-  auto regionDomain = RegionDomain::create(rootWorks->works, &detail);
+  auto regionDomain = timedQuery("region-domain", [&] {
+    return RegionDomain::create(rootWorks->works, &detail);
+  });
   if (mlir::failed(regionDomain))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "baseline-region-domain", detail);
-  std::vector<RegionPlan> regionProposals = regionDomain->getProposals(1);
+  std::vector<RegionPlan> regionProposals = timedQuery(
+      "region-proposals", [&] { return regionDomain->getProposals(1); });
   if (regionProposals.empty())
     return fail(ExecutableCompilationStatus::CompilerFailure, "baseline-region",
                 "baseline Region domain has no coherent fixed proposal");
@@ -312,10 +331,12 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     if (statistics)
       ++statistics->attempts;
     SpatialRegionMaterializationFailure spatialFailure;
-    auto candidate = materializeSpatialRegions(
-        tensorProgram, cardId, (*structured)->availableTileIds,
-        (*structured)->operationNodes, rootWorks->works, regionPlan,
-        &spatialFailure);
+    auto candidate = timedStage("spatial-materialization", [&] {
+      return materializeSpatialRegions(
+          tensorProgram, cardId, (*structured)->availableTileIds,
+          (*structured)->operationNodes, rootWorks->works, regionPlan,
+          &spatialFailure);
+    });
     if (mlir::failed(candidate))
       return fail(spatialFailure.kind ==
                           SpatialRegionMaterializationFailureKind::Unsupported
@@ -329,6 +350,10 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     candidate->module->walk(
         [&](TileRegionOp region) { regions.push_back(region); });
     bool refined = false;
+    std::vector<TemporalDomain> domains;
+    std::vector<TemporalChoice> choices;
+    domains.reserve(regions.size());
+    choices.reserve(regions.size());
     for (TileRegionOp region : regions) {
       TemporalDomainResult domain = buildTemporalDomain(region);
       if (!domain.succeeded())
@@ -340,19 +365,26 @@ ExecutableCompilationResult compileBaselineCurrentIR(
         return fail(ExecutableCompilationStatus::UnsupportedFailure,
                     "baseline-temporal-choice", detail);
       refined |= choice->refined;
-      TemporalTilingFailure temporalFailure;
-      auto tiled = applyTemporalTiling(*domain.domain, choice->choice,
-                                       candidate->relations, &temporalFailure);
-      if (mlir::failed(tiled))
-        return fail(ExecutableCompilationStatus::CompilerFailure,
-                    "baseline-temporal-apply", temporalFailure.detail);
-      if (statistics)
-        ++statistics->temporalApplications;
+      domains.push_back(std::move(*domain.domain));
+      choices.push_back(std::move(choice->choice));
     }
     if (attempt != 0 && !refined && lastCapacityRejection) {
       attachCapacityRejectionDetail(*lastCapacityRejection, attempt);
       return std::move(*lastCapacityRejection);
     }
+    llvm::SmallVector<TemporalTilingRequest, 32> requests;
+    for (auto [domain, choice] : llvm::zip_equal(domains, choices))
+      requests.push_back({domain, choice});
+    TemporalTilingFailure temporalFailure;
+    auto tiled = timedStage("temporal-materialization", [&] {
+      return applyTemporalTiling(requests, candidate->relations,
+                                 &temporalFailure);
+    });
+    if (mlir::failed(tiled))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "baseline-temporal-apply", temporalFailure.detail);
+    if (statistics)
+      statistics->temporalApplications += requests.size();
 
     if (options.qualification && options.qualification->mergeRegions) {
       SpatialRegionMaterializationFailure failure;
@@ -376,8 +408,10 @@ ExecutableCompilationResult compileBaselineCurrentIR(
               : ExecutableCompilationStatus::CompilerFailure,
           "baseline-attention-decomposition", attentionFailure.detail);
 
-    LayoutOptimizationResult layout = resolveCurrentLayoutsAndBufferize(
-        *candidate->module, candidate->relations, options.layoutWorkLimit);
+    LayoutOptimizationResult layout = timedStage("layout-bufferization", [&] {
+      return resolveCurrentLayoutsAndBufferize(
+          *candidate->module, candidate->relations, options.layoutWorkLimit);
+    });
     recordLayoutInstrumentation(layout.statistics);
     if (statistics) {
       ++statistics->layoutInvocations;

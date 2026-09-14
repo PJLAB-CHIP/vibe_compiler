@@ -81,7 +81,8 @@ getStandardPartialBox(llvm::ArrayRef<mlir::utils::IteratorType> iteratorTypes,
     return fail<analysis::StaticRectangularIndexSet>(
         failure, SpatialRegionMaterializationFailureKind::Unsupported,
         "standard partial result is not one exact tensor tile");
-  const auto &result = normalized->getBoxes().front();
+  auto boxes = normalized->getBoxes();
+  const auto &result = boxes.front();
   const size_t reductions =
       llvm::count(iteratorTypes, mlir::utils::IteratorType::reduction);
   if (iteration.offsets.size() != iteratorTypes.size() ||
@@ -90,18 +91,9 @@ getStandardPartialBox(llvm::ArrayRef<mlir::utils::IteratorType> iteratorTypes,
     return fail<analysis::StaticRectangularIndexSet>(
         failure, SpatialRegionMaterializationFailureKind::BrokenContract,
         "standard partial coordinates disagree with the reduction interface");
-  // Pinned Linalg PartialReductionOpInterface inserts reduction dimensions at
-  // their loop positions and preserves the original output's coordinate order.
-  analysis::StaticRectangularIndexSet partial;
-  unsigned output = 0;
-  for (auto [dimension, iterator] : llvm::enumerate(iteratorTypes)) {
-    const bool reduction = iterator == mlir::utils::IteratorType::reduction;
-    partial.offsets.push_back(reduction ? iteration.offsets[dimension]
-                                        : result.offsets[output]);
-    partial.sizes.push_back(reduction ? iteration.sizes[dimension]
-                                      : result.sizes[output++]);
-  }
-  return partial;
+  // A contribution has already reduced its local iteration rectangle.
+  // Its payload has exactly the output coordinates, never reduction axes.
+  return result;
 }
 
 struct SourceValueKey {
@@ -1998,65 +1990,6 @@ struct GroupBuilder {
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
           "standard contributions do not exactly cover their merge rectangle");
 
-    llvm::SmallVector<mlir::Value, 2> assembledPartials;
-    for (const analysis::ReductionResultSlice &result : merge.results) {
-      if (result.result >= work.rootOperation->getNumResults())
-        return fail<llvm::SmallVector<mlir::Value, 2>>(
-            failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-            "standard merge result index is out of range");
-      auto resultType = mlir::cast<mlir::RankedTensorType>(
-          work.rootOperation->getResult(result.result).getType());
-      analysis::StaticRectangularIndexSet globalIteration;
-      globalIteration.offsets.assign(globalOffsets.begin(),
-                                     globalOffsets.end());
-      globalIteration.sizes.assign(globalSizes.begin(), globalSizes.end());
-      auto globalPartial = getStandardPartialBox(iteratorTypes, globalIteration,
-                                                 result.domain, failure);
-      if (mlir::failed(globalPartial))
-        return mlir::failure();
-      mlir::Value assembled =
-          builder
-              .create<mlir::tensor::EmptyOp>(work.rootOperation->getLoc(),
-                                             globalPartial->sizes,
-                                             resultType.getElementType())
-              .getResult();
-      for (auto [contribution, box] :
-           llvm::zip_equal(merge.contributions, boxes)) {
-        StandardPartialKey key{merge.group, contribution.shard, result.result};
-        auto partial = getOrCreateStandardPartialBoundary(key);
-        if (mlir::failed(partial))
-          return mlir::failure();
-        auto contributionResult =
-            llvm::find_if(contribution.results, [&](const auto &slice) {
-              return slice.result == result.result;
-            });
-        if (contributionResult == contribution.results.end())
-          return fail<llvm::SmallVector<mlir::Value, 2>>(
-              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
-              "standard contribution has no exact result slice");
-        auto partialBox = getStandardPartialBox(
-            iteratorTypes, box, contributionResult->domain, failure);
-        if (mlir::failed(partialBox))
-          return mlir::failure();
-        llvm::SmallVector<mlir::OpFoldResult, 6> offsets;
-        llvm::SmallVector<mlir::OpFoldResult, 6> sizes;
-        llvm::SmallVector<mlir::OpFoldResult, 6> strides;
-        for (size_t dimension = 0; dimension < rank; ++dimension) {
-          offsets.push_back(
-              builder.getIndexAttr(partialBox->offsets[dimension] -
-                                   globalPartial->offsets[dimension]));
-          sizes.push_back(builder.getIndexAttr(partialBox->sizes[dimension]));
-          strides.push_back(builder.getIndexAttr(1));
-        }
-        assembled = builder
-                        .create<mlir::tensor::InsertSliceOp>(
-                            work.rootOperation->getLoc(), *partial, assembled,
-                            offsets, sizes, strides)
-                        .getResult();
-      }
-      assembledPartials.push_back(assembled);
-    }
-
     llvm::SmallVector<mlir::OpFoldResult, 6> iterationOffsets;
     llvm::SmallVector<mlir::OpFoldResult, 6> iterationSizes;
     for (size_t dimension = 0; dimension < rank; ++dimension) {
@@ -2090,63 +2023,62 @@ struct GroupBuilder {
                                        .getResult());
     }
 
-    mlir::IRMapping adapterMapping;
-    llvm::SmallVector<mlir::Operation *, 4> placeholders;
-    for (mlir::OpOperand &operand : work.rootOperation->getOpOperands()) {
-      std::optional<unsigned> initIndex;
-      for (auto [index, value] : llvm::enumerate(dps.getDpsInits()))
-        if (value == operand.get()) {
-          initIndex = index;
-          break;
-        }
-      if (initIndex) {
-        adapterMapping.map(operand.get(), resultDestinations[*initIndex]);
-        continue;
-      }
-      auto type =
-          mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
-      if (type && type.hasStaticShape()) {
-        auto empty = builder.create<mlir::tensor::EmptyOp>(
-            work.rootOperation->getLoc(), type.getShape(),
-            type.getElementType());
-        placeholders.push_back(empty);
-        adapterMapping.map(operand.get(), empty.getResult());
-        continue;
-      }
-      auto mapped = mapSupportValue(operand.get());
-      if (mlir::failed(mapped))
+    llvm::SmallVector<unsigned, 16> order;
+    for (unsigned index = 0; index != boxes.size(); ++index)
+      order.push_back(index);
+    llvm::sort(order, [&](unsigned lhs, unsigned rhs) {
+      return std::lexicographical_compare(
+          boxes[lhs].offsets.begin(), boxes[lhs].offsets.end(),
+          boxes[rhs].offsets.begin(), boxes[rhs].offsets.end());
+    });
+    llvm::SmallVector<mlir::Value, 2> mergedValues;
+    for (auto [resultIndex, result] : llvm::enumerate(merge.results)) {
+      auto resultDomain = analysis::normalizeFiniteExactIndexSet(result.domain);
+      if (mlir::failed(resultDomain) || resultDomain->getBoxes().size() != 1)
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
-            "standard merge cannot localize a non-tensor operand");
-      adapterMapping.map(operand.get(), *mapped);
+            "standard merge result is not one exact output rectangle");
+      auto resultBoxes = resultDomain->getBoxes();
+      const auto &resultBox = resultBoxes.front();
+      mlir::Value merged = resultDestinations[resultIndex];
+      for (unsigned index : order) {
+        const auto &contribution = merge.contributions[index];
+        auto slice =
+            llvm::find_if(contribution.results, [&](const auto &value) {
+              return value.result == result.result;
+            });
+        if (slice == contribution.results.end())
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard contribution has no exact result slice");
+        auto partialBox = getStandardPartialBox(iteratorTypes, boxes[index],
+                                                slice->domain, failure);
+        if (mlir::failed(partialBox) ||
+            partialBox->offsets != resultBox.offsets ||
+            partialBox->sizes != resultBox.sizes)
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::BrokenContract,
+              "standard partial and merge output coordinates disagree");
+        auto partial = getOrCreateStandardPartialBoundary(
+            {merge.group, contribution.shard, result.result});
+        if (mlir::failed(partial))
+          return mlir::failure();
+        std::string detail;
+        auto combined =
+            combineReductionPartial(work.rootOperation, result.result, *partial,
+                                    merged, builder, &detail);
+        if (mlir::failed(combined))
+          return fail<llvm::SmallVector<mlir::Value, 2>>(
+              failure, SpatialRegionMaterializationFailureKind::Unsupported,
+              detail);
+        merged = *combined;
+      }
+      mergedValues.push_back(merged);
     }
-    mlir::Operation *adapter =
-        builder.clone(*work.rootOperation, adapterMapping);
-    for (auto [result, destination] :
-         llvm::zip_equal(adapter->getResults(), resultDestinations))
-      result.setType(destination.getType());
-    auto adapterPartial =
-        mlir::cast<mlir::PartialReductionOpInterface>(adapter);
-    auto merged =
-        adapterPartial.mergeReductions(builder, work.rootOperation->getLoc(),
-                                       assembledPartials, reductionDimensions);
-    if (mlir::failed(merged) ||
-        merged->replacements.size() != merge.results.size()) {
-      if (adapter->use_empty())
-        adapter->erase();
-      return fail<llvm::SmallVector<mlir::Value, 2>>(
-          failure, SpatialRegionMaterializationFailureKind::Unsupported,
-          "standard partials cannot form one actual merge");
-    }
-    if (adapter->use_empty())
-      adapter->erase();
-    for (mlir::Operation *placeholder : llvm::reverse(placeholders))
-      if (placeholder->use_empty())
-        placeholder->erase();
 
     llvm::SmallVector<mlir::Value, 2> fullResults;
     for (auto [result, mergedValue] :
-         llvm::zip_equal(merge.results, merged->replacements)) {
+         llvm::zip_equal(merge.results, mergedValues)) {
       auto fullType = mlir::cast<mlir::RankedTensorType>(
           work.rootOperation->getResult(result.result).getType());
       auto normalizedResult =
@@ -3051,7 +2983,7 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
             return mlir::failure();
           StandardPartialKey key{merge.group, contribution.shard,
                                  result.result};
-          if (!resultType || partialBox->sizes.empty() ||
+          if (!resultType ||
               !standardPartialBoundaryRequirements
                    .emplace(
                        key,

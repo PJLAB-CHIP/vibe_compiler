@@ -36,6 +36,14 @@ struct PartialReductionTileMaterialization {
   llvm::SmallVector<mlir::Value, 2> mergedValues;
 };
 
+/// Combines one already reduced output tile with its current destination,
+/// cloning the original Linalg scalar combiner and preserving its dtype.
+mlir::FailureOr<mlir::Value>
+combineReductionPartial(mlir::Operation *reduction, unsigned resultNumber,
+                        mlir::Value partial, mlir::Value destination,
+                        mlir::OpBuilder &builder,
+                        std::string *failureReason = nullptr);
+
 /// One actual fixed iteration-domain tile. This is spatial materialization,
 /// not temporal loop generation: callers provide a single exact offset/size
 /// vector and own all returned operations in their current IR transaction.
