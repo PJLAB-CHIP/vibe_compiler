@@ -909,3 +909,20 @@ none/search的temporal调用者均改为一次提交同一candidate的所有Regi
 目标模块编译/链接155.290秒。两个temporal批次累计10.653秒，其中full-extent批次0.213秒；
 这些scope相互嵌套，不累加作总时间，也不将none与旧search的总wall比较成策略加速比。
 421项Transforms、127项Driver回归及新增kernel-axis/跨Module分支通过；canonical完整增量构建和第二次Ninja no-op通过。
+
+### 非连续Region合并导致跨Tile等待环
+
+用户要求直接修复DDR/DTE依赖环，停止继续等待旧代码的默认搜索。旧版默认search本次主动停止，
+不登记为timeout或搜索完成；保留的实际环同时覆盖混合DDR/DTE与纯DDR，故换transport本身不能修复顺序。
+同一ResNet source的width=1、trials=3有界复现为182.703秒，首次shared-DDR失败与默认搜索的resource及跨Tile路径相同。
+
+根因在`CommunicationRegionClosure.cpp`：将非连续Region合并到首个Region位置时，只纳入本地tensor SSA依赖，
+漏掉中间向远端提供前置数据的独立producer。后面的consumer被提前，producer留在其后，形成publish/acquire环。
+两Tile、rank3 `1×1024×64`的最小真实规模用例在17毫秒复现同一完成错误。
+
+修复保持已选scope首尾之间的全部当前Region及原block顺序，既有overlap closure把相交scope统一物化一次。
+不修改DDR/DTE op、通知协议、wait位置或cycle verifier，不推测SPM容量。06号定义pipeline contract，13号补入交错依赖覆盖。
+1024/1025 × Peer/SharedDDR用例检查中间producer仍先于原后续consumer，并经过Instr、DTE wait、DDR publication、NCC和实际SPM。
+本轮422项Transforms、两项SharedDDR直接验证回归、canonical完整增量构建和Ninja no-op通过；
+同一ResNet、相同width=1/trials=3的对照为219.001秒、峰值RSS 4,295,096 KiB：原先的shared-DDR失败候选通过completion后进入actual SPM；
+三次拒绝均为typed capacity，依赖环拒绝为零。本次小预算没有accepted package，完整默认搜索与设备数值资格仍分别保留。

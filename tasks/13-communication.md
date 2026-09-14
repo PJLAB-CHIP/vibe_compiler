@@ -386,8 +386,9 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 | 同payload与personalized完整交换 | 只读分析、显式合并；无peer/缺peer/无共同cut不可合并 | 分析不改IR；只合并选中区域，重建live endpoint，保留SSA/effect |
 | 相邻exchange共享生产/消费Region，relation顺序交错 | 从current依赖划分拓扑frontier；每个完整交换分别证明cut，再一次合并重叠范围 | 4/16 Tile与1024/1025/1031，两段peer IR、贡献/结果复制、Instr completion、实际SPM规划和transport；AllReduce source到PyTorch完整板测 |
 | 两个exchange共享后置本地初始化，4/16 Tile、1024/1025/1031 | actual依赖集合先收敛成互不重叠rewrite集合；effect阻止时整组不应用 | 每个Region只删除一次，关系全部retarget；layout→Instr→SPM/transport及原decode no-card |
-| 本地纯tensor初始化依赖 | 可纳入合并；side effect/其它跨Tile边界阻止合并 | dominance和effect保持，失败输入不修改 |
+| 本地纯tensor初始化依赖 | 当前区间内依赖共同物化；实际side effect或无法映射的依赖阻止合并 | dominance和effect保持，失败输入不修改 |
 | 同一DTE连通集合中的交错DDR发布与真实阻塞环 | 按actual prepare/issue/wait和publish/acquire区分顺序；合法交错通过，真实环拒绝，重复/条件保持typed失败 | rank≥3、1024/1025/1031正负例与原decode none到package |
+| 非连续Region合并与中间跨Tile producer | 原始单次执行顺序中的通信前置不能因只看本地tensor SSA而丢失；以current boundary relation核对实际producer/consumer顺序 | rank3、1024/1025，中间producer及其远端reader，DDR/Peer分别进入actual Instr、publication/wait和SPM验证 |
 | current Region间无环DDR依赖 | peer与shared-DDR各自物化；双向循环拒绝DDR候选，缺少跨Tile完成时不能证明可执行 | exact存储范围、实际写后读顺序、DDR resource与completion闭合 |
 | 多fragment、SSA与清理 | 同一source的local/external fragments共同按actual demand组装；聚合交换位于全部source定义之后、首次receive消费之前 | 多分片source回归，verifier dominance，Instr拷贝消除后重建实际buffer owner并进入SPM规划 |
 | capacity/unsupported/预算不足 | 失败只属于当前候选；compiler bug终止 | actual SPM冲突见证；无未运行候选冒充拒绝，winner不重建 |

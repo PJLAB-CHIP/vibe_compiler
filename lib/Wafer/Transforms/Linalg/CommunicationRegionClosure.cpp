@@ -428,13 +428,25 @@ struct TileMergeSet {
   llvm::SmallVector<TileRegionOp, 16> regions;
 };
 
-// Keep initialization dependencies in the same actual rewrite. Never absorb
-// another cross-Tile phase or move an effect across the selected region span.
+// Keep the current Region interval in its original order. A skipped Region
+// may produce a remote prerequisite even when it has no local SSA consumer;
+// moving the later exchange ahead of it can create a publication wait cycle.
 static bool includeLocalTensorDependencies(
     TileMergeSet &set, llvm::ArrayRef<StructuredBoundaryRelation> relations) {
   if (set.regions.empty())
     return false;
   TileRegionOp anchor = set.regions.front();
+  mlir::Operation *last = set.regions.back();
+  for (mlir::Operation *operation = anchor;;
+       operation = operation->getNextNode()) {
+    if (!operation || !mlir::isMemoryEffectFree(operation))
+      return false;
+    if (auto region = mlir::dyn_cast<TileRegionOp>(operation))
+      if (!llvm::is_contained(set.regions, region))
+        set.regions.push_back(region);
+    if (operation == last)
+      break;
+  }
   for (size_t index = 0; index < set.regions.size(); ++index) {
     TileRegionOp region = set.regions[index];
     if (region->getBlock() != anchor->getBlock() ||
@@ -464,11 +476,6 @@ static bool includeLocalTensorDependencies(
   llvm::sort(set.regions, [](TileRegionOp lhs, TileRegionOp rhs) {
     return lhs->isBeforeInBlock(rhs);
   });
-  for (mlir::Operation *operation = anchor.getOperation();
-       operation != set.regions.back().getOperation();
-       operation = operation->getNextNode())
-    if (!operation || !mlir::isMemoryEffectFree(operation))
-      return false;
   return true;
 }
 

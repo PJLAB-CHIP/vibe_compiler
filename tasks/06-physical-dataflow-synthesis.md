@@ -304,6 +304,21 @@ relation仍精确分析，普通物化负责创建完整计算。动态extent和
 | 后续choice失效、重复Region、不同Module | 输入拒绝 | 原Module字节不变，无部分改写 |
 | 原始ResNet-18 | none/search共用批次 | 全局入口/出口检查为固定次数；记录本轮实际编译停点 |
 
+#### 通信Region合并的顺序边界
+
+- 输入：当前tensor TileRegion及完整typed boundary relations；同一Tile上已选通信scope的首尾Region。
+- 职责：合并scope必须包含首尾之间的全部实际TileRegion，按原block顺序拼接。即使中间producer没有本地SSA consumer，
+  它仍可能通过boundary relation服务远端，不能把后面的consumer移到该producer前面。实际effect或无法映射的依赖仍拒绝。
+- 输出与下游：保持原执行顺序的candidate-owned合并Region和已retarget关系，直接交layout、movement及Instr completion。
+- 入口：`closeCrossTileCommunicationRegions`与其只读availability query共用同一scope closure。
+- 非目标：不新增同步、不把Region当作原子通信阶段、不改DDR/Peer选择、不以估算SPM或未来wait图判断合法性。
+- 完成条件：rank3、1024/1025的中间远端producer在合并后仍先于原后续consumer，DDR/Peer经actual wait/publication/SPM；
+  原完整exchange、多个顺序exchange及effect拒绝分支保持；真实ResNet直接产品重新验证。
+
+这里沿用[MLIR effect与移动规则](https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/)：本地memory-effect-free
+不能替代非本地依赖证明。相比只检查本地SSA后跨越中间Region，保留完整当前区间不需要另建远端可达性或未来调度表示；
+扩大scope带来的真实buffer与lifetime由后续actual memory planner判断。
+
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种
 结构选择：位于Region外、在Region内实际存在一次、或明确允许为selected consumer实际复制。它不选择top-level/nested、stored/direct、
 spill或future delivery。同region只选择共同local-storage scope，不证明SPM residency；只有actual producer work位于consumer

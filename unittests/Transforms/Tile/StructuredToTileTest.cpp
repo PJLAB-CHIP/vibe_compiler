@@ -4154,6 +4154,111 @@ TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
   }
 }
 
+TEST_F(StructuredToTileTest, RegionClosurePreservesInterveningRemoteProducer) {
+  for (int64_t extent : {1024, 1025}) {
+    for (auto transport : {BoundaryMovementTransport::Peer,
+                           BoundaryMovementTransport::SharedDDR}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<unsigned>(transport));
+      auto module = parse(makeSplitExchangeSource(extent));
+      ASSERT_TRUE(module);
+      llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 2> regions(2);
+      for (auto tile : module->getOps<TileModuleOp>())
+        tile.walk([&](TileRegionOp region) {
+          regions[tile.getTileId()].push_back(region);
+        });
+      mlir::OpBuilder builder(context.get());
+      builder.setInsertionPoint(regions[0][1]);
+      mlir::IRMapping producerMapping;
+      auto producer = mlir::cast<TileRegionOp>(
+          builder.clone(*regions[0][0], producerMapping));
+      producer.walk([&](mlir::linalg::GenericOp op) {
+        auto yield =
+            mlir::cast<mlir::linalg::YieldOp>(op.getBody()->getTerminator());
+        mlir::OpBuilder scalar(yield);
+        auto square = scalar.create<mlir::arith::MulFOp>(
+            op.getLoc(), op.getBody()->getArgument(0),
+            op.getBody()->getArgument(0));
+        yield->setOperand(0, square.getResult());
+      });
+      auto entry = regions[1][0]->getParentOfType<mlir::func::FuncOp>();
+      unsigned input = entry.getNumArguments();
+      entry.insertArgument(
+          input, producer.getResult(0).getType(),
+          builder.getDictionaryAttr({builder.getNamedAttr(
+              kWaferCrossTileBoundaryInputAttrName, builder.getUnitAttr())}),
+          entry.getLoc());
+      builder.setInsertionPoint(regions[1][0]);
+      mlir::IRMapping readerMapping;
+      auto reader = mlir::cast<TileRegionOp>(
+          builder.clone(*regions[1][0], readerMapping));
+      reader->setOperand(0, entry.getArgument(input));
+      regions[1][0]->setOperand(0, reader.getResult(0));
+      StructuredMaterializationRelations relations;
+      relations.boundaryRelations = {
+          {regions[0][0].getResult(0), regions[1][1].getBody().getArgument(0)},
+          {regions[1][0].getResult(0), regions[0][1].getBody().getArgument(0)},
+          {producer.getResult(0), reader.getBody().getArgument(0)}};
+      for (auto &tile : regions)
+        relations.structuralOutputs.push_back({0, tile[1].getResult(0)});
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      SpatialRegionMaterializationFailure failure;
+      ASSERT_TRUE(mlir::succeeded(closeCrossTileCommunicationRegions(
+          *module, relations, nullptr, &failure)))
+          << failure.detail;
+      auto published = mlir::cast<mlir::OpResult>(
+          relations.boundaryRelations[2].sourceEndpoint);
+      auto merged = mlir::cast<TileRegionOp>(published.getOwner());
+      auto yield =
+          mlir::cast<TileYieldOp>(merged.getBody().front().getTerminator());
+      auto *produced =
+          yield.getValues()[published.getResultNumber()].getDefiningOp();
+      auto consumed = mlir::cast<mlir::BlockArgument>(
+          relations.boundaryRelations[1].destinationEndpoint);
+      ASSERT_EQ(consumed.getOwner(), produced->getBlock());
+      ASSERT_TRUE(consumed.hasOneUse());
+      EXPECT_TRUE(produced->isBeforeInBlock(*consumed.getUsers().begin()));
+      ASSERT_TRUE(
+          resolveCurrentLayoutsAndBufferize(*module, relations).succeeded());
+      ASSERT_TRUE(lowerStructuredComputeToTile(*module, relations).succeeded());
+      BoundaryMovementOptions options;
+      options.transport = transport;
+      auto movement =
+          materializeTileBoundaryMovement(*module, relations, options);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      llvm::SmallVector<mlir::ModuleOp, 2> modules;
+      llvm::SmallVector<TileId, 2> tiles;
+      for (auto &tile : *standalone) {
+        llvm::SmallVector<TileRegionOp, 4> scopes;
+        tile.module->walk(
+            [&](TileRegionOp region) { scopes.push_back(region); });
+        TileRegionToInstrLoweringSession session(*context);
+        for (auto scope : scopes)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(scope, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        modules.push_back(*tile.module);
+        tiles.push_back(tile.tileId);
+      }
+      auto waits = rebuildRequiredDirectDTEWaits(modules);
+      ASSERT_TRUE(waits.succeeded()) << waits.detail;
+      auto completion = materializeSharedDDRCompletion(modules, tiles);
+      ASSERT_TRUE(completion.succeeded()) << completion.detail;
+      for (auto &tile : *standalone) {
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure memory;
+        auto planned = planTileMemory(std::move(tile.module), &memory);
+        ASSERT_TRUE(mlir::succeeded(planned));
+      }
+    }
+  }
+}
+
 TEST_F(StructuredToTileTest, RegionClosureCoalescesIdenticalImportedArguments) {
   for (int64_t tileCount : {4, 16}) {
     for (int64_t extent : {1024, 1025, 1031}) {

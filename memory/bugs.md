@@ -1852,6 +1852,16 @@
 - 防复发：recursive-doubling 4/16-Tile、1024/1025/1031矩阵在movement后立即`mlir::verify`，并检查带非零aggregate offset的嵌套subview；LLaMA
   FP16/BF16 search fresh no-card必须完成package/readback，而不是只看到candidate不再crash。
 
+## 非连续tensor Region合并不能跨过中间通信前置
+
+- 根因：tensor Region的本地memory-effect-free及SSA合法性没有覆盖typed boundary relation中的远端consumer。
+  将首尾Region拼到首个位置、跳过中间独立producer，会把远端数据的消费提前到该producer之前，形成跨Tile等待环。
+  纯DDR也能触发，因此切换DDR/DTE不能替代顺序证明。
+- 修复模式：合并首尾间完整的当前Region区间并保持原block顺序；重叠区间在同一closure中统一物化一次。
+  不改通知/wait协议，不放松最终actual completion verifier，实际新增lifetime仍交唯一SPM规划路径。
+- 防复发：rank3、1024/1025的两个Tile包含“交换producer—中间远端前置producer—交换consumer”，
+  同时检查合并后的精确顺序、Peer/DDR的Instr完成图及actual SPM；连续exchange正例不能代签这一交错分支。
+
 ## Direct DTE的ready通知不能当作独立FSM队列
 
 - 现象：send/recv/token匹配和4-FSM着色均通过，连续同peer接收仍可能丢通知；双方send先于recv也可能在显式wait之前卡住。
