@@ -20,7 +20,7 @@ IR和原有计数完全相同；该修改的LLaMA完整no-card通过，package�
 后续Region提案已减少重复合法性查询和FM计分，定向及组件门禁通过；该修改的LLaMA no-card通过且包与初始快版本相同，ResNet整网资格继续验证。
 ResNet另有temporal重复全module校验及窗口max归约lowering缺口；这些主机结果不计作已完成的板端性能优化轮次。
 ViT的GELU公开扩展和LayerNorm opmath入口已通用修复，1024/1025 source通过；1024已到含attention的structured IR，
-整块后续编译达到1,800秒主机期限：One-Shot循环状态分析单次活跃至少1,628秒，内部根因继续定位。
+整块旧编译达到1,800秒主机期限；actual分析输入有26,976个insert_slice且无scf.for，两次栈采样定位到长subset链的反向读写冲突查询。精确box合并已按06号合同实现，定向范围/多Tile/layout验证通过；本轮四组件回归通过，原ViT/LLaMA主机回归正在执行。
 独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
 这些证据只闭合入口缺口，不代签整块数值、设备性能或三轮调优。
 混合dtype端口及整数exact比较已补通用runner验证；完整单层LM已注册，S16 FP16/BF16的全部logits CPU oracle通过。

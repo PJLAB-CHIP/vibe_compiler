@@ -1,0 +1,145 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "精确box表示合并与fragment assembly主机编译根因；实卡尚未恢复，三轮性能调优未开始",
+  "parent_commit": "dcb8f849",
+  "compiler_sha256": "e1470a739a1810f74d15de3f8f715b78bc78c6186434e537591afa3a1450234a",
+  "baseline": {
+    "compiler_sha256": "9c885cebc916445003e38157d3286324fef2a6773bf91e3893330ba1016a9259",
+    "ordinary_runner_wall_seconds": 1822.76,
+    "ordinary_runner_rss_kib": 903408,
+    "compiler_timeout_seconds": 1800,
+    "one_shot_active_lower_bound_ms": 1628034,
+    "actual_analysis_input": "build/test/model-performance/bufferization-vit-analysis-input.mlir",
+    "actual_analysis_input_bytes": 11026910,
+    "actual_analysis_input_sha256": "4508a6adbc75ce68ee491893b2087abc7845f468c224c5929caa9aa4ad675344",
+    "tensor_insert_slice": 26976,
+    "tensor_extract_slice": 27654,
+    "scf_for": 0,
+    "linalg_generic": 1648,
+    "tile_region": 1632,
+    "func_func": 16,
+    "inserts_into_3x1024x1x768_f16": 24592,
+    "sampled_stack": [
+      "AnalysisState::findValueInReverseUseDefChain",
+      "matchesInsertDestination",
+      "wouldCreateReadAfterWriteInterference",
+      "OneShotAnalysisState::analyzeSingleOp",
+      "bufferization::analyzeModuleOp",
+      "LayoutAssignmentQuery::apply"
+    ],
+    "diagnostic_method": "GDB launched the host compiler; two independent pauses sampled reverse subset use-def conflict queries. No board process.",
+    "diagnostic_ir_recovery": "Two Operation::dump outputs stripped only ANSI/CR and interleaved compiler timing lines; normalized IR was byte-identical and nonempty wafer-opt verification passed.",
+    "timing_limit": "GDB elapsed after breakpoints includes manual pauses and is not compilation performance. Ordinary timeout supplies the timing baseline.",
+    "debugger_wait_excluded": "scheduler-locking on blocked the debugger-invoked dump verifier thread pool; disabled locking completed the dump. This was not a compiler/device hang.",
+    "gdb_process_status": "explicitly killed after evidence capture; exited before current compile"
+  },
+  "rule": "Within one exact set only: group equal cross sections, merge touching/overlapping intervals in deterministic axis sweeps until no count reduction. Preserve holes, owner boundaries and original Presburger set; no general coalesce solver or layout/SPM policy change.",
+  "tests": {
+    "focused_planning": {
+      "executed": 7,
+      "passed": 7,
+      "wall_seconds": 2.14,
+      "rss_kib": 17064
+    },
+    "spatial_materialization": {
+      "test": "CoalescesReshapedColumnDemandWithoutMergingSpatialOwners",
+      "extents": [
+        1024,
+        1025,
+        1031
+      ],
+      "shape": "[2,S,128] -> expand [2,S,4,32] -> [2,4,S,32]",
+      "producer_row_parts": 4,
+      "consumer_head_parts": 4,
+      "copies_per_configuration": 16,
+      "exact_point_coverage": true,
+      "layout_and_bufferization": "passed"
+    },
+    "canonical_build": "passed",
+    "second_build": "Ninja no-op",
+    "component_ctest": {
+      "executed": 4,
+      "passed": 4,
+      "gtest_executed": 754,
+      "analysis": 109,
+      "planning": 127,
+      "transforms": 391,
+      "driver": 127,
+      "wall_seconds": 625.16,
+      "unexpected_skips": 0,
+      "log": "build/test/model-performance/exact-box-components.log"
+    }
+  },
+  "vit": {
+    "case": "vit-encoder-block",
+    "dtype": "float16",
+    "seed": 20260803,
+    "shape": [
+      1,
+      1024,
+      768
+    ],
+    "search_width": 8,
+    "search_trials": 42,
+    "fresh_source_files": {
+      "data/ln_1.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+      "data/ln_1.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+      "data/ln_2.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+      "data/ln_2.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+      "data/mlp.0.bias": "5ecd36358ef2b296c1937bfa305471c0976fd98f2955dc5e5d77091f731c9ba7",
+      "data/mlp.0.weight": "e771ee2c6ea6a5cddfc54d73b9e7fccfa9c75a76b809d9943800a422f2e6e45e",
+      "data/mlp.3.bias": "5f7ab4b262f5966beccb919e8d586672d59bb26309202d665d39106323552b8c",
+      "data/mlp.3.weight": "6125ce13de6bf757f35f9d3fbab4bdf952d254b8c4d07c78734c43619cd3a999",
+      "data/self_attention.in_proj_bias": "29f18070ac1594a87ea114e193c9683669f8107763144e9d76c4db9c5f5c040b",
+      "data/self_attention.in_proj_weight": "84fa6f95ea5e9d137548a9824397ae4a3d44ac1c3d40fd6d76ede4dde0595dcb",
+      "data/self_attention.out_proj.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+      "data/self_attention.out_proj.weight": "8dab6a985560a49aaebcd9a3e00db94d00063edefbaa8606727112969211c795",
+      "functions/forward.meta": "40e0010c9605206af9d08bc57bcafcbf9684df0872d854a886935e83ee592d23",
+      "functions/forward.stablehlo.bc": "2ee826e066c81f2bb32b80326f538265b058957ad42aad2095b54d1d20f01790"
+    },
+    "fresh_source_equal_baseline": true,
+    "checkpoint": "host compiler running; no completion claimed"
+  },
+  "llama": {
+    "case": "llama-2-7b-block",
+    "dtype": "float16",
+    "search_width": 8,
+    "search_trials": 42,
+    "checkpoint": "fresh no-card runner started; no completion claimed",
+    "fresh_source_files": {
+      "data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+      "data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+      "data/decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+      "data/decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+      "data/decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+      "data/decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+      "data/decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+      "data/decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343",
+      "data/rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+      "data/rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+      "functions/forward.meta": "83366ad13c971c888242a2518f76193891b360977b892ad388eb0c883156d62b",
+      "functions/forward.stablehlo.bc": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b"
+    },
+    "source_equal_initial_and_previous": true
+  },
+  "board": {
+    "executed": false,
+    "boot_id": "f0bc038d-2b5e-42fa-9959-9d3aa265e993",
+    "user_confirmed": "尚未恢复，继续主机工作"
+  },
+  "limits": [
+    "ViT package/no-card not yet verified",
+    "LLaMA host regression not yet complete",
+    "No device timing or numerical readback",
+    "Original matrix and three matched tuning rounds remain incomplete",
+    "Host model runs overlap; wall/RSS provide qualification evidence, not matched isolated compiler benchmarks."
+  ],
+  "references": [
+    "https://github.com/llvm/llvm-project/issues/81959",
+    "https://mlir.llvm.org/docs/Bufferization/",
+    "https://libisl.sourceforge.io/user.html"
+  ]
+}

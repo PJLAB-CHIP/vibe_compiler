@@ -59,9 +59,10 @@ private:
   llvm::SmallVector<StaticRectangularIndexSet, 8> boxes;
 };
 
-/// Recovers a finite disjoint rectangular normal form without changing the
-/// represented integer set. Fails when the current exact Presburger set is not
-/// representable as a finite box union.
+/// Coalesces the existing BoxUnion or recovers a finite disjoint rectangular
+/// normal form without changing the represented integer set. Only intervals
+/// with identical cross sections are merged; holes are never filled. Fails on
+/// malformed boxes or when no supported finite rectangular form is recovered.
 mlir::FailureOr<ExactIndexSet>
 normalizeFiniteExactIndexSet(const ExactIndexSet &set);
 

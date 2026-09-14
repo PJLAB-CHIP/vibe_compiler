@@ -613,3 +613,27 @@ CPU数值oracle的多线程冷调用及oneDNN特殊值边界在02号合同和证
 本次定向11项测试及原runner两个完整CTest通过；模型suite实测89.76秒，因新增完整LM oracle已接近旧90秒期限，
 将该纯主机suite期限调整为180秒，设备watchdog及compiler期限不变。完整canonical构建及no-op按本次提交门禁验收。
 以上是正确性准备，不计为三轮性能调优；详见[混合端口证据](../../docs/data/board-performance/mixed-ports-lm-20260914.json)。
+
+### 2026-09-14 精确box合并与ViT慢编译根因
+
+旧compiler在首个layout分析入口的actual IR有26,976个`tensor.insert_slice`，其中24,592个写入
+`tensor<3x1024x1x768xf16>`；另有27,654个extract、1,632个Region，`scf.for`为0。
+两次独立栈采样均落在`matchesInsertDestination`调用的反向SSA遍历及subset读写冲突检查。
+因此`loop-state-binding`只是计时scope名字，不能把本次问题归因于循环state的buffer-type递归。
+输入dump经verifier通过；两份独立dump在去除交错timing记录后逐字节相同。GDB手工暂停时间不参与性能比较，
+基线仍使用上节普通1,800秒超时；调试过程中scheduler-locking造成的dump线程池等待已解除，不属于compiler或设备卡死。
+
+直接producer是spatial `assembleFragments`：reshape后同一fragment的逐行boxes可构成一个精确矩形，
+但原normalizer对已有BoxUnion直接返回，使每一行都生成一对extract/insert。按06号合同在唯一normalizer中
+合并同截面相邻/重叠区间，保留原exact集合和不同fragment边界；不补一般集合求解、LLVM旁路缓存或layout策略。
+7项normalizer测试覆盖大shape/尾部、换轴、多轴、holes/L形、重复/重叠、空集/标量、溢出和非矩形拒绝。
+真实`[2,S,128]→expand→[2,4,S,32]`、S=1024/1025/1031的四Tile行/列交叉分区，每配置恰好16次来源片段拷贝，
+全部需求位置exact覆盖一次；8个Region及cross-Tile关系、verifier、layout/bufferization通过。
+Analysis/Planning/Transforms/Driver四个组件的109/127/391/127项实际测试全部通过，无skip；
+完整canonical增量构建及随后的Ninja no-op通过。组件墙钟625.16秒，模型编译有并行主机工作，不作隔离性能A/B。
+
+本轮ViT重新导出的14个source文件与旧诊断输入相同，原默认8/42与FP16保持；ViT及固定FP16 LLaMA的完整
+主机复验仍在执行，尚无本轮整块package/no-card或设备结论。用户再次确认板卡尚未恢复，实卡批次保持停止。
+LLaMA重新导出的14个source文件与初始正确快版本及上轮无卡版本都相同，待核对本轮package/actual结果。
+本项仍是正确性/编译资格准备，不能计入三轮设备性能调优。证据见
+[精确box合并记录](../../docs/data/board-performance/exact-box-coalescing-20260914.json)。

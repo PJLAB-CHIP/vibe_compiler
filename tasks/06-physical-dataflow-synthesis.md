@@ -334,6 +334,31 @@ offset grid、静态size及步长满足生成合同。重叠window或其它无�
 不同endpoint、不同rectangle或中间有其它写入时保持原顺序。覆盖多contribution共用DPS init的重复矩形，
 并由named/generic contraction/conv、1024/1025/1031、多Tile与actual Instr/SPM回归消费。
 
+有限box normal form由`normalizeFiniteExactIndexSet`统一收敛：输入是同一个query-local exact集合，
+输出保持原Presburger集合，压缩其矩形表示，直接供fragment assembly和既有exact-demand消费者使用。
+每轴按其它轴的完整offset/size分组，再按本轴起点排序；仅在其它轴范围完全相同、本轴相邻或重叠时取区间并集。
+按最后轴到第一轴确定性扫描，只在box数减少时重复，最后恢复offset/size字典序。每次合并严格减少box数，
+不执行通用集合成对求解；rank/端点溢出明确失败，合并后的size不可表示时保留原pieces。
+该规则不填holes，不跨fragment owner或SSA endpoint合并，不改变算术，不另增layout或transport策略；
+合并后的actual IR继续经原layout分析、completion及唯一SPM规划确定物理选择和合法性。
+它是已有exact集合的表示规范化，不是普通pure graph的等价搜索，也不承诺最少矩形划分。
+
+算法对照[isl coalescing](https://libisl.sourceforge.io/user.html)和pinned MLIR `PresburgerRelation::coalesce`：
+通用实现能合并更多凸多面体，但需成对检查及约束求解；这里已有static boxes，使用轴分组的精确区间合并即可消除
+逐行展开。保留官方[One-Shot分析](https://mlir.llvm.org/docs/Bufferization/)的读写冲突规则，
+先减少本仓生成的冗余subset链；上游[长insert_slice链问题](https://github.com/llvm/llvm-project/issues/81959)
+说明这类非线性分析开销也会由其它模型的拼接引入。
+
+本项覆盖矩阵：
+
+| 输入等价类 | exact/失败要求 | 直接消费者与完成条件 |
+| --- | --- | --- |
+| rank3/4，1024/1025/1031逐行pieces、换轴、多轴网格、输入顺序改变 | 集合相等、确定顺序、幂等；相邻矩形压缩且tail不丢失 | normalizer输出与独立坐标oracle一致 |
+| holes、L形、重复/同截面重叠、负原点、空集、标量 | 不扩成bounding box，不引入额外点；不同截面保留pieces | 有界oracle检查全部点，tiny仅用于穷举几何反例 |
+| rank不符、端点溢出、非矩形Presburger集合 | 明确失败；合并size溢出不损失原可表示集合 | 原FailureOr边界消费，无crash/assert |
+| reshape后的多Tile fragment assembly，1024/1025/1031 | 每个actual来源独立合并、精确offset/size/coverage；insert数随片段而非行数增长 | spatial materializer→verifier、layout/bufferization及既有actual Instr/SPM门禁 |
+| 原模型source、固定预算与dtype | ViT编译work/timing及剩余typed结果；LLaMA无卡产物/actual结构回归 | 完整模型package仍须独立验收，主机改善不代签实卡性能 |
+
 ### 5.3 Temporal tiling
 
 

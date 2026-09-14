@@ -1563,3 +1563,24 @@ source、整数lookup lowering、1024/1025、package/no-card和设备结果仍�
 慢调用在`LayoutOptimization.cpp`中进入官方One-Shot bufferization分析；这是调用级定位，内部具体根因仍未证明。
 之前的verified structured IR保留，整块没有生成package或触发设备执行。
 终态追加到[数学源输入记录](data/board-performance/source-math-ingestion-20260914.json)，历史“当时仍在运行”的检查点保持其时间含义。
+
+## 2026-09-14 ViT长片段链的主机根因与精确box合并
+
+首个One-Shot分析输入包含26,976个insert、27,654个extract、1,632个Region，且没有scf.for；
+其中24,592个insert组装同一种`[3,1024,1,768]`张量。两次栈采样都经过`matchesInsertDestination`的
+反向SSA遍历和读写冲突查询，确认长subset链放大了分析工作。`loop-state-binding`为计时scope名称，
+本次不能解释成循环state递归。输入IR为11,026,910 bytes，两份独立dump规范化后hash相同且verifier通过。
+GDB暂停和调试器自身的线程池等待不计为compiler耗时；比较基线仍是普通runner的1,822.76秒主机超时。
+
+源头在spatial fragment assembly：同一来源的矩形集合保留逐行表示，继而逐行发射extract/insert。
+修复由`normalizeFiniteExactIndexSet`统一合并同截面的相邻/重叠区间，严格保持集合，不跨owner，不填holes。
+它采用static box的轴分组扫描；与[isl的一般coalescing](https://libisl.sourceforge.io/user.html)相比，
+不需要成对约束求解，也不改变官方One-Shot的别名规则。上游亦记录过
+[长insert_slice链的非线性分析](https://github.com/llvm/llvm-project/issues/81959)，其计时不当作本仓实测。
+
+7项几何测试及真实四Tile reshape/分区测试通过，1024/1025/1031每配置16次来源片段拷贝、全需求exact覆盖；
+layout/bufferization通过。原ViT与固定FP16 LLaMA的8/42完整主机复验在途，当前没有新的整块设备时间或数值回读。
+四组件754项实际测试全部通过，无skip；完整增量构建及第二次Ninja no-op通过。LLaMA本轮14个源文件与初始快版本、
+上次接受的无卡版本一致；ViT本轮14个源文件与旧诊断输入一致。主机模型运行存在重叠，不能把总wall差直接签为编译性能A/B。
+板卡由用户确认尚未恢复，继续主机工作。完整身份和后续终态进入
+[精确box合并证据](data/board-performance/exact-box-coalescing-20260914.json)。

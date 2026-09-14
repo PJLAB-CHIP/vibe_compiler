@@ -975,6 +975,112 @@ module {
 }
 
 TEST(SpatialRegionMaterializationTest,
+     CoalescesReshapedColumnDemandWithoutMergingSpatialOwners) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    std::string sourceType = "tensor<2x" + std::to_string(extent) + "x128xf16>";
+    std::string expandedType =
+        "tensor<2x" + std::to_string(extent) + "x4x32xf16>";
+    std::string outputType =
+        "tensor<2x4x" + std::to_string(extent) + "x32xf16>";
+    out << R"mlir(module {
+  wafer.target.topology @target {card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+      unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: )mlir"
+        << sourceType << ") -> " << outputType << " {\n"
+        << "%empty = tensor.empty() : " << sourceType << "\n"
+        << "%producer = linalg.map ins(%input : " << sourceType
+        << ") outs(%empty : " << sourceType << R"mlir() (%x: f16) {
+    %twice = arith.addf %x, %x : f16
+    linalg.yield %twice : f16
+  }
+  %expanded = tensor.expand_shape %producer [[0], [1], [2, 3]]
+      output_shape [2, )mlir"
+        << extent << ", 4, 32] : " << sourceType << " into " << expandedType
+        << "\n%out = tensor.empty() : " << outputType << R"mlir(
+  %consumer = linalg.generic {
+      indexing_maps = [affine_map<(b, h, m, n) -> (b, m, h, n)>,
+                       affine_map<(b, h, m, n) -> (b, h, m, n)>],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel"]}
+      ins(%expanded : )mlir"
+        << expandedType << ") outs(%out : " << outputType << R"mlir() {
+    ^bb0(%x: f16, %old: f16):
+      %square = arith.mulf %x, %x : f16
+      linalg.yield %square : f16
+  } -> )mlir"
+        << outputType << "\nreturn %consumer : " << outputType << "\n}}\n";
+    auto source = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+    std::string detail;
+    auto actual = materializeWithSpatialPlan(
+        *source,
+        [](SpatialPlan &plan) {
+          ASSERT_EQ(plan.nodes.size(), 2u);
+          for (auto &node : plan.nodes) {
+            for (auto &axis : node.axes) {
+              axis.scheme = IteratorPartitionScheme::BalancedParts;
+              axis.parameter = 1;
+            }
+            node.axes[1].parameter = 4;
+            node.embedding = {TileId(0), TileId(1), TileId(2), TileId(3)};
+            node.reductionMerges.clear();
+          }
+        },
+        detail);
+    ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+    // The producer splits rows; each consumer selects a different 32-column
+    // slab through expand_shape. Four independent owners supply each slab.
+    // Count only source-coordinate assemblies, excluding result publication.
+    unsigned copies = 0;
+    std::vector<unsigned> coverage(4 * extent);
+    actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
+      auto slice =
+          insert.getSource().getDefiningOp<mlir::tensor::ExtractSliceOp>();
+      if (!slice || slice.getSource().getType() != insert.getDest().getType() ||
+          insert.getDestType().getShape() !=
+              (llvm::ArrayRef<int64_t>{2, extent, 128}))
+        return;
+      ++copies;
+      auto offsets = slice.getStaticOffsets();
+      auto sizes = slice.getStaticSizes();
+      EXPECT_EQ(offsets, insert.getStaticOffsets());
+      EXPECT_EQ(sizes, insert.getStaticSizes());
+      EXPECT_EQ(offsets[0], 0);
+      EXPECT_EQ(sizes[0], 2);
+      EXPECT_EQ(sizes[2], 32);
+      ASSERT_GE(offsets[2], 0);
+      ASSERT_LT(offsets[2], 128);
+      EXPECT_EQ(offsets[2] % 32, 0);
+      ASSERT_GE(offsets[1], 0);
+      ASSERT_LE(offsets[1] + sizes[1], extent);
+      EXPECT_GE(sizes[1], extent / 4);
+      for (int64_t row = offsets[1]; row < offsets[1] + sizes[1]; ++row)
+        ++coverage[(offsets[2] / 32) * extent + row];
+    });
+    EXPECT_EQ(copies, 16u);
+    EXPECT_TRUE(
+        llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
+    EXPECT_EQ(countOps<TileRegionOp>(actual->module->getOperation()), 8u);
+    EXPECT_FALSE(actual->relations.boundaryRelations.empty());
+    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+        actual->module->getOperation(), actual->relations)));
+    auto layout =
+        resolveCurrentLayoutsAndBufferize(*actual->module, actual->relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+  }
+}
+
+TEST(SpatialRegionMaterializationTest,
      AssemblesExactMultiFragmentFaninAcrossUnequalPartitions) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   constexpr llvm::StringLiteral sourceText = R"mlir(
