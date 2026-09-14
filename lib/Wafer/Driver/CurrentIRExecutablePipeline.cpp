@@ -1,6 +1,7 @@
 //===- CurrentIRExecutablePipeline.cpp - Current IR downstream --------===//
 
 #include "CurrentIRExecutablePipeline.h"
+#include "PhysicalDataflow/CommunicationProposals.h"
 
 #include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -345,6 +346,8 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   for (const StandaloneTileModule &tile : *standalone)
     completionTileIds.push_back(tile.tileId);
   auto sharedCompletion = timed("shared-ddr-completion", [&] {
+    if (options.communication == CommunicationProposalPolicy::DependencyOrdered)
+      return constructCommunicationProposal(*standalone).outcome;
     return materializeSharedDDRCompletion(instructionModules,
                                           completionTileIds);
   });

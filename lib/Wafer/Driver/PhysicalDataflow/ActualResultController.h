@@ -104,10 +104,17 @@ enum class ActualCandidateStatus : uint8_t {
 /// the original actual Tile/Instr owner; rejected results contain only typed
 /// witness facts. No structural or downstream shadow plan enters this type.
 struct ActualCandidateResult {
+  struct EvaluatedObjective {
+    std::optional<analysis::SearchCostCohort> cohort;
+    analysis::SearchObjective value;
+  };
   ActualCandidateStatus status = ActualCandidateStatus::CompilerBug;
   std::optional<ExecutableCompilationResult> compilation;
   std::vector<SemanticRootKey> causalRoots;
   std::string detail;
+  // Valid only for the still-owned, unchanged accepted Instr. Replacing or
+  // mutating that IR invalidates this scalar ranking result.
+  std::optional<EvaluatedObjective> objective;
 
   bool isAccepted() const {
     return status == ActualCandidateStatus::Accepted && compilation &&
@@ -117,6 +124,10 @@ struct ActualCandidateResult {
     return status == ActualCandidateStatus::ExactRejection;
   }
 };
+
+const analysis::SearchObjective &getActualCandidateObjective(
+    ActualCandidateResult &result,
+    const std::optional<analysis::SearchCostCohort> &cohort);
 
 struct RetainedSearchCandidate {
   StructuralCandidateKey key;

@@ -187,6 +187,21 @@ NCC join各自只表达本域事实，不能单独作为远端store→load先行
 
 ### Shared-DDR publication
 
+Search的通信proposal构造消费已物化的Instr、DTE token/wait、DDR数据/通知op以及实际storage/alias；
+其直接输出是同一candidate-owned、联合依赖无环的Instr，交给NCC completion与唯一SPM/target leaf。
+固定请求和baseline继续验证其指定表示。Search中的transport偏好不是独立组件可任意组合的可行性证明；
+proposal构造以共同current-IR顺序分析给出的实际环为约束，调整允许的收发切点、输入共享参与者和transport选择。
+只读输入可根据实际RDMA及ProgramArgumentAttr证明相同输入窗口，在有关接收者上保留本地读取；
+其它可切换的DTE字节payload可以物化为同dtype的独立DDR packet、实际WDMA/RDMA及同一publication协议。
+算术和原SPM数据buffer不变，新增storage、binding、通知均进入真实IR；不能推测尚未物化的wait、alias或SPM可行性。
+每次改变IR后重新分析，不解析diagnostic控制流程；无法满足固定数据/控制依赖的选择不形成可执行proposal。
+共同分析只返回当前op句柄及typed状态，不能跨mutation保存。最终verifier仍独立从最终IR重建并检查约束。
+
+本项覆盖2/4/16 Tile、rank3及1024/1025/1031的混合DDR/DTE互等、只读输入共享与真正的数据环；
+检查合法共享保留、精确消息/字节、单独通知resource、最终无环与actual SPM；无须修改的输入保持原顺序。
+真实ResNet以默认8/42 search到完整package/no-card重签。协议选择参考MSCCLang依赖DAG驱动调度及TACCL的路由/顺序联合约束，
+但本实现只消费current Instr，不引入第二套通信IR或solver依赖。
+
 完成变换消费已经lower为Instr的完整TileModule集合。当前boundary materializer为每个source value建立独立shared-DDR resource；
 每个resource在一个无条件、单次执行的writer Region内写入，后续reader只读，invocation内不覆盖复用。完成变换必须从actual
 WDMA/RDMA、SSA alias和control flow验证这一前提，不能按resource名字或既有binding access标签猜测。多次交换使用各自实际resource；

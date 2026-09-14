@@ -423,6 +423,7 @@ public:
           *candidate->module, candidate->relations, movementOptions);
       recordMovementInstrumentation(movement.statistics);
       ExecutableCompilationResult compiled;
+      std::optional<analysis::SearchObjective> evaluatedObjective;
       InputCapacityFeedback capacityFeedback;
       std::mutex feedbackMutex;
       if (!movement.succeeded()) {
@@ -574,6 +575,8 @@ public:
               }
             };
         CurrentIRDownstreamOptions downstreamOptions = options.downstream;
+        downstreamOptions.communication =
+            CommunicationProposalPolicy::DependencyOrdered;
         downstreamOptions.distanceOneLoadPipeline = choice.pipeline;
         if (choice.pipeline)
           support::addCompileCounter("search", "pipeline-candidates", 1);
@@ -608,10 +611,12 @@ public:
       }
       if (choice.options.components.empty())
         temporal.observedTransports.insert(choice.options.transport);
+      bool repairQueued = false;
       if (hasActualSPMCapacityRejection(compiled)) {
         temporal.capacityObserved |= !capacityFeedback.coordinates.empty();
         bool refined = proposals->observeCapacity(temporal.choices,
                                                   capacityFeedback.coordinates);
+        repairQueued = refined;
         if (statistics) {
           statistics->actualCapacityRefinements += refined;
           statistics->unavailableCapacityRefinements += !refined;
@@ -619,6 +624,7 @@ public:
       } else if (compiled.isAccepted()) {
         auto objective =
             deriveExecutableSearchObjective(*compiled.executable, costCohort);
+        evaluatedObjective = objective;
         if (auto *known =
                 std::get_if<analysis::KnownSearchObjective>(&objective)) {
           uint64_t duration = known->estimatedDurationPicoseconds;
@@ -631,10 +637,17 @@ public:
           proposals->observeAccepted(temporal.choices, duration);
         }
       }
-      if (!temporal.realizationOnly && compiled.isAccepted() &&
-          (!realization || !realization->bestDuration ||
-           (temporal.bestDuration &&
-            *temporal.bestDuration < *realization->bestDuration))) {
+      if (!hasAcceptedCandidate && repairQueued && !realization &&
+          proposals->prepareNext(TemporalProposalKind::Repair)) {
+        // Keep the same actual prefix and all remaining alternatives, but
+        // serve certified capacity repair before exploring those siblings.
+        temporal.realizationOnly = true;
+        realization.emplace(std::move(temporal));
+        pending.pop_front();
+      } else if (!temporal.realizationOnly && compiled.isAccepted() &&
+                 (!realization || !realization->bestDuration ||
+                  (temporal.bestDuration &&
+                   *temporal.bestDuration < *realization->bestDuration))) {
         // Expose improvement immediately. The unvisited transport/closure
         // siblings retain this very same actual prefix in the one realization
         // slot; they no longer block another Temporal point. The executable
@@ -662,7 +675,7 @@ public:
       } else {
         finishBasePoint(temporal);
       }
-      return finish(std::move(compiled));
+      return finish(std::move(compiled), std::move(evaluatedObjective));
     }
   }
 
@@ -679,9 +692,12 @@ private:
   }
 
   TemporalWork nextTemporalWork() {
-    // Finish a bounded base comparison before starting another Temporal IR.
+    // Finish the current actualization before starting another Temporal IR.
     if (!pending.empty())
       return TemporalWork::Resume;
+    if (!hasAcceptedCandidate && proposals &&
+        proposals->prepareNext(TemporalProposalKind::Repair))
+      return TemporalWork::Repair;
     for (unsigned offset = 0; offset < 4; ++offset) {
       auto work = temporalWorkOrder()[(temporalPhase + offset) % 4];
       if ((work == TemporalWork::Proposal && proposals &&
@@ -1197,7 +1213,9 @@ private:
             CandidateRetention::UnfinishedActualization};
   }
 
-  StructuralCandidateEvaluation finish(ExecutableCompilationResult compiled) {
+  StructuralCandidateEvaluation finish(
+      ExecutableCompilationResult compiled,
+      std::optional<analysis::SearchObjective> objective = std::nullopt) {
     recordOwnership();
     stage = Stage::SelectTemporal;
     const auto status = classifyActualStatus(compiled.status);
@@ -1224,6 +1242,9 @@ private:
     ActualCandidateResult result;
     result.status = status;
     result.detail = compiled.detail;
+    if (objective)
+      result.objective = ActualCandidateResult::EvaluatedObjective{
+          costCohort, std::move(*objective)};
     if (compiled.isAccepted() || compiled.isProvenExactRejection())
       result.compilation.emplace(std::move(compiled));
     TemporalWork next = nextTemporalWork();

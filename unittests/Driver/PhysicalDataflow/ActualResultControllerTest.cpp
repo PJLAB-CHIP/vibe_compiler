@@ -2,6 +2,7 @@
 
 #include "Wafer/Driver/PhysicalDataflow/ActualResultController.h"
 #include "Wafer/Analysis/Instr/CostModel.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "Wafer/Target/RuntimeLaunchContract.h"
 
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -157,6 +159,31 @@ ActualCandidateResult exactRejected(uint32_t rootAnchor,
   }
   result.compilation.emplace(std::move(compilation));
   return result;
+}
+
+TEST(ActualResultControllerTest, ReusesObjectiveOnlyWithinTheSameCohort) {
+  // Bounded controller oracle; current-IR cost/legality has separate coverage.
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  auto timing = std::make_shared<wafer::support::CompileTimingSession>(stream);
+  wafer::support::ScopedCompileTimingActivation activation(timing);
+  auto result = accepted(1024);
+  auto policy = unitCostPolicy();
+  auto first = *SearchCostCohort::create(policy);
+  auto initial = getActualCandidateObjective(result, first);
+  auto repeated = getActualCandidateObjective(result, first);
+  EXPECT_EQ(compareSearchObjectives(initial, repeated),
+            SearchObjectiveComparison::Equivalent);
+  ASSERT_TRUE(result.objective);
+  EXPECT_EQ(result.objective->cohort, std::optional<SearchCostCohort>(first));
+  policy.ddrNominalBytesPerSecond /= 2;
+  auto second = *SearchCostCohort::create(policy);
+  auto changed = getActualCandidateObjective(result, second);
+  ASSERT_TRUE(std::holds_alternative<KnownSearchObjective>(changed));
+  EXPECT_EQ(std::get<KnownSearchObjective>(changed).cohort, second);
+  timing->finishAndPrintSummary();
+  EXPECT_NE(text.find("category=cost name=objective-evaluations value=2 "),
+            std::string::npos);
 }
 
 TEST(ActualResultControllerTest,

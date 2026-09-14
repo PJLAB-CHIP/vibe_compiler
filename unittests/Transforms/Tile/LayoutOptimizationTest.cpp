@@ -2103,6 +2103,96 @@ TEST_F(LayoutOptimizationTest,
 }
 
 TEST_F(LayoutOptimizationTest,
+       ConvolutionChannelSubviewHonorsAssignedUseLayout) {
+  for (int64_t extent : {1024, 1025})
+    for (int64_t channels : {24, 32}) {
+      for (bool padded : {false, true}) {
+        for (uint64_t workLimit : {0u, 100000u}) {
+          SCOPED_TRACE(extent);
+          SCOPED_TRACE(channels);
+          SCOPED_TRACE(padded);
+          SCOPED_TRACE(workLimit);
+          const int64_t sourceHeight = padded ? 3 : 5;
+          const int64_t sourceWidth = padded ? extent : extent + 2;
+          const std::string sourceType =
+              "tensor<1x" + std::to_string(sourceHeight) + "x" +
+              std::to_string(sourceWidth) + "x64xf16>";
+          const std::string sliceType = "tensor<1x" +
+                                        std::to_string(sourceHeight) + "x" +
+                                        std::to_string(sourceWidth) + "x" +
+                                        std::to_string(channels) + "xf16>";
+          const std::string inputType = "tensor<1x5x" +
+                                        std::to_string(extent + 2) + "x" +
+                                        std::to_string(channels) + "xf16>";
+          const std::string weightType =
+              "tensor<3x3x" + std::to_string(channels) + "x16xf16>";
+          const std::string outputType =
+              "tensor<1x3x" + std::to_string(extent) + "x16xf16>";
+          std::string text;
+          llvm::raw_string_ostream out(text);
+          out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+              << "func.func @entry(%image: " << sourceType
+              << ", %weight: " << weightType << ") -> " << outputType << " {\n"
+              << "%r = wafer.tile.region(%image, %weight : " << sourceType
+              << ", " << weightType << ") -> (" << outputType << ") {\n"
+              << "^bb0(%i: " << sourceType << ", %w: " << weightType << "):\n"
+              << "%slice = tensor.extract_slice %i[0, 0, 0, 16] [1, "
+              << sourceHeight << ", " << sourceWidth << ", " << channels
+              << "] [1, 1, 1, 1] : " << sourceType << " to " << sliceType
+              << "\n"
+              << "%zero = arith.constant 0.0 : f16\n";
+          if (padded)
+            out << "%padded = tensor.pad %slice low[0, 1, 1, 0] high[0, 1, 1, "
+                   "0] {\n"
+                << "^bb0(%n: index, %h: index, %v: index, %c: index):\n"
+                << "tensor.yield %zero : f16\n} : " << sliceType << " to "
+                << inputType << "\n";
+          out << "%empty = tensor.empty() : " << outputType << "\n"
+              << "%init = linalg.fill ins(%zero : f16) outs(%empty : "
+              << outputType << ") -> " << outputType << "\n"
+              << "%conv = linalg.conv_2d_nhwc_hwcf ins(%"
+              << (padded ? "padded" : "slice") << ", %w : " << inputType << ", "
+              << weightType << ") outs(%init : " << outputType << ") -> "
+              << outputType << "\n"
+              << "wafer.tile.yield %conv : " << outputType
+              << "\n}\nreturn %r : " << outputType << "\n}}}\n";
+          auto module = parse(text);
+          ASSERT_TRUE(module);
+          auto relations = outputRelation(*module);
+          if (padded) {
+            auto unprepared = queryCurrentLayoutAssignment(*module);
+            EXPECT_FALSE(unprepared.query);
+            EXPECT_EQ(unprepared.outcome.status,
+                      ExactPBQPStatus::BrokenContract);
+            EXPECT_EQ(countOps<mlir::tensor::PadOp>(*module), 1u);
+          }
+          ASSERT_TRUE(
+              prepareCurrentLayoutInput(*module, relations).succeeded());
+          EXPECT_EQ(countOps<mlir::tensor::PadOp>(*module), 0u);
+          auto query = queryCurrentLayoutAssignment(*module);
+          ASSERT_TRUE(query.query) << query.outcome.detail;
+          auto assignment = query.query->solve(workLimit);
+          ASSERT_TRUE(assignment.status == ExactPBQPStatus::Optimal ||
+                      assignment.status == ExactPBQPStatus::Feasible);
+          auto applied = query.query->apply(*module, relations, assignment);
+          ASSERT_TRUE(applied.succeeded()) << applied.detail;
+          unsigned convolutions = 0;
+          module->walk([&](mlir::linalg::Conv2DNhwcHwcfOp conv) {
+            ++convolutions;
+            auto type =
+                mlir::cast<mlir::MemRefType>(conv.getInputs()[0].getType());
+            EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), MemLayout::NCx);
+          });
+          EXPECT_EQ(convolutions, 1u);
+          auto lowered = lowerStructuredComputeToTile(*module, relations);
+          ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+          EXPECT_EQ(countOps<ComputeConvOp>(*module), 1u);
+        }
+      }
+    }
+}
+
+TEST_F(LayoutOptimizationTest,
        LoopInvariantPlacementIsAnActualBufferizedChoice) {
   for (int64_t extent : {1024, 1025, 1031}) {
     for (bool localSource : {false, true}) {

@@ -304,14 +304,13 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
 
 // Preserve actual blocking points. A DTE-connected set of Regions is not an
 // atomic phase: one Tile may publish DDR while another continues that exchange.
-static Result verifyOrder(const Collection &collection,
-                          llvm::ArrayRef<TileId> tileIds) {
+static Result
+verifyOrder(const Collection &collection, llvm::ArrayRef<TileId> tileIds,
+            llvm::SmallVectorImpl<mlir::Operation *> *cycle = nullptr) {
   support::ScopedCompileTimingSpan timing("completion-phase", "shared-ddr",
                                           "verify-order");
   if (tileIds.size() != collection.entries.size())
     return contract("shared DDR completion Tile identity domain differs");
-  if (collection.resources.empty())
-    return {};
   auto isBlockingPoint = [](mlir::Operation *op) {
     return mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEBroadcastOp,
                      InstrDTEScatterOp, InstrDTEWaitOp, SyncDDRPublishOp,
@@ -509,6 +508,14 @@ static Result verifyOrder(const Collection &collection,
   path.erase(path.begin(), path.begin() + positions.find(node)->second);
   std::reverse(path.begin(), path.end());
   path.push_back(path.front());
+  if (cycle) {
+    for (unsigned index : llvm::drop_end(path))
+      cycle->push_back(operations[index]);
+    // Proposal construction consumes typed current operations. Printing each
+    // instruction separately would repeatedly rebuild numbering for the
+    // complete entry, even though this diagnostic text is never consumed.
+    return unsupported("current communication order contains a cycle");
+  }
   std::string detail;
   llvm::raw_string_ostream stream(detail);
   stream << "shared DDR and DTE completion dependencies contain a cycle";
@@ -575,15 +582,8 @@ static bool isZeroInitialized(mlir::BlockArgument argument,
 }
 } // namespace
 
-Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
-                                 llvm::ArrayRef<TileId> tileIds) {
-  Collection collection;
-  Result result = collect(modules, collection);
-  if (!result.succeeded())
-    return result;
-  result = verifyOrder(collection, tileIds);
-  if (!result.succeeded())
-    return result;
+static Result verifyPublications(const Collection &collection) {
+  Result result;
   std::set<int64_t> readyResources;
   support::ScopedCompileTimingSpan timing(
       "completion-phase", "shared-ddr", "verify-publications",
@@ -669,8 +669,9 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
         return contract("shared DDR reader has no matching acquisition before "
                         "its first DMA");
     }
-    for (auto [entry, bindings] :
+    for (auto [entryRef, bindings] :
          llvm::zip_equal(collection.entries, entryBindings)) {
+      mlir::func::FuncOp entry = entryRef;
       const bool writes =
           resource.writer->root.getOwner() == &entry.getBody().front();
       const bool reads =
@@ -712,19 +713,18 @@ Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
   return {};
 }
 
-Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
-                                      llvm::ArrayRef<TileId> tileIds) {
+Result verifySharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
+                                 llvm::ArrayRef<TileId> tileIds) {
   Collection collection;
   Result result = collect(modules, collection);
-  if (!result.succeeded() || collection.resources.empty())
-    return result;
-  bool existing = false;
-  for (auto entry : collection.entries)
-    entry.walk([&](mlir::Operation *op) {
-      existing |= mlir::isa<SyncDDRPublishOp, SyncDDRAcquireOp>(op);
-    });
-  if (existing)
-    return verifySharedDDRCompletion(modules, tileIds);
+  if (result.succeeded() && !collection.resources.empty())
+    result = verifyOrder(collection, tileIds);
+  return result.succeeded() ? verifyPublications(collection) : result;
+}
+
+static Result
+createSharedDDRNotifications(llvm::ArrayRef<mlir::ModuleOp> modules,
+                             const Collection &collection) {
   {
     support::ScopedCompileTimingSpan timing(
         "completion-phase", "shared-ddr", "materialize-publications",
@@ -743,8 +743,9 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
     auto initial = mlir::DenseIntElementsAttr::get(
         mlir::RankedTensorType::get({64}, builder.getI8Type()),
         llvm::ArrayRef<int8_t>{0});
-    for (auto [moduleRef, entry] :
+    for (auto [moduleRef, entryRef] :
          llvm::zip_equal(modules, collection.entries)) {
+      mlir::func::FuncOp entry = entryRef;
       struct Publication {
         const Access *writer;
         const Access *reader;
@@ -816,6 +817,76 @@ Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
     if (mlir::failed(mlir::verify(module)))
       return contract(
           "shared DDR completion materialization produced invalid IR");
-  return verifySharedDDRCompletion(modules, tileIds);
+  return {};
 }
+
+CommunicationOrderAnalysis
+analyzeCurrentCommunicationOrder(llvm::ArrayRef<mlir::ModuleOp> modules,
+                                 llvm::ArrayRef<TileId> tileIds) {
+  CommunicationOrderAnalysis analysis;
+  Collection collection;
+  Result result = collect(modules, collection);
+  if (result.succeeded())
+    result = verifyOrder(collection, tileIds, &analysis.cycle);
+  if (result.succeeded())
+    result = verifyPublications(collection);
+  analysis.status = !analysis.cycle.empty() ? CommunicationOrderStatus::Cycle
+                    : result.succeeded()    ? CommunicationOrderStatus::Acyclic
+                    : result.failure == SharedDDRCompletionFailure::Contract
+                        ? CommunicationOrderStatus::Contract
+                        : CommunicationOrderStatus::Unsupported;
+  analysis.detail = std::move(result.detail);
+  return analysis;
+}
+
+Result
+materializeSharedDDRResourceCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
+                                       int64_t resourceId) {
+  Collection collection;
+  Result result = collect(modules, collection);
+  if (!result.succeeded())
+    return result;
+  if (!collection.resources.count(resourceId))
+    return contract("new shared DDR resource has no actual writer and readers");
+  for (auto entry : collection.entries) {
+    bool existing = false;
+    entry.walk([&](SyncDDRPublishOp publish) {
+      auto binding = getBinding(publish.getData());
+      existing |= binding && binding.getResourceId() == resourceId;
+    });
+    if (existing)
+      return contract("new shared DDR resource already has a publication");
+  }
+  for (auto it = collection.resources.begin();
+       it != collection.resources.end();)
+    if (it->first != resourceId)
+      it = collection.resources.erase(it);
+    else
+      ++it;
+  return createSharedDDRNotifications(modules, collection);
+}
+
+Result
+materializeSharedDDRNotifications(llvm::ArrayRef<mlir::ModuleOp> modules) {
+  Collection collection;
+  Result result = collect(modules, collection);
+  if (!result.succeeded() || collection.resources.empty())
+    return result;
+  bool existing = false;
+  for (auto entry : collection.entries)
+    entry.walk([&](mlir::Operation *op) {
+      existing |= mlir::isa<SyncDDRPublishOp, SyncDDRAcquireOp>(op);
+    });
+  if (existing)
+    return verifyPublications(collection);
+  return createSharedDDRNotifications(modules, collection);
+}
+
+Result materializeSharedDDRCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
+                                      llvm::ArrayRef<TileId> tileIds) {
+  Result result = materializeSharedDDRNotifications(modules);
+  return result.succeeded() ? verifySharedDDRCompletion(modules, tileIds)
+                            : result;
+}
+
 } // namespace wafer

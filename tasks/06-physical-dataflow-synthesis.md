@@ -319,6 +319,20 @@ relation仍精确分析，普通物化负责创建完整计算。动态extent和
 不能替代非本地依赖证明。相比只检查本地SSA后跨越中间Region，保留完整当前区间不需要另建远端可达性或未来调度表示；
 扩大scope带来的真实buffer与lifetime由后续actual memory planner判断。
 
+#### 布局assignment的计算端合同
+
+输入为current tensor IR及同一PBQP的value/use/转换activation解；layout阶段负责把解完整物化为bufferized IR，
+直接交structured-to-Tile。固定compute operand的硬layout约束必须在实际memref use上成立；producer可选择其它storage layout，
+但对应activation须生成真实转换，alias/view或function/loop bufferization不能丢失该约束。后续lowering只消费已物化布局。
+本项覆盖通道切片与Pad接卷积、1024/1025及非整除通道，分别检查PBQP use域、实际转换和NCx/Cx/NCx的直接compute消费者；
+原始ResNet失败片段和默认8/42整网作为下游验证。完成条件是同一assignment到actual use保持一致，不靠下游隐式换layout补救。
+
+Pinned Tensor Pad bufferization继承source memory space，并生成此前PBQP看不到的Fill及InsertSlice。
+因此在layout query前，对已选Tile内的uniform Pad使用pinned `linalg::GeneralizePadOpPattern`物化为现有Empty/Fill/InsertSlice；
+temporal中的Pad物化也复用同一实现。PBQP读取实际Fill硬布局及InsertSlice的DPS/alias关系，选择真实转换；
+不建立预测的Pad内部操作或buffer，也不把Pad输入与输出当作同一allocation。非uniform Pad仍按当前支持边界typed拒绝。
+这使转换成本、bufferization行为及直接compute消费者消费同一actual IR。
+
 对每个Tile的local structured DAG，region choice决定哪些root work进入同一TileRegion。一个producer相对当前Region只有三种
 结构选择：位于Region外、在Region内实际存在一次、或明确允许为selected consumer实际复制。它不选择top-level/nested、stored/direct、
 spill或future delivery。同region只选择共同local-storage scope，不证明SPM residency；只有actual producer work位于consumer
@@ -1150,7 +1164,13 @@ Controller接收每个实际leaf的typed结果；leaf更新与结构域关闭分
 未完成物化暂时禁止结构替换。capacity repair排队和正在物化的owner具有不同保留原因，不能互相覆盖。
 外层探索通道按启动顺序轮转活动S/F，再引入一个新S/F；无可行结果时与容量修复交错，
 已有可行结果时每三个实际leaf优先两个局部改进和一个探索/修复。空通道让出机会，阶段yield继续当前leaf，不推进配额。
-每个session同时只推进一个基础Temporal前缀；尚未可行时各closure先比较Peer与实际可用的SharedDDR。
+同一accepted owner在本轮比较期间保持Instr不变，其SearchObjective按固定cohort计算一次并随actual result传给局部反馈、统计及controller。
+缓存只含由该owner实际IR得到的排序标量及cohort，不保存别名、调度或memory事实；cohort变化重新计算，IR修改须丢弃旧objective。
+未取得可行leaf时，首次带实际冲突坐标的容量失败可将同一Temporal前缀及全部未访问Region/movement游标移入空闲realization槽，
+先推进已排队的容量修正。只在actual leaf结束处让出前缀，已有IR和游标继续保留；槽已占用时仍保持原有有界owner规则。
+会话没有正在物化的前缀时优先服务已有Repair，外层结构轮转与预算计费不变。覆盖真实SPM冲突→收缩→可行及未访问alternative续跑，
+不以估算footprint、空坐标或重复反馈触发修正。
+每个session同时只推进一个基础Temporal前缀；已有容量修正可按上述规则让出当前比较，其余情况下各closure比较Peer与实际可用的SharedDDR。
 接受后可将该实际前缀及尚未比较的transport/closure游标移入单个realization槽，立即释放下一T的改进机会。
 其中未准备的closure仍消费同一实际Temporal输入，全部layout-input物化后释放不再需要的Temporal checkpoint。
 共享、流水、通信算法等可选域无需全部耗尽即可释放基础前缀。单个局部realization anchor保留最佳可行或尚未可行的实际输入，

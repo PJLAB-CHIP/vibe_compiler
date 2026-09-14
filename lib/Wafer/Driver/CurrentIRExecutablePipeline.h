@@ -11,10 +11,14 @@
 
 namespace wafer::compiler::detail {
 
+enum class CommunicationProposalPolicy { Fixed, DependencyOrdered };
+
 struct CurrentIRDownstreamOptions {
   std::vector<TilePipelineChoice> executionPipelines;
   ExecutionStructureLimits executionLimits;
   bool distanceOneLoadPipeline = false;
+  CommunicationProposalPolicy communication =
+      CommunicationProposalPolicy::Fixed;
   unsigned tilePipelineParallelism = 0;
   bool captureTileDataflowIR = false;
   TileSPMCapacityObserver capacityObserver = nullptr;

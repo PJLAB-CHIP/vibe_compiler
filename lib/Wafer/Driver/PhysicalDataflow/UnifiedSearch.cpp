@@ -36,7 +36,7 @@ void recordRegionCandidateCounter(size_t index, llvm::StringRef metric,
 
 void recordStructuralCandidateMetrics(
     size_t index, const RegionPlan &plan,
-    const StructuralCandidateEvaluation &evaluation,
+    StructuralCandidateEvaluation &evaluation,
     const std::optional<analysis::SearchCostCohort> &cohort) {
 
   uint64_t fusionMerges = 0;
@@ -96,8 +96,8 @@ void recordStructuralCandidateMetrics(
     recordRegionCandidateCounter(index, "instruction-count",
                                  cost.aggregateInstructionCount.value);
 
-  analysis::SearchObjective objective = deriveExecutableSearchObjective(
-      *evaluation.result->compilation->executable, cohort);
+  analysis::SearchObjective objective =
+      getActualCandidateObjective(*evaluation.result, cohort);
   const auto *known = std::get_if<analysis::KnownSearchObjective>(&objective);
   recordRegionCandidateCounter(index, "objective-known", known != nullptr);
   if (!known)
@@ -438,8 +438,7 @@ struct UnifiedSearchSession::Impl {
         hasAccepted = true;
         servicePhase = 0;
       }
-      auto objective = deriveExecutableSearchObjective(
-          *evaluation.result->compilation->executable, costCohort);
+      auto objective = getActualCandidateObjective(*evaluation.result, costCohort);
       if (!branch.objective ||
           analysis::compareSearchObjectives(objective, *branch.objective) ==
               analysis::SearchObjectiveComparison::Better)

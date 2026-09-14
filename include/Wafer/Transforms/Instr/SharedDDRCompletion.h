@@ -5,6 +5,7 @@
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include <string>
 
 namespace wafer {
@@ -14,6 +15,31 @@ struct SharedDDRCompletionResult {
   std::string detail;
   bool succeeded() const { return failure == SharedDDRCompletionFailure::None; }
 };
+
+enum class CommunicationOrderStatus { Acyclic, Cycle, Unsupported, Contract };
+struct CommunicationOrderAnalysis {
+  CommunicationOrderStatus status = CommunicationOrderStatus::Acyclic;
+  // These are actual operations in this read-only IR epoch. Any mutation
+  // invalidates the complete analysis, including these handles.
+  llvm::SmallVector<mlir::Operation *, 8> cycle;
+  std::string detail;
+};
+
+CommunicationOrderAnalysis
+analyzeCurrentCommunicationOrder(llvm::ArrayRef<mlir::ModuleOp> modules,
+                                 llvm::ArrayRef<TileId> tileIds);
+
+/// Creates the actual publication/acquisition IR. Order is closed by the
+/// proposal constructor or verified by materializeSharedDDRCompletion.
+SharedDDRCompletionResult
+materializeSharedDDRNotifications(llvm::ArrayRef<mlir::ModuleOp> modules);
+
+/// Creates notification IR for one newly materialized DDR resource. The
+/// caller must close and verify the complete candidate communication order
+/// before passing it to memory/target planning.
+SharedDDRCompletionResult
+materializeSharedDDRResourceCompletion(llvm::ArrayRef<mlir::ModuleOp> modules,
+                                       int64_t resourceId);
 
 /// The caller owns and discards the complete candidate on failure.
 SharedDDRCompletionResult

@@ -926,3 +926,33 @@ none/search的temporal调用者均改为一次提交同一candidate的所有Regi
 本轮422项Transforms、两项SharedDDR直接验证回归、canonical完整增量构建和Ninja no-op通过；
 同一ResNet、相同width=1/trials=3的对照为219.001秒、峰值RSS 4,295,096 KiB：原先的shared-DDR失败候选通过completion后进入actual SPM；
 三次拒绝均为typed capacity，依赖环拒绝为零。本次小预算没有accepted package，完整默认搜索与设备数值资格仍分别保留。
+
+### 默认search的布局、通信构造及容量推进闭合
+
+修复后的首轮默认8/42实际执行8个候选、1个accepted、4次容量拒绝、2次通信环拒绝，最终由后续卷积的Tensor/NCx不一致中止，
+wall 625.110秒；没有package。容量修正只执行一次，136个参数减小，已经产生实际可行解；四次容量拒绝不能解释为连续缩小四次仍失败。
+
+布局根因是uniform tensor.pad在PBQP之后由One-Shot新建Fill/InsertSlice，并继承输入memory space，实际输出与独立选择的layout不一致。
+当前在query前复用pinned GeneralizePadOpPattern物化实际Empty/Fill/InsertSlice，Temporal也复用同一实现；PBQP直接约束这些实际操作，
+不添加Pad内部操作的预测模型或在卷积lowering临时换layout。1024/1025、C24/C32、带/不带Pad、完整/零求解预算的直接consumer通过。
+
+通信proposal使用actual Instr、token/wait与DDR发布关系，先从新鲜completion构造联合顺序；必要时选择有实际数据epoch证明的收发切点、
+有关接收者的本地只读输入，或同dtype的实际DDR packet及公共publication实现。固定baseline/qualification不改变指定表示。
+2/4/16 Tile、1024/1025/1031覆盖保持合法输入、收发位置、局部输入恢复、unicast/broadcast/scatter packet；均经过actual SPM，
+真实数据环仍拒绝。末段原始ResNet子图8次候选全部accepted并完成16 Tile package；它不替代整网资格。
+
+首次已关联容量失败可以保留原actual前缀并先服务Repair；两次候选预算已覆盖容量失败和新Temporal修正，未访问的实际游标仍按有界owner规则管理。
+同一accepted owner的SearchObjective在固定cohort内只计算一次，供局部反馈、统计和controller复用；cohort改变重新计算。
+Controller/search与通信相关30项定向检查及423项Transforms通过，Driver的128项中127项首次通过，唯一旧续跑计数断言更新后定向通过。
+通信检查还验证最终WDMA/RDMA的同dtype payload、source/destination byte offset以及scatter各receiver片段。
+完整canonical增量构建和Ninja no-op通过。此前重复评分版本在1192.759秒主动停止，无布局/通信拒绝；不登记为timeout或完整搜索结果。
+消除重复评分后的默认8/42运行由外层1800秒时限在1801.046秒中止，峰值RSS 14,428,604 KiB；
+此前已完成11个可行候选评分和21次actual容量拒绝，第12个可行候选评分尚未完成，没有布局或通信拒绝，没有package。
+同一轮直接XLA source及默认8/42按7200秒外层时限重新执行后完成：42个实际候选、13个accepted、29次actual SPM容量拒绝，
+unsupported/indeterminate均为零。正式wafer-compile生成verified ExecutablePackage，原始FP16输入[1,3,224,224]及完整输出[1,1000]保留；
+正式PyTorch helper重新导出核对source、生成本轮reference/payload，并完成16 Tile no-card。编译wall 2147.294秒，
+峰值RSS 14,907,472 KiB，含no-card共2153.622秒；compiler和no-card退出码均为0。
+外层时限调整不改变compiler的默认width/trials或可行性规则。本轮搜索完成16次actual容量反馈细化、9次Repair proposal，
+通信构造选择96次合法issue切点、18个实际DDR packet；13个accepted owner只执行13次目标评分。
+证据为`build/resnet-search-complete-budget.log`及本轮`resnet-search-objective-reuse/package`、`resnet-search-complete-budget-no-card`产物。
+本轮ResNet默认search目标已闭合；board-testing整体仍为doing，整网设备数值、性能与其它模型矩阵不由本次no-card代签。

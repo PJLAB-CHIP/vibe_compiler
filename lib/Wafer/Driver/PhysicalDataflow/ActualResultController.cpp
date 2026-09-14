@@ -3,8 +3,10 @@
 #include "Wafer/Driver/PhysicalDataflow/ActualResultController.h"
 
 #include "Wafer/Analysis/Instr/CostModel.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <cassert>
 #include <optional>
 #include <utility>
 
@@ -25,11 +27,25 @@ bool hasSPMCapacityRejection(const ActualCandidateResult &result) {
 analysis::SearchObjective deriveExecutableSearchObjective(
     const ExecutableLoweringResult &executable,
     const std::optional<analysis::SearchCostCohort> &cohort) {
+  support::ScopedCompileTimingSpan timing("analysis", "search-objective",
+                                         "current-instr");
+  support::addCompileCounter("cost", "objective-evaluations", 1);
   llvm::SmallVector<analysis::TileInstructionProgram, 16> programs;
   for (const auto &tile : executable.tiles)
     programs.push_back({tile.getTileId(), tile.getModule()});
   return analysis::deriveSearchObjective(executable.resourceCost, cohort,
                                          programs);
+}
+
+const analysis::SearchObjective &getActualCandidateObjective(
+    ActualCandidateResult &result,
+    const std::optional<analysis::SearchCostCohort> &cohort) {
+  assert(result.isAccepted() && "objective requires a current accepted owner");
+  if (!result.objective || !(result.objective->cohort == cohort))
+    result.objective = ActualCandidateResult::EvaluatedObjective{
+        cohort, deriveExecutableSearchObjective(*result.compilation->executable,
+                                                cohort)};
+  return result.objective->value;
 }
 
 CandidateReservation
@@ -67,8 +83,8 @@ ActualResultController::record(const StructuralCandidateKey &key,
     if (!result.compilation || !result.compilation->isAccepted() ||
         !result.compilation->executable)
       return failCompilerBug();
-    analysis::SearchObjective objective = deriveExecutableSearchObjective(
-        *result.compilation->executable, cohort);
+    analysis::SearchObjective objective =
+        getActualCandidateObjective(result, cohort);
     RetainedSearchCandidate candidate{key, objective,
                                       std::move(*result.compilation)};
     bool replace = !incumbent;

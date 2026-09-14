@@ -1251,42 +1251,15 @@ mlir::LogicalResult lowerConstantPads(mlir::IRRewriter &rewriter,
                                       TemporalTilingStatistics &statistics) {
   llvm::SmallVector<mlir::tensor::PadOp, 4> pads;
   region.walk([&](mlir::tensor::PadOp pad) { pads.push_back(pad); });
+  mlir::PatternRewriter patternRewriter(rewriter.getContext());
+  patternRewriter.setListener(rewriter.getListener());
+  mlir::linalg::GeneralizePadOpPattern pattern(rewriter.getContext());
   for (mlir::tensor::PadOp pad : pads) {
-    mlir::Value padding = pad.getConstantPaddingValue();
-    auto resultType = pad.getResultType();
-    if (!padding)
+    if (!pad.getConstantPaddingValue())
       continue;
-    rewriter.setInsertionPoint(pad);
-    llvm::SmallVector<mlir::OpFoldResult, 4> sourceSizes =
-        mlir::tensor::getMixedSizes(rewriter, pad.getLoc(), pad.getSource());
-    auto low = pad.getMixedLowPad();
-    auto high = pad.getMixedHighPad();
-    llvm::SmallVector<mlir::Value> dynamicSizes;
-    for (int64_t dimension = 0; dimension < resultType.getRank(); ++dimension) {
-      if (!resultType.isDynamicDim(dimension))
-        continue;
-      auto asValue = [&](mlir::OpFoldResult value) {
-        return mlir::getValueOrCreateConstantIndexOp(rewriter, pad.getLoc(),
-                                                     value);
-      };
-      mlir::Value size = rewriter.createOrFold<mlir::arith::AddIOp>(
-          pad.getLoc(), asValue(sourceSizes[dimension]),
-          asValue(low[dimension]));
-      dynamicSizes.push_back(rewriter.createOrFold<mlir::arith::AddIOp>(
-          pad.getLoc(), size, asValue(high[dimension])));
-    }
-    mlir::Value empty = rewriter.create<mlir::tensor::EmptyOp>(
-        pad.getLoc(), resultType.getShape(), resultType.getElementType(),
-        dynamicSizes);
-    mlir::Value filled =
-        rewriter.create<mlir::linalg::FillOp>(pad.getLoc(), padding, empty)
-            .getResult(0);
-    llvm::SmallVector<mlir::OpFoldResult, 4> strides(resultType.getRank(),
-                                                     rewriter.getIndexAttr(1));
-    mlir::Value inserted = rewriter.create<mlir::tensor::InsertSliceOp>(
-        pad.getLoc(), pad.getSource(), filled, pad.getMixedLowPad(),
-        sourceSizes, strides);
-    rewriter.replaceOp(pad, inserted);
+    patternRewriter.setInsertionPoint(pad);
+    if (mlir::failed(pattern.matchAndRewrite(pad, patternRewriter)))
+      return mlir::failure();
     ++statistics.decomposedPads;
   }
   return mlir::success();

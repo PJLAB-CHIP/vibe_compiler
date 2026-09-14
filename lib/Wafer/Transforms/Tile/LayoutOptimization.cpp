@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/Transforms.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1730,6 +1731,37 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
 
+  // One-Shot creates the Pad allocation and its Fill after the layout query.
+  // Materialize those existing tensor operations first so PBQP sees their
+  // real layout/alias constraints and prices any conversion to a consumer.
+  llvm::SmallVector<mlir::tensor::PadOp> pads;
+  module.walk([&](mlir::tensor::PadOp pad) { pads.push_back(pad); });
+  if (llvm::any_of(pads, [](mlir::tensor::PadOp pad) {
+        return !pad.getConstantPaddingValue();
+      })) {
+    result.status = ExactPBQPStatus::NoSolution;
+    result.detail = "layout input requires uniform tensor padding";
+    return result;
+  }
+  if (!pads.empty()) {
+    StructuredBufferReplacementListener listener(relations);
+    mlir::PatternRewriter rewriter(module.getContext());
+    rewriter.setListener(&listener);
+    mlir::linalg::GeneralizePadOpPattern pattern(module.getContext());
+    for (auto pad : pads) {
+      rewriter.setInsertionPoint(pad);
+      if (mlir::failed(pattern.matchAndRewrite(pad, rewriter))) {
+        result.detail =
+            "tensor padding could not be materialized before layout";
+        return result;
+      }
+    }
+    if (!listener.finalizeAfterRewrite()) {
+      result.detail = "tensor padding left stale current buffer relations";
+      return result;
+    }
+  }
+
   if (mlir::failed(normalizeLoopSubsetState(module, relations))) {
     result.detail = "loop subset state normalization failed";
     return result;
@@ -1792,6 +1824,13 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
   std::string detail;
   if (!module || mlir::failed(mlir::verify(module))) {
     result.detail = "layout query requires verifier-valid current IR";
+    return {std::move(result), nullptr};
+  }
+  if (module
+          .walk(
+              [](mlir::tensor::PadOp) { return mlir::WalkResult::interrupt(); })
+          .wasInterrupted()) {
+    result.detail = "layout query requires padding materialization first";
     return {std::move(result), nullptr};
   }
   llvm::SmallVector<mlir::Value, 64> values;

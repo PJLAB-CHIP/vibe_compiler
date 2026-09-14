@@ -125,6 +125,8 @@ private:
 LayoutOptimizationResult
 prepareCurrentLayoutInput(mlir::ModuleOp module,
                           StructuredMaterializationRelations &relations);
+/// Reads the prepared tensor IR. Operations that would introduce unmodeled
+/// compute during bufferization must be materialized before this query.
 LayoutQueryResult
 queryCurrentLayoutAssignment(mlir::ModuleOp module,
                              LayoutDomain domain = LayoutDomain::AllLegal);
