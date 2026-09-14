@@ -4,6 +4,7 @@
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -373,20 +374,26 @@ llvm::StringRef StructuredBufferReplacementListener::getFailureReason() const {
 mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     mlir::Operation *root,
     const StructuredMaterializationRelations &relations) {
+  support::ScopedCompileTimingSpan timing(
+      "analysis-phase", "current-buffer-relations", "validate");
   if (!root)
     return mlir::failure();
 
   llvm::DenseSet<const void *> liveValues;
   llvm::DenseSet<mlir::Operation *> liveOperations;
-  root->walk([&](mlir::Operation *operation) {
-    liveOperations.insert(operation);
-    for (mlir::Value result : operation->getResults())
-      liveValues.insert(result.getAsOpaquePointer());
-    for (mlir::Region &region : operation->getRegions())
-      for (mlir::Block &block : region)
-        for (mlir::BlockArgument argument : block.getArguments())
-          liveValues.insert(argument.getAsOpaquePointer());
-  });
+  {
+    support::ScopedCompileTimingSpan scanTiming(
+        "analysis-phase", "current-buffer-relations", "collect-live-ir");
+    root->walk([&](mlir::Operation *operation) {
+      liveOperations.insert(operation);
+      for (mlir::Value result : operation->getResults())
+        liveValues.insert(result.getAsOpaquePointer());
+      for (mlir::Region &region : operation->getRegions())
+        for (mlir::Block &block : region)
+          for (mlir::BlockArgument argument : block.getArguments())
+            liveValues.insert(argument.getAsOpaquePointer());
+    });
+  }
 
   StorageRootMemo storageRoots;
   for (const MaterializedBufferRelation &relation : relations.buffers) {

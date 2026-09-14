@@ -839,3 +839,31 @@ BF16 LLaMA的既有缺口仍按本计划前述矩阵推进；正确性收口后�
 
 可移机复现的12组同步诊断输入/实际IR、测试与binary身份见
 [主机执行及交接证据](../../docs/data/board-performance/scalar-host-execution-20260914.json)。
+
+
+### ResNet编译耗时的定向定位
+
+本轮只定位，未调整搜索预算、SPM准入或模型数学。静态Pad guard修复后的默认8/42搜索仍达到1800秒主机期限；
+日志中不再出现原动态shape布局拒绝，已记录的11次拒绝为5次shared DDR/DTE依赖环、2次七维卷积分解lowering及4次actual SPM容量。
+没有最终accepted统计，不能据此推断全部候选不可行。
+
+已完成的6次`start-temporal`累计445.8秒，超时时另一次已运行131.8秒；两次Region proposal生成累计188.6秒。
+209,930次搬运描述符规划累计69.0秒，不能把次数大单独当作30分钟主因；这些分层计时可能嵌套，不能直接相加。
+
+同一ResNet source的45秒有界none诊断确认了重复全图检查：1068次局部temporal调用累计18.069秒，同阶段1069次
+`checkStructuredBufferRelationsCurrent`累计17.379秒，其中重新收集live operation/value集合15.342秒；这段局部处理约96%的
+时间落在关系校验。源码在每个TileRegion调用入口扫描整个Module，而且位于full-extent no-op判断之前；
+活跃变换末尾还扫描全Module的结构与关系。随着Region和模型IR规模增加，重复工作按两者乘积增长。
+该比例只用于这段实测，不外推为完整30分钟的精确占比。诊断达到45秒主动结束，子进程峰值RSS为987332 KiB。
+
+另一个已确定的表示问题在`materializePartialReductionTile`：它把所有reduction维传给pinned partial-reduction接口；
+后者将这些维转为parallel并扩入结果。某卷积候选因此出现
+`memref<1x1x64x7x112x7x112xf16>`的全parallel中间结果，逻辑元素量约75.03 MiB，随后因无对应Tile expression lowering被拒绝。
+这是实际IR尺寸，不能替代SPM规划结论；需要重新区分局部归约和跨Tile partial/merge表示，而非仅补一个七维elementwise特例。
+
+通信失败的日志给出了实际闭环，例如Tile 8→9→10→11→12→13→14→15→8，含DDR publication、DTE token completion和Tile内顺序。
+前序将部分通信component改走DDR并从DTE component cycle遍历中排除，并不保证最终混合通信可执行；最终验证仍必须保留。
+当前需要修复候选的混合通信顺序，不能删除wait/acquire或放松cycle verifier。
+
+修复优先级：先把全局关系核验归到完整候选/批次边界并保留局部变换的精确校验，再修partial-reduction表示及实际混合通信顺序。
+本次新增只读关系校验计时；canonical完整增量构建、no-op及两个直接调用者回归通过。此前未提交的实现保持原样，不在本次诊断提交中收尾。
