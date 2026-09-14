@@ -685,5 +685,34 @@ F64诊断下PyTorch CPU与XLA CPU两者都有不同舍入点，不能把其中�
 这是主机执行差异证据，尚非Wafer生成代码/实卡缺陷的归因；不放宽容差，不签board-ready或性能轮次。
 
 四配置原CPU eager均得到全部有限logits；长序列每项约499秒主要花在主机reference，最终source构造/导出/ingestion每项约11–15秒，
-不是设备耗时。补充named source→Linalg检查中S16 BF16/FP16分别0.133/0.107秒通过；S1024达到该检查的120秒主机限额，
-该进程已退出，S1025未执行此阶段。未运行完整产品search/package，不把局部stage超时当成设备故障或停止其它主机工作。
+不是设备耗时。导出修改时的named source→Linalg检查中S16 BF16/FP16分别0.133/0.107秒通过；S1024达到该检查的120秒主机限额，
+该进程已退出。随后常量读取修复与完整产品入口的实际终态见下一节；这些主机期限不作为设备故障。
+
+### 2026-09-14 常量读取复杂度与完整LM下游边界
+
+官方StableHLO legalization已完成，两次主机栈采样均落在原constant generic折叠器的DenseElementsAttr元素转换。
+根因是每次读取一个元素都展开整份输入Attribute数组；广播后的大常量再进入compare时，工作量变成输出元素数乘输入元素数。
+按05号9.1合同改为标准iterator随机读取，slice只读取结果窗口，reshape复用原始存储，未使用的init不读取。
+同时按实际output permutation反解迭代坐标，避免转置输出折叠错误；不变更原元素、字节和scalar work预算。
+
+S1024完整LM的同一named pipeline由超过120秒变为1.61秒，其中constant pass 1.5201秒；S1025为0.10秒。
+后者mask超过原元素预算，保持原运算，因此不能把两种尺寸的时间差当成同等折叠工作量。
+实际S1024 mask共1,048,576个值与独立`column <= row`规则完全一致。S16/1024/1025重新导出的source各18文件，
+均与导出修复后的原source逐字节一致，原参数、dtype、输出与CPU reference不改。
+6个定向测试覆盖1024/1025/1031、输出转置、broadcast、使用/不使用init、FP16/BF16原始位型、stride、空窗口、
+未知输入/body及原预算；Transforms组件399项、相关lit 29项均实际通过，无skip；canonical完整增量构建及Ninja no-op通过。
+
+完整生产入口另测S16、S1024 FP16，编译transaction分别48.582、48.636秒正常失败，均已取得TensorProgram并识别attention；
+首次失败为`structured root has no typed path to an observable boundary`，尚未尝试actual candidate，SPM/target调用均为0。
+原gather的正式lowering在generic payload中通过`tensor.extract`读取外层token转换结果，
+而SemanticRootAnalysis及StructuredDAG的依赖遍历只读取外层operation operands，遗漏了实际region capture。
+下一步须一起闭合捕获依赖、结构化访问及直接下游物化，不能只删除该root或放松“可观测路径”检查。
+数据相关gather坐标不是affine索引；修复须保持当前SSA索引与StableHLO的clamp语义，不能给它伪造indexing map。
+标准[tensor.gather](https://mlir.llvm.org/docs/Dialects/TensorOps/#tensorgather-tensorgatherop)的越界合同与
+[StableHLO gather](https://openxla.org/stablehlo/spec#gather)不同，不能仅替换op名称宣称该路径合法；设备访问能力仍须沿现有Instr/ABI验证。
+
+本轮仍为无卡正确性准备；完整LM数值差异、完整package/no-card及实卡均未闭合，未计入三轮性能调优。
+固定FP16 LLaMA block本轮默认8/42完整no-card通过，9 accepted、33容量、0 unsupported；
+source保持初始快版本，包三文件及全部48份IR与上一轮no-card产物逐字节相同。主机总1059.59秒、RSS 2,840,736 KiB。
+前序修改相对初始快版本的设备回归仍待恢复，不能由本次主机产物相等代签。
+完整身份与结果见[常量读取证据](../../docs/data/board-performance/constant-tensor-lookup-20260914.json)。

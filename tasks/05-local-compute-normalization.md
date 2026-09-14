@@ -979,6 +979,32 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 原IR并由最终legality gate拒绝。cleanup不是runtime shape evaluator，也不能按partition名、symbol或常见mask shape猜结果。
 最终输出不得残留SDY或raw StableHLO。
 
+### 9.1 常量按需读取与坐标解释
+
+- Upstream IR / input：official legalization后的verified Linalg/Tensor IR，实际DenseElementsAttr、static view和indexing maps。
+- Current stage responsibility：在原`wafer-fold-static-tensor-ops`中按实际坐标读取常量；单个元素查询不能先展开整份输入。
+  Slice只读取结果窗口，等元素数量reshape直接复用DenseElementsAttr存储；Generic先由可逆output permutation将结果坐标映射到
+  迭代坐标，再使用输入map读取元素。未使用的init block argument不读取；body、dtype和算术顺序保持。
+- Output IR / files：同一SSA位置的精确`arith.constant`，或不适用时保持原操作；不产生旁路数据、cache或新文件格式。
+- Downstream consumer：原canonicalizer、attention识别和structured graph normalization；生产与named pipeline使用同一实现。
+- User-level driver / named pipeline：原`wafer-compile`及`wafer-lower-stablehlo-to-linalg`。
+- Explicit non-goals：不扩展constant scalar算术语言、不改数值、不改现有结果元素/字节/scalar work预算，不改变SPM、搜索或设备合同。
+  这不是ordinary graph的relation等价探索，也不新增e-graph前的graph rewrite。
+- Completion criteria：读取工作量随实际输出需求与scalar body线性增长，不包含“输出元素数×输入元素数”的隐藏复制；
+  每维坐标先检查边界，output map不可逆或输入访问不受支持时不折叠；实际大shape源图通过直接下游且输出逐项精确。
+
+算法采用[pinned MLIR DenseElementsAttr](https://mlir.llvm.org/doxygen/classmlir_1_1DenseElementsAttr.html)的随机访问iterator与
+`reshape`，而不是每次查询构造Attribute数组或建立跨operation缓存。pinned `BuiltinAttributes.h/.cpp`确认iterator按index定位存储，
+reshape保持元素类型、数量和原始数据；permutation解释复用标准`inversePermutation`，不根据相同shape猜测坐标。
+
+| 输入等价类/分支 | exact结果或失败 | 直接下游witness |
+| --- | --- | --- |
+| rank3、S1024/1025/1031，非splat/splat、整数add/compare、broadcast输入、identity/permuted输出、init使用/不使用 | 全部输出与独立坐标oracle一致；无完整输入向量逐元素重建 | 原pass后verified constant及正式normalization |
+| FP16/BF16常量passthrough、负零/非有限位型、static reshape/slice | dtype及每个元素原始位型保持，窗口只取所需元素；空窗口明确得到空constant | Tensor/Arith verifier及returned constant |
+| 大逻辑splat输入、小结果窗口、非单位stride、多轴位置 | 无与完整source元素数成比例的临时展开；所有读取坐标均在原输入范围 | 真实规模slice结果与外层用户 |
+| 超既有预算、dynamic index、未知输入、非可逆output map、未知scalar body | 保持原IR且verifier-valid，不放松预算或猜结果 | 原下游消费与负例检查 |
+| 原始完整LM S16与S1024/1025、固定FP16 block回归 | source/参数不变，记录实际pass工作与wall/RSS；完整产品与局部阶段分别验收 | 同一生产builder、package/no-card及后续实卡分级登记 |
+
 ## 10. Failure 与 Atomicity
 
 - attention near-miss不是错误，保持普通verified Linalg DAG；

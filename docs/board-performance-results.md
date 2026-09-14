@@ -1643,4 +1643,35 @@ source、测试和下游终态见[直接XLA导出证据](data/board-performance/
 
 四配置的完整CPU eager reference均生成；最终source构造/导出/ingestion每项约11–15秒，而两项长序列CPU reference各约499秒。
 这些均为主机工作墙钟，存在其它主机工作重叠，不是隔离性能A/B。Named source→Linalg补充检查的S16 BF16/FP16通过，
-S1024达到120秒主机期限，S1025此阶段未执行；完整产品search、package/no-card和实卡均未签发。
+该导出版本的S1024达到120秒主机期限；随后常量读取修复与完整产品检查见下节，完整LM仍未取得package/no-card及实卡资格。
+
+## 2026-09-14 常量张量读取复杂度修复
+
+原始完整LM S1024的主机编译阻塞发生在官方StableHLO legalization之后。两次栈采样均停在
+`foldConstantLinalgGeneric`的DenseElementsAttr元素转换：每生成一个结果元素，先把整份输入转换成Attribute数组。
+实际mask的两次broadcast和一次compare中，旧循环若执行完需约2.20万亿次Attribute读取，新实现为4,194,304次；
+这是从该实际IR及循环推导的工作量，不是设备指令数或已完成的运行计数。
+
+修复使用pinned DenseElementsAttr随机访问iterator，slice仅读取结果窗口，reshape复用原始存储，未使用init不读。
+Generic同时从实际output permutation反解迭代坐标，修复转置输出被按identity解释的问题；
+保留既有折叠元素/字节/scalar预算、算术与dtype，不改搜索或SPM规则。
+
+| 本轮边界 | 主机实际结果 | 资格限制 |
+| --- | --- | --- |
+| S1024完整LM source→named Linalg pipeline | 超过120秒→1.61秒；constant pass 1.5201秒；RSS 60,012 KiB | 同一阶段的编译改善，非完整产品或设备性能 |
+| S1025完整LM同一named pipeline | 0.10秒；RSS 28,564 KiB | mask超过原元素预算而保持运算，与1024的折叠工作量不同 |
+| 实际S1024因果mask | 1,048,576个值全部等于独立`column <= row`结果，含对角线 | 精确编译结果检查，非完整LM数值验收 |
+| 定向及组件回归 | 6个定向测试覆盖31组输入；Transforms 399项及相关lit 29项全部通过，无skip | 完整canonical增量构建及Ninja no-op通过 |
+| 完整LM S16/S1024 FP16生产入口 | source→TensorProgram通过，已识别attention；transaction各48.582/48.636秒后正常失败 | 尚未尝试actual candidate，SPM/target调用均为0，未产生package |
+| 固定FP16 LLaMA block，默认8/42 | 9 accepted、33容量、0 unsupported，完整package/no-card通过；主机1059.59秒，RSS 2,840,736 KiB | 包三文件及48份IR与上一轮逐字节一致；未执行设备 |
+
+三份重新导出的完整LM source各18文件，与直接XLA导出修复后的对应版本逐字节一致；没有更换参数、token端口或原始模型。
+下一失败是`structured root has no typed path to an observable boundary`。实际gather lowering在generic payload里读取
+外层token转换结果，而semantic root/structured DAG只追外层operands，遗漏了region capture。
+后续修复必须连同数据相关索引的访问与物化合同一起验证；不能删掉活跃root、虚构affine map或用加预算绕过该边界。
+完整LM之前的主机数值差异仍未闭合，本轮未启动设备，未计入三轮板端调优。
+固定block source与初始正确快版本亦逐字节一致；但上一轮局部常量/SPM修改已经改变其包，
+本次相对上轮包不变不能替代尚未执行的初始快版本设备回归。
+
+配置、实际IR、source身份、work推导、完整日志和关键回归见
+[常量读取证据](data/board-performance/constant-tensor-lookup-20260914.json)。

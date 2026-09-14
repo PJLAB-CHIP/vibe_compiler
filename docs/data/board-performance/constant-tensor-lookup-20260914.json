@@ -1,0 +1,367 @@
+{
+  "work_item": "board-testing",
+  "date": "2026-09-14",
+  "scope": "host-only; board explicitly unrecovered",
+  "root": {
+    "owner": "lib/Wafer/Transforms/Linalg/ConstantTensorFolding.cpp",
+    "old_element_lookup": "Rebuilt every input Attribute before selecting a single element for every output",
+    "stack_samples": 2,
+    "stack_log": {
+      "path": "build/test/model-performance/lm-normalization-profile.gdb.log",
+      "bytes": 7611,
+      "sha256": "256602491bb72b00bc3ae8dabbd8c0672d0b2a6ed16a9a18b89d2d4595fb9ab0"
+    },
+    "observed_stage": "official StableHLO legalization completed; FoldStaticTensorOpsPass active",
+    "baseline_named_pipeline": {
+      "status": "host deadline exceeded",
+      "deadline_seconds": 120,
+      "source_revision": "5f248da9",
+      "log": {
+        "path": "build/test/model-performance/direct-xla-lm-linalg.log",
+        "bytes": 1246,
+        "sha256": "631da7e2fd124e5dbea998e287bfc23485fc359e23b6989c0a0c033575a40cf9"
+      }
+    },
+    "ir_derived_work": {
+      "boundary": "Two constant i64 broadcasts [1,1,S] -> [1,1,S,S], followed by the actual sle compare; counts derived from loops, not observed completed runtime work",
+      "S": 1024,
+      "old_attribute_dereferences": 2201170739200,
+      "new_attribute_dereferences": 4194304,
+      "pre_fold_ir": {
+        "path": "build/test/model-performance/lm-normalization-profile-ir/builtin_module_IrToHlo.337/12_wafer-fold-static-tensor-ops.mlir",
+        "bytes": 85572,
+        "sha256": "521bf15924a7f5067e4e46177256c1b680df261315679495575cb0efe60f2f1d"
+      }
+    }
+  },
+  "implementation": {
+    "element_lookup": "DenseElementsAttr random-access iterator",
+    "slice": "validate every axis and read only selected output elements; nonempty splats resizeSplat",
+    "reshape": "DenseElementsAttr::reshape preserves original storage",
+    "output_coordinates": "inverse of actual output permutation composed into operand maps",
+    "unused_init": "not read",
+    "budget_change": false,
+    "numeric_change": false,
+    "search_change": false
+  },
+  "build": {
+    "canonical": "passed, full incremental default build",
+    "log": {
+      "path": "build/test/model-performance/constant-lookup-build-complete.log",
+      "bytes": 2205,
+      "sha256": "debf31281593508cd6123b43c7a6e036b4705b65ad5b9ae4e4f4b7670b7c8896"
+    },
+    "second_build": "Ninja no-op",
+    "second_log": {
+      "path": "build/test/model-performance/constant-lookup-build-noop.log",
+      "bytes": 63,
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "compiler": {
+      "path": "build/bin/wafer-compile",
+      "bytes": 85527240,
+      "sha256": "3e5af7cae7a6d25a131ed2e24f31093d6f362ccacf6707e7e2a1d2a7fece61f3"
+    },
+    "optimizer": {
+      "path": "build/bin/wafer-opt",
+      "bytes": 62610232,
+      "sha256": "b3a2f3124fcfec9ef8c72ce6d5321bdd2673c7443f55f49f2d3d9454ee3551b6"
+    },
+    "running_llama_compiler_sha_matches_final_build": true
+  },
+  "tests": {
+    "focused": {
+      "gtests": 6,
+      "passed": 6,
+      "configurations": 31,
+      "path": "build/test/model-performance/constant-lookup-focused-final.log",
+      "bytes": 1554,
+      "sha256": "73272a7b478878edc72a0ef47e2c8c8782ebfceadf7dff92d7edde5d541b326d",
+      "wall_seconds": 2.21,
+      "max_rss_kib": 36116
+    },
+    "component": {
+      "ctest": 1,
+      "gtests": 399,
+      "passed": 399,
+      "skipped": 0,
+      "path": "build/test/model-performance/constant-lookup-component.log",
+      "bytes": 385,
+      "sha256": "72c5d51960a186ba76c02ef48a0336b6ee0d9c6304e29a2bf91edfc79977d2ae",
+      "wall_seconds": 46.66,
+      "max_rss_kib": 140400
+    },
+    "lit": {
+      "executed": 29,
+      "passed": 29,
+      "skipped": 0,
+      "scope": [
+        "Conversion/StableHLOToLinalg",
+        "Transforms/StableHLO",
+        "Tools/wafer-frontend-product.test",
+        "Tools/check-source-organization.test"
+      ],
+      "path": "build/test/model-performance/constant-lookup-lit.log",
+      "bytes": 207,
+      "sha256": "4d8545332987179aa7ba0bdc696e0697dc8f7821629b85480f4e01af83210cbf",
+      "wall_seconds": 12.36,
+      "max_rss_kib": 533664
+    }
+  },
+  "named_pipeline": {
+    "S1024": {
+      "status": "passed",
+      "constant_pass_seconds": 1.5201,
+      "path": "build/test/model-performance/constant-lookup-lm-1024-linalg.log",
+      "bytes": 4913,
+      "sha256": "bc280e14ac6de4ce8ee5bf4280af94757759028dd776b97651c9b9a4fff5dca8",
+      "wall_seconds": 1.61,
+      "max_rss_kib": 60012
+    },
+    "S1025": {
+      "status": "passed",
+      "constant_pass_seconds": 0.0028,
+      "budget_boundary": "S*S exceeds unchanged output-element cap, so mask operations remain",
+      "path": "build/test/model-performance/constant-lookup-lm-1025-linalg.log",
+      "bytes": 4913,
+      "sha256": "226dded58a5ef77e7d7e68cbf62439965c1c8507a039814c7c2ff0af4d988061",
+      "wall_seconds": 0.1,
+      "max_rss_kib": 28564
+    },
+    "mask_exact": {
+      "status": "passed",
+      "elements_checked": 1048576,
+      "true_elements": 524800,
+      "oracle": "column <= row, including diagonal",
+      "actual_ir": "build/test/model-performance/constant-lookup-lm-1024-linalg.mlir",
+      "actual_ir_sha256": "aa6dcc549b82786ffadbb5cdc45670fc227aa2765326b57e991a3372ae163710"
+    }
+  },
+  "source_regression": [
+    {
+      "source": "constant-fold-lm-current/source-program",
+      "prior_source": "direct-xla-lm-final/torch.float16-1024",
+      "files": 18,
+      "byte_equal": true,
+      "sha256": {
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+        "functions/forward.stablehlo.bc": "3777cce8aa62384ff4389a5124f20d9c499a013dfaf92a1b5de578f3f7208dbd",
+        "functions/forward.meta": "96dd9df1f7374940f06ab1d3c276d9bae42062ac81eb3fd3ff0c915995782ab2",
+        "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+        "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+        "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+        "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a"
+      }
+    },
+    {
+      "source": "constant-lookup-lm-tail-current/source-program",
+      "prior_source": "direct-xla-lm-final/torch.float16-1025",
+      "files": 18,
+      "byte_equal": true,
+      "sha256": {
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+        "functions/forward.stablehlo.bc": "2ab2aa93fb09e74762cc627709789e456472b097b0cb22db311c341cab68569f",
+        "functions/forward.meta": "2519b5b58e75ff11d1c85beaf9fb647b4d36221d34190a8f2b59da24cba417df",
+        "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+        "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+        "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+        "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a"
+      }
+    },
+    {
+      "source": "constant-lookup-full-lm-current/source-program",
+      "prior_source": "direct-xla-lm-final/torch.float16-16",
+      "files": 18,
+      "byte_equal": true,
+      "sha256": {
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+        "functions/forward.stablehlo.bc": "1c7f272f3ed0380f5328e03c94535e55011447e5daf983bb734b35e9de323c6d",
+        "functions/forward.meta": "aad972e0a923dd4a32f68f01298677f4fa0873f945b9b6cf7c9c2d7c3bcc8d58",
+        "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+        "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+        "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+        "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a"
+      }
+    }
+  ],
+  "full_lm_product": {
+    "S16_float16": {
+      "status": "normal compile failure before actual candidates",
+      "transaction_wall_ms": 48581.959,
+      "constant_pass_ms": 2.723,
+      "tensor_program_operations": 437,
+      "path": "build/test/model-performance/constant-lookup-full-lm-current.log",
+      "bytes": 19074,
+      "sha256": "477ba5fa1477669833cc3c9fa5bf0db65f1431ba45b8c59e8892350218f184be",
+      "wall_seconds": 65.54,
+      "max_rss_kib": 3626160
+    },
+    "S1024_float16": {
+      "status": "normal compile failure before actual candidates",
+      "transaction_wall_ms": 48635.972,
+      "constant_pass_ms": 1421.203,
+      "path": "build/test/model-performance/constant-lookup-full-lm-1024-compile.log",
+      "bytes": 18561,
+      "sha256": "59eb7d0555a70db62941fb04fc9fa7237dca25c3cb193e25daacaaf23d31c6ec",
+      "wall_seconds": 48.64,
+      "max_rss_kib": 827116
+    },
+    "diagnostic": "structured root has no typed path to an observable boundary",
+    "actual_candidates": 0,
+    "spm_planning_invocations": 0,
+    "target_lowering_invocations": 0,
+    "next_boundary": "Official gather lowering captures token conversion result inside Generic payload; SemanticRootAnalysis and StructuredDAG traverse top-level operands only. Preserve actual region capture and dynamic index dependencies into materialization; no fake affine map or dropped live root.",
+    "package": false,
+    "no_card": false,
+    "board_executed": false,
+    "current_root_analysis_input": {
+      "path": "build/test/model-performance/lm-capture-root-current-input.mlir",
+      "sha256": "218c865a615bc9da35bb0d149eba708b9d9229532a93454ea2e15be4c9e6c606",
+      "bytes": 54143,
+      "verifier": "passed",
+      "capture": "GDB parent process, production SemanticRootAnalysis entry, actual function printed without source changes; compiler then returned the same normal failure",
+      "ir_witness": "i64 -> i32 Generic result captured by tensor.extract in next Generic payload, whose explicit inputs are empty; payload clamp and embedding table reads remain actual SSA"
+    }
+  },
+  "llama_regression": {
+    "source": {
+      "functions/forward.stablehlo.bc": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b",
+      "functions/forward.meta": "83366ad13c971c888242a2518f76193891b360977b892ad388eb0c883156d62b",
+      "data/decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+      "data/decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+      "data/decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+      "data/rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+      "data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+      "data/decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+      "data/decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+      "data/decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+      "data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+      "data/decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+    },
+    "package": {
+      "manifest.json": "f2e518c40aa69a25243b97c46f5976383bcdc29e4ce1df8d5497353092c00396",
+      "modules/module_00000.so": "33a717f64d78d34ce2a5e6d9c7199366b7d0b7a985cfade11e54ad94e85d6d2b",
+      "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+    },
+    "source_equal_previous": true,
+    "source_equal_initial_fast": true,
+    "package_equal_previous": true,
+    "package_equal_initial_fast": false,
+    "ir": {
+      "instruction/tile_00001.mlir": "a7c16254e166f6a371c0683a26edfe191141ec3e20cc5860adeb5baba1415346",
+      "instruction/tile_00015.mlir": "1802fb6f2eddd37cc7865f2ece0c76cdadce7523b73fbc2c74057084a5b4b280",
+      "instruction/tile_00002.mlir": "17243db6292a76f16b62222a093b2253391ecac6ba0064851ae31b428d9f37c8",
+      "instruction/tile_00010.mlir": "45d5df14d969c428846a4b71570aa3dc3fe77e0c98b2434a5a33c9eef4367ac7",
+      "instruction/tile_00000.mlir": "59079ac6d23e50d8e5bfead6e468be7acd0b8e01776ac118a1ac7d7a03e5e95c",
+      "instruction/tile_00006.mlir": "215a08e98f9935dbbe1bfbeb37bde3dbfcae49e88a9f8cd2db96bb4204406786",
+      "instruction/tile_00012.mlir": "ecb2215188649ca572cf77b6d232f450212ed6d55c841fd794764f1d9e156560",
+      "instruction/tile_00004.mlir": "80788ce344ec62459ec47e855eb7a1ec62c51bd53220d4cf4c0400903f93f96e",
+      "instruction/tile_00011.mlir": "c45ef374c03edf87bf4bb16d27b958f7dc6f06f52d653b1fd8d3395759e2c7fa",
+      "instruction/tile_00003.mlir": "cd0bc30edd7d36f954c676c12fca8787ad860d70ae57310ed43b58193958321b",
+      "instruction/tile_00008.mlir": "d30166049d36f18920b0e349aa8ebe64a4315b8d47f0befe5b1b9a452676c047",
+      "instruction/tile_00007.mlir": "27e09efea5b539b7ed0a108a557a2217d93b4ff9b774d45152efde94540deef5",
+      "instruction/tile_00014.mlir": "ec80db50b2cb0eb093b7080b95631c0e463c4f6010ee0e1e956cb50bd0dad160",
+      "instruction/tile_00005.mlir": "152c9ef73addc1e3a2777fe7d71aadc49189885aa71180bb89bb417b6ba59e58",
+      "instruction/tile_00009.mlir": "8d8390ff38e8ed50907bf6173596531ff98b08dc1aa2985e4b4a24be2da85ab8",
+      "instruction/tile_00013.mlir": "df345aa4a7eb473d8b03cb54de54afa53e0d3d5d6cc1e3879e7efcfb44c637f3",
+      "target-llvm/tile_00013.ll": "9c485022cc0fe121b42be3f5b7975f4a412b69ca3536fd7591676926c32297db",
+      "target-llvm/tile_00004.ll": "d33bc45b7a468a672f44eeb16fe38664d2b8dde0dfc3f37f7a09fdb10447256e",
+      "target-llvm/tile_00005.ll": "0ee554efaa11dafc8a9db81074de5c3305ef8e3a241963b97cd2094f9d67e685",
+      "target-llvm/tile_00007.ll": "c718a7e43f81caa304b918dcd68a37f33bd87f35b0e4a6219cceb93e78ad7428",
+      "target-llvm/tile_00010.ll": "1aa352a4b30fe71c02659e975c739c06bf6f0528a4cdb2c0da75788f7cda9b17",
+      "target-llvm/tile_00001.ll": "ff0aa5a06803d044cf59808344cdf8c131f0f090aa35cc6c23afbbe346fa1796",
+      "target-llvm/tile_00008.ll": "d3ca862e7a02e0f47427c994787c27b26f9d94868833561efd4aa8fb146dbc30",
+      "target-llvm/tile_00000.ll": "603a0ccd222cd9d20cb05d8fa64527d0f4c8545b086b533936126720c00c6563",
+      "target-llvm/tile_00014.ll": "35d3b9806e0236f4b52e9ffe45eb8b4f1c7bb937b463f1c0b84265f2b9085230",
+      "target-llvm/tile_00011.ll": "c38a8480b28c1bc0ee796da06b4813c1b0915df669ea4463cba43f81f516d482",
+      "target-llvm/tile_00012.ll": "b0c2424d09555eec066312aab9182ab68664641aa97c5e516d1e14a03abc1a2c",
+      "target-llvm/tile_00009.ll": "20f10e1b1d5b24173daf62568897123418fbfe36a60e979f7635484fe482a350",
+      "target-llvm/tile_00015.ll": "6d3fb53740a82d580f682f42fe49024083b7814a1438e616e4baebe8a6149246",
+      "target-llvm/tile_00006.ll": "6b5ad306f562369152a8797ea32bca1a4d9330062cfb901db76d2589a953e9db",
+      "target-llvm/tile_00003.ll": "212b7578ee9f61bcaf800f18fa5ab42dbafa70934cf41c05c0be19776b693ea0",
+      "target-llvm/tile_00002.ll": "0b1a43251b3da71b37dc51454454fad1edb0c47c9439b23817847b4bb3cc5450",
+      "tile-dataflow/tile_00001.mlir": "416064a6cb249d8d3b62794f2e267363e36e11f7ef196414bbbc271535817c6f",
+      "tile-dataflow/tile_00015.mlir": "6b4f8ba58caae354ca7aad226651031dcf81f828a7076676591763c10769b326",
+      "tile-dataflow/tile_00002.mlir": "24ae40853f3cc970822f0fc4df915da825dfcdbc3bff5acf6157d0d765cd978a",
+      "tile-dataflow/tile_00010.mlir": "1b9e79cbdaca29aa00772bfd3c07e737473242353227b9cb962c29c8c6a23dee",
+      "tile-dataflow/tile_00000.mlir": "679b57d093639a39667bc6ae049dc078de23b1567fba6790a5863d46be9ac0b8",
+      "tile-dataflow/tile_00006.mlir": "b4dac8624d67c9a665f240c49fb262f8bf73d708c5a0579eea671c3a176bcd87",
+      "tile-dataflow/tile_00012.mlir": "874cf31b1253b5cd0e4b5ddf49c5847434d77f48d15a236eef3d3e0db5e221ae",
+      "tile-dataflow/tile_00004.mlir": "ced809b0191a86ec2b49b3e40564bf7ef47e676610d8e93e130a09a0211e35fb",
+      "tile-dataflow/tile_00011.mlir": "f8d6f1c0e74254675e5eb2e713e1f5ede3325a74e93630220b4b48e890cf8a01",
+      "tile-dataflow/tile_00003.mlir": "d3be5ac0624d4d2a90cb9e5f5dc3a60c928e5a6df232a0255706f4787a8f87c9",
+      "tile-dataflow/tile_00008.mlir": "13c5a35065244bfb1a071e688ddfbf875fee561993cc887e36fad7b5ce4da9e6",
+      "tile-dataflow/tile_00007.mlir": "7d0f7b810a20d2753c5ed945f5f2b88a7ec615539807a21580069e8c1b77b93d",
+      "tile-dataflow/tile_00014.mlir": "80c09020b11b8fc08f39c3581f221557a84726513ebcd2794ffd011a3b16bc75",
+      "tile-dataflow/tile_00005.mlir": "97a22fd533d8d78baaab349c6ca479531f89fba9654cbc643c7ff807ad5854f8",
+      "tile-dataflow/tile_00009.mlir": "01ab64c703dc57363ebc32fa9b433d76f4e51cd77a05a60057e753e287c7c903",
+      "tile-dataflow/tile_00013.mlir": "7400038b235421ae1862e62954327770da6f9fdc9a2d4e2182045bc1c6de7728"
+    },
+    "ir_files": 48,
+    "ir_equal_previous": true,
+    "changed_ir": [],
+    "search": {
+      "accepted-candidates": 9,
+      "actual-capacity-refinements": 11,
+      "trials": 42,
+      "trials-used": 42,
+      "unsupported-candidates": 0,
+      "exact-rejected-candidates": 33
+    },
+    "wall_seconds": 1059.59,
+    "max_rss_kib": 2840736,
+    "status": "passed full source/reference/package/no-card",
+    "case": "llama-2-7b-block",
+    "dtype": "float16",
+    "seed": 20260803,
+    "search_width": 8,
+    "search_trials": 42,
+    "log": "build/test/model-performance/constant-lookup-llama-current.log",
+    "transaction_wall_ms": 1037256.404,
+    "board_executed": false,
+    "qualification_limit": "Source matches initial correct fast baseline, but current package differs from that older baseline because of earlier changes. Byte equality to immediately preceding no-card package does not close pending device qualification against the initial fast baseline."
+  },
+  "board_executed": false,
+  "remaining": [
+    "Full LM capture dependencies and downstream runtime gather must be handled together",
+    "Full LM CPU numerical differences remain unqualified",
+    "Full LM package/no-card unavailable",
+    "ViT full result/assembly carriers and other matrix gaps remain",
+    "Device correctness/performance and three tuning rounds pending board restoration"
+  ]
+}

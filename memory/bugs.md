@@ -2034,3 +2034,12 @@
   在原typed LayerNorm调用边界使用pinned官方分解；普通ATen分解仍由同一capture scope承载，不按模型名判断。
 - 防复发：共享参数和非persistent buffer的1024/1025/1031、FP16/BF16真实导出，逐bit payload/输出以及修改runtime ID后复用同一图；
   验证原CPU对象不变，数据相关标量、CPU fallback、显式graph step、状态修改和不安全路径失败后不发布目录。
+
+## 常量折叠的预算不能约束隐藏的完整输入复制
+
+- 根因：输出元素/scalar body计数有界，但每个元素查询都把DenseElementsAttr展开为完整Attribute数组；
+  broadcast后再逐项compare会变成输出元素数乘输入元素数的工作。Slice复制完整source也会把很小的需求变成大工作。
+- 修复模式：用pinned DenseElementsAttr iterator直接索引，仅遍历需要的结果窗口；splat窗口用resizeSplat，
+  相同dtype/元素数的reshape复用原始存储。先验证每维坐标；generic从可逆output map反解迭代坐标，不能假定输出就是identity。
+- 防复发：真实规模非splat与broadcast、1024/1025/1031及permuted输出逐项核对；FP16/BF16负零、非有限位型、
+  大逻辑splat小窗口、非单位stride及空窗口保持精确。未使用init不读，未知body/输入与超原预算保持原IR。

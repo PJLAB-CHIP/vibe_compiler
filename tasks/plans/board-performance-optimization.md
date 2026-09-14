@@ -30,6 +30,11 @@ ViT首个候选的19个12 MiB F32常量buffer已消除。整块仍因完整resul
 混合dtype端口及整数exact比较已补通用runner验证；完整单层LM已注册，S16 FP16/BF16的全部logits CPU oracle通过。
 按用户要求，产品module入口改为直接XLA capture，完整HF的Dynamo追踪阻塞已解除；原始计算、参数及reference保持。
 source、主机数值与后续lowering/package分别按扩展矩阵检查点登记，完整LM尚未取得板端资格。
+后续已修复常量折叠逐元素展开完整输入的平方级工作：S1024 named normalization超过120秒降至1.61秒，
+实际完整mask精确校验及Transforms/lit门禁通过。完整LM S16/1024产品入口已到TensorProgram，下一失败为
+generic payload中捕获依赖未进入semantic root/structured DAG分析；未进入actual候选，不归因于搜索预算或SPM。
+本次固定FP16 LLaMA默认8/42完整no-card通过，9 accepted、33容量、0 unsupported；包及48份IR与上轮完全相同，
+source与初始快版本一致，前序修改相对初始快包的设备回归仍待恢复后验收。
 
 ## 输入、输出与边界
 

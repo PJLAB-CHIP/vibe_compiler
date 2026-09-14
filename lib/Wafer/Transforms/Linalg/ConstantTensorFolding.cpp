@@ -234,9 +234,21 @@ foldConstantTensorExtractSlice(mlir::tensor::ExtractSliceOp slice,
   if (!isWithinConstantFoldBudget(resultType))
     return mlir::failure();
 
-  llvm::SmallVector<mlir::Attribute> sourceValues;
-  for (mlir::Attribute value : sourceAttr.getValues<mlir::Attribute>())
-    sourceValues.push_back(value);
+  for (auto [extent, offset, size, stride] :
+       llvm::zip(sourceType.getShape(), slice.getStaticOffsets(),
+                 slice.getStaticSizes(), slice.getStaticStrides())) {
+    if (offset < 0 || size < 0 || stride <= 0 || offset > extent)
+      return mlir::failure();
+    if (size != 0 &&
+        (offset == extent || size - 1 > (extent - 1 - offset) / stride))
+      return mlir::failure();
+  }
+
+  if (sourceAttr.isSplat() && resultType.getNumElements() != 0)
+    return replaceWithDenseConstant(slice.getOperation(), slice.getResult(),
+                                    sourceAttr.resizeSplat(resultType),
+                                    rewriter);
+  auto sourceValues = sourceAttr.getValues<mlir::Attribute>();
 
   llvm::SmallVector<mlir::Attribute> resultValues;
   resultValues.reserve(resultType.getNumElements());
@@ -254,7 +266,7 @@ foldConstantTensorExtractSlice(mlir::tensor::ExtractSliceOp slice,
     if (sourceLinear < 0 ||
         sourceLinear >= static_cast<int64_t>(sourceValues.size()))
       return mlir::failure();
-    resultValues.push_back(sourceValues[sourceLinear]);
+    resultValues.push_back(*(sourceValues.begin() + sourceLinear));
   }
 
   auto resultAttr = mlir::DenseElementsAttr::get(resultType, resultValues);
@@ -279,11 +291,8 @@ foldConstantTensorReshape(mlir::Operation *op, mlir::Value source,
   if (!sourceAttr)
     return mlir::failure();
 
-  llvm::SmallVector<mlir::Attribute> values;
-  for (mlir::Attribute value : sourceAttr.getValues<mlir::Attribute>())
-    values.push_back(value);
-  auto resultAttr = mlir::DenseElementsAttr::get(resultType, values);
-  return replaceWithDenseConstant(op, result, resultAttr, rewriter);
+  return replaceWithDenseConstant(op, result, sourceAttr.reshape(resultType),
+                                  rewriter);
 }
 
 static mlir::LogicalResult
@@ -334,6 +343,8 @@ getConstantLinearIndex(mlir::AffineMap map, llvm::ArrayRef<int64_t> indices,
       return std::nullopt;
     operandIndices.push_back(indices[dimExpr.getPosition()]);
   }
+  if (!areValidIndices(shape, operandIndices))
+    return std::nullopt;
   return getLinearIndex(shape, operandIndices);
 }
 
@@ -349,12 +360,12 @@ getDenseElementAt(mlir::DenseElementsAttr attr, mlir::AffineMap map,
   if (!linear)
     return std::nullopt;
 
-  llvm::SmallVector<mlir::Attribute> values;
-  for (mlir::Attribute value : attr.getValues<mlir::Attribute>())
-    values.push_back(value);
-  if (*linear < 0 || *linear >= static_cast<int64_t>(values.size()))
+  if (*linear < 0 || *linear >= type.getNumElements())
     return std::nullopt;
-  return values[*linear];
+  // DenseElementsAttr iterators support direct indexed access, including
+  // splats. Expanding the whole input here makes every output read linear in
+  // the input size and defeats the scalar evaluation budget.
+  return *(attr.getValues<mlir::Attribute>().begin() + *linear);
 }
 
 static std::optional<mlir::Attribute>
@@ -462,6 +473,14 @@ foldConstantLinalgGeneric(mlir::linalg::GenericOp generic,
       static_cast<size_t>(generic.getNumDpsInputs() + generic.getNumDpsInits());
   if (indexingMaps.size() != expectedIndexingMaps)
     return mlir::failure();
+  if (!indexingMaps.back().isPermutation())
+    return mlir::failure();
+  mlir::AffineMap outputToIteration =
+      mlir::inversePermutation(indexingMaps.back());
+  if (!outputToIteration)
+    return mlir::failure();
+  for (mlir::AffineMap &map : indexingMaps)
+    map = map.compose(outputToIteration);
 
   llvm::SmallVector<std::optional<mlir::DenseElementsAttr>> operandAttrs;
   operandAttrs.reserve(generic.getNumDpsInputs() + generic.getNumDpsInits());
@@ -472,15 +491,16 @@ foldConstantLinalgGeneric(mlir::linalg::GenericOp generic,
     operandAttrs.push_back(attr);
   }
   for (auto [index, init] : llvm::enumerate(generic.getDpsInits())) {
-    mlir::DenseElementsAttr attr = getDenseConstantAttr(init);
-    if (!attr && !generic.getBody()
-                      ->getArgument(generic.getNumDpsInputs() + index)
-                      .use_empty())
-      return mlir::failure();
-    if (attr)
-      operandAttrs.push_back(attr);
-    else
+    if (generic.getBody()
+            ->getArgument(generic.getNumDpsInputs() + index)
+            .use_empty()) {
       operandAttrs.push_back(std::nullopt);
+      continue;
+    }
+    mlir::DenseElementsAttr attr = getDenseConstantAttr(init);
+    if (!attr)
+      return mlir::failure();
+    operandAttrs.push_back(attr);
   }
 
   auto yield =
