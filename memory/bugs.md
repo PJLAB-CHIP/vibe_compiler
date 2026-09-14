@@ -2024,3 +2024,13 @@
   会让后续精确矩形查询因group体积不同返回错误。
 - 修复边界：只有对应维度extent相等才附加该构造证明；子集或被源边界裁剪的关系仍保留exact projected map。
 - 防复发：成对覆盖destination小于/大于source、整除/非整除长度，检查精确image和边界成员关系。
+
+## 原始module直接XLA导出的参数别名与算子边界
+
+- CPU→XLA的`Module._apply`可能分别替换多个位置注册的同一Parameter；不能用转移后的参数枚举反推原别名。
+  在独立module副本上保存实际注册槽及对象关系，转移后恢复同一对象的共享，再从实际输出图的device-data identity绑定payload。
+  非persistent buffer仍是有效source状态，不能只依赖`state_dict()`；BF16 payload保留原始16位存储。
+- `native_layer_norm`的CompositeImplicitAutograd分解可能先于Python dispatch，进入其中的training BN再按BN inference处理会误拒绝。
+  在原typed LayerNorm调用边界使用pinned官方分解；普通ATen分解仍由同一capture scope承载，不按模型名判断。
+- 防复发：共享参数和非persistent buffer的1024/1025/1031、FP16/BF16真实导出，逐bit payload/输出以及修改runtime ID后复用同一图；
+  验证原CPU对象不变，数据相关标量、CPU fallback、显式graph step、状态修改和不安全路径失败后不发布目录。

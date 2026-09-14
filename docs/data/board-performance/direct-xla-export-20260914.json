@@ -1,0 +1,1265 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "scope": "原始module直接XLA导出；本轮无设备执行，source/主机数值/lowering分别登记",
+  "parent_commit": "f9fdcc296ba18fb78ae56c227ae26a0031662b1b",
+  "dependencies": {
+    "torch": "2.5.0+cpu",
+    "torch-xla": "2.5.0",
+    "transformers": "5.14.1"
+  },
+  "checkpoint_sources_sha256": {
+    "python/wafer/frontend/__init__.py": "51c8a6fd056624c0f41e41dcefeaccea9b8ab560e5e2d38ebd43a6e4d3faffc2",
+    "test/Board/PyTorch/wafer_pytorch_board_cases.py": "94680596c1333b06a6f8ffc7611fd818b0a70a0e0f4aa81f3855ec6347486b00",
+    "test/Board/PyTorch/wafer_pytorch_board_cases_test.py": "f2f49f70497c1bb82f81997bb625ea11c250de1007d7f245ca1cb4d8cdc91245",
+    "test/Tools/wafer_frontend_product_test.py": "717691885282beb18c2a7f52610f29c088ba83b46a0df6e924310526d873078b",
+    "test/Tools/wafer-frontend-product.test": "7b73f68aa82324819eee762b6599daea98072bbb97ae0d0f3cacf0d0336d5466",
+    "test/Tools/Inputs/hf/llama-2-7b-block-config.json": "9842a80570738e3f2456024d1479d5034df8efa151dbd208cdb7ebb371dfcef7"
+  },
+  "entry": "wafer.frontend.export_pytorch_program",
+  "capture": "原module副本直接XLA lazy forward，不调用torch.export或Dynamo；实际graph input identity绑定metadata/payload",
+  "source_configurations": [
+    {
+      "dtype": "torch.float16",
+      "sequence_length": 16,
+      "source_seconds": 15.34327068401035,
+      "files": {
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+        "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+        "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+        "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+        "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+        "functions/forward.meta": "aad972e0a923dd4a32f68f01298677f4fa0873f945b9b6cf7c9c2d7c3bcc8d58",
+        "functions/forward.stablehlo.bc": "1c7f272f3ed0380f5328e03c94535e55011447e5daf983bb734b35e9de323c6d"
+      },
+      "metadata": {
+        "name": "forward",
+        "stablehlo_version": "0.0.0",
+        "input_signature": [
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              11008
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              1,
+              16
+            ],
+            "dtype": "int64",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              64
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          }
+        ],
+        "output_signature": [
+          {
+            "shape": [
+              1,
+              16,
+              32000
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          }
+        ],
+        "input_locations": [
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.lm_head.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.down_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.up_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.o_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.v_proj.weight"
+          },
+          {
+            "type_": "input_arg",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.embed_tokens.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.input_layernorm.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 1,
+            "name": ""
+          },
+          {
+            "type_": "constant",
+            "position": 2,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.rotary_emb.inv_freq"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.k_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.q_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.post_attention_layernorm.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.gate_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.norm.weight"
+          }
+        ],
+        "unused_inputs": [],
+        "input_pytree_spec": null,
+        "output_pytree_spec": null
+      },
+      "final_producer_reexport_equal": true,
+      "reference_source_same_bytes": true,
+      "cpu_eager_finite_logits": true,
+      "construction_and_cpu_reference_seconds": 18.419439298988436,
+      "package": false,
+      "board_executed": false
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "sequence_length": 16,
+      "source_seconds": 12.038321191997966,
+      "files": {
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "aaaaf76c2b8c3af0d8e2a4bb74ed6a36a81c568f556795bff3af746ff354b4a5",
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "data/model.lm_head.weight": "2d1a2a6a8f061ac5caefae311b91aeb7796700d39c9f17b8f7a986fcb1a2fb7d",
+        "data/model.model.embed_tokens.weight": "e264a2d1f34e798759e932183b535f05b9b03df64ce446f2b6f8e3a31906e4b4",
+        "data/model.model.layers.0.input_layernorm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "data/model.model.layers.0.mlp.down_proj.weight": "36649060a7d77caff9ed726fc9e960271b754e110f54ece06d879303c451554b",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "5b172652a3a6808854fc2e54338e272add7ef2de43f4ae7f07d9f17e0b118a89",
+        "data/model.model.layers.0.mlp.up_proj.weight": "97eae1c75b9f1b3fc2f644f49326595e6e871c367ba70febde71bceb37d15560",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "24b4ac58cd0df1ecb5f18b3a0349f2dc1334c4278a32b768745b6bcd675a629e",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "8459f3c30ad8fcadc116bae2f9264bc6e1187e6f4509e6e306c997470e2c2f4a",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "3fc0807b1c57b9114a32341e683d664edda7b88895a19b2140993e67b7215ee7",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "b263d72e4c7009c4ec02f0b81860b0c7c7f0aa217d519824a4031543a223678c",
+        "data/model.model.norm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "data/model.model.rotary_emb.inv_freq": "13bdf4e5b96aba223d284857dac5ddcea23039b3eeb223676c9f94d7b55d08c6",
+        "functions/forward.meta": "8202ff3b9edccd7eff6993bece709120b77d7d3711a8d21ce2af27020929569d",
+        "functions/forward.stablehlo.bc": "69bd0874c833bad3cab1fa9364a1cd541beca206174623e5851fddcc4647530e"
+      },
+      "metadata": {
+        "name": "forward",
+        "stablehlo_version": "0.0.0",
+        "input_signature": [
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              11008
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              1,
+              16
+            ],
+            "dtype": "int64",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              64
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          }
+        ],
+        "output_signature": [
+          {
+            "shape": [
+              1,
+              16,
+              32000
+            ],
+            "dtype": "bfloat16",
+            "dynamic_dims": []
+          }
+        ],
+        "input_locations": [
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.lm_head.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.down_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.up_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.o_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.v_proj.weight"
+          },
+          {
+            "type_": "input_arg",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.embed_tokens.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.input_layernorm.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 1,
+            "name": ""
+          },
+          {
+            "type_": "constant",
+            "position": 2,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.rotary_emb.inv_freq"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.k_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.q_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.post_attention_layernorm.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.gate_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.norm.weight"
+          }
+        ],
+        "unused_inputs": [],
+        "input_pytree_spec": null,
+        "output_pytree_spec": null
+      },
+      "final_producer_reexport_equal": true,
+      "reference_source_same_bytes": true,
+      "cpu_eager_finite_logits": true,
+      "construction_and_cpu_reference_seconds": 7.846850948000792,
+      "package": false,
+      "board_executed": false
+    },
+    {
+      "dtype": "torch.float16",
+      "sequence_length": 1024,
+      "source_seconds": 12.260590481004328,
+      "files": {
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+        "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+        "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+        "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+        "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+        "functions/forward.meta": "96dd9df1f7374940f06ab1d3c276d9bae42062ac81eb3fd3ff0c915995782ab2",
+        "functions/forward.stablehlo.bc": "3777cce8aa62384ff4389a5124f20d9c499a013dfaf92a1b5de578f3f7208dbd"
+      },
+      "metadata": {
+        "name": "forward",
+        "stablehlo_version": "0.0.0",
+        "input_signature": [
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              11008
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              1,
+              1024
+            ],
+            "dtype": "int64",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              64
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          }
+        ],
+        "output_signature": [
+          {
+            "shape": [
+              1,
+              1024,
+              32000
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          }
+        ],
+        "input_locations": [
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.lm_head.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.down_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.up_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.o_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.v_proj.weight"
+          },
+          {
+            "type_": "input_arg",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.embed_tokens.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.input_layernorm.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 1,
+            "name": ""
+          },
+          {
+            "type_": "constant",
+            "position": 2,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.rotary_emb.inv_freq"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.k_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.q_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.post_attention_layernorm.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.gate_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.norm.weight"
+          }
+        ],
+        "unused_inputs": [],
+        "input_pytree_spec": null,
+        "output_pytree_spec": null
+      },
+      "final_producer_reexport_equal": true,
+      "reference_source_same_bytes": true,
+      "cpu_eager_finite_logits": true,
+      "construction_and_cpu_reference_seconds": 499.4997119930049,
+      "package": false,
+      "board_executed": false
+    },
+    {
+      "dtype": "torch.float16",
+      "sequence_length": 1025,
+      "source_seconds": 11.137608843011549,
+      "files": {
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+        "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+        "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+        "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+        "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+        "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+        "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+        "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+        "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a",
+        "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+        "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+        "functions/forward.meta": "2519b5b58e75ff11d1c85beaf9fb647b4d36221d34190a8f2b59da24cba417df",
+        "functions/forward.stablehlo.bc": "2ab2aa93fb09e74762cc627709789e456472b097b0cb22db311c341cab68569f"
+      },
+      "metadata": {
+        "name": "forward",
+        "stablehlo_version": "0.0.0",
+        "input_signature": [
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              11008
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              1,
+              1025
+            ],
+            "dtype": "int64",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              32000,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [],
+            "dtype": "float32",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              64
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              11008,
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          },
+          {
+            "shape": [
+              4096
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          }
+        ],
+        "output_signature": [
+          {
+            "shape": [
+              1,
+              1025,
+              32000
+            ],
+            "dtype": "float16",
+            "dynamic_dims": []
+          }
+        ],
+        "input_locations": [
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.lm_head.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.down_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.up_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.o_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.v_proj.weight"
+          },
+          {
+            "type_": "input_arg",
+            "position": 0,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.embed_tokens.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.input_layernorm.weight"
+          },
+          {
+            "type_": "constant",
+            "position": 1,
+            "name": ""
+          },
+          {
+            "type_": "constant",
+            "position": 2,
+            "name": ""
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.rotary_emb.inv_freq"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.k_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.self_attn.q_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.post_attention_layernorm.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.layers.0.mlp.gate_proj.weight"
+          },
+          {
+            "type_": "parameter",
+            "position": -1,
+            "name": "model.model.norm.weight"
+          }
+        ],
+        "unused_inputs": [],
+        "input_pytree_spec": null,
+        "output_pytree_spec": null
+      },
+      "final_producer_reexport_equal": true,
+      "reference_source_same_bytes": true,
+      "cpu_eager_finite_logits": true,
+      "construction_and_cpu_reference_seconds": 498.0684114009928,
+      "package": false,
+      "board_executed": false
+    }
+  ],
+  "source_checks": {
+    "configurations_passed": 4,
+    "final_producer_reexports_byte_equal": 4,
+    "complete_eager_references": 4,
+    "parameters_and_buffers_per_source": 13,
+    "captured_constants_per_source": 3,
+    "runtime_inputs_per_source": 1,
+    "source_files_per_configuration": 18
+  },
+  "host_tests": {
+    "canonical_build": "passed",
+    "second_build": "ninja-no-op",
+    "frontend_lit": {
+      "executed": 1,
+      "passed": 1,
+      "seconds": 10.93,
+      "skip": 0,
+      "direct_xla_configurations": 6,
+      "actual_xla_cpu_executions": 12,
+      "negative_classes": 11,
+      "opmath": "原Conv/BN/GELU/LayerNorm实际source及直接Linalg测试全部通过"
+    },
+    "board_case_python_suite": {
+      "unittests": 39,
+      "passed": 39,
+      "skip": 0,
+      "ctest_seconds": 92.02,
+      "boundary": "随后仅加强完整LM测试的valid export/ingestion断言，单独复验通过"
+    },
+    "full_lm_strengthened_test": {
+      "unittests": 1,
+      "dtype_configurations": 2,
+      "passed": 1,
+      "seconds": 45.702,
+      "final_guard_change": "最后增加graph-step拒绝后，四配置完整source再次导出、ingestion且18文件逐字节一致"
+    }
+  },
+  "full_lm_xla_cpu_numerics": {
+    "rtol": 0.002,
+    "atol": 0.004,
+    "results": [
+      {
+        "dtype": "torch.float16",
+        "shape": [
+          1,
+          16,
+          32000
+        ],
+        "elements": 512000,
+        "failed_elements": 8,
+        "max_abs_error": 0.005859375,
+        "seconds": 19.00912112100923
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "shape": [
+          1,
+          16,
+          32000
+        ],
+        "elements": 512000,
+        "failed_elements": 265359,
+        "max_abs_error": 0.046875,
+        "seconds": 10.089005310990615
+      }
+    ],
+    "qualified": false,
+    "interpretation": "主机XLA执行差异，不能当作Wafer板端数值或唯一硬件归因"
+  },
+  "first_difference": {
+    "dtype": "bfloat16",
+    "bit_equal_stages": [
+      "embedding",
+      "rotary cos/sin",
+      "input RMSNorm"
+    ],
+    "earliest_different_stage": "Q/K/V GEMM",
+    "independent_same_input_weight_gemm": [
+      {
+        "projection": "q_proj",
+        "torch_xla_different": 12,
+        "torch_vs_fp64_different": 6,
+        "xla_vs_fp64_different": 8,
+        "max_abs_error": 0.00390625
+      },
+      {
+        "projection": "k_proj",
+        "torch_xla_different": 7,
+        "torch_vs_fp64_different": 5,
+        "xla_vs_fp64_different": 7,
+        "max_abs_error": 0.001953125
+      },
+      {
+        "projection": "v_proj",
+        "torch_xla_different": 11,
+        "torch_vs_fp64_different": 10,
+        "xla_vs_fp64_different": 7,
+        "max_abs_error": 0.00390625
+      }
+    ],
+    "interpretation": "独立GEMM已复现差异；相对F64诊断两种CPU后端均有不同舍入点，后续模型放大；未改源算术或容差"
+  },
+  "named_source_to_linalg": [
+    {
+      "dtype": "bfloat16",
+      "sequence_length": 16,
+      "result": "passed",
+      "seconds": 0.13293362899275962
+    },
+    {
+      "dtype": "float16",
+      "sequence_length": 16,
+      "result": "passed",
+      "seconds": 0.10687020698969718
+    },
+    {
+      "dtype": "float16",
+      "sequence_length": 1024,
+      "result": "host-timeout",
+      "limit_seconds": 120,
+      "boundary": "补充named lowering检查，不是设备执行，也不是完整产品search；进程已终止，未重试"
+    },
+    {
+      "dtype": "float16",
+      "sequence_length": 1025,
+      "result": "not-executed"
+    }
+  ],
+  "logs": {
+    "direct-xla-build.log": {
+      "path": "build/test/model-performance/direct-xla-build.log",
+      "sha256": "3d843637a4cb122184aa2d8f2a2038df5f4a500c5bfe38c12d10dba112d4c624"
+    },
+    "direct-xla-final-build.log": {
+      "path": "build/test/model-performance/direct-xla-final-build.log",
+      "sha256": "3d843637a4cb122184aa2d8f2a2038df5f4a500c5bfe38c12d10dba112d4c624"
+    },
+    "direct-xla-final-noop.log": {
+      "path": "build/test/model-performance/direct-xla-final-noop.log",
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "direct-xla-lit-final.log": {
+      "path": "build/test/model-performance/direct-xla-lit-final.log",
+      "sha256": "1384cdfffaa894e1fe358ad60b4a967b094b09faa005b070fd20f97a2377c93a"
+    },
+    "direct-xla-board-cases.log": {
+      "path": "build/test/model-performance/direct-xla-board-cases.log",
+      "sha256": "4a31495d5e513bb9fbb01143154e8a0d8343f93278530ea2060913ee665ad681"
+    },
+    "direct-xla-lm-regression.log": {
+      "path": "build/test/model-performance/direct-xla-lm-regression.log",
+      "sha256": "35ebfc27bbe5ca89550e4c8abc08062ef2ddf96c72c2017589d2ef98aeceeed3"
+    },
+    "direct-xla-lm-source.log": {
+      "path": "build/test/model-performance/direct-xla-lm-source.log",
+      "sha256": "d97f5ab5cb60f42cf64b88910d57ccbcd61a9a8523f5109c9361daabe46fe964"
+    },
+    "direct-xla-lm-final-source.log": {
+      "path": "build/test/model-performance/direct-xla-lm-final-source.log",
+      "sha256": "55bf5982dd2237db53aebab3a45e1801dc7d8df6507b5cb4efd0aaeebe38384f"
+    },
+    "direct-xla-lm-final-check.log": {
+      "path": "build/test/model-performance/direct-xla-lm-final-check.log",
+      "sha256": "b46f3f8e4075f20937637939abafd7d7831801498fd72d5c28744d1cf0f684c4"
+    },
+    "direct-xla-lm-numeric.log": {
+      "path": "build/test/model-performance/direct-xla-lm-numeric.log",
+      "sha256": "72c0327b070cca008668f2bf276278b6f378c658e6711bef64dc685838074ec2"
+    },
+    "direct-xla-lm-stages.log": {
+      "path": "build/test/model-performance/direct-xla-lm-stages.log",
+      "sha256": "043096b12cf19ba57950ba445e9000792f20b6f0b559149a59251d2f8a47fdb1"
+    },
+    "direct-xla-lm-dot.log": {
+      "path": "build/test/model-performance/direct-xla-lm-dot.log",
+      "sha256": "805aa10abb5caa166af848c55dbe011503a6b3274bcf4800d22e9086d4c3a644"
+    },
+    "direct-xla-lm-linalg.log": {
+      "path": "build/test/model-performance/direct-xla-lm-linalg.log",
+      "sha256": "631da7e2fd124e5dbea998e287bfc23485fc359e23b6989c0a0c033575a40cf9"
+    },
+    "direct-xla-lm-f16-linalg.log": {
+      "path": "build/test/model-performance/direct-xla-lm-f16-linalg.log",
+      "sha256": "604ce8bae5bc1e96696e8a4e903ebb06b725d4b979bcb11696e02892714e47cb"
+    }
+  },
+  "board": {
+    "executed": false,
+    "reason": "用户确认QKV实际设备超时后尚未恢复；仅主机工作"
+  },
+  "remaining": [
+    "完整LM产品lowering/search/package/no-card",
+    "完整LM既定容差数值资格",
+    "长序列named lowering工作量根因",
+    "原board-testing矩阵及三轮实卡调优"
+  ],
+  "retained_source_root": "build/test/model-performance/direct-xla-lm-final",
+  "duplicate_source_cleanup": "初始direct-xla-lm-current四配置与最终source逐文件SHA一致后删除；保留最终source及日志/身份"
+}

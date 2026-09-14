@@ -28,7 +28,8 @@ ViT首个候选的19个12 MiB F32常量buffer已消除。整块仍因完整resul
 独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
 这些证据只闭合入口缺口，不代签整块数值、设备性能或三轮调优。
 混合dtype端口及整数exact比较已补通用runner验证；完整单层LM已注册，S16 FP16/BF16的全部logits CPU oracle通过。
-完整HF导出受pinned PyTorch装饰器/ModuleList追踪问题阻塞，尚无source/package；其余范围保持扩展矩阵原合同。
+按用户要求，产品module入口改为直接XLA capture，完整HF的Dynamo追踪阻塞已解除；原始计算、参数及reference保持。
+source、主机数值与后续lowering/package分别按扩展矩阵检查点登记，完整LM尚未取得板端资格。
 
 ## 输入、输出与边界
 

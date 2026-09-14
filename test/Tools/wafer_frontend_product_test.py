@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import json
 import os
 import pathlib
 import subprocess
+from unittest import mock
 
+import numpy as np
 import torch
 
 from wafer.frontend import (
@@ -275,6 +278,148 @@ def check_composite_precision(output_root: pathlib.Path) -> None:
     print("composite_opmath: gelu=18 layer_norm=13 source_layer_norm_to_linalg=12 unrelated_unchanged=true")
 
 
+def check_direct_xla(output_root: pathlib.Path) -> None:
+    import torch_xla
+
+    class Lookup(torch.nn.Module):
+        def __init__(self, dtype):
+            super().__init__()
+            self.weight = torch.nn.Parameter(
+                (torch.arange(1024 * 8).reshape(1024, 8) / 8192).to(dtype))
+            self.shared = self.weight
+            self.register_buffer("bias", torch.full((8,), .125, dtype=dtype), persistent=False)
+
+        def forward(self, data, indices):
+            # A shape-only scalar is safe; runtime-derived Python branches are
+            # rejected separately below. Both paths retain all runtime ports.
+            positions = torch.arange(data.shape[1], device=data.device)
+            if (positions >= 0).all().item():
+                first = torch.nn.functional.embedding(indices, self.weight)
+                second = torch.nn.functional.embedding(indices, self.shared)
+                return data + first + second + self.bias, indices.clone()
+            return data, indices.clone()
+
+    configurations = 0
+    for extent in (1024, 1025, 1031):
+        for dtype in (torch.float16, torch.bfloat16):
+            model = Lookup(dtype).eval()
+            data = torch.full((1, extent, 8), .25, dtype=dtype)
+            indices = (torch.arange(extent) % 1024).reshape(1, extent)
+            directory = output_root / f"direct-xla-{dtype}-{extent}"
+            before = {name: tensor.clone() for name, tensor in
+                      (*model.named_parameters(), *model.named_buffers())}
+            with mock.patch("torch.export.export", side_effect=AssertionError("Dynamo must not run")):
+                export_pytorch_program(model, (data, indices), directory)
+            subprocess.run(["wafer-verify-program", "--program-dir", str(directory)], check=True)
+            metadata = json.loads((directory / "functions/forward.meta").read_text())
+            parameters = {location["name"] for location in metadata["input_locations"]
+                          if location["type_"] == "parameter"}
+            if parameters != {"weight", "bias"}:
+                raise RuntimeError(f"shared parameter or buffer binding changed: {parameters}")
+
+            def saved_tensor(path, signature):
+                with path.open("rb") as stream:
+                    array = np.load(stream, allow_pickle=False)
+                if signature["dtype"] == "bfloat16":
+                    return torch.from_numpy(array.view(np.uint16)).view(torch.bfloat16)
+                return torch.from_numpy(array)
+
+            # Execute the exported bytecode, then change runtime IDs without
+            # re-exporting. This catches binding a sample tensor as a constant.
+            for ids in (indices, indices.roll(1, dims=1)):
+                inputs = (data, ids)
+                call_args = []
+                runtime_ports = {}
+                for location, signature in zip(metadata["input_locations"], metadata["input_signature"]):
+                    if location["type_"] == "input_arg":
+                        value = inputs[location["position"]]
+                        runtime_ports[location["position"]] = signature
+                    else:
+                        path = directory / ("data" if location["type_"] == "parameter" else "constants")
+                        path /= location["name"] if location["type_"] == "parameter" else str(location["position"])
+                        value = saved_tensor(path, signature)
+                        if location["type_"] == "parameter":
+                            torch.testing.assert_close(value, before[location["name"]], rtol=0, atol=0)
+                    call_args.append(value)
+                if set(runtime_ports) != {0, 1}:
+                    raise RuntimeError("runtime input binding is incomplete")
+                for position, value in enumerate(inputs):
+                    if runtime_ports[position]["shape"] != list(value.shape) or runtime_ports[position]["dtype"] != str(value.dtype).removeprefix("torch."):
+                        raise RuntimeError("runtime input signature changed")
+                actual = torch_xla._XLAC._run_stablehlo(
+                    (directory / "functions/forward.stablehlo.bc").read_bytes(), call_args)
+                with torch.no_grad():
+                    expected = model(*inputs)
+                if len(actual) != 2:
+                    raise RuntimeError("multiple outputs were lost")
+                for value, reference, signature in zip(actual, expected, metadata["output_signature"]):
+                    torch.testing.assert_close(value.cpu(), reference, rtol=0, atol=0)
+                    if signature["shape"] != list(reference.shape) or signature["dtype"] != str(reference.dtype).removeprefix("torch."):
+                        raise RuntimeError("output signature changed")
+            if model.weight is not model.shared or any(value.device.type != "cpu" for value in model.parameters()):
+                raise RuntimeError("capture modified the original module")
+            for name, value in (*model.named_parameters(), *model.named_buffers()):
+                torch.testing.assert_close(value, before[name], rtol=0, atol=0)
+            configurations += 1
+
+    class Invalid(torch.nn.Module):
+        def __init__(self, kind):
+            super().__init__()
+            self.kind = kind
+            self.register_buffer("state", torch.zeros(1, 1025, 8))
+            if kind == "path":
+                self.register_buffer("unsafe/state", torch.zeros(1))
+
+        def forward(self, value, other):
+            if self.kind == "scalar":
+                return value + other if value.sum().item() > 0 else value - other
+            if self.kind == "host":
+                return value.cpu() + other.cpu()
+            if self.kind == "mutation":
+                self.state.add_(value)
+                return self.state + other
+            if self.kind == "input-mutation":
+                value.add_(other)
+                return value
+            if self.kind == "replace-state":
+                self.state = self.state + value
+                return self.state + other
+            if self.kind == "fallback":
+                return torch.histc(value, bins=8) + other.sum()
+            if self.kind == "step":
+                import torch_xla.core.xla_model as xm
+                intermediate = value + other
+                xm.mark_step()
+                return intermediate + value
+            if self.kind == "unused":
+                return value + self.state
+            if self.kind == "output":
+                return value + other, 1
+            return value + other
+
+    value = torch.ones(1, 1025, 8)
+    failures = {"scalar": "data-dependent scalar", "host": "to the host",
+                "mutation": "mutation", "unused": "unused runtime inputs",
+                "output": "outputs must be tensors", "alias": "aliased input",
+                "input-mutation": "mutation", "replace-state": "replacing module state",
+                "fallback": "unsupported XLA CPU fallback", "path": "safe data filename",
+                "step": "executed a graph step"}
+    for kind, message in failures.items():
+        directory = output_root / f"direct-xla-invalid-{kind}"
+        model = Invalid(kind).eval()
+        try:
+            export_pytorch_program(model, (value, value if kind == "alias" else value.clone()), directory)
+        except (RuntimeError, ValueError) as error:
+            if message not in str(error):
+                raise RuntimeError(f"incorrect failure for {kind}: {error}") from error
+        else:
+            raise RuntimeError(f"invalid direct XLA capture accepted: {kind}")
+        if directory.exists() or model.state.count_nonzero() or not torch.all(value == 1):
+            raise RuntimeError("failed capture published output or modified caller tensors")
+    export_pytorch_program(StaticBranch().eval(), (value,), output_root / "direct-xla-after-failure")
+    print(f"direct_xla: configurations={configurations} executions=12 negatives=11 dynamo=false")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=pathlib.Path, required=True)
@@ -300,6 +445,7 @@ def main() -> None:
     check_convolution_precision(args.output_root)
     check_batch_norm_precision(args.output_root)
     check_composite_precision(args.output_root)
+    check_direct_xla(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")
     except Exception:

@@ -185,6 +185,22 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 self.assertEqual(actual.shape, (1, 16, 32000))
                 self.assertEqual(actual.dtype, dtype)
                 torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                with tempfile.TemporaryDirectory() as directory:
+                    destination = pathlib.Path(directory) / "source"
+                    with mock.patch("torch.export.export", side_effect=AssertionError("Dynamo must not run")):
+                        case.export_program(destination)
+                    subprocess.run(["wafer-verify-program", "--program-dir", str(destination)], check=True)
+                    metadata = json.loads((destination / "functions/forward.meta").read_text())
+                    ports = [(location, signature) for location, signature in
+                             zip(metadata["input_locations"], metadata["input_signature"])]
+                    runtime = [(location["position"], signature["shape"], signature["dtype"])
+                               for location, signature in ports if location["type_"] == "input_arg"]
+                    self.assertEqual(runtime, [(0, [1, 16], "int64")])
+                    self.assertEqual(sum(location["type_"] == "parameter" and signature["shape"] == [32000, 4096]
+                                         for location, signature in ports), 2)
+                    self.assertEqual(metadata["output_signature"], [{"shape": [1, 16, 32000],
+                                      "dtype": str(dtype).removeprefix("torch."), "dynamic_dims": []}])
+                    self.assertIn("stablehlo.gather", read_portable_stablehlo(destination))
                 case.inputs[0][0, -1] = (case.inputs[0][0, -1] + 1) % 32000
                 changed, = case.materialize_expected_outputs()
                 self.assertFalse(torch.equal(changed[:, -1], expected[:, -1]))

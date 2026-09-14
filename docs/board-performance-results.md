@@ -1623,3 +1623,24 @@ source/权重不变，运行包及48份final IR改变：静态fill从336降至30
 实际差异包括移除不再使用的square指数fill、缩小局部常量以及重新规划SPM offset。这些静态计数不等于动态性能，
 相对上轮无卡包和初始实卡快包的设备数值/性能均待恢复后重签。
 完整身份与终态见[局部常量证据](data/board-performance/splat-demand-localization-20260914.json)。
+
+## 2026-09-14 完整单层LM直接XLA导出
+
+原HF module的Dynamo装饰器/ModuleList追踪阻塞，通过产品入口直接XLA lazy capture解除；保持原始模型前向、
+参数、i64 token输入与全部词表logits。S16 FP16/BF16和S1024/1025 FP16均导出完整portable source并通过正式ingestion。
+这次修复前端导出能力，不是设备性能优化；未运行实卡、未生成新的完整LM package。
+
+实际修复还覆盖两处通用边界：Module的CPU→XLA转移保留原始共享Parameter关系，source按实际tensor identity绑定状态；
+LayerNorm在进入Python dispatch前可能被CompositeImplicitAutograd展开，现于其typed调用边界使用原官方opmath分解。
+HF位置mask的标量判断由实际无外部leaf的XLA子图证明为常量；数据相关Python分支、主机fallback及状态修改明确拒绝。
+6组整除/尾部混合输入、12次实际XLA CPU执行、11类负例和原opmath门禁通过，完整LM两dtype亦有正式导出/ingestion回归。
+
+另行检查S16完整logits的XLA CPU执行，FP16有8/512000、BF16有265359/512000超既定容差，最大绝对误差分别
+0.005859375/0.046875；因此完整LM数值资格仍未完成。中间输出显示BF16 embedding、RoPE与首个RMSNorm逐bit一致，
+Q/K/V最先出现舍入差异；同一实际输入/权重的独立GEMM复现12/7/11个不同元素，后续attention/MLP放大差异。
+相对F64诊断，两个CPU后端都出现不同舍入点；该证据不能冒充Wafer设备结果，不用于放宽容差或改变原算术。
+source、测试和下游终态见[直接XLA导出证据](data/board-performance/direct-xla-export-20260914.json)。
+
+四配置的完整CPU eager reference均生成；最终source构造/导出/ingestion每项约11–15秒，而两项长序列CPU reference各约499秒。
+这些均为主机工作墙钟，存在其它主机工作重叠，不是隔离性能A/B。Named source→Linalg补充检查的S16 BF16/FP16通过，
+S1024达到120秒主机期限，S1025此阶段未执行；完整产品search、package/no-card和实卡均未签发。

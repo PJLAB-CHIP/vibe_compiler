@@ -832,7 +832,10 @@ def _llama_2_7b_single_layer_lm(
 
     def export_program(output: pathlib.Path) -> None:
         validate_ids()
-        _save_exported_program(output, module, inputs)
+        from wafer.frontend import export_pytorch_program
+
+        export_pytorch_program(module, inputs, output)
+        capture._verify_program_dir_layout(output)
 
     return PyTorchBoardCase(
         name=f"llama-2-7b-single-layer-lm-{sequence_length}",

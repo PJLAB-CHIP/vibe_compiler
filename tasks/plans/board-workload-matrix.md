@@ -44,7 +44,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
    GQA已通过source/reference及默认search package/no-card；长cache两步4094→4095→4096也已通过完整package/no-card，
    actual tensor assembly输入需求反馈已修复，设备结果接续和完整数值仍待实卡验收。
    单层完整LM已注册S16 FP16/BF16及1024/1025 FP16，S16两种dtype的完整eager oracle通过；
-   原始HF wrapper在pinned PyTorch导出时失败，尚无source/package。原block仍是hidden states输入/输出，不能代签完整LM。
+   原始HF wrapper已切到产品直接XLA导出，Dynamo装饰器/ModuleList追踪阻塞解除；完整source及主机数值证据见下方检查点，
+   尚无完整package/board资格。原block仍是hidden states输入/输出，不能代签完整LM。
    YOLO尚未接入。
 2. case构造已改成逐端口CPU及manifest支持dtype检查，整数ID、实际F32输出不再被模型精度限制；
    整数输出始终exact。六组混合dtype/整除尾部配置通过真实export、metadata及payload文件边界检查；
@@ -661,3 +662,28 @@ ViT仍正常结束于39容量拒绝、3共享完成依赖环；fresh GDB的liter
 固定LLaMA完整no-card通过、9 accepted，包和48份final IR改变：静态fill减少32，其它指令类别计数相同，
 常量形状与SPM offset变化。不能以该静态差异代签相对上轮无卡包和最初快包的设备回归。
 板卡仍未恢复，设备数值与性能验收不变更；证据见[局部常量记录](../../docs/data/board-performance/splat-demand-localization-20260914.json)。
+
+### 2026-09-14 原始完整LM直接XLA导出
+
+按用户要求，原产品 `export_pytorch_program` 直接执行原始 module 的 XLA lazy forward，再由输出根生成同一 portable
+program directory；完整LM case调用该入口。既有显式ExportedProgram corpus不改输入，不建立异常后自动切换或模型名分支。
+原模型、参数、整数token、完整logits与CPU eager reference保持；case不手写attention/mask、embedding或LM head。
+HF静态位置mask有一次Python布尔读取，实际XLA子图没有device-data leaf才允许；runtime依赖标量仍拒绝。
+CPU→XLA的Module转移会拆开共享Parameter注册，已按转移前真实对象关系恢复；参数、非persistent buffer与常量从实际图绑定。
+LayerNorm在Python dispatch之前可能降成training BN，现于原typed调用边界保留pinned官方分解，与已有opmath合同一致。
+
+S16 FP16/BF16、S1024/1025 FP16四配置均通过本轮source导出与正式ingestion；每项18文件、13个实际参数/buffer、
+3个captured scalar constant和1个i64 runtime输入，完整输出为`[1,S,32000]`。新source不能沿用旧block的package或性能资格。
+产品lit通过，包含6组rank3整除/尾部与两种dtype、12次实际XLA CPU数值执行、11个负例、全部原opmath检查；
+修改runtime ID后不重导出仍正确。原board-case主机suite通过，其后加强完整LM测试的两dtype真实导出/ingestion并单独通过。
+完整canonical build及Ninja no-op通过；source与下游终态及身份见[直接XLA证据](../../docs/data/board-performance/direct-xla-export-20260914.json)。
+
+完整LM不能据此签数值完成：同一S16 source在XLA CPU执行，相对原PyTorch CPU及固定`rtol=.002, atol=.004`，
+FP16有8/512000、BF16有265359/512000元素超容差。BF16的embedding、RoPE、首个RMSNorm逐bit一致；
+最早差异在Q/K/V GEMM，独立相同输入/权重已复现12/7/11个不同元素，再经后续层放大。
+F64诊断下PyTorch CPU与XLA CPU两者都有不同舍入点，不能把其中任一当成唯一硬件结果或据此改写原模型。
+这是主机执行差异证据，尚非Wafer生成代码/实卡缺陷的归因；不放宽容差，不签board-ready或性能轮次。
+
+四配置原CPU eager均得到全部有限logits；长序列每项约499秒主要花在主机reference，最终source构造/导出/ingestion每项约11–15秒，
+不是设备耗时。补充named source→Linalg检查中S16 BF16/FP16分别0.133/0.107秒通过；S1024达到该检查的120秒主机限额，
+该进程已退出，S1025未执行此阶段。未运行完整产品search/package，不把局部stage超时当成设备故障或停止其它主机工作。

@@ -110,6 +110,35 @@ device residency或compute-time weight streaming。
 
 ### 2.2 产品 frontend 与外部 StableHLO 边界
 
+#### 原始 module 的直接 XLA capture
+
+- Upstream IR / input：eval 的原始 `torch.nn.Module` 与静态 CPU tensor tuple；模块参数及 buffer 为本次不可变状态。
+- Current stage responsibility：在独立 module/input 副本上直接执行 XLA lazy forward，不要求先产生 Dynamo/ExportedProgram；
+  从实际输出根提取 StableHLO，并由 XLA device-data 的 tensor identity 绑定输入、参数、buffer 与 captured constant。
+  复合算子的既有 opmath 合同通过同一 pinned ATen decomposition 保持，不按模型或 shape 选择算术。
+- Output IR / files：原 `forward.stablehlo.bc`、同一 metadata schema 和逐 bit 保留 dtype 的 NPY；只发布完整目录。
+- Downstream consumer：原 program-directory ingestion、SPMD 与 compiler；原模型 CPU eager 仍独立产生 reference。
+- User-level driver / named pipeline：原 `wafer.frontend.export_pytorch_program`；板测完整 LM 使用此产品入口。
+  已显式提供 ExportedProgram 的测试 corpus 保留其外部输入适配，不作为 module capture 的异常 fallback。
+- Explicit non-goals：不改模型、参数、依赖版本、runtime、搜索与板端执行；不把 runtime tensor 移到 CPU 计算，
+  不接受数据依赖 Python 分支或状态修改，不扩展输入端口 schema。
+- Completion criteria：原 module 不受 capture 影响；混合端口、共享参数、buffer、多输出与尾部通过真实导出和 ingestion；
+  运行时输入必须 all-and-only 出现在图的输入绑定中。标量转 Python 只允许实际 XLA 子图无 device-data leaf 的常量表达式；
+  其余标量读取、CPU fallback、显式graph step及输入/状态 mutation 在目录发布前拒绝；
+  动态端口继续由原 portable/source verifier 拒绝，不扩展 directory 的静态边界合同。
+
+依据为 [PyTorch/XLA 2.5 输出根导出 API](https://docs.pytorch.org/xla/release/r2.5/index.html#torch_xla.core.xla_model.get_stablehlo)
+及 pinned `xla_model.py`、`stablehlo.py` 的实际 device-data 绑定和 bundle serializer；不用 `save_torch_model_as_stablehlo`
+包一层代替直接导出，因为该便利函数仍调用 `torch.export`。
+
+| 输入等价类 | exact 结果 / 失败 | 直接下游 witness |
+| --- | --- | --- |
+| rank3、S1024/1025/1031，FP16/BF16、i64 输入、多个输出、共享参数及非 persistent buffer | 输入位置与实际 XLA identity 一致，所有 payload bit-exact，原 module/input 不变 | portable ingestion、实际 XLA CPU 执行与独立 PyTorch reference |
+| 仅由静态 shape 构造的标量表达式 | actual scalar 子图无外部 leaf 才可读取；原结果和 runtime 输入仍保留 | 原始完整 LM 的 mask 构造及 S16/1024/1025 source |
+| runtime-dependent item/CPU transfer、unused/重复端口、状态 mutation、非 tensor 输出 | 明确失败且不发布目录；失败后下一合法导出可用 | 产品 API 负例与后续合法 export |
+| Conv+bias、inference BN、GELU/LayerNorm | 保持既有 opmath、approximate 选择和 dtype；无模块名分支 | 既有精度测试与 source→Linalg |
+| 完整单层 LM、i64 ID→全部词表 logits | 原 embedding、decoder、final norm、LM head 均进入图；新输入改变完整输出 | 原始 HF eager、source ingestion；package/no-card/board 分别登记 |
+
 唯一backend输入仍是本节定义的一种program directory。framework adapter是directory的producer，而不是把Python/framework
 object直连C++ compiler的第二入口。产品adapter只负责capture/export、拒绝graph break/eager fallback/unsupported side
 effect、写入metadata与外部数据引用并调用共享verifier；workload corpus、seed、CPU oracle、模型名分支、target topology和
@@ -119,8 +148,9 @@ PyTorch eval BatchNorm在导出前通过pinned `torch._decomp`的inference分解
 FP16/BF16输入和参数在F32计算，输出回到原dtype；F32/F64保持自身精度。只处理typed ATen inference调用，
 不按module名/shape分派，不展开training或改变running statistics。已显式的primitive算术保持原样。
 `native_batch_norm`、`_native_batch_norm_legit`及functional形式的training参数必须是literal false；
-`_native_batch_norm_legit_no_training`复用同一官方分解链。输入仍是原ExportedProgram，输出为同一产品exporter
-消费的分解图；pre-exported StableHLO由05号按自身dtype合法化，不从PyTorch合同反推来源。
+`_native_batch_norm_legit_no_training`复用同一官方分解链。原 module 在 typed ATen 调用边界执行该分解；
+显式 ExportedProgram 输入在其图上执行同一官方分解，再交给 XLA。Pre-exported StableHLO由05号按自身dtype合法化，
+不从PyTorch合同反推来源。
 完成覆盖为FP16/BF16/F32、1024/1025/1031、affine有/无、非平凡mean/variance/scale/bias、原模块参数不变、
 分解图全量eager对比，以及portable source→official Linalg的直接下游检查；training和无BN图为不修改分支。
 依据是[PyTorch官方分解](https://github.com/pytorch/pytorch/blob/v2.5.0/torch/_decomp/decompositions.py)

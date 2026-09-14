@@ -142,6 +142,10 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 S16为主配置并覆盖FP16/BF16，S1024/1025为真实规模整除/尾部；case只组织typed输入并选择既定完整输出。
 实际API以pinned实现为准，依据[官方HF调用合同](https://huggingface.co/docs/transformers/model_doc/llama#transformers.LlamaForCausalLM.forward)。
 
+原始 module 通过02号直接 XLA capture 合同导出，不要求 Dynamo 预追踪。共享权重、buffer 与 runtime ID 按实际
+tensor identity 绑定，参数及 CPU reference 不变。导出/source 校验、XLA CPU 数值、Wafer no-card 与实卡资格分别登记；
+两套主机 GEMM 的累加/舍入差异不能冒充设备缺陷，也不能据此放宽该 case 的既定容差。
+
 | 覆盖输入/分支 | exact要求、失败与直接witness |
 | --- | --- |
 | rank3+、1024/1025/1031的浮点数据与i32/i64 IDs，多种输出dtype | 原module→真实export的metadata逐端口一致；原raw字节及manifest绑定，无隐式cast |
