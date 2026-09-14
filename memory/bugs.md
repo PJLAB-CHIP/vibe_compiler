@@ -2043,3 +2043,13 @@
   相同dtype/元素数的reshape复用原始存储。先验证每维坐标；generic从可逆output map反解迭代坐标，不能假定输出就是identity。
 - 防复发：真实规模非splat与broadcast、1024/1025/1031及permuted输出逐项核对；FP16/BF16负零、非有限位型、
   大逻辑splat小窗口、非单位stride及空窗口保持精确。未使用init不读，未知body/输入与超原预算保持原IR。
+
+## Linalg payload的投影式捕获读取必须成为真实输入
+
+- 根因：官方gather legalization可在generic payload中读取另一structured producer的Tensor；只遍历外层operands的
+  DAG/semantic-root分析会漏掉该真实依赖。只放宽可观测路径检查不能修复tiling和后续物化。
+- 修复边界：source坐标可证明为同一generic的迭代投影，且对应extent相等，或unit维的零坐标时，
+  绑定为实际DPS input/indexing map并改用input block argument。相同source/map复用；不同map分开。
+  捕获init仍读取原Tensor SSA，不能替换为可能已更新的归约accumulator argument。
+- 防复发：1024/1025/1031逐bit数据、main/tail实际切片和exact覆盖，验证真实producer→consumer DAG边及semantic key。
+  数据相关table读取仍保留原索引、clamp和capture；没有动态访问合同不能伪造affine map或宣称完整gather已闭合。

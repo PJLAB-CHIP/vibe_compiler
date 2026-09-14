@@ -6,6 +6,7 @@ add_mlir_library(WaferLinalgTransforms
   ConstantTensorFolding.cpp
   NormalizeAttention.cpp
   NormalizeStructuredGraph.cpp
+  NormalizeTensorReads.cpp
   OnlineAttentionDecomposition.cpp
   OnlineAttentionMaterialization.cpp
   SpatialRegionMaterialization.cpp

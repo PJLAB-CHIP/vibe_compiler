@@ -133,6 +133,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Tile/ReadOnlyInputSharingTest.cpp
     Transforms/Linalg/AttentionNormalizationTest.cpp
     Transforms/Linalg/ConstantTensorFoldingTest.cpp
+    Transforms/Linalg/NormalizeTensorReadsTest.cpp
     Transforms/Linalg/OnlineAttentionDecompositionTest.cpp
     Transforms/Linalg/StructuredGraphEGraphTest.cpp
     Transforms/Linalg/StructuredGraphNormalizationTest.cpp

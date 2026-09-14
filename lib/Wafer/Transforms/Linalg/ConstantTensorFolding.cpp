@@ -338,6 +338,10 @@ getConstantLinearIndex(mlir::AffineMap map, llvm::ArrayRef<int64_t> indices,
   llvm::SmallVector<int64_t> operandIndices;
   operandIndices.reserve(shape.size());
   for (mlir::AffineExpr expr : map.getResults()) {
+    if (auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
+      operandIndices.push_back(constant.getValue());
+      continue;
+    }
     auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
     if (!dimExpr || dimExpr.getPosition() >= indices.size())
       return std::nullopt;

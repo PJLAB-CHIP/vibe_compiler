@@ -27,6 +27,7 @@ void buildLegalizeStablehloToStructuredTensorPipeline(mlir::OpPassManager &pm) {
 
 void buildSimplifyStructuredTensorPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createFoldStaticTensorOpsPass());
+  pm.addNestedPass<mlir::func::FuncOp>(createNormalizeLinalgTensorReadsPass());
 }
 
 void buildNormalizeAttentionPipeline(mlir::OpPassManager &pm) {

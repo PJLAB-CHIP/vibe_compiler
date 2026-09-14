@@ -1675,3 +1675,28 @@ Generic同时从实际output permutation反解迭代坐标，修复转置输出�
 
 配置、实际IR、source身份、work推导、完整日志和关键回归见
 [常量读取证据](data/board-performance/constant-tensor-lookup-20260914.json)。
+
+## 2026-09-14 Linalg捕获依赖修复及完整LM下一边界
+
+新增通用normalization：将payload中可证明的投影式Tensor读取绑定为真实Linalg inputs/maps，
+使原StructuredDAG、semantic root及TilingInterface共同看到同一依赖；不增加旁路依赖表。
+保留动态词表读取、原索引clamp、scalar算术及dtype。重复input复用，但captured init不能被当成更新中的归约accumulator。
+常量求值同步接受显式常量坐标，并保持逐轴边界检查及原有预算。
+
+7个新测试覆盖59组输入，591,360个结果逐bit精确，224个实际切片实现中含32个尾窗口且exact覆盖。
+13项定向、538项组件和30项相关lit通过，完整构建及Ninja no-op通过。
+原始完整LM的S16/1024/1025 FP16 source各18文件与直接XLA版本相同；S1024/1025 source→Linalg用时1.820/0.114秒，
+每项新增一个真实索引input。这些是主机编译结果，不是完整LM的package、数值或设备性能资格。
+
+下一缺口已经明确：动态词表读取超出当前RootRegionWork的精确operand demand合同。
+最终compiler在none诊断中47.88秒正常返回typed `UnsupportedCapture`，未调用Instr/SPM/target；
+正式search仍使用8/42，但反复更换分区并重查这一不变缺口，人工取消前最后进度已有942次需求检查，runner总599.13秒。
+最终compiler的8/1 GDB诊断同样观察到93次需求检查，规划栈落在分区传播及矩形关系证明。
+`trials`没有限制这部分前置规划工作；不能把它解释为板卡卡死、仅仅预算太小或已经进入硬件lowering。
+主机搜索停止的版本边界、统计限制及后续通用修复步骤见[当前矩阵计划](../tasks/plans/board-workload-matrix.md)。
+
+固定FP16 block本轮默认8/42完整package/no-card通过：9 accepted、33容量、0 unsupported，主机1060.77秒。
+包三个文件及48份最终IR与上一轮逐字节一致，source保持初始正确快版本；前序修改相对初始实卡快包的设备回归仍待恢复。
+实卡保持停止，完整LM数值差异仍待解决。
+本轮不计入三轮设备调优，所有身份、测试和诊断见
+[投影读取证据](data/board-performance/projected-tensor-reads-20260914.json)。

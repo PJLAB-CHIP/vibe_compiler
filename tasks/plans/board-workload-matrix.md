@@ -716,3 +716,45 @@ S1024完整LM的同一named pipeline由超过120秒变为1.61秒，其中constan
 source保持初始快版本，包三文件及全部48份IR与上一轮no-card产物逐字节相同。主机总1059.59秒、RSS 2,840,736 KiB。
 前序修改相对初始快版本的设备回归仍待恢复，不能由本次主机产物相等代签。
 完整身份与结果见[常量读取证据](../../docs/data/board-performance/constant-tensor-lookup-20260914.json)。
+
+### 2026-09-14 投影式读取显式化与动态表访问边界
+
+按05号3.4合同，正式source→Linalg pipeline将generic payload中已证明的迭代投影读取绑定为实际DPS input、
+indexing map和block argument。依赖进入current IR，原DAG与semantic-root分析无需旁路capture表。
+同source/map多读及已有input复用，不同map保持独立；捕获的init不能误连到可能已更新的归约accumulator。
+常量消费者同时支持map内的显式常量坐标，沿用原边界检查与预算；不修改算术、dtype、layout、transport或搜索策略。
+
+7个新增测试覆盖59组输入，包括1024/1025/1031、FP16/BF16/整数、排列/broadcast/unit零坐标、重复和init读取、
+structured producer依赖、data-dependent索引、局部source、shape不匹配和未知extent。
+591,360个结果位型精确，TilingInterface实际生成224个窗口实现，其中32个尾窗口；逐坐标覆盖一次并检查实际input/output slices。
+连同原constant测试共13项定向通过；Transforms/Planning/Pipeline的406/127/5项及相关lit 30项实际通过，无skip。
+最初source-organization命令路径拼错未发现测试，随后已用正式路径单独执行通过；不把空发现算通过。
+完整canonical增量构建及后续Ninja no-op通过。
+
+完整LM S16/1024/1025 FP16本轮直接XLA重新导出，source各18文件均与原直接XLA版本逐字节相同。
+S1024/1025的正式source→named Linalg分别1.820/0.114秒，每项恰好提升一个索引读取；实际动态词表读取及clamp保留。
+两种长度的mask折叠工作量不同，仍沿用上一节说明，不能把这两个时间当同等工作对比。
+本轮未重新执行长序列CPU eager或完整数值验收；未用历史raw输出作新输入。
+
+当前完整LM下一失败为`UnsupportedRootRegionWorkReason::UnsupportedCapture`：动态词表没有静态affine访问，
+仍被`RootRegionWorkAnalysis`的精确operand demand合同拒绝。相同fresh source、最终compiler的none诊断在47.88秒正常失败，
+Instr、SPM及target调用均为0；这是区分边界的诊断，不替换正式search或作为性能结果。
+正式8/42主机搜索在确认重复工作后人工取消，runner共599.13秒；取消前最后进度已完成942次spatial demand和root-work检查，
+其中demand累计277.756秒。该搜索启动于constant-map消费者小扩展之前，投影读取pass相同；最终compiler另做none及GDB复核。
+GDB的8/1诊断也已完成93次demand检查，两次规划栈采样分别在spatial close/contains和exact rectangular image恢复；
+采样后主动结束，不作为计时基线。取消不代表1,800秒主机期限到达，更不代表设备timeout；已删除本次取消事务约3.72 GB临时payload。
+
+后续须一起处理两处通用边界：
+
+1. 从当前Tensor SSA索引、原clamp、实际source和结果窗口建立动态读取合同，分别闭合需求、selected candidate物化、
+   bufferization及target地址/读取能力。标准Tensor op及external interfaces先行评估；当前target conversion没有普通
+   `memref.load` lowering，不能仅生成scalar load或把整张表装进SPM就宣称闭合。不能为表内容索引伪造affine map或使用估算容量。
+2. 当前`UnsupportedCapture`检查只取同一root的operands/captures，不随空间分区改变；搜索仍按每个proposal重查，
+   `trials`仅约束actual候选，production planning credits默认无界。必须保留typed失败的作用范围：能证明与choice无关的缺口
+   在共同输入边界报告；choice相关失败仍保留其它方向。不能把全部unsupported一律终止，也不能只加trials或用超时冒充搜索收敛。
+
+完整LM动态读取、package/no-card、数值差异与实卡资格仍未闭合。本项不计为三轮板端性能调优；
+固定FP16 block本轮默认8/42完整package/no-card通过，9 accepted、33容量、0 unsupported；
+主机1060.77秒，RSS 2,849,620 KiB。source与初始快版本相同，包三个文件及48份最终IR与上一轮逐字节一致。
+前序局部常量/SPM修改相对初始实卡快包的设备回归仍待恢复，本次产物相等不代签该门禁。
+详见[投影读取证据](../../docs/data/board-performance/projected-tensor-reads-20260914.json)。

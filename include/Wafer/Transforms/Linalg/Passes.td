@@ -32,6 +32,21 @@ def FormAttentionOpsPass
                            "wafer::WaferDialect"];
 }
 
+def NormalizeLinalgTensorReadsPass
+    : Pass<"wafer-normalize-linalg-tensor-reads", "mlir::func::FuncOp"> {
+  let summary = "Bind projected payload tensor reads to explicit Linalg inputs";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::tensor::TensorDialect"];
+  let statistics = [
+    Statistic<"numNormalizedReads", "normalized-reads",
+              "Number of projected tensor reads replaced by input arguments">,
+    Statistic<"numAddedInputs", "added-inputs",
+              "Number of new explicit tensor input bindings">
+  ];
+}
+
 def NormalizeStructuredTensorGraphPass
     : Pass<"wafer-normalize-structured-tensor-graph", "mlir::func::FuncOp"> {
   let summary =

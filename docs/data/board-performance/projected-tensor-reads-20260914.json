@@ -1,0 +1,257 @@
+{
+  "work_item": "board-testing",
+  "date": "2026-09-14",
+  "scope": "host-only; board explicitly unrecovered",
+  "root": {
+    "upstream": "Pinned official StableHLO gather legalization captures the tensor of converted indices inside linalg.generic payload.",
+    "failure_before": "SemanticRootAnalysis and StructuredDAG follow direct operation operands and miss the actual structured producer dependency.",
+    "implementation": "Projected direct payload tensor reads become actual DPS inputs, maps and scalar block arguments; reuse only identical input source/map, never init arguments.",
+    "preserved": "Scalar arithmetic, dtype, all init/result ties, dynamic table extract and clamped index SSA.",
+    "constant_consumer": "Input maps with explicit constant coordinates use the same checked per-axis lookup and original folding budgets.",
+    "non_goals": [
+      "No synthetic affine map for data-dependent table reads",
+      "No layout, transport, memory admission or search policy changes",
+      "No numerical tolerance changes"
+    ]
+  },
+  "build": {
+    "canonical": "passed, full incremental default build",
+    "log": {
+      "path": "build/test/model-performance/projected-reads-build-final.log",
+      "bytes": 2204,
+      "sha256": "81c79511e401b2ea8e79c60feebe69c50b9b0d42f4aecda82fb3e8bd5bdd6826"
+    },
+    "final_test_update_build": {
+      "path": "build/test/model-performance/projected-reads-build-tests-final.log",
+      "bytes": 224,
+      "sha256": "44257cca441dea7d4adde3a4529661471307cd89f15e5f606a54b0f14f124708"
+    },
+    "no_op": {
+      "path": "build/test/model-performance/projected-reads-build-no-op.log",
+      "bytes": 63,
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "compiler": {
+      "path": "build/bin/wafer-compile",
+      "bytes": 85542368,
+      "sha256": "add9d2440fbff41dc94a4ed8d43f037a59d76405dc6f79899622c67ab197d350"
+    },
+    "optimizer": {
+      "path": "build/bin/wafer-opt",
+      "bytes": 62625752,
+      "sha256": "8600f028708ff4e983c6672b68bbd449c0677ccd3636ea04548d564729c96392"
+    },
+    "running_fixed_block_compiler_sha_matches_final_build": true
+  },
+  "validation": {
+    "focused_gtests_passed": 13,
+    "new_normalization_gtests": 7,
+    "normalization_configurations": 59,
+    "bit_exact_output_values": 591360,
+    "actual_tiled_implementations": 224,
+    "tail_implementations": 32,
+    "focused_log": {
+      "path": "build/test/model-performance/projected-reads-focused-final.log",
+      "bytes": 2874,
+      "sha256": "126d83b8d2481b29c34533943b317286f83689de5edb0d57cb580b363d405fce"
+    },
+    "component_gtests": {
+      "Transforms": 406,
+      "Planning": 127,
+      "Pipeline": 5
+    },
+    "component_skipped": 0,
+    "component_log": {
+      "path": "build/test/model-performance/projected-reads-component.log",
+      "bytes": 119669,
+      "sha256": "8d8fde63cbd1efa2b0f1c40bb7381850ce2f3cceecfa909f13c29e1fe9d42108"
+    },
+    "final_transforms_log": {
+      "path": "build/test/model-performance/projected-reads-transforms-final.log",
+      "bytes": 90837,
+      "sha256": "531a838444f2180e94d0696db329d2646e38447e4cb648da14c078a58d90ec36"
+    },
+    "lit_passed": 30,
+    "lit_log": {
+      "path": "build/test/model-performance/projected-reads-lit.log",
+      "bytes": 2893,
+      "sha256": "8f025687ed14f538ecac2740efb05111b4fa7d5687301e81a25e12bf40d4971f"
+    },
+    "source_organization_log": {
+      "path": "build/test/model-performance/projected-reads-source-organization.log",
+      "bytes": 165,
+      "sha256": "c0d1b714476d12bf62eb4155824de4d5fda0b7d1cab3cc27a4f487726864623f"
+    },
+    "lit_note": "One initially misspelled source-organization path discovered no test; the correct registered path was then explicitly run and passed. Counts are 29 + 1 actual tests.",
+    "source_identities": {
+      "path": "build/test/model-performance/projected-reads-source-identities.json",
+      "bytes": 8882,
+      "sha256": "381944c81f38cd1771b5bfe7b8c7dfec23f1b20aac2f8b7d583ef0961d12167e"
+    }
+  },
+  "full_lm": {
+    "source": "Original HF LlamaForCausalLM, one decoder, embedding, final norm and complete LM head; direct XLA export.",
+    "dtype": "float16",
+    "seed": 20260803,
+    "source_configurations": [
+      16,
+      1024,
+      1025
+    ],
+    "source_files_per_configuration": 18,
+    "source_equal_to_direct_xla_version": true,
+    "runtime_input": "i64 [1,S]",
+    "output": "f16 [1,S,32000]",
+    "long_source_checks": [
+      {
+        "S": 1024,
+        "dtype": "float16",
+        "source_export_wall_seconds": 12.906207407999318,
+        "named_pipeline_wall_seconds": 1.8201800890092272,
+        "status": "verified source and named Linalg pipeline; no package or numeric readback"
+      },
+      {
+        "S": 1025,
+        "dtype": "float16",
+        "source_export_wall_seconds": 10.09733494000102,
+        "named_pipeline_wall_seconds": 0.11449531700054649,
+        "status": "verified source and named Linalg pipeline; no package or numeric readback"
+      }
+    ],
+    "normalized_reads_per_long_case": 1,
+    "new_inputs_per_long_case": 1,
+    "long_source_log": {
+      "path": "build/test/model-performance/projected-reads-lm-long-source.log",
+      "bytes": 690,
+      "sha256": "2169b4ba29e6264a919993283a41e690924f7e24e78d0710fa04c42b035bb047"
+    },
+    "none_diagnostic": {
+      "status": "normal compiler failure",
+      "policy": "none; diagnostic only, not a replacement winner",
+      "wall_seconds": 47.88,
+      "transaction_wall_ms": 47868.198,
+      "max_rss_kib": 827188,
+      "failure": "root region captures a shaped value outside exact operand demand",
+      "owner": "RootRegionWorkAnalysis.cpp / UnsupportedRootRegionWorkReason::UnsupportedCapture",
+      "instr_spm_target_calls": 0,
+      "log": {
+        "path": "build/test/model-performance/projected-reads-full-lm-none-diagnostic.log",
+        "bytes": 18655,
+        "sha256": "c85160e3f2dcacfffa13c7b751b76ba55435d2c3510ffd78f712697ca37446b9"
+      }
+    },
+    "search_diagnostic": {
+      "policy": "search",
+      "width": 8,
+      "trials": 42,
+      "status": "manually cancelled after diagnosis; not a host or board timeout",
+      "runner_wall_seconds": 599.13,
+      "max_rss_kib": 3588688,
+      "last_progress_completed_demand_queries": 942,
+      "last_progress_demand_query_wall_ms": 277755.651,
+      "last_progress_root_work_validations": 942,
+      "last_progress_root_work_validation_wall_ms": 10900.332,
+      "no_final_search_statistics": true,
+      "compiler_scope": "This diagnostic started before the small constant-map consumer extension; the normalization pass was unchanged. The final-compiler none and GDB checks below establish the remaining boundary.",
+      "log": {
+        "path": "build/test/model-performance/projected-reads-full-lm-current.log",
+        "bytes": 135746,
+        "sha256": "1864c51950cf3f42df0a5bec53c9fa46f96182b7db9b30a47354a0ad592ff974"
+      }
+    },
+    "final_compiler_stack_diagnostic": {
+      "width": 8,
+      "trials": 1,
+      "status": "manually stopped after two planning stack samples",
+      "samples": [
+        "SpatialPlanDomain::contains/close inside spatial partition propagation",
+        "Exact rectangular image recovery inside spatial partition propagation"
+      ],
+      "last_observed_completed_demand_queries": 93,
+      "not_a_timing_baseline": true,
+      "log": {
+        "path": "build/test/model-performance/projected-reads-full-lm-stack.log",
+        "bytes": 12713,
+        "sha256": "14888a1acba58ca7b900184d777a49a20f395ed3db2cd276155c87bf15ebcada"
+      }
+    },
+    "cleanup": {
+      "cancelled_transaction_payload_bytes_removed": 3716346114,
+      "source_and_diagnostic_logs_retained": true
+    },
+    "package": false,
+    "no_card": false,
+    "numeric_qualification": false,
+    "remaining": [
+      "Dynamic tensor read demand and actual materialization/target contract",
+      "Placement-invariant unsupported capture repeatedly rechecked across spatial proposals; production planning credits currently unbounded by trials",
+      "Previously observed full-LM XLA CPU versus PyTorch numerical differences",
+      "Real-board qualification after device recovery"
+    ],
+    "named_1024_ir": {
+      "path": "build/test/model-performance/projected-reads-lm-1024-current/linalg.mlir",
+      "bytes": 311577,
+      "sha256": "49126533207013432b9c6f8773c72c2e589e5ec22851995591ce40dfcdb2b6f1"
+    },
+    "named_1024_statistics": {
+      "path": "build/test/model-performance/projected-reads-lm-1024-current/normalization.log",
+      "bytes": 5191,
+      "sha256": "8164a6a6d8b25acaa0b6fc9021dc98e29fbf6c6505dfddb856979de073c8d592"
+    },
+    "named_1025_ir": {
+      "path": "build/test/model-performance/projected-reads-lm-1025-current/linalg.mlir",
+      "bytes": 66334,
+      "sha256": "e85d0edc0bba0d8c1445c905fcdda643cc63b1bb8dd9bcd88146c679e3573ae3"
+    },
+    "named_1025_statistics": {
+      "path": "build/test/model-performance/projected-reads-lm-1025-current/normalization.log",
+      "bytes": 5191,
+      "sha256": "324721d8d896b907c10a2bf2b5a898998896a2f200f9e962c89d39d09b455f03"
+    }
+  },
+  "fixed_fp16_block": {
+    "status": "passed fresh source, complete package and 16-Tile no-card validation",
+    "policy": "search",
+    "width": 8,
+    "trials": 42,
+    "actual": 42,
+    "accepted": 9,
+    "exact_capacity_rejected": 33,
+    "unsupported": 0,
+    "indeterminate": 0,
+    "wall_seconds": 1060.77,
+    "transaction_wall_ms": 1037495.569,
+    "max_rss_kib": 2849620,
+    "source_files": 14,
+    "source_equal_to_initial_fast_baseline": true,
+    "fresh_pytorch_reference_generated": true,
+    "package_files": 3,
+    "final_ir_files": 48,
+    "package_equal_to_previous": true,
+    "final_ir_equal_to_previous": true,
+    "package_equal_to_initial_fast_board_baseline": false,
+    "package_sha256": {
+      "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+      "manifest.json": "f2e518c40aa69a25243b97c46f5976383bcdc29e4ce1df8d5497353092c00396",
+      "modules/module_00000.so": "33a717f64d78d34ce2a5e6d9c7199366b7d0b7a985cfade11e54ad94e85d6d2b"
+    },
+    "identity": {
+      "path": "build/test/model-performance/projected-reads-llama-identity.json",
+      "bytes": 5945,
+      "sha256": "bf1355afa3c51411910c4e4be44bb029d2236d65f94228c1bcac286ac790e1e0"
+    },
+    "log": {
+      "path": "build/test/model-performance/projected-reads-llama-current.log",
+      "bytes": 6195190,
+      "sha256": "04bce3ef8797a6bdbccb1d3cb2dbdf37ff3f58952f499a9ed2029e4645a05f2e"
+    },
+    "board_execution": false,
+    "numeric_readback": false,
+    "pending_device_gate": "Earlier local-constant/SPM changes already changed the package relative to the initial fast correct board baseline; that gate remains pending."
+  },
+  "board": {
+    "executed": false,
+    "reason": "User explicitly confirmed the QKV timeout device has not recovered",
+    "performance_rounds_completed_by_this_change": 0
+  }
+}

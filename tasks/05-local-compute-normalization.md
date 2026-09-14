@@ -15,7 +15,8 @@ Pipeline position:
 - Current stage responsibility:
   先把supported StableHLO collectives规整为typed destination-style tensor ops，再通过仓库pinned官方
   StableHLO-to-Linalg conversion把compute、shape/data movement和constant变成Linalg/Tensor/SCF/Arith/Math；
-  折叠可由static IR完全证明的SPMD helper residual；最后从current structured SSA证明完整Q/K/V attention，
+  折叠可由static IR完全证明的SPMD helper residual，将payload中可证明的投影式Tensor读取绑定为显式Linalg inputs；
+  最后从current structured SSA证明完整Q/K/V attention，
   归一为一个`wafer.linalg_ext.attention` op并确定`flash_attention`或`flash_decoding`算法。Attention识别完成后，
   对剩余ordinary pure structured Tensor/Linalg connected component运行一次有界access-relation e-graph normalization，组合并消除
   可证明等价的static reshape、transpose、broadcast、concat和structured compute operand/result access graph；
@@ -129,6 +130,36 @@ PyTorch的opmath由02号frontend在进入StableHLO之前显式表达；本pass�
 | dynamic shape或quantized inference | 匹配前明确拒绝，不能产生部分分解或假定shape | partial conversion失败；不影响其它op |
 | training/grad或已经显式的primitive | 不作为inference重写；不修改其算术 | function pass局部保留；后续不支持仍由原边界报告 |
 | 原始PyTorch BatchNorm及ResNet整网 | 同一module导出、全部reference及参数保持；不按模型名分派 | source→正式TensorProgram及package/no-card分别登记，实卡资格另签 |
+
+### 3.4 捕获的投影式Tensor读取
+
+- Upstream IR / input：official legalization后的verified tensor-semantics `linalg.generic`，其payload直接包含
+  读取外层Tensor SSA的`tensor.extract`；迭代域和source均为static shape。
+- Current stage responsibility：在原source→Linalg pipeline中，将已证明等于迭代坐标投影的读取绑定为真正的DPS input与indexing map。
+  source各维要么是同一generic的`linalg.index`且extent等于对应迭代extent，要么是extent=1的零坐标。
+  原输入中相同source/map可复用；不同map保持不同输入，不能复用可能参与归约更新的init block argument。
+  替换读结果为对应input block argument，保留其余标量算术、dtype、属性、输出map和DPS init/result关系。
+  常量求值的直接消费者同时接受map中的显式常量坐标，并沿用逐轴边界检查与原有求值预算；unit广播零坐标不再丢失常量求值能力。
+- Output IR / files：同一generic上的实际input operands、indexing maps和region block arguments；不建立额外依赖side table。
+- Downstream consumer：原canonicalizer、attention/e-graph及StructuredDAG/SemanticRoot；常规投影路径继续进入原tiling、bufferization和lowering。
+- User-level driver / named pipeline：同一`wafer-compile`与`wafer-lower-stablehlo-to-linalg`中的`wafer-normalize-linalg-tensor-reads`。
+- Explicit non-goals：不猜data-dependent访问、非unit常量轴、未知extent或越界坐标；这些读取保持原SSA，不能被改成虚假affine map。
+  不增加scalar算术、数值重排、物理内存或transport choice；不把输入显式化等同于完整dynamic gather已支持。
+  当前e-graph语言拒绝含此类payload Tensor读取的component；本项建立其缺失的显式输入合同，不为已准入语言新增旁路等价探索。
+- Completion criteria：每个被提升读取都有逐坐标等价证明，实际DPS input成为唯一依赖；typed DAG/semantic root看见全部新边且无重复输入，
+  剩余未知读取不被隐藏。整除/非整除正例、原始source直接下游及固定关键回归分别验收。
+
+采用上游[Linalg显式输入与payload](https://mlir.llvm.org/docs/Dialects/Linalg/)的表示，pinned TOSA `TableConverter`同样将
+规则索引输入作为DPS operand、数据相关table read保留在payload；相比只在DAG中扫描capture，本项把可证明的读依赖直接写入IR，
+供已有tiling和bufferization共同消费。动态gather仍须单独闭合其访问、生命周期与target合同。
+
+| 分支/输入等价类 | exact要求 | 直接下游witness |
+| --- | --- | --- |
+| rank3、1024/1025/1031，identity/permutation/broadcast、unit零坐标、FP16/BF16和整数 | 每个input/map与原extract坐标逐项相等；dtype、scalar body及输出关系保持 | verifier、constant数值oracle及TilingInterface main/tail |
+| 同一source/map多读、已有同map input、不同map、init同时被捕获 | 相同输入只绑定一次；不同map分开；init读不得误连到正在更新的output block argument | DPS ties、SSA uses、实际DAG edge/semantic key |
+| source来自另一个structured root、后继同时有动态表读取 | 新增真实producer→consumer边，保留dynamic extract及其index SSA；非affine表不伪装规则输入 | 原StructuredDAG/SemanticRoot及生产完整LM下一typed边界 |
+| data-dependent index、非unit常量轴、source在payload内定义、shape不匹配、source或loop extent未知 | 保持原读取，不引入新input或猜测映射 | verifier及不变IR/原有合法化门禁 |
+| 原始完整LM、固定FP16 block | 原source/参数保持，source阶段、实际候选、package/no-card、设备数值分别记账 | 统一runner；设备恢复前不能签实卡完成 |
 
 ## 4. Attention Semantic Normalization
 
@@ -984,7 +1015,8 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 - Upstream IR / input：official legalization后的verified Linalg/Tensor IR，实际DenseElementsAttr、static view和indexing maps。
 - Current stage responsibility：在原`wafer-fold-static-tensor-ops`中按实际坐标读取常量；单个元素查询不能先展开整份输入。
   Slice只读取结果窗口，等元素数量reshape直接复用DenseElementsAttr存储；Generic先由可逆output permutation将结果坐标映射到
-  迭代坐标，再使用输入map读取元素。未使用的init block argument不读取；body、dtype和算术顺序保持。
+  迭代坐标，再使用输入map中的维度或显式常量坐标读取元素；两类坐标都经过逐轴边界检查。
+  未使用的init block argument不读取；body、dtype和算术顺序保持。
 - Output IR / files：同一SSA位置的精确`arith.constant`，或不适用时保持原操作；不产生旁路数据、cache或新文件格式。
 - Downstream consumer：原canonicalizer、attention识别和structured graph normalization；生产与named pipeline使用同一实现。
 - User-level driver / named pipeline：原`wafer-compile`及`wafer-lower-stablehlo-to-linalg`。
