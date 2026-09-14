@@ -147,4 +147,106 @@ TEST(TensorResultIndexingTest,
     }
 }
 
+TEST(TensorResultIndexingTest,
+     InsertDemandPartitionsSourceAndUntouchedDestination) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    std::string input = "tensor<1x" + std::to_string(extent - 2) + "x64xf16>";
+    std::string output = "tensor<2x" + std::to_string(extent) + "x128xf16>";
+    std::string text;
+    llvm::raw_string_ostream b(text);
+    b << "module { func.func @update(%src: " << input << ", %dst: " << output
+      << ") -> " << output
+      << " { %r = tensor.insert_slice %src into %dst[1, 1, 32] [1, "
+      << extent - 2 << ", 64] [1, 1, 1] : " << input << " into " << output
+      << " return %r : " << output << " } }";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    mlir::tensor::InsertSliceOp insert;
+    module->walk([&](mlir::tensor::InsertSliceOp op) { insert = op; });
+    auto transfer = deriveTensorResultIndexing(
+        mlir::cast<mlir::OpResult>(insert.getResult()));
+    ASSERT_TRUE(transfer.isExact()) << transfer.detail;
+    ASSERT_EQ(transfer.indexing->operands.size(), 2u);
+    for (const StaticRectangularIndexSet &demand :
+         llvm::SmallVector<StaticRectangularIndexSet, 4>{
+             {{0, 0, 0}, {2, extent, 128}},
+             {{0, 0, 31}, {2, extent, 66}},
+             {{1, 1, 32}, {1, extent - 2, 64}},
+             {{0, 0, 0}, {1, extent, 128}}}) {
+      auto src = getTensorOperandDemand(
+          *transfer.indexing, transfer.indexing->operands[0], {demand});
+      auto dst = getTensorOperandDemand(
+          *transfer.indexing, transfer.indexing->operands[1], {demand});
+      ASSERT_TRUE(src.isExact()) << src.reason;
+      ASSERT_TRUE(dst.isExact()) << dst.reason;
+      auto count = [](llvm::ArrayRef<StaticRectangularIndexSet> boxes,
+                      int64_t b, int64_t m, int64_t n) {
+        const int64_t points[] = {b, m, n};
+        unsigned matches = 0;
+        for (const auto &box : boxes) {
+          bool inside = true;
+          for (auto [point, offset, size] : llvm::zip_equal(
+                   llvm::ArrayRef<int64_t>(points), box.offsets, box.sizes))
+            inside &= offset <= point && point < offset + size;
+          matches += inside;
+        }
+        return matches;
+      };
+      // Enumerating logical membership is an independent oracle for exact
+      // coverage and disjointness, including multidimensional edge slabs.
+      for (int64_t batch = 0; batch < 2; ++batch)
+        for (int64_t row = 0; row < extent; ++row)
+          for (int64_t col = 0; col < 128; ++col) {
+            const bool read = count({demand}, batch, row, col);
+            const bool updated = batch == 1 && row >= 1 && row < extent - 1 &&
+                                 col >= 32 && col < 96;
+            ASSERT_EQ(count(dst.domains, batch, row, col), read && !updated);
+            ASSERT_EQ(count(src.domains, batch - 1, row - 1, col - 32),
+                      read && updated);
+          }
+    }
+    IndexRelationLimits limits;
+    limits.maxRectangularPieces = 1;
+    auto bounded = getTensorOperandDemand(
+        *transfer.indexing, transfer.indexing->operands[1],
+        {{{0, 0, 0}, {2, extent, 128}}}, limits);
+    EXPECT_EQ(bounded.status, IndexRelationStatus::ResourceExhausted);
+    EXPECT_TRUE(bounded.domains.empty());
+    EXPECT_EQ(getTensorOperandDemand(*transfer.indexing,
+                                     transfer.indexing->operands[1],
+                                     {{{0, 0, 0}, {2, extent + 1, 128}}})
+                  .status,
+              IndexRelationStatus::Invalid);
+  }
+}
+
+TEST(TensorResultIndexingTest, ZeroOffsetSubsetIsNotAnEqualVolumeReshape) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    for (bool clipped : {false, true}) {
+      const int64_t destination = clipped ? extent : extent / 2;
+      const int64_t source = clipped ? extent / 2 : extent;
+      auto relation = IndexRelation::fromAffineMap(
+          mlir::AffineMap::getMultiDimIdentityMap(3, context.get()),
+          {2, destination, 128}, {2, source, 128});
+      ASSERT_TRUE(relation.isExact()) << relation.reason;
+      auto image = relation.get()->getExactStaticRectangularImagePieces(
+          {0, 0, 0}, {2, destination, 128});
+      ASSERT_TRUE(image.isExact()) << image.reason;
+      ASSERT_EQ(image.domains.size(), 1u);
+      EXPECT_EQ(image.domains.front().offsets,
+                (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+      EXPECT_EQ(image.domains.front().sizes,
+                (llvm::SmallVector<int64_t, 4>{2, extent / 2, 128}));
+      EXPECT_TRUE(relation.get()->contains({1, extent / 2 - 1, 127},
+                                           {1, extent / 2 - 1, 127}));
+      EXPECT_FALSE(
+          relation.get()->contains({1, extent / 2, 127}, {1, extent / 2, 127}));
+    }
+  }
+}
+
 } // namespace

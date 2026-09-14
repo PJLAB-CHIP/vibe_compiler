@@ -59,6 +59,14 @@ TensorResultIndexingResult deriveTensorResultIndexing(
     mlir::OpResult result,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
+/// Map a finite result demand to one operand of an exact current support
+/// result. Insert destinations exclude the overwritten source window; empty
+/// images have no rectangles. The query preserves exactness and bounds work.
+StaticRectangularIndexSetPiecesResult getTensorOperandDemand(
+    const TensorResultIndexing &indexing, const TensorOperandIndexing &operand,
+    llvm::ArrayRef<StaticRectangularIndexSet> demand,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
 /// Current structured-compute access maps. These adapters expose dialect
 /// semantics only; no fusion, tiling, or placement decisions belong here.
 mlir::FailureOr<mlir::AffineMap>

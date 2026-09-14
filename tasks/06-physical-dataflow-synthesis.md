@@ -1083,8 +1083,16 @@ Region body由同次`IRMapping`关联到未变的上层choice，body-preserving�
 
 当前ABI已经规定每个Tile entry的`ProgramArgumentAttr`指向同一原始输入槽，因此跨clone、Region合并与pipeline后，
 这类关联不需要旧operation身份。对actual allocation的全部当前writer，沿typed RDMA/GS源及memref alias逐级查询；
-有非搬运writer、未知来源、循环依赖、不同输入或DTE接收时不凭空给出唯一输入来源。只有显式的单一输入来源才能关联scope。
-对structural tensor operand，穿过共同tensor support indexing query证明的单一Source关系及当前Region参数绑定。
+有非搬运writer、未知来源、循环依赖、不同输入或DTE接收时不凭空给出唯一输入来源。只有实际失败allocation具有显式单一输入来源，
+才用该ABI槽查找structural reader集合；这不要求structural tensor operand只能读取一个输入。
+对structural tensor operand，穿过共同tensor support indexing query及当前Region参数绑定，按实际需求区域反向查询输入。
+单一Source的view沿result-to-operand关系传递；`insert_slice`按写入窗口拆分：Source只消费需求与窗口的交集，
+Destination只消费需求减去窗口的部分。多次插入按当前SSA顺序逐层查询，完整覆盖的旧值不再成为reader；
+`extract_slice`、reshape和pad继续使用同一exact关系。矩形集合的映射与插入差集由Analysis中的共同查询拥有，
+structured demand和容量反馈共享该实现，不分别维护覆盖规则。查询受现有关系工作量上限约束；不支持或超限的
+尚未解释分支保留其输入歧义，不能把有证据的其它reader当作完整集合。该分析不改写tensor计算。
+底层projected affine关系只有对应维度extent相等时才附加row-major reshape构造证明；零偏移但extent不同的切片
+仍是exact projected关系，由其实际边界裁剪image，不能因映射表达式相同就声称等体积。
 已有Temporal fusion明确纳入当前traversal的pure unary pointwise producer，若其唯一payload输入与输出的完整permutation map相同，
 可保持索引坐标继续查询该输入的访问需求。这是已选融合的输入需求映射，不是数值相等、alias或buffer来源证明；
 Instr侧仍独立要求实际buffer只经RDMA/GS写入。其它计算保持未知，不猜测跨归约、多输入或未融合producer的参数关联。
@@ -1096,6 +1104,15 @@ Card/Tile和ABI槽都相同，且每个读入scope都有完整operand map证据�
 歧义检查只沿当前traversal内尚未解释的SSA路径扩展；到另一个显式scope或另一个TileRegion的计算结果时停止。
 消费前序Region的计算结果，不等于读取该Region的全部原始输入，不能把跨Region的普通数据依赖登记成同一输入buffer的reader。
 覆盖成对的直接输入读取和前序Region结果读取，检查归因不跨越独立物化边界。
+
+插入需求覆盖矩阵：rank3+及1024/1025/1031分别覆盖部分插入、连续拼接、重叠覆盖、完整覆盖、切片只读其中一段、
+同输入多段与不同输入、未覆盖的未知producer和已覆盖的未知producer；检查all-and-only来源、精确差集且无重叠。
+4/16 Tile通过actual RDMA/GS与真实SPM容量certificate检查返回坐标；选中修正仍须通过原Temporal物化与Instr/SPM门禁。
+长cache两步source和默认8/42编译作为真实下游资格；固定FP16 LLaMA保留原快版本，模块变化时须另做实卡回归。
+算法比较：普通[MLIR backward slice](https://mlir.llvm.org/doxygen/SliceAnalysis_8h.html)只描述SSA依赖，
+不足以排除被覆盖的旧区域；[tensor insert_slice语义](https://mlir.llvm.org/docs/Dialects/TensorOps/#tensorinsert_slice-tensorinsertsliceop)
+与[One-Shot Bufferization的读取判断](https://mlir.llvm.org/doxygen/Tensor_2Transforms_2BufferizableOpInterfaceImpl_8cpp_source.html)
+明确区分Source与未覆盖Destination。本项复用仓库已有有限矩形差集算法，不引入通用无界集合求解或数据流重写。
 
 相关坐标按(domain, scope)分组，容量修正保留同一参数起点的全关联轴、各scope轮转单轴、独立坐标和联合方向。
 每个选中坐标按自身合法下界生成`max(lower, floor(size/2))`，不按共同减量或仅固定最大轴推进。

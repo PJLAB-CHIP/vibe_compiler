@@ -38,11 +38,10 @@ protected:
     context->loadAllAvailableDialects();
   }
 
-  mlir::OwningOpRef<mlir::ModuleOp> source(int64_t extent, unsigned tiles,
-                                           bool sharedInput = false,
-                                           bool derivedInput = false,
-                                           int64_t columns = 2048,
-                                           bool opaqueDerived = false) {
+  mlir::OwningOpRef<mlir::ModuleOp>
+  source(int64_t extent, unsigned tiles, bool sharedInput = false,
+         bool derivedInput = false, int64_t columns = 2048,
+         bool opaqueDerived = false, llvm::StringRef assembly = {}) {
     std::string suffix =
         std::to_string(extent) + "x" + std::to_string(columns) + "xf16>";
     std::string input = "tensor<1x" + suffix;
@@ -74,6 +73,55 @@ protected:
            << ") { ^bb0(%value: f16, %old: f16): "
            << "%negated = arith.negf %value : f16\n"
            << "linalg.yield %negated : f16 } -> " << input << "\n";
+      if (!assembly.empty()) {
+        const std::string half = "tensor<1x" + std::to_string(extent / 2) +
+                                 "x" + std::to_string(columns) + "xf16>";
+        if (assembly == "full") {
+          ir << "%assembled = tensor.insert_slice %y into %x[0, 0, 0] [1, "
+             << extent << ", " << columns << "] [1, 1, 1] : " << input
+             << " into " << input << "\n";
+        } else if (assembly == "partial" || assembly == "unknown_remainder") {
+          ir << "%piece = tensor.extract_slice %y[0, 0, 0] [1, " << extent / 2
+             << ", " << columns << "] [1, 1, 1] : " << input << " to " << half
+             << "\n%assembled = tensor.insert_slice %piece into "
+             << (assembly == "partial" ? "%x" : "%derived") << "[0, 0, 0] [1, "
+             << extent / 2 << ", " << columns << "] [1, 1, 1] : " << half
+             << " into " << input << "\n";
+        } else if (assembly == "overwritten_unknown") {
+          const int64_t rest = extent - extent / 2;
+          const std::string tail = "tensor<1x" + std::to_string(rest) + "x" +
+                                   std::to_string(columns) + "xf16>";
+          ir << "%first = tensor.extract_slice %y[0, 0, 0] [1, " << extent / 2
+             << ", " << columns << "] [1, 1, 1] : " << input << " to " << half
+             << "\n%last = tensor.extract_slice %y[0, " << extent / 2
+             << ", 0] [1, " << rest << ", " << columns
+             << "] [1, 1, 1] : " << input << " to " << tail
+             << "\n%updated = tensor.insert_slice %first into %derived[0, 0, "
+                "0] [1, "
+             << extent / 2 << ", " << columns << "] [1, 1, 1] : " << half
+             << " into " << input
+             << "\n%assembled = tensor.insert_slice %last into %updated[0, "
+             << extent / 2 << ", 0] [1, " << rest << ", " << columns
+             << "] [1, 1, 1] : " << tail << " into " << input << "\n";
+        } else {
+          const std::string wide = "tensor<1x" + std::to_string(2 * extent) +
+                                   "x" + std::to_string(columns) + "xf16>";
+          ir << "%base = tensor.empty() : " << wide
+             << "\n%prefix = tensor.insert_slice %x into %base[0, 0, 0] [1, "
+             << extent << ", " << columns << "] [1, 1, 1] : " << input
+             << " into " << wide
+             << "\n%both = tensor.insert_slice %y into %prefix[0, "
+             << (assembly == "overlap" ? extent / 2 : extent) << ", 0] [1, "
+             << extent << ", " << columns << "] [1, 1, 1] : " << input
+             << " into " << wide
+             << "\n%assembled = tensor.extract_slice %both[0, "
+             << (assembly == "read_suffix" ? extent
+                 : assembly == "overlap"   ? 0
+                                           : extent / 2)
+             << ", 0] [1, " << extent << ", " << columns
+             << "] [1, 1, 1] : " << wide << " to " << input << "\n";
+        }
+      }
       for (unsigned scope = 0; scope < 2; ++scope)
         ir << "%e" << scope << " = tensor.empty() : " << output << "\n"
            << "%v" << scope << " = linalg.generic {indexing_maps = ["
@@ -81,9 +129,10 @@ protected:
            << "affine_map<(b, r, m, k) -> (b, r, m, k)>], "
            << "iterator_types = [\"parallel\", \"parallel\", \"parallel\", "
               "\"parallel\"]} ins("
-           << (scope == 0 || sharedInput ? "%x"
-               : derivedInput            ? "%derived"
-                                         : "%y")
+           << (scope == 1 && !assembly.empty() ? "%assembled"
+               : scope == 0 || sharedInput     ? "%x"
+               : derivedInput                  ? "%derived"
+                                               : "%y")
            << " : " << input << ") outs(%e" << scope << " : " << output
            << ") { ^bb0(%value: f16, %old: f16): linalg.yield %value : f16 } "
            << "-> " << output << "\n";
@@ -94,10 +143,9 @@ protected:
     return mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
   }
 
-  mlir::OwningOpRef<mlir::ModuleOp> actual(int64_t extent,
-                                           bool writeInterference = false,
-                                           bool hasABI = true,
-                                           int64_t columns = 2048) {
+  mlir::OwningOpRef<mlir::ModuleOp>
+  actual(int64_t extent, bool writeInterference = false, bool hasABI = true,
+         int64_t columns = 2048, int64_t inputID = 0) {
     std::string shape =
         "1x" + std::to_string(extent) + "x" + std::to_string(columns) + "xf16";
     std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
@@ -106,7 +154,8 @@ protected:
     llvm::raw_string_ostream ir(text);
     ir << "module { func.func @entry(%input: " << ddr;
     if (hasABI)
-      ir << " {wafer.program_argument = #wafer.program_argument<0>}";
+      ir << " {wafer.program_argument = #wafer.program_argument<" << inputID
+         << ">}";
     ir << ") {\n%unused = wafer.tile.region(%input : " << ddr << ") -> (" << ddr
        << ") {\n^bb0(%ddr: " << ddr << "):\n"
        << "%c0 = arith.constant 0 : index\n"
@@ -220,6 +269,46 @@ TEST_F(CapacityFeedbackTest, SharedInputAssociatesEveryProvenReader) {
         EXPECT_EQ(feedback.coordinates.count({tiles - 1, scope, 1}), 0u);
       }
     }
+}
+
+TEST_F(CapacityFeedbackTest, InsertedPiecesRetainOnlyDemandedInputReaders) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned tiles : {4u, 16u})
+      for (llvm::StringRef assembly :
+           {"partial", "full", "read_suffix", "cross_pieces", "overlap",
+            "unknown_remainder", "overwritten_unknown"}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(tiles);
+        SCOPED_TRACE(assembly.str());
+        const bool opaque = assembly.contains("unknown");
+        auto program =
+            source(extent, tiles, false, opaque, 2048, opaque, assembly);
+        ASSERT_TRUE(program);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*program)));
+        for (int64_t input : {0, 1}) {
+          auto feedback = observe(
+              *program, actual(extent, false, true, 2048, input), tiles - 1);
+          if (assembly == "unknown_remainder" && input == 0) {
+            EXPECT_GT(feedback.ambiguousInputs, 0u);
+            EXPECT_TRUE(feedback.coordinates.empty());
+            continue;
+          }
+          EXPECT_EQ(feedback.ambiguousInputs, 0u);
+          EXPECT_EQ(feedback.unavailableDemands, 0u);
+          const bool secondReadsFirst = assembly == "partial" ||
+                                        assembly == "cross_pieces" ||
+                                        assembly == "overlap";
+          const size_t expected = input == 0 && secondReadsFirst ? 4 : 2;
+          EXPECT_EQ(feedback.coordinates.size(), expected);
+          for (size_t scope : {0u, 1u})
+            for (size_t axis : {2u, 3u}) {
+              const bool reads =
+                  input == 0 ? scope == 0 || secondReadsFirst : scope == 1;
+              EXPECT_EQ(feedback.coordinates.count({tiles - 1, scope, axis}),
+                        reads);
+            }
+        }
+      }
 }
 
 TEST_F(CapacityFeedbackTest, ActualLiveConflictUsesTheSameCoordinateProof) {

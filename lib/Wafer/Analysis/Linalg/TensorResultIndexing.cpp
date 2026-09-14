@@ -242,4 +242,124 @@ deriveTensorResultIndexing(mlir::OpResult result,
   return {TensorResultIndexingStatus::Exact, std::move(indexing), {}};
 }
 
+StaticRectangularIndexSetPiecesResult
+getTensorOperandDemand(const TensorResultIndexing &indexing,
+                       const TensorOperandIndexing &operand,
+                       llvm::ArrayRef<StaticRectangularIndexSet> demand,
+                       const IndexRelationLimits &limits) {
+  auto fail = [](IndexRelationStatus status, llvm::StringRef reason) {
+    return StaticRectangularIndexSetPiecesResult{status, {}, reason.str()};
+  };
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(indexing.result.getType());
+  if (!type || !type.hasStaticShape())
+    return fail(IndexRelationStatus::Invalid,
+                "tensor demand needs a static result");
+  if (demand.size() > limits.maxRectangularPieces)
+    return fail(IndexRelationStatus::ResourceExhausted,
+                "tensor demand exceeds rectangle work limit");
+  const bool inserted =
+      indexing.kind == TensorIndexingTransformKind::InsertSlice;
+  const bool padded = indexing.kind == TensorIndexingTransformKind::Pad;
+  const TensorOperandIndexing *source = nullptr;
+  mlir::RankedTensorType sourceType;
+  if (inserted || padded) {
+    auto found = llvm::find_if(indexing.operands, [](const auto &candidate) {
+      return candidate.role == TensorIndexingOperandRole::Source;
+    });
+    if (found == indexing.operands.end() ||
+        found->operand >= indexing.result.getOwner()->getNumOperands())
+      return fail(IndexRelationStatus::Invalid,
+                  "tensor insertion has no source");
+    source = &*found;
+    sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
+        indexing.result.getOwner()->getOperand(source->operand).getType());
+    if (!sourceType || !sourceType.hasStaticShape() ||
+        sourceType.getRank() != type.getRank() ||
+        source->offsets.size() != static_cast<size_t>(type.getRank()))
+      return fail(IndexRelationStatus::Invalid,
+                  "tensor insertion has an inconsistent source window");
+    for (auto [offset, size, extent] : llvm::zip_equal(
+             source->offsets, sourceType.getShape(), type.getShape()))
+      if (offset < 0 || offset > extent || size < 0 || size > extent - offset)
+        return fail(IndexRelationStatus::Invalid,
+                    "tensor insertion is out of bounds");
+  }
+  StaticRectangularIndexSetPiecesResult result{
+      IndexRelationStatus::Exact, {}, {}};
+  for (const auto &rectangle : demand) {
+    if (rectangle.offsets.size() != static_cast<size_t>(type.getRank()) ||
+        rectangle.sizes.size() != rectangle.offsets.size())
+      return fail(IndexRelationStatus::Invalid,
+                  "tensor demand rank is inconsistent");
+    for (auto [offset, size, extent] :
+         llvm::zip_equal(rectangle.offsets, rectangle.sizes, type.getShape()))
+      if (offset < 0 || offset > extent || size < 0 || size > extent - offset)
+        return fail(IndexRelationStatus::Invalid,
+                    "tensor demand is out of bounds");
+    if (llvm::is_contained(rectangle.sizes, 0))
+      continue;
+    auto read = rectangle;
+    if (source) {
+      bool overlaps = true;
+      for (unsigned d = 0; d < rectangle.offsets.size(); ++d) {
+        const int64_t begin =
+            std::max(rectangle.offsets[d], source->offsets[d]);
+        const int64_t end =
+            std::min(rectangle.offsets[d] + rectangle.sizes[d],
+                     source->offsets[d] + sourceType.getDimSize(d));
+        overlaps &= begin < end;
+        read.offsets[d] = begin;
+        read.sizes[d] = std::max<int64_t>(0, end - begin);
+      }
+      if (operand.role == TensorIndexingOperandRole::Destination) {
+        if (!overlaps) {
+          result.domains.push_back(rectangle);
+        } else {
+          // Peel disjoint slabs from a shrinking core. Only the intersection
+          // remains at the end, and that is supplied by the inserted source.
+          auto core = rectangle;
+          for (unsigned d = 0; d < core.offsets.size(); ++d) {
+            const int64_t end = core.offsets[d] + core.sizes[d];
+            const int64_t readEnd = read.offsets[d] + read.sizes[d];
+            if (core.offsets[d] < read.offsets[d]) {
+              auto lower = core;
+              lower.sizes[d] = read.offsets[d] - core.offsets[d];
+              result.domains.push_back(std::move(lower));
+              core.offsets[d] = read.offsets[d];
+              core.sizes[d] = end - core.offsets[d];
+            }
+            if (readEnd < end) {
+              auto upper = core;
+              upper.offsets[d] = readEnd;
+              upper.sizes[d] = end - readEnd;
+              result.domains.push_back(std::move(upper));
+              core.sizes[d] = readEnd - core.offsets[d];
+            }
+            if (result.domains.size() > limits.maxRectangularPieces)
+              return fail(IndexRelationStatus::ResourceExhausted,
+                          "tensor insertion exceeds rectangle work limit");
+          }
+        }
+      } else if (overlaps) {
+        auto image =
+            operand.resultToOperand.getExactStaticRectangularImagePieces(
+                read.offsets, read.sizes, limits);
+        if (!image.isExact())
+          return image;
+        result.domains.append(std::move(image.domains));
+      }
+    } else {
+      auto image = operand.resultToOperand.getExactStaticRectangularImagePieces(
+          read.offsets, read.sizes, limits);
+      if (!image.isExact())
+        return image;
+      result.domains.append(std::move(image.domains));
+    }
+    if (result.domains.size() > limits.maxRectangularPieces)
+      return fail(IndexRelationStatus::ResourceExhausted,
+                  "tensor demand image exceeds rectangle work limit");
+  }
+  return result;
+}
+
 } // namespace wafer::analysis

@@ -1477,3 +1477,34 @@ wall 246.20秒、RSS 1,226,876 KiB，无package；第二步未进入编译，不
 
 本节身份、窗口统计、LLaMA包差异、长cache拒绝及原始日志hash见
 [`input-view-loading-20260914.json`](data/board-performance/input-view-loading-20260914.json)。
+
+## 2026-09-14：修复assembly输入需求归因，长KV两步达到board-ready
+
+这次根因在容量反馈的structural reader查询：实际KV输入来自RDMA/GS，但cache copy和attention的operand经过
+`tensor.insert_slice`，旧查询只允许一个Source，因此遗漏了已有完整operand maps的相关temporal轴。
+新的只读查询携带精确需求区域，插入Source取交集、Destination取去除已覆盖区域的差集；沿后续slice/reshape继续查询。
+差集实现由Analysis统一提供，原structured demand复用；未知且未被覆盖的输入仍保持歧义。
+另修复projected slice被错误附加为等体积row-major reshape的构造证明。没有更改预算、SPM gate、PBQP、transport或算术。
+
+| 配置，FP16 | 原默认8/42的actual结果 | 完整验证 |
+| --- | --- | --- |
+| 长cache 4094→4095 | 0→15 accepted；27 capacity、0 unsupported；输入归因歧义3142→0 | fresh原HF完整reference、运行时payload、package与16-Tile no-card通过 |
+| 长cache 4095→4096 | 15 accepted；26 capacity、1 unsupported；输入归因歧义0 | 第二步完整package/no-card通过；无卡时使用reference接续 |
+| GQA 1024 / 1025 | 均9 accepted；33/32 capacity、0/1 unsupported | 两项本轮完整package/no-card通过 |
+
+长cache两步runner wall为801.90秒、峰值RSS 1,588,724 KiB。第一步final dataflow的最大单次逻辑load是1 MiB，
+其中KV窗口`[1,2,512,128]`为256 KiB，原失败候选中的`[1,4,2048,128]`为2 MiB。
+这些是actual IR的窗口证据，不是动态DDR总流量、峰值SPM或实卡耗时；不同候选的大小不能代签性能改善。
+GQA runner wall为309.28/359.53秒、RSS 3,438,760/3,436,556 KiB，本轮同时运行其它主机任务。
+
+完整Analysis 109、Planning 123、Transforms 390、Driver 127项通过；补充重叠覆盖后的定向4/10项通过。
+机制覆盖包含真实规模三维精确集合oracle、84个4/16-Tile容量反馈配置、未知分支与typed工作量边界；
+canonical完整增量和Ninja no-op通过。长cache两步仍有653/691次无法确定输入来源的demand，未扩大其归因或SPM合法性。
+设备会话仍未恢复，本节无实卡执行、输出数值、时间或profile，不计入三轮调优；长cache现在只签board-ready。
+完整证据及产物hash见[插入需求与容量反馈记录](data/board-performance/insert-demand-capacity-feedback-20260914.json)。
+
+
+固定FP16 LLaMA本轮fresh package/no-card通过，runner wall 1,060.62秒、RSS 2,808,176 KiB，9个accepted。
+14个source文件与初始快版本相同；完整运行包与上轮view修改后的无卡包逐字节相同，temporal选择计数也未改变。
+本轮已保存16 Tile的final dataflow、Instr及target LLVM。反馈修复没有进一步改变LLaMA产物，但上轮view修改相对初始快包的
+设备数值与性能matched A/B尚未执行，不能把原快版本计时标为本轮性能。

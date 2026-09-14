@@ -1998,3 +1998,19 @@
   缓存调用前状态；自身新建等价式、child变化、union/rebuild或facts变化都必须重新执行。不得仅用节点数或hash判断相同。
 - 防复发：同时检查真实skip、child先于parent的phase-order闭合、自身新等价式继续组合、独立root保留和并行request确定性。
   对相同预算的真实输入比较最终IR及原match/node/merge计数；新rule读取更深事实时同步扩展失效合同。
+
+## 容量反馈的输入需求不能只沿单一Source追踪
+
+- 根因：`tensor.insert_slice`同时有Source和Destination。只接受一个Source的查询会丢掉完整reader集合，
+  使实际输入窗口的容量失败无法关联到其temporal参数；直接沿全部SSA operand追踪又会误计已覆盖的旧值。
+- 修复边界：在不可变structural IR上携带exact需求区域反向查询，Source取与写入窗口的交集，Destination取差集。
+  多层覆盖、slice和reshape共同传递需求，空分支停止；未覆盖的未知producer继续阻止不完整归因。
+  这只是输入访问到搜索参数的关联，actual Instr的buffer来源及SPM合法性仍由独立证据决定。
+- 防复发：检查部分/完整/重叠覆盖、不同输入与重复输入、未知分支保留/覆盖，并以真实RDMA/GS容量certificate验证all-and-only坐标。
+
+## Projected affine切片不自动具有等体积reshape证明
+
+- 根因：映射表达式是维度投影，不代表两端对应extent相等。把零偏移子集附加为row-major reshape group，
+  会让后续精确矩形查询因group体积不同返回错误。
+- 修复边界：只有对应维度extent相等才附加该构造证明；子集或被源边界裁剪的关系仍保留exact projected map。
+- 防复发：成对覆盖destination小于/大于source、整除/非整除长度，检查精确image和边界成员关系。

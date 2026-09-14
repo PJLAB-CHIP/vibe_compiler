@@ -1,0 +1,339 @@
+{
+  "date": "2026-09-14",
+  "work_item": "board-testing",
+  "base_commit": "ddc7abb6",
+  "compiler_sha256": "37f67cc2779ed72e7e11009bd51d78e8954bf7c6ef79e30ac5b86a6fa67ca3c9",
+  "scope": "Exact input demand through tensor assembly restores temporal capacity feedback",
+  "board_executed": false,
+  "search_width": 8,
+  "search_trials_per_step": 42,
+  "arithmetic_changed": false,
+  "spm_gate_changed": false,
+  "budget_changed": false,
+  "root": {
+    "actual_failure": "coexisting 2 MiB GEMM and KV windows, each below the 3 MiB SPM capacity",
+    "old_input_feedback_coordinates": [
+      [
+        1,
+        0,
+        1
+      ],
+      [
+        1,
+        0,
+        2
+      ],
+      [
+        9,
+        0,
+        1
+      ],
+      [
+        9,
+        0,
+        2
+      ],
+      [
+        13,
+        0,
+        1
+      ],
+      [
+        13,
+        0,
+        2
+      ],
+      [
+        33,
+        0,
+        1
+      ],
+      [
+        33,
+        0,
+        2
+      ]
+    ],
+    "incomplete_readers": {
+      "input_3": [
+        [
+          16,
+          0
+        ],
+        [
+          32,
+          0
+        ]
+      ],
+      "input_8": [
+        [
+          31,
+          0
+        ],
+        [
+          32,
+          0
+        ]
+      ]
+    },
+    "reason": "single-Source query discarded insert_slice Source/Destination demand; shared reader incompleteness withheld attention axes",
+    "boundary": "Instr buffer origins remain unique RDMA/GS input identities; structural tensor operands may read several exact input pieces",
+    "secondary_root": "projected affine relations with unequal extents were incorrectly qualified as equal-volume row-major reshape groups"
+  },
+  "host_tests": {
+    "analysis": {
+      "passed": 109,
+      "wall_s": 0.36
+    },
+    "planning": {
+      "passed": 123,
+      "wall_s": 66.44
+    },
+    "transforms": {
+      "passed": 390,
+      "wall_s": 43.75
+    },
+    "driver": {
+      "passed": 127,
+      "wall_s": 634.58
+    },
+    "total_component_tests": 749,
+    "final_focused_analysis": 4,
+    "final_focused_driver": 10,
+    "insert_capacity_configurations": 84,
+    "description": "Final focused suite also covers overlapping insertions; complete component suite uses the same production code.",
+    "canonical_incremental_build": "passed",
+    "subsequent_build": "Ninja no-op",
+    "unexpected_skip": false
+  },
+  "long_cache": {
+    "log": "build/test/model-performance/insert-demand-long-no-card.log",
+    "log_sha256": "cd332bfe81e86d15339d43095f1c483883d6f4c58084928e44706497ada2a2b6",
+    "steps": [
+      {
+        "accepted": 15,
+        "actual_capacity_rejected": 27,
+        "unsupported": 0,
+        "capacity_refinements": 12,
+        "unavailable_refinements": 15,
+        "ambiguous_inputs": 0,
+        "input_coordinates": 5504,
+        "unavailable_input_demands": 653,
+        "shared_input_demands": 2547,
+        "package_no_card_passed": true,
+        "package_sha256": {
+          "data/program-data.bin": "772389a03cab08980e47e592126942ac60a3e8480243db682fe1f9c6b088da34",
+          "manifest.json": "a762812f59e5e77cba23c25c1df64a577cb9e531a68c80c9d8072f8154f46a23",
+          "modules/module_00000.so": "ca0b16376b43f314b3b80d71ae4cb4670f912fb7e5a9734ddc783d7f9f940822"
+        },
+        "max_logical_load_payload_bytes": 1048576,
+        "largest_load_shapes": [
+          {
+            "bytes": 1048576,
+            "shape": "256x2048",
+            "dtype": "f16",
+            "static_occurrences": 128
+          },
+          {
+            "bytes": 262144,
+            "shape": "1x2x512x128",
+            "dtype": "f16",
+            "static_occurrences": 16
+          },
+          {
+            "bytes": 261632,
+            "shape": "1x2x511x128",
+            "dtype": "f16",
+            "static_occurrences": 16
+          },
+          {
+            "bytes": 130944,
+            "shape": "1x1x1023x64",
+            "dtype": "f16",
+            "static_occurrences": 32
+          },
+          {
+            "bytes": 4096,
+            "shape": "1x2048",
+            "dtype": "f16",
+            "static_occurrences": 96
+          },
+          {
+            "bytes": 1024,
+            "shape": "1x4x1x128",
+            "dtype": "f16",
+            "static_occurrences": 136
+          }
+        ],
+        "ir_statistic_scope": "All 16 final dataflow Tiles; individual logical load sizes, not dynamic traffic or peak SPM"
+      },
+      {
+        "accepted": 15,
+        "actual_capacity_rejected": 26,
+        "unsupported": 1,
+        "capacity_refinements": 12,
+        "unavailable_refinements": 14,
+        "ambiguous_inputs": 0,
+        "input_coordinates": 5376,
+        "unavailable_input_demands": 691,
+        "shared_input_demands": 2546,
+        "package_no_card_passed": true,
+        "package_sha256": {
+          "data/program-data.bin": "5673e0b229a2c813c2988465990eff0045eca5457dd3eaa993299943bf625980",
+          "manifest.json": "1a33ebc976697f5cb039da36d1ccf5ec55438eda121860ff2f6365afb847ecf3",
+          "modules/module_00000.so": "9d7940fb079717e9608956620d9407d7a96d1e41c369669115fdf5cf8d2e6aad"
+        },
+        "max_logical_load_payload_bytes": 1048576,
+        "largest_load_shapes": [
+          {
+            "bytes": 1048576,
+            "shape": "256x2048",
+            "dtype": "f16",
+            "static_occurrences": 128
+          },
+          {
+            "bytes": 262144,
+            "shape": "1x2x512x128",
+            "dtype": "f16",
+            "static_occurrences": 32
+          },
+          {
+            "bytes": 261632,
+            "shape": "1x2x511x128",
+            "dtype": "f16",
+            "static_occurrences": 16
+          },
+          {
+            "bytes": 131072,
+            "shape": "1x1x1024x64",
+            "dtype": "f16",
+            "static_occurrences": 32
+          },
+          {
+            "bytes": 130944,
+            "shape": "1x1x1023x64",
+            "dtype": "f16",
+            "static_occurrences": 32
+          },
+          {
+            "bytes": 4096,
+            "shape": "1x2048",
+            "dtype": "f16",
+            "static_occurrences": 96
+          }
+        ],
+        "ir_statistic_scope": "All 16 final dataflow Tiles; individual logical load sizes, not dynamic traffic or peak SPM"
+      }
+    ],
+    "runner_wall_s": 801.9,
+    "max_rss_kib": 1588724,
+    "source_contract": {
+      "dtype": "float16",
+      "hidden": [
+        1,
+        1,
+        4096
+      ],
+      "heads": 32,
+      "head_dim": 128,
+      "lengths": [
+        4094,
+        4095,
+        4096
+      ],
+      "full_outputs": [
+        "hidden",
+        "K",
+        "V"
+      ],
+      "numeric_execution": false
+    },
+    "before": {
+      "accepted": 0,
+      "actual_capacity_rejected": 42,
+      "ambiguous_inputs": 3142,
+      "input_coordinates": 2144,
+      "package_exists": false
+    }
+  },
+  "gqa_1024": {
+    "log": "build/test/model-performance/insert-demand-gqa-no-card.log",
+    "log_sha256": "b189af24dd81e331973306f18a753e69af7cba81c2bb72e212af1e5def32bae2",
+    "steps": [
+      {
+        "accepted": 9,
+        "actual_capacity_rejected": 33,
+        "unsupported": 0,
+        "capacity_refinements": 20,
+        "unavailable_refinements": 13,
+        "ambiguous_inputs": 0,
+        "input_coordinates": 2403,
+        "unavailable_input_demands": 18222,
+        "shared_input_demands": 256,
+        "package_no_card_passed": true
+      }
+    ],
+    "runner_wall_s": 309.28,
+    "max_rss_kib": 3438760
+  },
+  "gqa_1025": {
+    "log": "build/test/model-performance/insert-demand-gqa-tail-no-card.log",
+    "log_sha256": "da7ca6e020d4e8cee07424a3304b78957bdc697d4fa9121060c16862fe7ff455",
+    "steps": [
+      {
+        "accepted": 9,
+        "actual_capacity_rejected": 32,
+        "unsupported": 1,
+        "capacity_refinements": 19,
+        "unavailable_refinements": 13,
+        "ambiguous_inputs": 0,
+        "input_coordinates": 2378,
+        "unavailable_input_demands": 22326,
+        "shared_input_demands": 256,
+        "package_no_card_passed": true
+      }
+    ],
+    "runner_wall_s": 359.53,
+    "max_rss_kib": 3436556
+  },
+  "source_sha256": {
+    "include/Wafer/Analysis/Linalg/TensorResultIndexing.h": "6b10a0f2362f9c212ffb37627ebea498775ee27ad09134b41a499d8f666897de",
+    "lib/Wafer/Analysis/Linalg/IndexRelation.cpp": "eb309199517cd9fb2fb60051efa711d6f6c49a3a10349cb8cbbfcf427e6e2fa5",
+    "lib/Wafer/Analysis/Linalg/TensorResultIndexing.cpp": "22c1722960d0d296059f23b2a0ae7450634ee53b03bd630e750c172747ac06ab",
+    "lib/Wafer/Driver/PhysicalDataflow/CapacityFeedback.cpp": "bff3fc0fb9e4ae72b7836de76b44dfad7779ebf7ef20a555c16a06f92830fd71",
+    "lib/Wafer/Planning/PhysicalDataflow/StructuredDemandAnalysis.cpp": "f61947bef83fcd79bb681edee417121de5e6cb190000f3823ac89aef3488865f",
+    "unittests/Analysis/Linalg/TensorResultIndexingTest.cpp": "583f0c89cdb57436ba02ec244656d98c269b7fb955e013a839f8d687c50078e9",
+    "unittests/Driver/PhysicalDataflow/CapacityFeedbackTest.cpp": "46ac8277ebd52a9c505e25002ffb0a9bc9ca75d15724044d5dcc6ecd3ca32ab7"
+  },
+  "llama": {
+    "source_files": 14,
+    "source_equal_previous": true,
+    "source_equal_initial_fast": true,
+    "package_equal_previous": true,
+    "package_equal_initial_fast": false,
+    "package_sha256": {
+      "data/program-data.bin": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59",
+      "manifest.json": "e9b5dfa066bfdeab153ac199b019ebc74b1c4feffd4df6c963bfec1d1acb1a6c",
+      "modules/module_00000.so": "0135e335aaa04435da27c98cf8c0f56034ade05a1df0299748d3699f299bba82"
+    },
+    "package_no_card_passed": true,
+    "runner_wall_s": 1060.62,
+    "max_rss_kib": 2808176,
+    "accepted": 9,
+    "log": "build/test/model-performance/insert-demand-llama-no-card.log",
+    "log_sha256": "68ead5d43526e2d91a878f8eca3f2842ba0b81f12c2d2df1c0125f9a40d98135",
+    "temporal_counter_changes": 0,
+    "final_ir_retained": {
+      "tile-dataflow": 16,
+      "instruction": 16,
+      "target-llvm": 16
+    },
+    "board_numeric_and_performance": "pending matched A/B against original fast package"
+  },
+  "diagnostic_artifacts": {
+    "build/test/model-performance/long-cache-no-card.log": "1bec82212a4b5412776ec969fb1a4e6fbec9d1f3470c549838b5aa71931a1525",
+    "build/test/model-performance/long-cache-actual-0.txt": "cd34481cca032e041d86efb4b5048146d7764bfbcb1bca0d3c4a83a099dcf078",
+    "build/test/model-performance/long-cache-input-3-readers.txt": "9601223666c37f999457f78b03e04e18b5cc568dbd6f9715002d5f1fa6252993",
+    "build/test/model-performance/long-cache-input-8-readers.txt": "609080c55b8be14f74cce09ebf8adfc68dfcd3b872a911ce29604c2b37d94aa5"
+  }
+}

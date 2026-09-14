@@ -616,66 +616,30 @@ imageInsertDestination(const analysis::TensorResultIndexing &transfer,
         UnsupportedDemandReason::MissingTensorTransfer,
         RelationOperationKind::Image,
         "insert_slice destination demand is not a finite box union"));
-  auto source = llvm::find_if(transfer.operands, [](const auto &operand) {
-    return operand.role == wafer::TensorIndexingOperandRole::Source;
+  auto destination = llvm::find_if(transfer.operands, [](const auto &operand) {
+    return operand.role == wafer::TensorIndexingOperandRole::Destination;
   });
-  if (source == transfer.operands.end() ||
-      source->operand >= transfer.result.getOwner()->getNumOperands())
+  if (destination == transfer.operands.end())
     return asResult<ExactIndexSet>(
         broken(BrokenDemandContractReason::InterfaceContradiction,
                RelationOperationKind::Image,
-               "insert_slice transfer has no source operand"));
-  auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
-      transfer.result.getOwner()->getOperand(source->operand).getType());
-  if (!sourceType || !sourceType.hasStaticShape() ||
-      source->offsets.size() != static_cast<size_t>(sourceType.getRank()))
+               "insert_slice transfer has no destination operand"));
+  auto image = analysis::getTensorOperandDemand(transfer, *destination,
+                                                normalized->getBoxes(), limits);
+  if (!image.isExact()) {
+    if (image.status == IndexRelationStatus::ResourceExhausted)
+      return asResult<ExactIndexSet>(workLimit(
+          RelationOperationKind::Image, limits.maxRectangularPieces + 1,
+          limits.maxRectangularPieces, image.reason));
+    if (image.status == IndexRelationStatus::Unsupported)
+      return asResult<ExactIndexSet>(
+          unsupported(UnsupportedDemandReason::MissingTensorTransfer,
+                      RelationOperationKind::Image, image.reason));
     return asResult<ExactIndexSet>(
         broken(BrokenDemandContractReason::InterfaceContradiction,
-               RelationOperationKind::Image,
-               "insert_slice source description is not static"));
-
-  llvm::SmallVector<StaticRectangularIndexSet, 8> pieces;
-  for (const StaticRectangularIndexSet &rectangle : normalized->getBoxes()) {
-    StaticRectangularIndexSet overlap;
-    bool hasOverlap = true;
-    for (auto [demandOffset, demandSize, pieceOffset, pieceSize] :
-         llvm::zip_equal(rectangle.offsets, rectangle.sizes, source->offsets,
-                         sourceType.getShape())) {
-      const int64_t begin = std::max(demandOffset, pieceOffset);
-      const int64_t end =
-          std::min(demandOffset + demandSize, pieceOffset + pieceSize);
-      if (begin >= end)
-        hasOverlap = false;
-      overlap.offsets.push_back(begin);
-      overlap.sizes.push_back(std::max<int64_t>(0, end - begin));
-    }
-    if (!hasOverlap) {
-      pieces.push_back(rectangle);
-      continue;
-    }
-    StaticRectangularIndexSet core = rectangle;
-    for (size_t dimension = 0; dimension < core.offsets.size(); ++dimension) {
-      const int64_t coreBegin = core.offsets[dimension];
-      const int64_t coreEnd = coreBegin + core.sizes[dimension];
-      const int64_t overlapBegin = overlap.offsets[dimension];
-      const int64_t overlapEnd = overlapBegin + overlap.sizes[dimension];
-      if (coreBegin < overlapBegin) {
-        StaticRectangularIndexSet lower = core;
-        lower.sizes[dimension] = overlapBegin - coreBegin;
-        pieces.push_back(std::move(lower));
-        core.offsets[dimension] = overlapBegin;
-        core.sizes[dimension] = coreEnd - overlapBegin;
-      }
-      if (overlapEnd < coreEnd) {
-        StaticRectangularIndexSet upper = core;
-        upper.offsets[dimension] = overlapEnd;
-        upper.sizes[dimension] = coreEnd - overlapEnd;
-        pieces.push_back(std::move(upper));
-        core.sizes[dimension] = overlapEnd - core.offsets[dimension];
-      }
-    }
+               RelationOperationKind::Image, image.reason));
   }
-  return makeBoxUnion(normalized->getRank(), pieces, limits,
+  return makeBoxUnion(normalized->getRank(), image.domains, limits,
                       RelationOperationKind::Image);
 }
 

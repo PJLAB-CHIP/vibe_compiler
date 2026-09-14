@@ -34,62 +34,6 @@ std::optional<int64_t> getProgramArgument(mlir::Value value) {
   return identity ? std::optional<int64_t>(identity.getIndex()) : std::nullopt;
 }
 
-std::optional<int64_t>
-getTensorInput(mlir::Value value, InputCapacityFeedback &feedback,
-               const llvm::DenseSet<mlir::Operation *> &fusedProducers) {
-  llvm::DenseSet<mlir::Value> visited;
-  while (visited.insert(value).second) {
-    if (auto identity = getProgramArgument(value))
-      return identity;
-    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-      auto region =
-          mlir::dyn_cast<TileRegionOp>(argument.getOwner()->getParentOp());
-      if (!region || argument.getArgNumber() >= region.getInputs().size())
-        return std::nullopt;
-      value = region.getInputs()[argument.getArgNumber()];
-      continue;
-    }
-    auto result = mlir::dyn_cast<mlir::OpResult>(value);
-    if (!result)
-      return std::nullopt;
-    if (auto producer =
-            mlir::dyn_cast<mlir::linalg::LinalgOp>(result.getOwner());
-        producer && fusedProducers.contains(producer) &&
-        producer.hasPureTensorSemantics() && !producer.getNumReductionLoops()) {
-      // Follow an already selected fused unary computation's input demand,
-      // not its numeric value or storage identity. Equal permutation maps
-      // prove that this step preserves the scope's indexing coordinates.
-      auto outputMap = analysis::getStructuredResultMap(result);
-      mlir::OpOperand *input = nullptr;
-      for (mlir::OpOperand &operand : producer->getOpOperands()) {
-        if (!producer.payloadUsesValueFromOperand(&operand))
-          continue;
-        if (input)
-          return std::nullopt;
-        input = &operand;
-      }
-      if (input && mlir::succeeded(outputMap) && outputMap->isPermutation() &&
-          producer.getMatchingIndexingMap(input) == *outputMap) {
-        value = input->get();
-        continue;
-      }
-    }
-    auto indexing = analysis::deriveTensorResultIndexing(result);
-    if (indexing.status ==
-        analysis::TensorResultIndexingStatus::BrokenContract) {
-      feedback.status = CapacityFeedbackStatus::BrokenContract;
-      feedback.detail = indexing.detail;
-    }
-    if (!indexing.isExact() || indexing.indexing->operands.size() != 1 ||
-        indexing.indexing->operands.front().role !=
-            TensorIndexingOperandRole::Source)
-      return std::nullopt;
-    value = result.getOwner()->getOperand(
-        indexing.indexing->operands.front().operand);
-  }
-  return std::nullopt;
-}
-
 // A derived non-view producer can also read an input. Its consumer scope
 // must participate in ambiguity detection even when no parameter map is
 // available. Stop at another explicit scope, which owns that producer's
@@ -131,6 +75,118 @@ std::set<int64_t> getUnattributedInputs(
     });
   }
   return inputs;
+}
+
+struct TensorInputAccesses {
+  std::set<int64_t> known;
+  std::set<int64_t> incomplete;
+};
+
+TensorInputAccesses
+getTensorInputs(mlir::Value value, InputCapacityFeedback &feedback,
+                const llvm::DenseSet<mlir::Operation *> &fusedProducers,
+                const llvm::DenseSet<mlir::Operation *> &scopeBoundaries) {
+  TensorInputAccesses accesses;
+  auto unknown = [&](mlir::Value current) {
+    auto dependencies = getUnattributedInputs(current, scopeBoundaries);
+    accesses.incomplete.insert(dependencies.begin(), dependencies.end());
+  };
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!type || !type.hasStaticShape()) {
+    unknown(value);
+    return accesses;
+  }
+  struct Pending {
+    mlir::Value value;
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> demand;
+  };
+  analysis::StaticRectangularIndexSet full;
+  full.offsets.assign(type.getRank(), 0);
+  full.sizes.assign(type.getShape().begin(), type.getShape().end());
+  llvm::SmallVector<Pending, 8> pending{{value, {std::move(full)}}};
+  const analysis::IndexRelationLimits limits;
+  uint64_t work = 0;
+  while (!pending.empty()) {
+    auto current = pending.pop_back_val();
+    if (current.demand.empty())
+      continue;
+    work += current.demand.size();
+    if (work > limits.maxRectangularPieces) {
+      // Never publish only the subset visited before work was exhausted.
+      unknown(value);
+      return accesses;
+    }
+    if (auto identity = getProgramArgument(current.value)) {
+      accesses.known.insert(*identity);
+      continue;
+    }
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(current.value)) {
+      auto region =
+          mlir::dyn_cast<TileRegionOp>(argument.getOwner()->getParentOp());
+      if (region && argument.getArgNumber() < region.getInputs().size())
+        pending.push_back({region.getInputs()[argument.getArgNumber()],
+                           std::move(current.demand)});
+      else
+        unknown(current.value);
+      continue;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(current.value);
+    if (!result) {
+      unknown(current.value);
+      continue;
+    }
+    if (auto producer =
+            mlir::dyn_cast<mlir::linalg::LinalgOp>(result.getOwner());
+        producer && fusedProducers.contains(producer) &&
+        producer.hasPureTensorSemantics() && !producer.getNumReductionLoops()) {
+      // Follow selected unary input demand, not numeric/storage identity.
+      // Equal permutation maps preserve the current result coordinates.
+      auto outputMap = analysis::getStructuredResultMap(result);
+      mlir::OpOperand *input = nullptr;
+      bool multiple = false;
+      for (mlir::OpOperand &operand : producer->getOpOperands()) {
+        if (!producer.payloadUsesValueFromOperand(&operand))
+          continue;
+        if (input) {
+          multiple = true;
+          break;
+        }
+        input = &operand;
+      }
+      if (input && !multiple && mlir::succeeded(outputMap) &&
+          outputMap->isPermutation() &&
+          producer.getMatchingIndexingMap(input) == *outputMap) {
+        pending.push_back({input->get(), std::move(current.demand)});
+        continue;
+      }
+    }
+    auto indexing = analysis::deriveTensorResultIndexing(result, limits);
+    if (indexing.status ==
+        analysis::TensorResultIndexingStatus::BrokenContract) {
+      feedback.status = CapacityFeedbackStatus::BrokenContract;
+      feedback.detail = indexing.detail;
+      return accesses;
+    }
+    if (!indexing.isExact()) {
+      unknown(current.value);
+      continue;
+    }
+    for (const auto &operand : indexing.indexing->operands) {
+      auto demand = analysis::getTensorOperandDemand(
+          *indexing.indexing, operand, current.demand, limits);
+      if (demand.status == analysis::IndexRelationStatus::Invalid) {
+        feedback.status = CapacityFeedbackStatus::BrokenContract;
+        feedback.detail = demand.reason;
+        return accesses;
+      }
+      mlir::Value input = result.getOwner()->getOperand(operand.operand);
+      if (demand.isExact())
+        pending.push_back({input, std::move(demand.domains)});
+      else
+        unknown(input);
+    }
+  }
+  return accesses;
 }
 
 /// One immutable current function. Only RDMA/GS writers can preserve the
@@ -279,32 +335,31 @@ deriveInputCapacityFeedback(CardId card, TileId tile,
     }
     for (auto [scopeIndex, scope] : llvm::enumerate(choice.scopes))
       for (mlir::OpOperand &operand : scope.operation->getOpOperands()) {
-        auto input = getTensorInput(operand.get(), result, fusedProducers);
+        auto sources = getTensorInputs(operand.get(), result, fusedProducers,
+                                       scopeBoundaries);
         if (result.status == CapacityFeedbackStatus::BrokenContract)
           return result;
-        if (!input) {
-          for (int64_t dependency :
-               getUnattributedInputs(operand.get(), scopeBoundaries))
-            inputs[dependency][{domainIndex, scopeIndex}].complete = false;
-          continue;
+        for (int64_t dependency : sources.incomplete)
+          inputs[dependency][{domainIndex, scopeIndex}].complete = false;
+        for (int64_t input : sources.known) {
+          // Retain all readers of every actually demanded input piece.
+          auto &access = inputs[input][{domainIndex, scopeIndex}];
+          auto map = analysis::getStructuredOperandMap(operand);
+          if (mlir::failed(map)) {
+            access.complete = false;
+            continue;
+          }
+          auto simplified = mlir::simplifyAffineMap(*map);
+          for (auto [iterator, capability] :
+               llvm::enumerate(descriptors[scopeIndex].iteratorCapabilities))
+            if (capability == IteratorTilingCapability::Tileable &&
+                descriptors[scopeIndex].iterationExtents[iterator] > 1 &&
+                llvm::any_of(simplified.getResults(),
+                             [&](mlir::AffineExpr expr) {
+                               return expr.isFunctionOfDim(iterator);
+                             }))
+              access.coordinates.insert({domainIndex, scopeIndex, iterator});
         }
-        // Retain the whole reader set. An unsupported reader must not make
-        // the analyzable subset appear to be a complete access relation.
-        auto &access = inputs[*input][{domainIndex, scopeIndex}];
-        auto map = analysis::getStructuredOperandMap(operand);
-        if (mlir::failed(map)) {
-          access.complete = false;
-          continue;
-        }
-        auto simplified = mlir::simplifyAffineMap(*map);
-        for (auto [iterator, capability] :
-             llvm::enumerate(descriptors[scopeIndex].iteratorCapabilities))
-          if (capability == IteratorTilingCapability::Tileable &&
-              descriptors[scopeIndex].iterationExtents[iterator] > 1 &&
-              llvm::any_of(simplified.getResults(), [&](mlir::AffineExpr expr) {
-                return expr.isFunctionOfDim(iterator);
-              }))
-            access.coordinates.insert({domainIndex, scopeIndex, iterator});
       }
   }
   llvm::DenseMap<mlir::Operation *, std::unique_ptr<InputOrigins>> origins;

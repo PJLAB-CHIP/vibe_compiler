@@ -527,3 +527,42 @@ metadata reshape本身不要求完整输入驻留。只读证明消费value关�
 wall 246.20秒、RSS 1,226,876 KiB，无package，第二步未进入编译。反馈已有2,144个输入坐标，但也有3,142次ambiguous-input计数；
 这些汇总不能确定哪个实际allocation阻断缩小。下一步取实际失败demand及其producer/alias链，核对输入窗口、cache输出与反馈边界，
 不先假定与GQA同源或盲目增加预算。当前只签两步source/reference接入，不签board-ready或实卡结果。
+
+
+### Tensor assembly的精确输入需求与容量反馈
+
+长cache首轮实际失败包含每份2 MiB的权重/KV窗口及布局副本；这些buffer单独小于3 MiB，冲突集合不能当作一个峰值相加。
+诊断回调只返回四个GEMM域的坐标。两个KV输入的cache输出copy及online-attention reader已经有完整operand maps，
+但其operand经过`tensor.insert_slice`；旧查询只接受单个Source，因而把Source/Destination assembly标为歧义，整个输入的反馈被丢弃。
+这不是缺少attention识别、PBQP重选或预算过小的证据。
+
+06号反馈现携带exact矩形需求沿current SSA查询，插入Source取交集，Destination取去掉覆盖窗口后的差集；
+后续切片只追实际读到的部分，多次插入按SSA覆盖顺序处理。需求分析和容量反馈共享Analysis中的同一插入差集实现。
+未覆盖的未知计算仍阻止完整归因，跨独立Region的结果不冒充原输入。Instr侧仍单独证明RDMA/GS的唯一输入来源，
+反馈只生成参数提案，所有新choice继续通过actual物化、completion及原SPM门禁；没有改变算术、layout、transport或预算。
+同时修复底层构造证明：零偏移projected slice的两端extent不同，不构成等体积row-major reshape；保留其exact projected关系。
+
+机制覆盖：1024/1025/1031、4/16 Tiles，两份输入、重复输入、部分/完整/重叠插入、后续切片只读一段、
+未知producer的未覆盖/全部覆盖，共84个实际容量certificate配置；返回all-and-only scope/axis。
+Analysis枚举真实规模三维成员关系，检查交集/差集的精确覆盖、无重叠、空集、typed工作量上限和非法边界；
+projected subset同时覆盖两端extent大小关系。完整Analysis/Planning/Transforms/Driver分别109/123/390/127项通过，
+最终补充重叠链的定向4/10项再次通过。完整canonical增量构建及Ninja no-op通过，无skip。
+
+| 本轮固定FP16配置 | 默认8/42 actual结果 | 直接下游 |
+| --- | --- | --- |
+| 长KV第一步4094→4095 | 15 accepted、27 capacity、0 unsupported；ambiguous-inputs 3142→0 | fresh原HF reference、payload、完整package与16-Tile strict no-card通过 |
+| 长KV第二步4095→4096 | 15 accepted、26 capacity、1 unsupported；ambiguous-inputs 0 | 同上；无卡接续使用reference，真实设备actual-state接续尚未执行 |
+| GQA 1024 / 1025 | 均9 accepted；capacity为33/32、unsupported为0/1 | 两个配置完整package/no-card再次通过 |
+
+长cache两步完整runner为801.90秒、峰值RSS 1,588,724 KiB；第一步最终16-Tile dataflow中最大单次逻辑load为1 MiB，
+两个KV窗口为`[1,2,512,128]`、256 KiB（此前失败候选为`[1,4,2048,128]`、2 MiB）。它们是不同actual候选的窗口证据，
+不能当作动态DDR流量或matched设备性能。两步仍有653/691次unavailable-input-demand，内部或非搬运来源没有被猜成已知。
+GQA完整runner为309.28/359.53秒、峰值RSS 3,438,760/3,436,556 KiB；本轮有并行主机任务，wall不用于签编译性能改善。
+长cache达到board-ready，设备未恢复，所有新数值与性能资格仍待实卡；本项不计入三轮性能调优。
+证据及完整产物身份见[插入需求与容量反馈记录](../../docs/data/board-performance/insert-demand-capacity-feedback-20260914.json)。
+
+
+固定FP16 LLaMA本轮独立no-card通过，wall 1,060.62秒、RSS 2,808,176 KiB，仍有9个accepted。
+14个source文件与原快版本及上轮view修改版本一致；完整运行包的manifest、module和data与上轮无卡包逐字节相同，
+temporal选择计数无变化。本轮保存全部16 Tile的final dataflow、Instr和target LLVM，补齐上轮未保留final IR的证据入口。
+这证明本项反馈修复未进一步改变该LLaMA产物；上轮view修改与初始正确快包之间的实卡数值、性能matched A/B仍待恢复后执行。

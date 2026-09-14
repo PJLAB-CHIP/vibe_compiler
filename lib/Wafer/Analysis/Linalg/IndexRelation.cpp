@@ -682,6 +682,11 @@ IndexRelationResult IndexRelation::fromAffineMap(
       mapping.sourceDimensions.push_back(sourceDimension);
       if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
         pattern.push_back(dimension.getPosition());
+        // A projected subset remains an exact affine map, but unequal
+        // extents cannot form an equal-volume row-major reshape group.
+        hasExactRowMajorMapping &=
+            destinationShape[dimension.getPosition()] ==
+            sourceShape[sourceDimension];
         mapping.destinationDimensions.push_back(dimension.getPosition());
         rowMajorMappings.push_back(std::move(mapping));
         continue;
