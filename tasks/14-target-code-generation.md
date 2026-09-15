@@ -364,3 +364,13 @@ FunctionInterfaces.cpp 核对，不引入另一个清理 pass 或 shadow resourc
 | 各 Tile 不同长度的参数行 | TileMajor/TileRow、物理 Tile 与 launch_slot 置换、共同资源描述冲突 | actual LLVM row offset、invalidate 长度、函数体使用正确槽；普通参数不一致仍拒绝 |
 | 多于4096个共享资源、稀疏引用 | canonical roundtrip、record/byte 上限、不同资源引用顺序 | manifest 仅有实际参数；runtime 每 ResourceId 分配一次、逐 Tile 地址精确 |
 | 当前 LLaMA none/search、通信 tail | fresh source→package/no-card | 共享参数无 access=none；记录数、payload/通知资源数和编译耗时；板测资格单独记录 |
+
+
+## 独立目标对象编译
+
+输入为已经生成的target LLVM IR、现行CRT source和确定的device-link命令；输出仍为同一staging事务中的input object、CRT object及最终模块。
+LLVM对象编译/归一化与CRT对象编译/归一化写入不同文件，最多用两个host worker并行；每一路内部保留原命令依赖。
+两路全部退出并按固定顺序报告结果后，才执行原link、undefined-symbol scan和原子发布。失败仍清理本次staging，不覆盖已有产物，
+也不在后台编译尚未退出时删除其工作目录。打印命令、ABI、归一化规则及package消费者保持原合同。
+完成条件为并发启动的有界oracle、两路失败/清理的确定性检查，以及原真实device-link成功/负例和fresh package/no-card通过。
+不引入多份target-module格式、不同link路径或真实设备并行执行。

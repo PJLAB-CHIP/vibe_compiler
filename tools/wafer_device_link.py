@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
 import pathlib
 import shlex
@@ -398,6 +399,35 @@ def run_command(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def compile_objects(command_sequences: list[list[list[str]]]) -> None:
+    def compile_sequence(commands: list[list[str]]) -> list[subprocess.CompletedProcess]:
+        results = []
+        for command in commands:
+            result = subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            results.append(result)
+            if result.returncode:
+                break
+        return results
+
+    # Each sequence owns a distinct staged object. Join all workers before
+    # reporting failures so cleanup cannot race a still-running compiler.
+    workers = max(1, min(len(command_sequences), os.cpu_count() or 1))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(compile_sequence, commands)
+                   for commands in command_sequences]
+        results = [future.result() for future in futures]
+    # Preserve diagnostic and failure priority independently of finish order.
+    for sequence in results:
+        for result in sequence:
+            sys.stdout.buffer.write(result.stdout)
+            sys.stdout.buffer.flush()
+            sys.stderr.buffer.write(result.stderr)
+            sys.stderr.buffer.flush()
+            result.check_returncode()
+
+
 def run_required_symbol_scan(command: list[str], loader_abi: str) -> None:
     completed = subprocess.run(
         command,
@@ -473,12 +503,10 @@ def execute_staged_link(args: argparse.Namespace) -> None:
             required_symbol_scan_cmd,
         ) = build_commands(staged_args)
 
-        run_command(compile_cmd)
-        for normalize_cmd in normalize_cmds:
-            run_command(normalize_cmd)
-        run_command(compile_crt_cmd)
-        for normalize_cmd in normalize_crt_cmds:
-            run_command(normalize_cmd)
+        compile_objects([
+            [compile_cmd, *normalize_cmds],
+            [compile_crt_cmd, *normalize_crt_cmds],
+        ])
         run_command(link_cmd)
         run_required_symbol_scan(required_symbol_scan_cmd, args.loader_abi)
 

@@ -4,6 +4,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/NCCCompletion.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/BoundedParallel.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -24,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace wafer::analysis {
 namespace {
@@ -418,6 +420,90 @@ struct CompletionTimes {
     entry->second = value;
   }
 };
+
+using CostProgramGroups =
+    llvm::SmallVector<llvm::SmallVector<size_t, 4>, 4>;
+
+CostProgramGroups
+groupIndependentCostPrograms(llvm::ArrayRef<TileInstructionProgram> programs) {
+  CostProgramGroups groups(1);
+  for (size_t index = 0; index < programs.size(); ++index)
+    groups.front().push_back(index);
+  auto *context = programs.front().root->getContext();
+  if (support::getBoundedParallelWorkerCount(context, programs.size()) == 1 ||
+      llvm::any_of(programs, [&](const auto &program) {
+        return program.root->getContext() != context;
+      }))
+    return groups;
+
+  llvm::SmallVector<size_t> parents;
+  for (size_t index = 0; index < programs.size(); ++index)
+    parents.push_back(index);
+  auto leader = [&](size_t index) {
+    while (parents[index] != index) {
+      parents[index] = parents[parents[index]];
+      index = parents[index];
+    }
+    return index;
+  };
+  auto unite = [&](size_t lhs, size_t rhs) {
+    lhs = leader(lhs);
+    rhs = leader(rhs);
+    parents[std::max(lhs, rhs)] = std::min(lhs, rhs);
+  };
+  llvm::DenseMap<uint64_t, size_t> tiles;
+  llvm::DenseMap<mlir::Operation *, size_t> roots;
+  for (auto [index, program] : llvm::enumerate(programs)) {
+    auto [tile, newTile] = tiles.try_emplace(program.tileId.getValue(), index);
+    if (!newTile)
+      unite(index, tile->second);
+    auto [root, newRoot] = roots.try_emplace(program.root, index);
+    if (!newRoot)
+      unite(index, root->second);
+  }
+  llvm::DenseMap<int64_t, size_t> resources;
+  for (auto [index, program] : llvm::enumerate(programs)) {
+    auto peer = [&](uint64_t id) {
+      auto found = tiles.find(id);
+      if (found != tiles.end())
+        unite(index, found->second);
+    };
+    program.root->walk([&](mlir::Operation *operation) {
+      if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation))
+        peer(send.getPeer());
+      else if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation))
+        peer(recv.getPeer());
+      else if (auto send = mlir::dyn_cast<InstrDTEBroadcastOp>(operation))
+        for (int64_t id : send.getPeers())
+          peer(id);
+      else if (auto send = mlir::dyn_cast<InstrDTEScatterOp>(operation))
+        for (int64_t id : send.getPeers())
+          peer(id);
+      if (auto function = mlir::dyn_cast<mlir::func::FuncOp>(operation))
+        for (unsigned argument = 0; argument < function.getNumArguments();
+             ++argument)
+          if (auto binding = function.getArgAttrOfType<DDRBindingAttr>(
+                  argument, kWaferDDRBindingAttrName)) {
+            // Any publication resolved by the estimator must use one of
+            // these entry bindings. Including unused bindings is conservative.
+            auto [resource, inserted] =
+                resources.try_emplace(binding.getResourceId(), index);
+            if (!inserted)
+              unite(index, resource->second);
+          }
+    });
+  }
+  groups.clear();
+  llvm::DenseMap<size_t, unsigned> groupIndices;
+  for (size_t index = 0; index < programs.size(); ++index) {
+    auto [group, inserted] =
+        groupIndices.try_emplace(leader(index), groups.size());
+    if (inserted)
+      groups.emplace_back();
+    groups[group->second].push_back(index);
+  }
+  return groups;
+}
 
 bool executesOnce(mlir::Operation *operation) {
   for (auto *parent = operation->getParentOp(); parent;
@@ -1184,20 +1270,40 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
             completionTimes.receiveForSend[endpoint.op] = receive;
           }
       });
-    llvm::SmallVector<std::unique_ptr<InstructionServiceEstimator>> estimators;
-    for (size_t index = 0; index < ordered.size(); ++index)
-      estimators.push_back(std::make_unique<InstructionServiceEstimator>(
-          cohort->getPolicy(), completionTimes));
+    auto groups = groupIndependentCostPrograms(ordered);
+    std::vector<CompletionTimes> groupTimes(groups.size(), completionTimes);
+    std::vector<std::unique_ptr<InstructionServiceEstimator>> estimators(
+        ordered.size());
+    for (auto [group, indices] : llvm::enumerate(groups))
+      for (size_t index : indices)
+        estimators[index] = std::make_unique<InstructionServiceEstimator>(
+            cohort->getPolicy(), groupTimes[group]);
+    auto *context = ordered.front().root->getContext();
+    support::addCompileCounter("cost", "independent-tile-groups", groups.size());
+    support::addCompileCounter(
+        "cost", "parallel-workers",
+        support::getBoundedParallelWorkerCount(context, groups.size()));
+    std::vector<std::optional<uint64_t>> durations(ordered.size());
     uint64_t critical = 0;
     bool complete = false, coarse = false;
     for (unsigned iteration = 0; iteration < 32; ++iteration) {
       support::addCompileCounter("cost", "completion-propagation-rounds", 1);
-      completionTimes.changed = false;
+      for (auto &times : groupTimes)
+        times.changed = false;
       critical = 0;
       coarse = false;
       bool failed = false;
-      for (auto [program, estimator] : llvm::zip(ordered, estimators)) {
-        auto duration = estimator->estimate(program.root);
+      support::runBoundedParallelWork(context, groups.size(), [&](size_t group) {
+        for (size_t index : groups[group]) {
+          durations[index] = estimators[index]->estimate(ordered[index].root);
+          if (!durations[index])
+            break;
+        }
+      });
+      // Disjoint groups commute. Merge in the original Tile order, including
+      // the original prefix of logical work if one estimator fails.
+      for (auto [index, estimator] : llvm::enumerate(estimators)) {
+        const auto &duration = durations[index];
         support::addCompileCounter("cost", "current-ir-estimate-work",
                                    estimator->getWorkCount());
         support::addCompileCounter("cost", "local-coarse-scopes",
@@ -1211,7 +1317,9 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
       }
       if (failed)
         break;
-      if (!completionTimes.changed) {
+      if (llvm::none_of(groupTimes, [](const auto &times) {
+            return times.changed;
+          })) {
         complete = true;
         break;
       }

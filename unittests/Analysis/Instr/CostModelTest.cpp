@@ -60,6 +60,19 @@ void expectCoarse(const SearchObjective &objective, bool saturated = false) {
   }
 }
 
+uint64_t costCounter(llvm::StringRef report, llvm::StringRef name) {
+  std::string marker = "category=cost name=" + name.str() + " value=";
+  size_t offset = report.find(marker);
+  EXPECT_NE(offset, llvm::StringRef::npos) << report.str();
+  if (offset == llvm::StringRef::npos)
+    return 0;
+  auto number = report.drop_front(offset + marker.size())
+                    .take_until([](char c) { return c == ' '; });
+  uint64_t value = 0;
+  EXPECT_FALSE(number.getAsInteger(10, value));
+  return value;
+}
+
 TEST(CostModelTest, ActualDependenciesAndJoinsChangeOverlapWithIdenticalWork) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
@@ -408,15 +421,55 @@ TEST(CostModelTest, SharedDDRPropagatesCurrentPublicationAcrossTiles) {
       programs.push_back({wafer::TileId(tile), *module});
       owners.push_back(std::move(module));
     }
+    // A second independent chain must communicate within its own group while
+    // retaining the same critical path and the shared-card DDR lower bound.
+    for (unsigned tile = 0; tile < 3; ++tile) {
+      mlir::OwningOpRef<mlir::ModuleOp> copy(owners[tile]->clone());
+      copy->walk([&](mlir::memref::GlobalOp global) {
+        auto resource = global->getAttrOfType<wafer::DDRResourceAttr>(
+            wafer::kWaferDDRResourceAttrName);
+        global->setAttr(wafer::kWaferDDRResourceAttrName,
+                        wafer::DDRResourceAttr::get(
+                            &context, resource.getResourceId() + 4));
+      });
+      copy->walk([&](mlir::func::FuncOp function) {
+        for (unsigned i = 0; i < function.getNumArguments(); ++i) {
+          auto binding = function.getArgAttrOfType<wafer::DDRBindingAttr>(
+              i, wafer::kWaferDDRBindingAttrName);
+          function.setArgAttr(
+              i, wafer::kWaferDDRBindingAttrName,
+              wafer::DDRBindingAttr::get(&context, binding.getResource(),
+                                         binding.getResourceId() + 4,
+                                         binding.getAccess()));
+        }
+      });
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*copy)));
+      programs.push_back({wafer::TileId(tile + 3), *copy});
+      owners.push_back(std::move(copy));
+    }
+    uint64_t serialWork = 0;
     for (unsigned order = 0; order < 2; ++order) {
+      context.enableMultithreading(order != 0);
       auto cost = analyzeInstructionProgramAggregateCost(
           programs, wafer::getTargetMemoryPolicy());
+      std::string report;
+      llvm::raw_string_ostream reportStream(report);
+      auto timing =
+          std::make_shared<wafer::support::CompileTimingSession>(reportStream);
+      wafer::support::ScopedCompileTimingActivation activation(timing);
       auto result = deriveSearchObjective(cost, *cohort, programs);
+      timing->finishAndPrintSummary();
       auto *known = std::get_if<KnownSearchObjective>(&result);
       ASSERT_TRUE(known);
       EXPECT_FALSE(known->usesCoarseEstimate);
       EXPECT_EQ(known->estimatedDurationPicoseconds,
                 9 * bytes + bytes / 2 + 10);
+      EXPECT_EQ(costCounter(report, "independent-tile-groups"), order ? 2u : 1u);
+      EXPECT_EQ(costCounter(report, "parallel-workers"), order ? 2u : 1u);
+      if (!order)
+        serialWork = costCounter(report, "current-ir-estimate-work");
+      else
+        EXPECT_EQ(costCounter(report, "current-ir-estimate-work"), serialWork);
       std::reverse(programs.begin(), programs.end());
     }
   }
@@ -669,6 +722,71 @@ TEST(CostModelTest, StaticSummariesPreserveRepeatedScopesAndFreshInputs) {
       else
         EXPECT_EQ(counter("current-ir-estimate-work"), logicalWork);
       EXPECT_GT(logicalWork, 0u);
+    }
+  }
+}
+
+TEST(CostModelTest, IndependentTilesUseParallelCostWorkers) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto cohort = SearchCostCohort::create(unitCostPolicy());
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const uint64_t bytes = 256 * extent, trips = (extent + 31) / 32;
+    const std::string type = "memref<2x" + std::to_string(extent) +
+                             "x64xf16, #wafer.memory<spm, tensor>>";
+    std::string text;
+    llvm::raw_string_ostream ir(text);
+    ir << "module { func.func @main() {\n";
+    for (auto [name, offset] : {std::pair{"a", 65536}, {"b", 1048576}})
+      ir << "%" << name << " = memref.alloc() {wafer.spm.offset = "
+         << "#wafer.spm_offset<" << offset << ">} : " << type << '\n';
+    ir << "%lo = arith.constant 0 : index\n"
+          "%step = arith.constant 1 : index\n"
+          "%hi = arith.constant "
+       << trips << " : index\nscf.for %i = %lo to %hi step %step {\n"
+       << "wafer.instr.gather_scatter %a to %b {byte_count = " << bytes
+       << " : i64, inner_bytes = " << bytes
+       << " : i64, src_strides = array<i64: 0,0,0>, "
+          "dst_strides = array<i64: 0,0,0>, src_iterations = array<i64: 1,1,1>, "
+          "dst_iterations = array<i64: 1,1,1>} : "
+       << type << " to " << type
+       << "\n}\nwafer.instr.ncc_join [0]\nreturn\n}}\n";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(module) << text;
+    llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+    llvm::SmallVector<TileInstructionProgram> programs;
+    for (unsigned tile = 0; tile < 16; ++tile) {
+      owners.emplace_back(module->clone());
+      programs.push_back({wafer::TileId(tile), *owners.back()});
+    }
+    uint64_t serialWork = 0;
+    for (bool parallel : {false, true}) {
+      context.enableMultithreading(parallel);
+      auto cost = analyzeInstructionProgramAggregateCost(
+          programs, wafer::getTargetMemoryPolicy());
+      std::string report;
+      llvm::raw_string_ostream reportStream(report);
+      auto timing =
+          std::make_shared<wafer::support::CompileTimingSession>(reportStream);
+      wafer::support::ScopedCompileTimingActivation activation(timing);
+      auto result = deriveSearchObjective(cost, *cohort, programs);
+      timing->finishAndPrintSummary();
+      auto *known = std::get_if<KnownSearchObjective>(&result);
+      ASSERT_TRUE(known);
+      EXPECT_FALSE(known->usesCoarseEstimate);
+      EXPECT_EQ(known->estimatedDurationPicoseconds, bytes * trips + 2);
+      EXPECT_EQ(costCounter(report, "independent-tile-groups"), parallel ? 16u : 1u);
+      EXPECT_EQ(costCounter(report, "parallel-workers"), parallel ? 16u : 1u);
+      if (!parallel)
+        serialWork = costCounter(report, "current-ir-estimate-work");
+      else
+        EXPECT_EQ(costCounter(report, "current-ir-estimate-work"), serialWork);
     }
   }
 }

@@ -1064,3 +1064,36 @@ verified package及16 Tile fresh no-card退出码均为0。与前一轮对照，
 证据为`build/local-query-reuse-cost-tests.log`、`build/local-query-reuse-driver-tests.log`及`build/resnet-local-query-reuse-search.log`；
 产品在`build/test/resnet-local-query-reuse/package`，本轮reference/payload/no-card在`build/test/resnet-local-query-reuse-no-card`。
 Canonical完整增量构建、后续Ninja no-op、diff检查及源码缓存检查通过。本次授权的两项修改闭合，较大的搜索分解/复用方案仍未启动。
+
+
+### 独立编译工作并行
+
+用户要求检查整个编译链，将能够独立执行的工作多线程化。核对到现有Tile级lowering、SPM/DDR规划、NCC completion和LLVM translation已并行；
+本轮先验证三个边界：最外层TileRegion统一分派、独立完成时间分量的cost并行、LLVM/CRT两路对象编译并行；根据整网结果只保留后两项。
+Layout的One-Shot共享状态、PBQP全局工作预算及依赖反馈的候选生成不直接并发修改。当前IR、评分公式、逻辑预算和原子发布规则保持。
+基线为local-query-reuse默认8/42：总839.845秒、评分380.818秒、18个accepted/24次capacity，1274项search记录作为同输入对照。
+先验证serial/parallel实际结果及对象编译失败边界，再进行本轮原始模型fresh search/no-card；记录实际并行组/worker、wall及RSS。
+
+
+并行回归：59项CostModel/ScheduleCostAnalysis通过，包含实际16个独立组及两条独立DDR链，serial/parallel的ps、coarse和逻辑work一致。
+现行逐Tile pipeline及8候选续跑回归通过。设备链接的真实成功/失败lit用例通过；新增有界双线程barrier oracle验证两路实际同时启动，
+每一路先编译后归一化、双方退出后才link，任一路失败保留原产物且清理staging，双失败按固定顺序报告。
+
+128-worker Region实验完成原始ResNet默认8/42、verified package与16 Tile fresh no-card：18个accepted、24次capacity，
+unsupported/indeterminate为零；1274项search记录及所有原有cost计数与local-query-reuse完全一致。
+编译837.157秒、含export/no-card总846.913秒，对照839.845秒增加7.068秒；RSS 5,153,140 KiB。
+Region conversion的累计CPU从262.904秒增至462.303秒，descriptor planning从375,147次增至396,862次；
+Region阶段wall为7.930秒，但整轮没有净收益。因此撤回Region统一分派及其特有检查，保留原逐Tile session与并行。
+实验产物`build/test/resnet-parallel-compiler`及`build/resnet-parallel-compiler-search.log`仅记录未保留方案，不作为最终版本的性能数字。
+
+ResNet的18次评分共18个独立组/worker，即每次保守分组为一组；本轮没有获得组间并行，未进一步证明更细粒度的独立性。
+GEMM正式helper验证更一般的独立情况：默认8/42为34个accepted、8次capacity，unsupported/indeterminate为零；
+34次评分共389个独立组/worker，确实使用了组间并行。最初手工构包已成功，但prepared helper要求本case的IR dump，
+因缺少该输出未完成no-card；随后改用正式helper自动准备dump，fresh source/package/no-card通过。
+撤回Region实验后，最终版本重新执行GEMM正式helper：2026项search记录及全部cost计数与前一轮相同，16 Tile no-card通过；
+证据为`build/gemm-parallel-final.log`及`build/test/gemm-parallel-final`。最终版本未额外重跑一轮ResNet，不能将实验耗时记为最终加速。
+
+全链路核对结论：Tile lowering、SPM/DDR规划、NCC completion及LLVM lowering/translation已有并行，继续沿用；
+One-Shot共享分析状态、PBQP全局工作预算、通信组内传播及依赖评分反馈的候选生成保持原顺序。
+最终仅保留独立cost组与两路对象编译；本轮不声明ResNet有显著加速或实卡性能提升。
+Canonical完整增量构建、后续Ninja no-op、直接回归及diff/source缓存检查通过，原有不相关改动保留。

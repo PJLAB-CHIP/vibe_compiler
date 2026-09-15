@@ -1004,6 +1004,28 @@ Allocator不返回retile、spill、layout、route或completion repair recipe。
 不能把独立bitmask组合当成合法通信proposal；完整proposal必须拥有同一actual IR及可推进的DDR/DTE顺序。
 构造分支工作有界并单独记录，沿用原search预算，不通过重命名stage隐藏失败候选或无界回溯。SPM容量仍只由actual allocator决定。
 
+### 6.6.1 独立评分组的并行
+
+- Upstream IR / input：accepted current Instr modules与固定cohort。
+- Current stage responsibility：从实际DTE peer和DDRBinding建立保守的独立组，只在不共享完成时间表项的组之间并行。
+- Output IR / files：相同SearchObjective及独立的组/worker计数，IR保持只读。
+- Downstream consumer：原search controller及其候选比较。
+- User-level driver / named pipeline：生产none/search继续调用同一cost求值；使用现有MLIR线程池，不增加public并行开关。
+- Explicit non-goals：不修改Region lowering的现行Tile级并行粒度，不改变PBQP预算、候选访问顺序或cost公式，不并发启动依赖评分反馈的候选。
+- Completion criteria：serial/parallel的精确ps、coarse、overflow与逻辑work一致；真实输入到package/no-card通过，记录wall/RSS和实际worker数量。
+
+评分的独立组是当前只读调用内的保守分量：同一物理Tile身份、同一root、DTE peer或函数参数中的相同DDRBinding resource会连在一起。
+这些键覆盖当前估计器所有跨Tile完成时间读写，额外合并只减少并行度；不推测未来通信。每组独占CompletionTimes及estimator，
+每轮并行处理各组、组内按原Tile顺序更新，轮末仍按全局Tile顺序合并结果并检查changed。保留32轮全局上限、逻辑work、
+coarse/overflow与失败语义；不改成读取上一轮快照的另一种迭代算法。不同MLIR context或单worker时保持一个顺序组。
+共享context及线程池上限由BoundedParallel提供；全部worker结束后才合并结果，线程完成顺序不参与选择或诊断优先级。
+
+| 输入等价类 | 必须保持的结果 | 并行证据 |
+| --- | --- | --- |
+| rank3、1024/1025/1031，16个独立Instr程序和32/33次循环 | 精确ps与逻辑work一致 | 实际16个独立评分组 |
+| 两条独立DDR链、DTE交互及别名状态 | 组内原依赖传播、跨组结果一致 | serial/parallel评分及原cost回归 |
+| 原始模型默认预算 | 候选状态、评分及最终结构一致 | fresh package/no-card、wall/RSS；整网相连时允许只有一个组 |
+
 ### 6.7 能力 owner
 
 下列能力只保留一个最终owner。Memory/target leaf发现输入缺口时只返回typed failure，不接管上游能力：

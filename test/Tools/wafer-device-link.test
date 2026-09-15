@@ -1,3 +1,4 @@
+# RUN: %python %S/wafer_device_link_parallel_test.py %wafer_src_root/tools/wafer_device_link.py
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll \
 # RUN:   --output %t.kernel.so \
