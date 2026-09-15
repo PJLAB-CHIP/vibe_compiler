@@ -15,6 +15,13 @@
 
 namespace wafer::compiler::detail {
 
+/// True only when the current static view/issue byte ranges prove disjoint
+/// accesses to the same storage root. Unknown ranges return false.
+bool haveDisjointCommunicationRanges(mlir::Operation *left,
+                                     mlir::Value leftBuffer,
+                                     mlir::Operation *right,
+                                     mlir::Value rightBuffer);
+
 enum class DirectDTECompletionFailureKind : uint8_t {
   None,
   Unsupported,

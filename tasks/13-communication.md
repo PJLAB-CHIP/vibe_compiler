@@ -187,22 +187,47 @@ NCC join各自只表达本域事实，不能单独作为远端store→load先行
 
 ### Shared-DDR publication
 
-Search的通信proposal构造消费已物化的Instr、DTE token/wait、DDR数据/通知op以及实际storage/alias；
-其直接输出是同一candidate-owned、联合依赖无环的Instr，交给NCC completion与唯一SPM/target leaf。
-固定请求和baseline继续验证其指定表示。Search中的transport偏好不是独立组件可任意组合的可行性证明；
-proposal构造以共同current-IR顺序分析给出的实际环为约束，调整允许的收发切点、输入共享参与者和transport选择。
-只读输入可根据实际RDMA及ProgramArgumentAttr证明相同输入窗口，在有关接收者上保留本地读取；
-其它可切换的DTE字节payload可以物化为同dtype的独立DDR packet、实际WDMA/RDMA及同一publication协议。
-算术和原SPM数据buffer不变，新增storage、binding、通知均进入真实IR；不能推测尚未物化的wait、alias或SPM可行性。
-每次改变IR后重新分析，不解析diagnostic控制流程；无法满足固定数据/控制依赖的选择不形成可执行proposal。
-共同分析只返回当前op句柄及typed状态，不能跨mutation保存。最终verifier仍独立从最终IR重建并检查约束。
-选择同一block内issue切点时，每个actual operation的递归memory effects和SSA storage roots只求一次；该调用只移动issue、删除不携带memory effect的DTE wait，不改变memref operands、alias或memory effects，因此摘要可在调用内复用。每次仍按当前block顺序找切点；离开此调用即销毁摘要，后续消息替换和completion重建重新分析。该规则避免融合大Region后逐message重扫同一嵌套body。
-Direct DTE wait构造、局部wait验证和transport binding各自的只读模块遍历内，递归effects按实际storage root索引一次；逐issue仍独立检查原byte range、读写类型及未知访问。索引不跨wait重建或其它IR mutation存活，不复用旧wait位置。
+#### 通信候选的构造式调度
 
-本项覆盖2/4/16 Tile、rank3及1024/1025/1031的混合DDR/DTE互等、只读输入共享与真正的数据环；
-检查合法共享保留、精确消息/字节、单独通知resource、最终无环与actual SPM；无须修改的输入保持原顺序。
-真实ResNet以默认8/42 search到完整package/no-card重签。协议选择参考MSCCLang依赖DAG驱动调度及TACCL的路由/顺序联合约束，
-但本实现只消费current Instr，不引入第二套通信IR或solver依赖。
+- Upstream IR / input：candidate-owned实际Instr modules、已选计算/存储/worker、完整当前DTE消息对与DDR数据/通知op；无SPM/transport物理绑定。
+- Current stage responsibility：从current SSA、range-aware memory effects、Region/control-flow和publication建立必要依赖，以完整收发组作为可选扩展，生成兼容的各Tile顺序；只在合法扩展间选择局部读取或DDR表示。固定请求保留指定表示并验证。
+- Output IR / files：同一owner中的完整、可推进通信Instr及对应当前token；纯查询工作集在调用结束销毁，不发布旁路schedule或future-output IR。
+- Downstream consumer：共同DTE/NCC completion、唯一actual SPM/DDR/transport/target leaf，以及原ExecutablePackage路径。
+- User-level driver / named pipeline：生产search通过共同current-IR下游调用同一通信构造实现；focused测试直接调用此实现；none/显式qualification继续其固定表示。
+- Explicit non-goals：不改算术、dtype、compute/Region划分、物理路由或runtime ABI，不用估算SPM准入，不加每轮全卡barrier，不把局部构造卡住判成整个模型无解。
+- Completion criteria：进入SPM/评分的通信候选已闭合；合法Ring/双向交换/DDR-DTE混合继续可行，真实循环等待无proposal输出；逐消息检环修补循环为零；原始ResNet默认8/42与fresh package/no-card通过并记录构造work、wall和RSS。
+
+算法由依赖约束列表调度、容量/别名兼容的极大收发匹配与有界分支探索组成。参考
+[MSCCLang §5.2](https://parsa.epfl.ch/course-info/cs723/papers/MSCCLang.pdf)的共同拓扑序，及
+[TACOS §IV](https://arxiv.org/pdf/2304.05301)的就绪供给选择；不照搬NCCL FIFO、虚拟通道或离散网络时间模型。
+当前DTE send issue先等待peer-ready，只有1个sender slot、4个receiver FSM及每peer一个非计数ready通知；这些是构造硬约束。
+
+查询图只包含当前operation及其必要依赖。普通局部操作保持原相对顺序，通信issue的移动仅受SSA dominance、实际读写/释放及scope约束。
+当前构造支持单block entry的顶层TileRegion内的单次通信；普通局部loop作为当前operation汇总effect而不展开。
+含通信的loop、条件、call或已绑定transport保持typed unsupported，不能猜测动态次数或丢弃其它完成域的token。
+每次只读查询按actual storage root汇总每个operation的effect；普通操作间已有顺序链，只比较涉及通信issue的访问冲突，避免重复执行普通操作的二次方比较。
+Direct DTE completion及transport检查沿用各自查询内的effect索引，保留原byte range和unknown语义；所有摘要在相关IR mutation后失效。
+每个DTE收发组必须同时满足source先行依赖和destination可写条件，不单独占住recv等待未安排的远端操作；同组先准备recv，再issue send。
+组内sender/receiver容量及source/destination区间冲突共同检查，native fanout作为不可拆的完整接收集合检查。
+收发组在查询图中共享一个就绪节点，但不代表硬件原子通信或立即完成。共同completion在组间实际资源复用点生成wait；所等token的配对issue均来自已构造前缀，因此该释放不依赖后面的组。
+同一次调用内的顺序查询只保存当前op的排列，成功立即应用到同一IR；未闭合查询不修改顺序，仅返回实际就绪端点供表示扩展。固定依赖图中的就绪项可任意选择而不破坏闭合性，故顺序层无需克隆回溯；表示扩展有64轮与实际查询work预算，耗尽为indeterminate。
+待完成token的配对issue必须已进入同一合法前缀；后续消费/复用所需wait只依赖这些已经能够完成的消息。
+DDR publish与acquire分别按实际writer及同resource发布关系推进，参与同一个全局就绪前沿；不能独立排列各transport或各collective后拼接。
+每组只形成各Tile上的实际顺序，不生成全局barrier。最终completion仍从实际token、effect和资源复用位置求minimum-strength、latest-unavoidable wait/join。
+
+Read-only input和DDR packet是当前frontier上的表示选择：先用实际donor RDMA、ProgramArgumentAttr、dtype/byte-range和只读证明完成preflight，
+所选变换立即物化在candidate-owned IR，旧分析按mutation范围失效。没有相应actual证据的分支不可选。允许的表示/顺序分支有独立work上限；
+budget耗尽返回未完成，已证明的固定依赖冲突与unsupported/contract failure保持typed区分。不得把这些结果改称SPM容量失败。
+最终verifier从最终IR独立重建联合等待关系；它检查构造器，不选择替代消息或修补顺序。
+
+| 覆盖输入 | 构造/拒绝结果 | 直接下游证据 |
+| --- | --- | --- |
+| 2/4/16 Tile，1024/1025/1031的单向、双向、Ring及多轮交换 | 匹配完整、payload/range原样，构造不因拓扑环拒绝；相同输入确定性相同 | 最终wait graph、actual SPM及transport |
+| 多组相反局部顺序、DDR publish/acquire与DTE交错 | 统一选择可推进顺序；无合法扩展时无proposal，不把坏候选交下游修补 | 独立全局依赖检查及受影响IR |
+| sender=1、receiver=4、同peer ready复用、native broadcast/scatter | 每轮容量合规；完成与实际reuse一一对应，无全卡barrier | 精确token、动态次数、FSM和SPM |
+| 同root disjoint/overlap byte spans、alias/view、loop与unknown effect | 保留真实range语义；禁止无证据重排/复制/提前复用 | 源数据完整性、lifetime与typed failure |
+| 只读输入恢复、computed DDR packet、真正数据环 | 前沿合法表示实际物化；不能改变固定依赖来伪造可行性 | actual RDMA/WDMA/publication、完整验证 |
+| ResNet原始FP16、默认width=8/trials=42 | 只发布通信闭合候选；记录构造扩展与完整重建次数 | verified package、16 Tile fresh no-card；实卡另签 |
 
 完成变换消费已经lower为Instr的完整TileModule集合。当前boundary materializer为每个source value建立独立shared-DDR resource；
 每个resource在一个无条件、单次执行的writer Region内写入，后续reader只读，invocation内不覆盖复用。完成变换必须从actual

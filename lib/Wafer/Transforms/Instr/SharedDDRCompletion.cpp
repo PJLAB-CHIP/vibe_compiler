@@ -820,6 +820,10 @@ createSharedDDRNotifications(llvm::ArrayRef<mlir::ModuleOp> modules,
   return {};
 }
 
+DDRBindingAttr getSharedDDRBinding(mlir::Value value) {
+  return getBinding(value);
+}
+
 CommunicationOrderAnalysis
 analyzeCurrentCommunicationOrder(llvm::ArrayRef<mlir::ModuleOp> modules,
                                  llvm::ArrayRef<TileId> tileIds) {

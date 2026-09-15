@@ -393,8 +393,7 @@ public:
         stage = Stage::EvaluateMovement;
         return yield();
       }
-      if (attempt.nextMovement == attempt.movements.size() &&
-          !appendMixedMovement(attempt)) {
+      if (attempt.nextMovement == attempt.movements.size()) {
         completeRegion(temporal);
         stage = Stage::SelectTemporal;
         return yield();
@@ -733,14 +732,6 @@ private:
     size_t nextMovement = 0;
     size_t baseMovements = 0;
     std::optional<uint64_t> bestDuration;
-    llvm::SmallVector<StructuredBoundaryRelation, 4> components;
-    std::vector<MovementChoice> algorithms;
-    std::vector<uint8_t> transportMask;
-    size_t nextAlgorithm = 0;
-    size_t nextSingleton = 0;
-    bool combinationsStarted = false;
-    bool hasMixedMask = false;
-    bool mixedExhausted = false;
     bool merged = false;
     bool baseComplete() const {
       return lowered && nextMovement >= baseMovements;
@@ -755,46 +746,6 @@ private:
     bool realizationOnly = false;
     bool capacityObserved = false;
   };
-
-  static bool appendMixedMovement(RegionAttempt &attempt) {
-    if (attempt.components.size() < 2 || attempt.mixedExhausted)
-      return false;
-    while (!attempt.hasMixedMask) {
-      if (attempt.nextSingleton < attempt.components.size()) {
-        std::fill(attempt.transportMask.begin(), attempt.transportMask.end(),
-                  0);
-        attempt.transportMask[attempt.nextSingleton++] = 1;
-      } else {
-        if (!attempt.combinationsStarted) {
-          std::fill(attempt.transportMask.begin(), attempt.transportMask.end(),
-                    0);
-          attempt.combinationsStarted = true;
-        }
-        size_t bit = 0;
-        while (bit < attempt.transportMask.size() && attempt.transportMask[bit])
-          attempt.transportMask[bit++] = 0;
-        if (bit == attempt.transportMask.size()) {
-          attempt.mixedExhausted = true;
-          return false;
-        }
-        attempt.transportMask[bit] = 1;
-        const size_t selected = llvm::count(attempt.transportMask, uint8_t(1));
-        if (selected == 1 || selected == attempt.transportMask.size())
-          continue; // Singles and uniform DDR already have actual candidates.
-      }
-      attempt.hasMixedMask = true;
-      attempt.nextAlgorithm = 0;
-    }
-    MovementChoice choice = attempt.algorithms[attempt.nextAlgorithm++];
-    for (auto [index, edge] : llvm::enumerate(attempt.components))
-      if (attempt.transportMask[index])
-        choice.options.components.push_back(
-            {edge, BoundaryMovementTransport::SharedDDR});
-    attempt.movements.push_back(std::move(choice));
-    if (attempt.nextAlgorithm == attempt.algorithms.size())
-      attempt.hasMixedMask = false;
-    return true;
-  }
 
   std::optional<ExecutableCompilationResult> initialize() {
     std::string detail;
@@ -1084,17 +1035,9 @@ private:
     if (distributed.brokenContract)
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "search-movement-domain", distributed.detail);
-    auto components = queryBoundaryMovementComponents(*candidate->module,
-                                                      candidate->relations);
-    if (!components.succeeded())
-      return fail(components.failure == BoundaryMovementFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "search-movement-components", components.detail);
-    attempt.components = std::move(components.anchors);
-    attempt.transportMask.assign(attempt.components.size(), 0);
+    // Transport preferences seed actual construction. Component combinations
+    // are selected only by the unified ready frontier, not a Cartesian mask.
     attempt.movements.push_back({});
-    attempt.algorithms.push_back({});
     if (distributed.sharedDDR) {
       MovementChoice ddr;
       ddr.options.transport = BoundaryMovementTransport::SharedDDR;
@@ -1121,7 +1064,6 @@ private:
       if (reduce)
         choice.options.reduction = DistributedReductionAlgorithm::Ring;
       attempt.movements.push_back(choice);
-      attempt.algorithms.push_back(choice);
     }
     attempt.lowered.emplace(std::move(*candidate));
     return RegionPrepared{};

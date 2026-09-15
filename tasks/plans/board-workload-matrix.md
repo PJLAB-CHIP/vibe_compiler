@@ -993,3 +993,44 @@ FP16/BF16 1024/1025的所有输出逐bit一致。内部fanout、不同feature轴
 剩余编译热点为通信proposal：42次构造累计803.346秒，1,335次实际消息修正和1,463次wait重建；
 最后的DTE effect索引复用未带来显著整轮加速（中间版本1651.013秒，最终1640.848秒），不声明独立性能收益。
 本轮BN融合与直接下游目标闭合，进一步减少通信proposal全量重建需单独按actual依赖和verifier边界处理；不在本次继续扩大修改。
+
+### DDR/DTE通信合法候选构造
+
+用户已确认实现资源约束列表调度、兼容收发组和有界合法分支；明确DDR和DTE统一处理，禁止先提死锁proposal再交下游逐条修补。
+范围归board-testing、13号构造合同及06号下游边界。基线为BN版原始ResNet默认8/42：总1640.848秒，通信构造803.346秒，
+1,335条消息替换及1,463次wait重建。已有模型、dtype、默认预算及no-card边界保持；本轮不执行真实设备。
+先实现共同actual操作依赖与收发组构造，再把前沿表示选择和search入口接入；相关真实规模正负例经completion/SPM后，
+执行原始ResNet一次完整默认search/no-card并记录与基线差异。旧逐消息消环循环由同一production入口整体替换，不保留兼容路径。
+
+实现检查点：构造/顺序kernel归入Transforms/Instr；Driver只负责actual owner、policy和下游编排，删除旧CommunicationProposals文件及独立transport bitmask枚举。
+共同依赖图以当前完整收发组、普通操作和实际Region边界为节点，SSA/range-aware effects及DDR publication构成必要边；
+Kahn前沿按send=1、recv≤4及same-peer约束提交极大组，成功后将同一current操作排列提交IR，共同completion重建一次并独立验证。
+未闭合前沿只允许有actual只读来源或已就绪sender的表示扩展，按批物化后重新查询，未形成完整顺序前不交SPM。
+顺序查询固定图可单调推进，不需要克隆回溯；表示探索有64轮/查询work限制。非DTE token、未知通信call/控制流在构造边界typed拒绝。
+2/4/16 Tile、1024/1025/1031的Ring、多组相反顺序、真实数据环、native/mixed DDR及5-source fanin的focused检查已通过；
+fanin实际FSM峰值4，均经过actual SPM与transport绑定。完整428项Transforms与132项Driver通过。
+首次targetless构建因磁盘满失败；仅清理本会话ResNet中止事务的payload副本，保留发布包、source、日志和stage IR，随后完整增量构建通过。
+
+首轮构造式版本完成原始ResNet默认8/42、verified package与16 Tile fresh no-card：编译787.086秒、总797.284秒，RSS 5,161,400 KiB；
+16个accepted、24次actual capacity、2个indeterminate，unsupported为零。通信构造62.275秒，76次前沿查询、122次DTE wait重建。
+两次indeterminate来自构造查询work预算：依赖收集重复比较已有固定顺序的普通操作，造成437,475,982次总查询work。
+已删除固定/固定的无效比较，只保留涉及issue的actual冲突约束；工作量上限和默认搜索预算均不变。
+修正后的7项定向回归（含1024/1025/1031的完整通信search）、完整canonical增量构建及Ninja no-op通过。
+
+最终版本完成原始直接Torch XLA ResNet-18 FP16、默认width=8/trials=42：18个accepted、24次actual SPM容量拒绝，
+unsupported/indeterminate均为零，两个查询work耗尽均已消除。正式compiler产出verified ExecutablePackage；
+正式PyTorch runner重新导出核对source、生成本轮reference/payload并通过16 Tile no-card，完整输入[1,3,224,224]及输出[1,1000]保留。
+编译wall 836.009秒、含fresh export/no-card总845.348秒，较BN阶段1640.848秒缩短48.5%；峰值RSS 5,175,408 KiB，
+较4,774,528 KiB增加8.4%。这份对照包含实际候选构造工作集，不能宣称主机内存无退化。
+
+42次通信构造累计69.325秒（原803.346秒，减少91.4%）；88次前沿查询、31,254,864次总query work，
+查询19.321秒；1,582个只读输入表示按前沿分批物化，整轮DTE wait重建126次（原1,463次），不再逐消息重建/检环。
+本轮原始ResNet未选择computed DDR packet；该分支由真实规模mixed/native focused正例验证，不以整网零次数替代其覆盖。
+对照首轮构造式版本，查询work减少92.9%，并多完成两个可行候选；因此最终总wall高于首轮797.284秒，不能拿少完成两次评分的中间结果作最终速度。
+最低评分仍为候选33/35的5,914,966,592 ps，候选33仍是1376个Region、51,728指令、108,810,080 DDR读bytes、
+22,456,928 DDR写bytes，与BN阶段相同。当前最大单项耗时为18次目标评分408.023秒；本轮没有实卡数值或性能结论。
+
+结果在`build/resnet-communication-final-search.log`，产品在`build/test/resnet-communication-final/package`，
+fresh no-card在`build/test/resnet-communication-final-no-card`；本轮source由固定case seed 20260803重新导出，未复用历史payload作测试输入。
+132项Driver与428项Transforms完整通过，最终修正的7项定向回归通过；canonical完整增量构建、Ninja no-op、文本检查及source缓存检查通过。
+本次构造算法与原始ResNet默认search目标闭合；board-testing整体继续doing，剩余模型及设备验收沿原矩阵推进。

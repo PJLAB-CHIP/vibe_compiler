@@ -1000,6 +1000,10 @@ allocation、alias、movement、order或completion后，memory problem、offset�
 Actual gate只返回typed `Accepted`、actual capacity rejection、`Unsupported`、`ResourceExhausted`、timeout或compiler error。
 Allocator不返回retile、spill、layout、route或completion repair recipe。
 
+通信表示/顺序构造由13号构造式调度闭合后才进入actual memory/target leaf。Search可以选择transport或collective偏好，
+不能把独立bitmask组合当成合法通信proposal；完整proposal必须拥有同一actual IR及可推进的DDR/DTE顺序。
+构造分支工作有界并单独记录，沿用原search预算，不通过重命名stage隐藏失败候选或无界回溯。SPM容量仍只由actual allocator决定。
+
 ### 6.7 能力 owner
 
 下列能力只保留一个最终owner。Memory/target leaf发现输入缺口时只返回typed failure，不接管上游能力：

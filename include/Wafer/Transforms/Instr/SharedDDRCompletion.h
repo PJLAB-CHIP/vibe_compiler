@@ -9,7 +9,17 @@
 #include <string>
 
 namespace wafer {
-enum class SharedDDRCompletionFailure { None, Unsupported, Contract };
+class DDRBindingAttr;
+/// Resolve a current data value through typed single-execution aliases to
+/// its entry DDR binding. No binding is inferred from names or shapes.
+DDRBindingAttr getSharedDDRBinding(mlir::Value value);
+
+enum class SharedDDRCompletionFailure {
+  None,
+  Unsupported,
+  Indeterminate,
+  Contract
+};
 struct SharedDDRCompletionResult {
   SharedDDRCompletionFailure failure = SharedDDRCompletionFailure::None;
   std::string detail;

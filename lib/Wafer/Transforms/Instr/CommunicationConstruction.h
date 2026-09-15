@@ -1,29 +1,30 @@
-//===- CommunicationProposals.h - Construct current communication choices ===//
-#ifndef WAFER_DRIVER_PHYSICALDATAFLOW_COMMUNICATIONPROPOSALS_H
-#define WAFER_DRIVER_PHYSICALDATAFLOW_COMMUNICATIONPROPOSALS_H
+//===- CommunicationConstruction.h - Construct legal current communication ===//
+#ifndef WAFER_TRANSFORMS_INSTR_COMMUNICATIONCONSTRUCTION_H
+#define WAFER_TRANSFORMS_INSTR_COMMUNICATIONCONSTRUCTION_H
 
-#include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
+#include <cstdint>
 
 namespace wafer::compiler::detail {
 
-struct CommunicationProposalStatistics {
+struct CommunicationConstructionStatistics {
   uint64_t localInputReads = 0;
   uint64_t ddrPackets = 0;
   uint64_t replacedMessages = 0;
   uint64_t issuePlacements = 0;
 };
 
-struct CommunicationProposalResult {
+struct CommunicationConstructionResult {
   SharedDDRCompletionResult outcome;
-  CommunicationProposalStatistics statistics;
+  CommunicationConstructionStatistics statistics;
 };
 
 /// Completes a search communication proposal on its actual Instr owner.
 /// Fixed baseline/qualification choices do not call this constructor.
 /// A failed owner is discarded by the caller. No memory placement is run here.
-CommunicationProposalResult constructCommunicationProposal(
-    llvm::MutableArrayRef<StandaloneTileModule> tiles);
+CommunicationConstructionResult
+constructCommunication(llvm::ArrayRef<mlir::ModuleOp> modules,
+                       llvm::ArrayRef<TileId> tileIds);
 
 } // namespace wafer::compiler::detail
 #endif

@@ -1,7 +1,7 @@
 //===- CurrentIRExecutablePipeline.cpp - Current IR downstream --------===//
 
 #include "CurrentIRExecutablePipeline.h"
-#include "PhysicalDataflow/CommunicationProposals.h"
+#include "Wafer/Transforms/Instr/CommunicationConstruction.h"
 
 #include "Wafer/Analysis/Tile/TileDataflowAnalysis.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -346,17 +346,30 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   for (const StandaloneTileModule &tile : *standalone)
     completionTileIds.push_back(tile.tileId);
   auto sharedCompletion = timed("shared-ddr-completion", [&] {
-    if (options.communication == CommunicationProposalPolicy::DependencyOrdered)
-      return constructCommunicationProposal(*standalone).outcome;
+    if (options.communication ==
+        CommunicationProposalPolicy::DependencyOrdered) {
+      auto constructed =
+          constructCommunication(instructionModules, completionTileIds);
+      if (constructed.outcome.succeeded() &&
+          constructed.statistics.replacedMessages)
+        for (auto &tile : *standalone) {
+          tile.materializationRelations.buffers.clear();
+          rebuildCurrentBufferOwnerRelations(*tile.module,
+                                             tile.materializationRelations);
+        }
+      return constructed.outcome;
+    }
     return materializeSharedDDRCompletion(instructionModules,
                                           completionTileIds);
   });
   if (!sharedCompletion.succeeded())
-    return fail(sharedCompletion.failure ==
-                        SharedDDRCompletionFailure::Unsupported
-                    ? ExecutableCompilationStatus::UnsupportedFailure
-                    : ExecutableCompilationStatus::CompilerFailure,
-                "shared-ddr-completion", sharedCompletion.detail);
+    return fail(
+        sharedCompletion.failure == SharedDDRCompletionFailure::Indeterminate
+            ? ExecutableCompilationStatus::IndeterminateFailure
+        : sharedCompletion.failure == SharedDDRCompletionFailure::Unsupported
+            ? ExecutableCompilationStatus::UnsupportedFailure
+            : ExecutableCompilationStatus::CompilerFailure,
+        "shared-ddr-completion", sharedCompletion.detail);
 
   DirectDTECompletionResult finalDTECompletion =
       timed("final-direct-dte-completion",

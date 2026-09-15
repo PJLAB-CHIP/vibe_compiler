@@ -7,6 +7,8 @@ add_mlir_library(WaferTransforms
   Module/MaterializeTargetTopology.cpp
   Module/StripTargetMetadata.cpp
   Instr/DirectDTETransport.cpp
+  Instr/CommunicationScheduling.cpp
+  Instr/CommunicationConstruction.cpp
   Instr/LifetimeAnalysis.cpp
   Instr/MiniMallocPacking.cpp
   Instr/NativeDirectDTEMultiSend.cpp
@@ -44,6 +46,7 @@ add_mlir_library(WaferTransforms
   MLIRPass
   MLIRSCFDialect
   MLIRSCFTransforms
+  MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
   MLIRTransforms

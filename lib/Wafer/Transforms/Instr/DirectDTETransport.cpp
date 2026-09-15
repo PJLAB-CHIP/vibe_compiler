@@ -2372,6 +2372,19 @@ rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
   return result;
 }
 
+bool haveDisjointCommunicationRanges(mlir::Operation *left,
+                                     mlir::Value leftBuffer,
+                                     mlir::Operation *right,
+                                     mlir::Value rightBuffer) {
+  auto l = getStaticDTEIssueRange(left);
+  if (!l || l->root != getRootViewSource(leftBuffer))
+    l = getStaticContiguousStorageRange(leftBuffer);
+  auto r = getStaticDTEIssueRange(right);
+  if (!r || r->root != getRootViewSource(rightBuffer))
+    r = getStaticContiguousStorageRange(rightBuffer);
+  return l && r && l->root == r->root && !rangesOverlap(l->bytes, r->bytes);
+}
+
 mlir::LogicalResult
 verifyDirectDTETransportSchedule(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;

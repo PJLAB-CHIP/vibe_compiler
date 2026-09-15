@@ -1,6 +1,7 @@
-//===- CommunicationProposals.cpp - Current-IR communication construction ===//
+//===- CommunicationConstruction.cpp - Legal current communication choices ===//
 
-#include "CommunicationProposals.h"
+#include "CommunicationConstruction.h"
+#include "Wafer/Transforms/Instr/CommunicationScheduling.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -18,6 +19,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <optional>
@@ -147,68 +149,6 @@ void eraseWaits(mlir::Value token, mlir::IRRewriter &rewriter) {
   }
 }
 
-// These are movement choices inside the existing owning block. Data epochs,
-// aliases and operand definitions bound the cuts; waits are rebuilt from the
-// resulting actual issue/token IR by the common completion implementation.
-uint64_t placeIssuesAtLegalCuts(llvm::ArrayRef<mlir::ModuleOp> modules) {
-  support::ScopedCompileTimingSpan timing(
-      "construction-phase", "communication-proposal", "place-issues");
-  uint64_t changed = 0;
-  for (auto module : modules) {
-    mlir::IRRewriter rewriter(module.getContext());
-    llvm::SmallVector<mlir::Operation *> issues;
-    module.walk([&](mlir::Operation *op) {
-      if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(op) && directRegion(op))
-        issues.push_back(op);
-    });
-    BufferAccesses accesses;
-    for (auto *op : issues) {
-      if (auto receive = mlir::dyn_cast<InstrDTERecvOp>(op)) {
-        if (receive.getBindingSelector() || receive.getBinding())
-          continue;
-        auto buffer = receive.getBuffer();
-        auto allocation = buffer.getDefiningOp<mlir::memref::AllocOp>();
-        if (!allocation || allocation->getBlock() != op->getBlock())
-          continue;
-        mlir::Operation *after = allocation;
-        for (auto *previous = op->getPrevNode();
-             previous && previous != allocation;
-             previous = previous->getPrevNode())
-          if (accesses.get(previous, buffer) != AccessKind::None) {
-            after = previous;
-            break;
-          }
-        if (after->getNextNode() != op) {
-          rewriter.moveOpAfter(op, after);
-          ++changed;
-        }
-      } else {
-        auto send = mlir::cast<InstrDTESendOp>(op);
-        if (send.getBindingSelector() || send.getBinding())
-          continue;
-        mlir::Operation *before = op->getBlock()->getTerminator();
-        for (auto *next = op->getNextNode(); next && next != before;
-             next = next->getNextNode())
-          if (accesses.get(next, send.getBuffer()) == AccessKind::Write) {
-            before = next;
-            break;
-          }
-        auto *next = op->getNextNode();
-        while (next && mlir::isa<InstrDTEWaitOp>(next))
-          next = next->getNextNode();
-        if (next != before) {
-          eraseWaits(send.getToken(), rewriter);
-          rewriter.moveOpBefore(op, before);
-          ++changed;
-        }
-      }
-    }
-    support::addCompileCounter("communication-proposal", "effect-summaries",
-                               accesses.size());
-  }
-  return changed;
-}
-
 struct Receiver {
   unsigned tile;
   InstrDTERecvOp operation;
@@ -232,23 +172,24 @@ Message messageKey(uint64_t source, uint64_t dest, DTEMessageAttr message) {
 }
 
 mlir::FailureOr<llvm::SmallVector<Packet>>
-collectPackets(llvm::MutableArrayRef<StandaloneTileModule> tiles) {
+collectPackets(llvm::ArrayRef<mlir::ModuleOp> modules,
+               llvm::ArrayRef<TileId> tileIds) {
   support::ScopedCompileTimingSpan timing(
       "construction-phase", "communication-proposal", "collect-packets");
   std::map<Message, std::pair<unsigned, InstrDTERecvOp>> receives;
-  for (auto [index, tile] : llvm::enumerate(tiles))
-    tile.module->walk([&](InstrDTERecvOp recv) {
+  for (auto [index, module] : llvm::enumerate(modules))
+    mlir::ModuleOp(module).walk([&](InstrDTERecvOp recv) {
       auto entry = recv->getParentOfType<mlir::func::FuncOp>();
       if (!entry || entry.isPrivate())
         return;
-      receives.emplace(
-          messageKey(recv.getPeer(), tile.tileId.getValue(), recv.getMessage()),
-          std::make_pair(index, recv));
+      receives.emplace(messageKey(recv.getPeer(), tileIds[index].getValue(),
+                                  recv.getMessage()),
+                       std::make_pair(index, recv));
     });
   llvm::SmallVector<Packet> packets;
   bool invalid = false;
-  for (auto [index, tile] : llvm::enumerate(tiles))
-    tile.module->walk([&](mlir::Operation *op) {
+  for (auto [index, module] : llvm::enumerate(modules))
+    mlir::ModuleOp(module).walk([&](mlir::Operation *op) {
       Packet packet{op, static_cast<unsigned>(index), {}, 0, 0, 0, {}};
       llvm::SmallVector<std::pair<int64_t, DTEMessageAttr>> endpoints;
       bool scatter = false;
@@ -285,7 +226,7 @@ collectPackets(llvm::MutableArrayRef<StandaloneTileModule> tiles) {
       if (!directRegion(op) || !waitsOnly(op->getResult(0)))
         return;
       for (auto [ordinal, endpoint] : llvm::enumerate(endpoints)) {
-        auto found = receives.find(messageKey(tile.tileId.getValue(),
+        auto found = receives.find(messageKey(tileIds[index].getValue(),
                                               endpoint.first, endpoint.second));
         if (found == receives.end()) {
           invalid = true;
@@ -398,7 +339,7 @@ bool hasOnlyInputReads(mlir::Value value, llvm::DenseSet<mlir::Value> &seen) {
 // typed program input, never from a remembered pre-lowering load or a name.
 mlir::FailureOr<bool>
 restoreLocalInput(const Packet &packet,
-                  llvm::MutableArrayRef<StandaloneTileModule> tiles) {
+                  llvm::ArrayRef<mlir::ModuleOp> modules) {
   support::ScopedCompileTimingSpan timing(
       "construction-phase", "communication-proposal", "restore-input");
   if (packet.receivers.size() != 1 || packet.sourceOffset != 0)
@@ -416,8 +357,8 @@ restoreLocalInput(const Packet &packet,
       origin->argument.getArgNumber(), kWaferProgramArgumentAttrName);
   if (!identity)
     return false;
-  for (auto &tile : tiles)
-    for (auto entry : tile.module->getOps<mlir::func::FuncOp>()) {
+  for (auto module : modules)
+    for (auto entry : module.getOps<mlir::func::FuncOp>()) {
       if (entry.isExternal() || entry.isPrivate())
         continue;
       for (auto input : entry.getArguments())
@@ -466,7 +407,6 @@ restoreLocalInput(const Packet &packet,
 }
 
 Outcome useDDRPacket(const Packet &packet,
-                     llvm::MutableArrayRef<StandaloneTileModule> tiles,
                      llvm::ArrayRef<mlir::ModuleOp> modules) {
   support::ScopedCompileTimingSpan timing(
       "construction-phase", "communication-proposal", "materialize-packet");
@@ -512,7 +452,7 @@ Outcome useDDRPacket(const Packet &packet,
       participants.push_back(receiver.tile);
   llvm::sort(participants);
   for (unsigned index : participants) {
-    auto module = *tiles[index].module;
+    mlir::ModuleOp module = modules[index];
     mlir::func::FuncOp entry;
     for (auto candidate : module.getOps<mlir::func::FuncOp>())
       if (!candidate.isPrivate() && !candidate.isExternal())
@@ -578,122 +518,124 @@ Outcome useDDRPacket(const Packet &packet,
 
 } // namespace
 
-CommunicationProposalResult constructCommunicationProposal(
-    llvm::MutableArrayRef<StandaloneTileModule> tiles) {
+CommunicationConstructionResult
+constructCommunication(llvm::ArrayRef<mlir::ModuleOp> modules,
+                       llvm::ArrayRef<TileId> tileIds) {
   support::ScopedCompileTimingSpan timing(
       "construction", "communication-proposal", "current-instr");
-  CommunicationProposalResult result;
-  llvm::SmallVector<mlir::ModuleOp> modules;
-  llvm::SmallVector<TileId> tileIds;
-  for (auto &tile : tiles) {
-    modules.push_back(*tile.module);
-    tileIds.push_back(tile.tileId);
-  }
-  // Transfer cleanup may have changed the first/last buffer accesses since
-  // the earlier completion pass. Build the order constraints from fresh
-  // actual waits, rather than treating those obsolete cuts as requirements.
-  auto initialWaits = rebuildRequiredDirectDTEWaits(modules);
-  if (!initialWaits.succeeded()) {
+  CommunicationConstructionResult result;
+  if (modules.empty() || modules.size() != tileIds.size() ||
+      llvm::any_of(modules, [](mlir::ModuleOp module) {
+        return !module || mlir::failed(mlir::verify(module));
+      })) {
     result.outcome =
-        fail(initialWaits.failure == DirectDTECompletionFailureKind::Unsupported
-                 ? SharedDDRCompletionFailure::Unsupported
-                 : SharedDDRCompletionFailure::Contract,
-             initialWaits.detail);
+        fail(SharedDDRCompletionFailure::Contract,
+             "communication construction requires verified Tile modules");
     return result;
   }
   result.outcome = materializeSharedDDRNotifications(modules);
   if (!result.outcome.succeeded())
     return result;
-  bool placed = false;
-  for (;;) {
-    auto order = analyzeCurrentCommunicationOrder(modules, tileIds);
-    if (order.status == CommunicationOrderStatus::Acyclic) {
-      result.outcome = {};
+  constexpr uint64_t maximumWork = 67108864;
+  uint64_t work = 0;
+  bool complete = false;
+  // Only complete ready exchanges enter a proposed order. A blocked prefix
+  // exposes current endpoints at which another representation may advance.
+  // Representation choices are applied in batches; no wait graph is used to
+  // select a message, and no incomplete order is passed to the memory leaf.
+  for (unsigned branch = 0; branch < 64; ++branch) {
+    auto scheduled =
+        scheduleCurrentCommunication(modules, tileIds, maximumWork - work);
+    work += scheduled.work;
+    support::addCompileCounter("communication-construction", "frontier-queries",
+                               1);
+    if (scheduled.status == CommunicationSchedulingStatus::Scheduled) {
+      result.statistics.issuePlacements += scheduled.movedIssues;
+      complete = true;
       break;
     }
-    if (order.status != CommunicationOrderStatus::Cycle) {
-      result.outcome = fail(order.status == CommunicationOrderStatus::Contract
-                                ? SharedDDRCompletionFailure::Contract
-                                : SharedDDRCompletionFailure::Unsupported,
-                            order.detail);
+    if (scheduled.status != CommunicationSchedulingStatus::Blocked) {
+      result.outcome =
+          fail(scheduled.status == CommunicationSchedulingStatus::WorkLimit
+                   ? SharedDDRCompletionFailure::Indeterminate
+               : scheduled.status == CommunicationSchedulingStatus::Unsupported
+                   ? SharedDDRCompletionFailure::Unsupported
+                   : SharedDDRCompletionFailure::Contract,
+               scheduled.detail);
       return result;
     }
-    if (!placed) {
-      placed = true;
-      result.statistics.issuePlacements = placeIssuesAtLegalCuts(modules);
-      if (result.statistics.issuePlacements) {
-        auto waits = rebuildRequiredDirectDTEWaits(modules);
-        if (!waits.succeeded()) {
+    auto packets = collectPackets(modules, tileIds);
+    if (mlir::failed(packets)) {
+      result.outcome = fail(SharedDDRCompletionFailure::Contract,
+                            "communication has unmatched current messages");
+      return result;
+    }
+    llvm::DenseSet<mlir::Operation *> sources(scheduled.readySenders.begin(),
+                                              scheduled.readySenders.end());
+    llvm::DenseSet<mlir::Operation *> destinations(
+        scheduled.readyReceivers.begin(), scheduled.readyReceivers.end());
+    uint64_t expanded = 0;
+    for (const Packet &packet : *packets) {
+      const bool receiveReady =
+          llvm::all_of(packet.receivers, [&](const Receiver &receiver) {
+            return destinations.contains(receiver.operation.operator->());
+          });
+      if (receiveReady || sources.contains(packet.sender)) {
+        auto local = restoreLocalInput(packet, modules);
+        if (mlir::failed(local)) {
           result.outcome =
-              fail(waits.failure == DirectDTECompletionFailureKind::Unsupported
-                       ? SharedDDRCompletionFailure::Unsupported
-                       : SharedDDRCompletionFailure::Contract,
-                   waits.detail);
+              fail(SharedDDRCompletionFailure::Contract,
+                   "ready input representation failed materialization");
           return result;
         }
-        continue;
+        if (*local) {
+          ++result.statistics.localInputReads;
+          result.statistics.replacedMessages += packet.receivers.size();
+          ++expanded;
+          continue;
+        }
       }
-    }
-    auto packets = collectPackets(tiles);
-    if (mlir::failed(packets)) {
-      result.outcome =
-          fail(SharedDDRCompletionFailure::Contract,
-               "communication proposal has unmatched current messages");
-      return result;
-    }
-    auto selected = llvm::find_if(*packets, [&](const Packet &packet) {
-      return llvm::is_contained(order.cycle, packet.sender) ||
-             llvm::any_of(packet.receivers, [&](const Receiver &receiver) {
-               auto operation = receiver.operation;
-               return llvm::is_contained(order.cycle, operation.getOperation());
-             });
-    });
-    if (selected == packets->end()) {
-      result.outcome = fail(SharedDDRCompletionFailure::Unsupported,
-                            "fixed current data/control dependencies admit no "
-                            "communication proposal");
-      return result;
-    }
-    const uint64_t removed = selected->receivers.size();
-    auto local = restoreLocalInput(*selected, tiles);
-    if (mlir::failed(local)) {
-      result.outcome =
-          fail(SharedDDRCompletionFailure::Contract,
-               "current input window cannot be materialized locally");
-      return result;
-    }
-    if (*local)
-      ++result.statistics.localInputReads;
-    else {
-      result.outcome = useDDRPacket(*selected, tiles, modules);
+      if (!sources.contains(packet.sender))
+        continue;
+      result.outcome = useDDRPacket(packet, modules);
       if (!result.outcome.succeeded())
         return result;
       ++result.statistics.ddrPackets;
+      result.statistics.replacedMessages += packet.receivers.size();
+      ++expanded;
     }
-    result.statistics.replacedMessages += removed;
-    auto waits = rebuildRequiredDirectDTEWaits(modules);
-    if (!waits.succeeded()) {
-      result.outcome =
-          fail(waits.failure == DirectDTECompletionFailureKind::Unsupported
-                   ? SharedDDRCompletionFailure::Unsupported
-                   : SharedDDRCompletionFailure::Contract,
-               waits.detail);
+    if (!expanded) {
+      result.outcome = fail(
+          SharedDDRCompletionFailure::Unsupported,
+          "current fixed dependencies admit no ready communication extension");
       return result;
     }
   }
-  if (result.statistics.replacedMessages)
-    for (auto &tile : tiles) {
-      tile.materializationRelations.buffers.clear();
-      rebuildCurrentBufferOwnerRelations(*tile.module,
-                                         tile.materializationRelations);
-      if (mlir::failed(mlir::verify(*tile.module)) ||
-          mlir::failed(checkStructuredBufferRelationsCurrent(
-              *tile.module, tile.materializationRelations))) {
-        result.outcome =
-            fail(SharedDDRCompletionFailure::Contract,
-                 "communication proposal produced invalid current IR");
-        return result;
-      }
+  if (!complete) {
+    result.outcome = fail(SharedDDRCompletionFailure::Indeterminate,
+                          "communication construction branch budget exhausted");
+    return result;
+  }
+  auto waits = rebuildRequiredDirectDTEWaits(modules);
+  if (!waits.succeeded()) {
+    result.outcome = fail(SharedDDRCompletionFailure::Contract, waits.detail);
+    return result;
+  }
+  auto order = analyzeCurrentCommunicationOrder(modules, tileIds);
+  if (order.status != CommunicationOrderStatus::Acyclic) {
+    result.outcome = fail(
+        SharedDDRCompletionFailure::Contract,
+        "constructed communication order failed independent verification: " +
+            order.detail);
+    return result;
+  }
+  result.outcome = {};
+  for (auto module : modules)
+    if (mlir::failed(mlir::verify(module))) {
+      result.outcome =
+          fail(SharedDDRCompletionFailure::Contract,
+               "communication construction produced invalid current IR");
+      return result;
     }
   support::addCompileCounter("communication-proposal", "local-input-reads",
                              result.statistics.localInputReads);
