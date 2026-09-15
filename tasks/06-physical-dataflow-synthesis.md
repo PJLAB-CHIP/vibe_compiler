@@ -747,6 +747,11 @@ API依据为[MemRef subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefs
 具体结果type使用pinned `SubViewOp::inferRankReducedResultType`保留source strides。完成条件为1024/1025/1031、
 不同unit位置、置换/广播、strided view的精确alias与访问证明及actual Instr下游；不扩展SPM或硬件layout能力。
 
+复合parallel scalar body的每个中间表达式，以其actual operand indexing maps所依赖的输出坐标并集生成局部结果域；
+只依赖feature的转换与算术保持feature尺寸，scalar常量保持scalar尺寸，传播result-to-loop map供下一条表达式消费。
+此规则消费已选layout/current buffer与原scalar SSA，不改算术、dtype或重排，不以shape估算判断SPM。最终yield才物化完整结果坐标。
+BN融合的1024/1025/1031正例须经过actual Tile/Instr/SPM，断言channel中间量未扩成完整激活；不把generic数量下降独自当作内存收益。
+
 #### 6.1.1 Layout assignment 与 exact PBQP
 
 Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。

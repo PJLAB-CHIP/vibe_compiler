@@ -131,6 +131,28 @@ PyTorch的opmath由02号frontend在进入StableHLO之前显式表达；本pass�
 | training/grad或已经显式的primitive | 不作为inference重写；不修改其算术 | function pass局部保留；后续不支持仍由原边界报告 |
 | 原始PyTorch BatchNorm及ResNet整网 | 同一module导出、全部reference及参数保持；不按模型名分派 | source→正式TensorProgram及package/no-card分别登记，实卡资格另签 |
 
+### 3.3.1 BatchNorm primitive链的精确融合
+
+- Upstream IR / input：official legalization与静态清理后的pure、static-ranked Tensor/Linalg SSA；BN已显式分解为原始标量算术、转换和feature广播。
+- Current stage responsibility：识别center、variance/epsilon、sqrt/reciprocal、scale/offset的完整数据链；将已匹配的原scalar operation按SSA依赖嵌入一个标准DPS `linalg.generic`。可包含末尾原有精度转换及直接ReLU，feature轴由indexing map证明。
+- Output IR / files：标准Linalg generic及原输入/结果type、operand map和scalar body；不新增BN op、属性、runtime接口或旁路语义表。
+- Downstream consumer：同一attention/access-relation normalization、SemanticRoot与spatial/temporal tiling、PBQP及Structured-to-Tile。
+- User-level driver / named pipeline：production的none/search及`wafer-lower-stablehlo-to-linalg`共用`wafer-fuse-batch-norm-inference` function pass。
+- Explicit non-goals：不把BN折叠进卷积权重，不重新结合浮点算术，不改变转换位置、dtype或fastmath；不融合卷积/归约body，不选择物理tile或SPM合法性。未闭合的内部compute fanout保留原图。
+- Completion criteria：BN计算形成一个可直接tiling的root；所有标量步骤、读取坐标和舍入保持；channel-only计算在直接下游仍保持channel域，完整ResNet默认search与本轮package/no-card记录实际Region、IR work、wall及RSS。
+
+此识别是受限BN语义链的scalar-region融合，区别于7节只保留compute occurrence的access关系等价探索；不新增普通Access旁路rewrite。
+方法对照采用[MLIR Linalg elementwise fusion](https://mlir.llvm.org/docs/Passes/#-linalg-fuse-elementwise-ops)：由当前indexing maps组合输入坐标并克隆原payload。
+本项固定匹配完整BN链，先证明内部compute所有uses闭合，再物化一个region，避免通用贪心fusion隐式复制共享producer。
+Unit reshape和广播仅用于证明该已匹配链的输入坐标；其它pure图继续由既有e-graph负责。
+
+| 输入等价类/分支 | exact输出或保留 | 直接下游witness |
+| --- | --- | --- |
+| rank3/4，feature首/中/末轴，1024/1025/1031，FP16/BF16/F32 | 一个BN generic；原scalar DAG、dtype、转换及feature map一致；repeat幂等 | 原图/融合后全量数值与tiling main/tail |
+| reciprocal乘法与直接divide；显式broadcast/unit reshape；可选ReLU | 只克隆对应原步骤，不互换表达式；广播读坐标精确 | PBQP→Tile→Instr及actual SPM |
+| 内部compute外部use、错误feature轴、不完整链、非pure body | 不隐式复制或扩大匹配，原图保留 | verifier与原直接消费者 |
+| 原始Torch XLA ResNet-18 FP16 | 相同source、默认8/42；Region/工作量实际减少，完整输出端口保留 | verified package与16 Tile fresh no-card；实卡数值/性能另签 |
+
 ### 3.4 捕获的投影式Tensor读取
 
 - Upstream IR / input：official legalization后的verified tensor-semantics `linalg.generic`，其payload直接包含

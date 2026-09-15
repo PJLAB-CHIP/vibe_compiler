@@ -956,3 +956,40 @@ unsupported/indeterminate均为零。正式wafer-compile生成verified Executabl
 通信构造选择96次合法issue切点、18个实际DDR packet；13个accepted owner只执行13次目标评分。
 证据为`build/resnet-search-complete-budget.log`及本轮`resnet-search-objective-reuse/package`、`resnet-search-complete-budget-no-card`产物。
 本轮ResNet默认search目标已闭合；board-testing整体仍为doing，整网设备数值、性能与其它模型矩阵不由本次no-card代签。
+
+### BN primitive融合与ResNet搜索粒度
+
+用户要求为BN建立专门pattern并改进融合，沿05号3.3.1与06号复合表达式lowering执行。
+基线为上一轮原始FP16 ResNet默认8/42：351个generic（BN算术140、转换122、broadcast40、conv20、ReLU17、残差8、pool3及FC bias1）；
+13个accepted均保留6000个TileRegion，完整编译2147.294秒，RSS 14,907,472 KiB。该基线只用于结构和编译耗时对照。
+先实现受限BN scalar链识别，再修直接下游channel-only表达式域，完成精确数值及actual SPM检查后执行一次本轮原始ResNet默认search/no-card。
+不改变数值语义、搜索预算、SPM准入或设备状态；已有其它未提交工作保留。
+
+BN pattern已将本轮ResNet的generic从351降至62，20条BN全部形成单root，其中9条包含原有直接ReLU。
+定向FP16/BF16的完整输出逐bit一致，feature首/中/末轴与F32、内部fanout/轴不一致的保留路径通过；
+1024/1025/1031经实际128步长tiling、Instr和SPM，feature转换及sqrt保持17元素。复合cast结果使用owned layout，不继承输入slice的动态stride。
+首次融合版默认search在已有5个accepted后，融合候选的通信构造超过5分钟，主动停止该轮以修复issue切点查询重复构造同一嵌套body的memory effects；不登记为timeout或完整结果。
+该查询仅在同次issue移动内复用未改变的实际effect/alias摘要，规则与最终completion验证不变。
+
+仅加入issue effect摘要的中间版本已完成默认42次：18个accepted、24次actual capacity，unsupported为零，5个Region closure候选通过。
+可行候选的全卡Region为304/1279/1376，旧版均为6000；20条BN融合。编译1644.587秒、RSS 4,717,560 KiB，
+含16 Tile fresh no-card共1651.013秒，完整FP16输入/输出保留。通信构造仍累计805.267秒，其中1350余次实际消息修正反复重建wait。
+后续把Direct DTE wait构造/验证中的递归effect查询按实际root索引，保持原范围和unknown语义；完整Transforms与通信回归通过。
+
+最终版本已通过本轮原始ResNet-18 FP16的production helper：fresh source、默认width=8/trials=42、verified package、
+完整输入[1,3,224,224]/输出[1,1000]及16 Tile no-card；退出码0。编译事务1633.478秒，runner总wall 1640.848秒，
+峰值RSS 4,774,528 KiB。18个accepted、24次actual capacity，unsupported为零；20条BN融合、5个Region closure候选可行。
+相对融合前总wall 2153.622秒，减少23.8%；RSS从14,907,472 KiB减少68.0%。这只是本轮主机编译对照，不代签设备性能。
+最佳评分候选33为全卡1376/每Tile 86个Region，51,728指令、108,810,080 DDR读bytes与22,456,928 DDR写bytes；
+对照融合前最低评分候选29的6000/每Tile 375个Region、60,720指令与286,902,720总DDR bytes。
+304/每Tile 19个Region的合并候选也通过，但总DDR 89,126,304 bytes、61,380指令、40,530段，
+coarse估值10.098ms，高于候选33的5.915ms；不能由Region更少推出更快，也不能由未经板端校准的评分推出实卡结论。
+
+新增5个BN测试覆盖rank3/4、所有feature轴、1024/1025/1031、FP16/BF16/F32、divide/reciprocal/rsqrt及直接ReLU；
+FP16/BF16 1024/1025的所有输出逐bit一致。内部fanout、不同feature轴保留；main/tail实际128步长、bufferization、Tile/Instr与SPM通过。
+完整428项Transforms、前端与pipeline测试、5项通信/相关Driver回归均执行通过；32消息/128嵌套写用例检查每个op effect只汇总一次。
+本轮canonical完整增量构建与随后Ninja no-op、diff文本检查通过。记录在`build/resnet-bn-final-search.log`，产品在`build/test/resnet-bn-final`。
+
+剩余编译热点为通信proposal：42次构造累计803.346秒，1,335次实际消息修正和1,463次wait重建；
+最后的DTE effect索引复用未带来显著整轮加速（中间版本1651.013秒，最终1640.848秒），不声明独立性能收益。
+本轮BN融合与直接下游目标闭合，进一步减少通信proposal全量重建需单独按actual依赖和verifier边界处理；不在本次继续扩大修改。

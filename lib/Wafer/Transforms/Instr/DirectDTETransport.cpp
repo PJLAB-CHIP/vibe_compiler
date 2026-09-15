@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/DirectDTE.h"
 #include "Wafer/Target/TargetMemory.h"
 
@@ -544,9 +545,75 @@ static mlir::FailureOr<mlir::Operation *> findUniqueSameBlockWait(
   return wait;
 }
 
-static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
-                                                      mlir::Operation *wait,
-                                                      mlir::Value buffer) {
+// One read-only module traversal owns this index. The per-root lists preserve
+// effect order and leave byte-range filtering to the individual query.
+class MemoryAccessIndex {
+public:
+  struct Query {
+    bool effectsKnown;
+    bool hasOperand;
+    bool hasMemRefOperand;
+    llvm::ArrayRef<mlir::MemoryEffects::EffectInstance> effects;
+  };
+
+  Query get(mlir::Operation *operation, mlir::Value root) {
+    auto [entry, inserted] = summaries.try_emplace(operation);
+    auto &summary = entry->second;
+    if (inserted) {
+      operation->walk([&](mlir::Operation *nested) {
+        for (mlir::Value value : nested->getOperands()) {
+          auto source = storageRoot(value);
+          if (!mlir::isa<mlir::BaseMemRefType>(source.getType()))
+            continue;
+          auto &access = summary.roots[source];
+          access.hasOperand = true;
+          access.hasMemRefOperand |=
+              mlir::isa<mlir::BaseMemRefType>(value.getType());
+        }
+      });
+      auto effects = mlir::getEffectsRecursively(operation);
+      summary.effectsKnown = effects.has_value();
+      if (effects)
+        for (const auto &effect : *effects)
+          if (mlir::Value value = effect.getValue()) {
+            auto source = storageRoot(value);
+            if (mlir::isa<mlir::BaseMemRefType>(source.getType()))
+              summary.roots[source].effects.push_back(effect);
+          }
+    }
+    auto found = summary.roots.find(root);
+    if (found == summary.roots.end())
+      return {summary.effectsKnown, false, false, {}};
+    const auto &access = found->second;
+    return {summary.effectsKnown, access.hasOperand, access.hasMemRefOperand,
+            access.effects};
+  }
+
+  uint64_t size() const { return summaries.size(); }
+
+private:
+  mlir::Value storageRoot(mlir::Value value) {
+    auto [entry, inserted] = roots.try_emplace(value);
+    if (inserted)
+      entry->second = getRootViewSource(value);
+    return entry->second;
+  }
+  struct RootAccess {
+    bool hasOperand = false;
+    bool hasMemRefOperand = false;
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 2> effects;
+  };
+  struct Summary {
+    bool effectsKnown = false;
+    llvm::DenseMap<mlir::Value, RootAccess> roots;
+  };
+  llvm::DenseMap<mlir::Value, mlir::Value> roots;
+  llvm::DenseMap<mlir::Operation *, Summary> summaries;
+};
+
+static mlir::LogicalResult
+verifyIssueBufferIsolation(mlir::Operation *issue, mlir::Operation *wait,
+                           mlir::Value buffer, MemoryAccessIndex &accesses) {
   mlir::Value root = getRootViewSource(buffer);
   const bool issueWritesBuffer = mlir::isa<InstrDTERecvOp>(issue);
   std::optional<StaticStorageRange> issueRange = getStaticDTEIssueRange(issue);
@@ -558,32 +625,18 @@ static mlir::LogicalResult verifyIssueBufferIsolation(mlir::Operation *issue,
     if (operation->getNumRegions() == 0 &&
         mlir::isa<mlir::ViewLikeOpInterface>(operation))
       continue;
-    bool hasRootOperand = false;
-    operation->walk([&](mlir::Operation *nested) {
-      hasRootOperand |=
-          llvm::any_of(nested->getOperands(), [&](mlir::Value operand) {
-            return getRootViewSource(operand) == root;
-          });
-    });
     // Region control such as scf.for has recursive memory effects.  Inspect
     // the complete value-specific summary so an explicitly prepared receive
     // may overlap unrelated compute while every nested access to its exact
     // root remains forbidden. Any nested operation without an effect contract
     // makes getEffectsRecursively fail, preserving fail-closed behavior.
-    std::optional<llvm::SmallVector<mlir::MemoryEffects::EffectInstance>>
-        recursiveEffects = mlir::getEffectsRecursively(operation);
-    if (!recursiveEffects)
+    auto access = accesses.get(operation, root);
+    if (!access.effectsKnown)
       return operation->emitError(
           "direct_dte_binding: issue buffer has an unknown access before "
           "its matching wait");
-    llvm::ArrayRef<mlir::MemoryEffects::EffectInstance> instances =
-        *recursiveEffects;
-    const bool hasRootValueEffect =
-        llvm::any_of(instances, [&](const auto &effect) {
-          mlir::Value value = effect.getValue();
-          return value && getRootViewSource(value) == root;
-        });
-    if (hasRootOperand && !hasRootValueEffect)
+    auto instances = access.effects;
+    if (access.hasOperand && instances.empty())
       return operation->emitError("direct_dte_binding: issue buffer has no "
                                   "value-specific memory "
                                   "effect before its matching wait: operation=")
@@ -711,6 +764,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
   for (size_t tileIndex = 0; tileIndex < tileModules.size(); ++tileIndex) {
     mlir::ModuleOp module = tileModules[tileIndex];
+    MemoryAccessIndex accesses;
     llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
     module.walk([&](mlir::Block *block) {
       for (auto [index, operation] : llvm::enumerate(*block))
@@ -786,8 +840,8 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
             findUniqueSameBlockWait(operation, token, operationIndices);
         if (mlir::failed(loopSite) || mlir::failed(sourceRange) ||
             mlir::failed(wait) ||
-            mlir::failed(
-                verifyIssueBufferIsolation(operation, *wait, buffer))) {
+            mlir::failed(verifyIssueBufferIsolation(operation, *wait, buffer,
+                                                    accesses))) {
           result = mlir::failure();
           return mlir::WalkResult::interrupt();
         }
@@ -910,7 +964,8 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
         }
         range = PhysicalRange{start, end};
       }
-      if (mlir::failed(verifyIssueBufferIsolation(operation, *wait, buffer))) {
+      if (mlir::failed(
+              verifyIssueBufferIsolation(operation, *wait, buffer, accesses))) {
         result = mlir::failure();
         return mlir::WalkResult::interrupt();
       }
@@ -1909,7 +1964,7 @@ enum class RootAccessKind : uint8_t {
 };
 
 static RootAccessKind classifyRootAccess(
-    mlir::Operation *operation, mlir::Value root,
+    mlir::Operation *operation, mlir::Value root, MemoryAccessIndex &accesses,
     const std::optional<StaticStorageRange> &targetRange = std::nullopt) {
   if (!operation || mlir::isa<InstrDTEWaitOp>(operation))
     return RootAccessKind::None;
@@ -1917,24 +1972,15 @@ static RootAccessKind classifyRootAccess(
       mlir::isa<mlir::ViewLikeOpInterface>(operation))
     return RootAccessKind::None;
 
-  bool hasRootOperand = false;
-  operation->walk([&](mlir::Operation *nested) {
-    hasRootOperand |=
-        llvm::any_of(nested->getOperands(), [&](mlir::Value value) {
-          return mlir::isa<mlir::BaseMemRefType>(value.getType()) &&
-                 getRootViewSource(value) == root;
-        });
-  });
-
-  std::optional<llvm::SmallVector<mlir::MemoryEffects::EffectInstance>>
-      effects = mlir::getEffectsRecursively(operation);
-  if (!effects)
-    return hasRootOperand ? RootAccessKind::Unknown : RootAccessKind::None;
+  auto access = accesses.get(operation, root);
+  if (!access.effectsKnown)
+    return access.hasMemRefOperand ? RootAccessKind::Unknown
+                                   : RootAccessKind::None;
 
   bool reads = false;
   bool mutates = false;
   bool hasRootEffect = false;
-  for (const mlir::MemoryEffects::EffectInstance &effect : *effects) {
+  for (const mlir::MemoryEffects::EffectInstance &effect : access.effects) {
     mlir::Value value = effect.getValue();
     if (!value || !mlir::isa<mlir::BaseMemRefType>(value.getType()) ||
         getRootViewSource(value) != root)
@@ -1947,7 +1993,7 @@ static RootAccessKind classifyRootAccess(
         !llvm::isa<mlir::MemoryEffects::Read, mlir::MemoryEffects::Allocate>(
             effect.getEffect());
   }
-  if (hasRootOperand && !hasRootEffect)
+  if (access.hasMemRefOperand && !hasRootEffect)
     return RootAccessKind::Unknown;
   if (mutates)
     return RootAccessKind::Mutating;
@@ -1974,9 +2020,11 @@ completionFailure(DirectDTECompletionFailureKind kind, llvm::StringRef detail,
   return result;
 }
 
-static mlir::LogicalResult buildBlockWaitChoices(
-    mlir::Block &block, llvm::SmallVectorImpl<DirectDTEWaitChoice> &choices,
-    DirectDTECompletionStatistics &statistics, std::string &detail) {
+static mlir::LogicalResult
+buildBlockWaitChoices(mlir::Block &block,
+                      llvm::SmallVectorImpl<DirectDTEWaitChoice> &choices,
+                      DirectDTECompletionStatistics &statistics,
+                      std::string &detail, MemoryAccessIndex &accesses) {
   llvm::SmallVector<mlir::Operation *, 64> operations;
   llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
   for (auto [index, operation] : llvm::enumerate(block)) {
@@ -2014,7 +2062,8 @@ static mlir::LogicalResult buildBlockWaitChoices(
            llvm::drop_begin(operations, operationIndex + 1)) {
         if (mlir::isa<InstrDTEWaitOp>(candidate))
           continue;
-        RootAccessKind access = classifyRootAccess(candidate, root, issueRange);
+        RootAccessKind access =
+            classifyRootAccess(candidate, root, accesses, issueRange);
         if (access == RootAccessKind::Unknown) {
           detail = "Direct DTE receive has an untyped buffer access before "
                    "its first proven consumer";
@@ -2045,7 +2094,8 @@ static mlir::LogicalResult buildBlockWaitChoices(
         choice.senderSlotReuse = true;
         break;
       }
-      RootAccessKind access = classifyRootAccess(candidate, root, issueRange);
+      RootAccessKind access =
+          classifyRootAccess(candidate, root, accesses, issueRange);
       if (access == RootAccessKind::Unknown) {
         detail = "Direct DTE send has an untyped source-buffer access before "
                  "completion";
@@ -2115,7 +2165,10 @@ static mlir::LogicalResult buildBlockWaitChoices(
 
 static mlir::LogicalResult
 verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
+  support::ScopedCompileTimingSpan timing("completion-phase", "direct-dte",
+                                          "verify-waits");
   for (mlir::ModuleOp module : tileModules) {
+    MemoryAccessIndex accesses;
     mlir::LogicalResult valid = mlir::success();
     module.walk([&](mlir::Block *block) {
       if (mlir::failed(valid))
@@ -2206,8 +2259,8 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
         if (!mlir::isa<InstrDTEWaitOp>(wait) || wait->getBlock() != block ||
             operationIndices.lookup(&operation) >=
                 operationIndices.lookup(wait) ||
-            mlir::failed(
-                verifyIssueBufferIsolation(&operation, wait, buffer))) {
+            mlir::failed(verifyIssueBufferIsolation(&operation, wait, buffer,
+                                                    accesses))) {
           valid = mlir::failure();
           return;
         }
@@ -2223,6 +2276,8 @@ verifyLocalWaitPlacement(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
 
 DirectDTECompletionResult
 rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
+  support::ScopedCompileTimingSpan timing("completion", "direct-dte",
+                                          "rebuild-waits");
   DirectDTECompletionStatistics statistics;
   if (tileModules.empty()) {
     DirectDTECompletionResult result;
@@ -2266,11 +2321,19 @@ rebuildRequiredDirectDTEWaits(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
       return completionFailure(
           DirectDTECompletionFailureKind::BrokenContract,
           "Direct DTE completion input has malformed token uses", statistics);
-    module.walk([&](mlir::Block *block) {
-      if (mlir::succeeded(valid) && mlir::failed(buildBlockWaitChoices(
-                                        *block, choices, statistics, detail)))
-        valid = mlir::failure();
-    });
+    MemoryAccessIndex accesses;
+    {
+      support::ScopedCompileTimingSpan timing("completion-phase", "direct-dte",
+                                              "plan-waits");
+      module.walk([&](mlir::Block *block) {
+        if (mlir::succeeded(valid) &&
+            mlir::failed(buildBlockWaitChoices(*block, choices, statistics,
+                                               detail, accesses)))
+          valid = mlir::failure();
+      });
+    }
+    support::addCompileCounter("direct-dte-completion",
+                               "planned-effect-summaries", accesses.size());
     if (mlir::failed(valid))
       return completionFailure(
           DirectDTECompletionFailureKind::Unsupported,

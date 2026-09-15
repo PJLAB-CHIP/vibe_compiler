@@ -20,6 +20,18 @@ def FoldStaticTensorOpsPass
                            "mlir::tensor::TensorDialect"];
 }
 
+def FuseBatchNormInferencePass
+    : Pass<"wafer-fuse-batch-norm-inference", "mlir::func::FuncOp"> {
+  let summary = "Fuse proven batch normalization scalar chains without reassociation";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::tensor::TensorDialect"];
+  let statistics = [
+    Statistic<"numFusedChains", "fused-chains", "Number of fused normalization chains">
+  ];
+}
+
 def FormAttentionOpsPass
     : Pass<"wafer-form-attention-ops", "mlir::func::FuncOp"> {
   let summary =

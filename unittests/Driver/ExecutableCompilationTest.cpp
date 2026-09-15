@@ -9,6 +9,7 @@
 #include "Wafer/Driver/PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/MemoryPlanning.h"
@@ -1486,6 +1487,96 @@ TEST(ExecutableCompilationPolicyTest,
           tile.module = std::move(*planned);
         }
       }
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     CommunicationIssuePlacementSummarizesEachCurrentOperationOnce) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  constexpr unsigned messages = 32;
+  constexpr unsigned nestedWrites = 128;
+  auto parsed = wafer::compiler::testing::parseProgram();
+  llvm::SmallVector<StandaloneTileModule, 2> tiles;
+  llvm::SmallVector<mlir::ModuleOp, 2> modules;
+  llvm::SmallVector<TileId, 2> ids{TileId(0), TileId(1)};
+  for (unsigned tile = 0; tile < 2; ++tile) {
+    std::string text;
+    llvm::raw_string_ostream ir(text);
+    llvm::StringRef ddr = "memref<1x1025x64xf16, #wafer.memory<ddr, tensor>>";
+    llvm::StringRef spm = "memref<1x1025x64xf16, #wafer.memory<spm, tensor>>";
+    ir << "module { memref.global \"private\" @data : " << ddr
+       << " {wafer.ddr_resource = #wafer.ddr_resource<0>}\n"
+       << "func.func @entry(%data: " << ddr
+       << " {wafer.ddr_binding = #wafer.ddr_binding<@data, id = 0, "
+       << (tile ? "write" : "read") << ">}) {\n"
+       << "wafer.tile.region(%data : " << ddr << ") -> () { ^bb0(%d: " << ddr
+       << "):\n"
+       << "%b = memref.alloc() : " << spm << "\n"
+       << "%one = arith.constant 1.0 : f16\n";
+    auto dma = [&]() {
+      ir << "wafer.instr." << (tile ? "wdma %b to %d" : "rdma %d to %b")
+         << " {byte_count = 131200 : i64, inner_bytes = 131200 : i64, "
+         << (tile ? "dst" : "src") << "_strides = array<i64: 0,0,0>, "
+         << (tile ? "dst" : "src")
+         << "_iterations = array<i64: 1,1,1>} : " << (tile ? spm : ddr)
+         << " to " << (tile ? ddr : spm) << '\n';
+    };
+    if (tile)
+      ir << "wafer.instr.fill %b, %one : " << spm << ", f16\n";
+    else
+      dma();
+    for (unsigned message = 0; message < messages; ++message)
+      ir << "%t" << message << " = wafer.instr.dte_" << (tile ? "send" : "recv")
+         << " %b {peer = " << (1 - tile)
+         << " : i64, bytes = 128 : i64, message = "
+            "#wafer.dte_message<communication = "
+         << message << ", round = 0, slice = 0>} : " << spm
+         << " -> !async.token\nwafer.instr.dte_wait %t" << message
+         << " : !async.token\n";
+    if (tile) {
+      // The unrelated loop is a bounded oracle for repeated recursive effect
+      // queries. Its actual writes must not move any source-buffer epoch.
+      ir << "%other = memref.alloc() : " << spm << '\n'
+         << "%lo = arith.constant 0 : index\n"
+         << "%hi = arith.constant 1025 : index\n"
+         << "%step = arith.constant 1 : index\n"
+         << "scf.for %i = %lo to %hi step %step {\n";
+      for (unsigned index = 0; index < nestedWrites; ++index)
+        ir << "wafer.instr.fill %other, %one : " << spm << ", f16\n";
+      ir << "}\n";
+      dma();
+    }
+    ir << "wafer.tile.yield\n}\nreturn\n}\n}\n";
+    auto module =
+        mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
+    ASSERT_TRUE(module) << text;
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    modules.push_back(*module);
+    tiles.push_back({CardId(0), TileId(tile), std::move(module), {}});
+  }
+  std::string text;
+  llvm::raw_string_ostream stream(text);
+  auto timing = std::make_shared<support::CompileTimingSession>(stream);
+  support::ScopedCompileTimingActivation activation(timing);
+  auto result = constructCommunicationProposal(tiles);
+  ASSERT_TRUE(result.outcome.succeeded()) << result.outcome.detail;
+  EXPECT_GE(result.statistics.issuePlacements, messages);
+  EXPECT_EQ(result.statistics.replacedMessages, 0u);
+  EXPECT_EQ(analyzeCurrentCommunicationOrder(modules, ids).status,
+            CommunicationOrderStatus::Acyclic);
+  timing->finishAndPrintSummary();
+  llvm::StringRef marker = "name=effect-summaries value=";
+  size_t offset = text.find(marker.str());
+  ASSERT_NE(offset, std::string::npos);
+  llvm::StringRef number = llvm::StringRef(text)
+                               .drop_front(offset + marker.size())
+                               .take_until([](char c) { return c == ' '; });
+  uint64_t summaries = 0;
+  ASSERT_FALSE(number.getAsInteger(10, summaries));
+  // Each top-level op contributes at most one summary, independent of the
+  // number of messages and the nested body length.
+  EXPECT_LE(summaries, 2 * messages + 24);
+  EXPECT_GT(summaries, 0u);
 }
 
 TEST(ExecutableCompilationPolicyTest,

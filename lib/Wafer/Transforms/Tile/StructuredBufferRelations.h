@@ -68,8 +68,11 @@ void retainCurrentStructuredBufferRelations(
 void rebuildCurrentBufferOwnerRelations(
     mlir::Operation *root, StructuredMaterializationRelations &relations);
 
-/// Query-local memo of per-value storage roots. Values are only valid within
-/// one unchanged IR epoch; a caller constructs one memo per validation root
+/// Query-local memo of per-value storage roots. Values are valid while buffer
+/// SSA definitions, operands and region/alias relations remain unchanged.
+/// Reordering issues or removing memory-free waits preserves these facts;
+/// the memo contains no operation-order or lifetime information.
+/// A caller constructs one memo per validation root
 /// and threads it through every buffer query in that scope, turning
 /// per-op×per-relation storage-root walks into amortized O(1) lookups.
 /// The per-value sets are heap-owned so the returned references stay valid

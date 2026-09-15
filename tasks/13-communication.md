@@ -196,6 +196,8 @@ proposal构造以共同current-IR顺序分析给出的实际环为约束，调�
 算术和原SPM数据buffer不变，新增storage、binding、通知均进入真实IR；不能推测尚未物化的wait、alias或SPM可行性。
 每次改变IR后重新分析，不解析diagnostic控制流程；无法满足固定数据/控制依赖的选择不形成可执行proposal。
 共同分析只返回当前op句柄及typed状态，不能跨mutation保存。最终verifier仍独立从最终IR重建并检查约束。
+选择同一block内issue切点时，每个actual operation的递归memory effects和SSA storage roots只求一次；该调用只移动issue、删除不携带memory effect的DTE wait，不改变memref operands、alias或memory effects，因此摘要可在调用内复用。每次仍按当前block顺序找切点；离开此调用即销毁摘要，后续消息替换和completion重建重新分析。该规则避免融合大Region后逐message重扫同一嵌套body。
+Direct DTE wait构造、局部wait验证和transport binding各自的只读模块遍历内，递归effects按实际storage root索引一次；逐issue仍独立检查原byte range、读写类型及未知访问。索引不跨wait重建或其它IR mutation存活，不复用旧wait位置。
 
 本项覆盖2/4/16 Tile、rank3及1024/1025/1031的混合DDR/DTE互等、只读输入共享与真正的数据环；
 检查合法共享保留、精确消息/字节、单独通知resource、最终无环与actual SPM；无须修改的输入保持原顺序。

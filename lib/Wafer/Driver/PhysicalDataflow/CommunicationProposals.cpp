@@ -59,52 +59,74 @@ bool waitsOnly(mlir::Value token) {
 
 enum class AccessKind { None, Read, Write };
 
-AccessKind bufferAccess(mlir::Operation *op, mlir::Value buffer,
-                        StorageRootMemo &roots) {
-  if (mlir::isa<InstrDTEWaitOp, mlir::ViewLikeOpInterface>(op))
-    return AccessKind::None;
-  auto effects = mlir::getEffectsRecursively(op);
-  if (!effects)
-    return AccessKind::Write;
-  const auto &wanted = roots.getStorageRoots(buffer);
-  AccessKind kind = AccessKind::None;
-  for (const auto &effect : *effects) {
-    auto value = effect.getValue();
-    if (!value) {
-      if (effect.getResource() == mlir::SideEffects::DefaultResource::get())
-        return AccessKind::Write;
-      continue;
+// Issue placement changes only operation order and memory-free DTE waits.
+// Buffer operands, SSA aliases and memory effects are unchanged, so these
+// summaries remain valid for this call. Rebuilding waits or replacing messages
+// happens only after this object has been destroyed.
+class BufferAccesses {
+public:
+  AccessKind get(mlir::Operation *op, mlir::Value buffer) {
+    if (mlir::isa<InstrDTEWaitOp, mlir::ViewLikeOpInterface>(op))
+      return AccessKind::None;
+    auto [entry, inserted] = summaries.try_emplace(op);
+    auto &summary = entry->second;
+    if (inserted) {
+      auto effects = mlir::getEffectsRecursively(op);
+      summary.unknown = !effects;
+      if (effects)
+        for (const auto &effect : *effects) {
+          auto value = effect.getValue();
+          if (!value) {
+            summary.unknown |= effect.getResource() ==
+                               mlir::SideEffects::DefaultResource::get();
+            continue;
+          }
+          if (!mlir::isa<mlir::BaseMemRefType>(value.getType()))
+            continue;
+          AccessKind kind = AccessKind::None;
+          if (mlir::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
+                  effect.getEffect()))
+            kind = AccessKind::Write;
+          else if (mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect()))
+            kind = AccessKind::Read;
+          for (mlir::Value root : roots.getStorageRoots(value))
+            summary.accesses[root] = std::max(summary.accesses[root], kind);
+        }
     }
-    if (!mlir::isa<mlir::BaseMemRefType>(value.getType()))
-      continue;
-    const auto &actual = roots.getStorageRoots(value);
-    if (!llvm::any_of(wanted,
-                      [&](mlir::Value root) { return actual.contains(root); }))
-      continue;
-    if (mlir::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
-            effect.getEffect()))
+    if (summary.unknown)
       return AccessKind::Write;
-    if (mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect()))
-      kind = AccessKind::Read;
+    AccessKind kind = AccessKind::None;
+    for (mlir::Value root : roots.getStorageRoots(buffer))
+      kind = std::max(kind, summary.accesses.lookup(root));
+    return kind;
   }
-  return kind;
-}
+
+  uint64_t size() const { return summaries.size(); }
+
+private:
+  struct Summary {
+    bool unknown = false;
+    llvm::DenseMap<mlir::Value, AccessKind> accesses;
+  };
+  StorageRootMemo roots;
+  llvm::DenseMap<mlir::Operation *, Summary> summaries;
+};
 
 mlir::Operation *nextBufferAccess(mlir::Operation *op, mlir::Value buffer) {
-  StorageRootMemo roots;
+  BufferAccesses accesses;
   for (auto *next = op->getNextNode(); next; next = next->getNextNode())
     if (next->hasTrait<mlir::OpTrait::IsTerminator>() ||
-        bufferAccess(next, buffer, roots) != AccessKind::None)
+        accesses.get(next, buffer) != AccessKind::None)
       return next;
   return nullptr;
 }
 
 mlir::Operation *precedingBufferWrite(mlir::Operation *op, mlir::Value buffer) {
-  StorageRootMemo roots;
+  BufferAccesses accesses;
   for (auto *previous = op->getPrevNode(); previous;
        previous = previous->getPrevNode())
     if (previous == buffer.getDefiningOp() ||
-        bufferAccess(previous, buffer, roots) == AccessKind::Write)
+        accesses.get(previous, buffer) == AccessKind::Write)
       return previous;
   return nullptr;
 }
@@ -129,6 +151,8 @@ void eraseWaits(mlir::Value token, mlir::IRRewriter &rewriter) {
 // aliases and operand definitions bound the cuts; waits are rebuilt from the
 // resulting actual issue/token IR by the common completion implementation.
 uint64_t placeIssuesAtLegalCuts(llvm::ArrayRef<mlir::ModuleOp> modules) {
+  support::ScopedCompileTimingSpan timing(
+      "construction-phase", "communication-proposal", "place-issues");
   uint64_t changed = 0;
   for (auto module : modules) {
     mlir::IRRewriter rewriter(module.getContext());
@@ -137,8 +161,8 @@ uint64_t placeIssuesAtLegalCuts(llvm::ArrayRef<mlir::ModuleOp> modules) {
       if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(op) && directRegion(op))
         issues.push_back(op);
     });
+    BufferAccesses accesses;
     for (auto *op : issues) {
-      StorageRootMemo roots;
       if (auto receive = mlir::dyn_cast<InstrDTERecvOp>(op)) {
         if (receive.getBindingSelector() || receive.getBinding())
           continue;
@@ -150,7 +174,7 @@ uint64_t placeIssuesAtLegalCuts(llvm::ArrayRef<mlir::ModuleOp> modules) {
         for (auto *previous = op->getPrevNode();
              previous && previous != allocation;
              previous = previous->getPrevNode())
-          if (bufferAccess(previous, buffer, roots) != AccessKind::None) {
+          if (accesses.get(previous, buffer) != AccessKind::None) {
             after = previous;
             break;
           }
@@ -165,8 +189,7 @@ uint64_t placeIssuesAtLegalCuts(llvm::ArrayRef<mlir::ModuleOp> modules) {
         mlir::Operation *before = op->getBlock()->getTerminator();
         for (auto *next = op->getNextNode(); next && next != before;
              next = next->getNextNode())
-          if (bufferAccess(next, send.getBuffer(), roots) ==
-              AccessKind::Write) {
+          if (accesses.get(next, send.getBuffer()) == AccessKind::Write) {
             before = next;
             break;
           }
@@ -180,6 +203,8 @@ uint64_t placeIssuesAtLegalCuts(llvm::ArrayRef<mlir::ModuleOp> modules) {
         }
       }
     }
+    support::addCompileCounter("communication-proposal", "effect-summaries",
+                               accesses.size());
   }
   return changed;
 }
@@ -208,6 +233,8 @@ Message messageKey(uint64_t source, uint64_t dest, DTEMessageAttr message) {
 
 mlir::FailureOr<llvm::SmallVector<Packet>>
 collectPackets(llvm::MutableArrayRef<StandaloneTileModule> tiles) {
+  support::ScopedCompileTimingSpan timing(
+      "construction-phase", "communication-proposal", "collect-packets");
   std::map<Message, std::pair<unsigned, InstrDTERecvOp>> receives;
   for (auto [index, tile] : llvm::enumerate(tiles))
     tile.module->walk([&](InstrDTERecvOp recv) {
@@ -372,6 +399,8 @@ bool hasOnlyInputReads(mlir::Value value, llvm::DenseSet<mlir::Value> &seen) {
 mlir::FailureOr<bool>
 restoreLocalInput(const Packet &packet,
                   llvm::MutableArrayRef<StandaloneTileModule> tiles) {
+  support::ScopedCompileTimingSpan timing(
+      "construction-phase", "communication-proposal", "restore-input");
   if (packet.receivers.size() != 1 || packet.sourceOffset != 0)
     return false;
   auto load = soleInputLoad(packet.source);
@@ -439,6 +468,8 @@ restoreLocalInput(const Packet &packet,
 Outcome useDDRPacket(const Packet &packet,
                      llvm::MutableArrayRef<StandaloneTileModule> tiles,
                      llvm::ArrayRef<mlir::ModuleOp> modules) {
+  support::ScopedCompileTimingSpan timing(
+      "construction-phase", "communication-proposal", "materialize-packet");
   auto type = mlir::cast<mlir::MemRefType>(packet.source.getType());
   auto element = type.getElementType();
   if (!mlir::isa<mlir::IntegerType, mlir::FloatType>(element) ||

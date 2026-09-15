@@ -1183,14 +1183,15 @@ createScalarFill(mlir::Value scalar, mlir::MemRefType resultShape,
     return mlir::failure();
   auto tensorMemory = MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
                                       MemLayout::Tensor);
-  auto type = mlir::MemRefType::get(resultShape.getShape(), scalar.getType(),
-                                    resultShape.getLayout(), tensorMemory);
+  auto type = mlir::MemRefType::get(
+      {}, scalar.getType(), mlir::MemRefLayoutAttrInterface{}, tensorMemory);
   auto allocation = rewriter.create<mlir::memref::AllocOp>(location, type);
   rewriter.create<ComputeFillOp>(location, allocation.getResult(), scalar,
                                  FillDomainAttr{});
   ++statistics.fills;
   return ExprValue{allocation.getResult(),
-                   getIdentityMap(rewriter.getContext(), type.getRank())};
+                   mlir::AffineMap::get(resultShape.getRank(), 0, {},
+                                        rewriter.getContext())};
 }
 
 static mlir::FailureOr<ExprValue>
@@ -1200,14 +1201,36 @@ createElementwise(ComputeElementwiseKind kind, llvm::ArrayRef<ExprValue> inputs,
                   StructuredToTileStatistics &statistics) {
   llvm::SmallVector<mlir::Value, 3> buffers;
   llvm::SmallVector<mlir::AffineMap, 4> maps;
+  llvm::SmallBitVector used(resultShape.getRank());
+  for (ExprValue input : inputs) {
+    if (!input.indexingMap.isProjectedPermutation())
+      return mlir::failure();
+    for (mlir::AffineExpr expression : input.indexingMap.getResults())
+      used.set(mlir::cast<mlir::AffineDimExpr>(expression).getPosition());
+  }
+  llvm::SmallVector<int64_t> shape;
+  llvm::SmallVector<mlir::AffineExpr> resultCoordinates;
+  llvm::SmallVector<mlir::AffineExpr> inputCoordinates(
+      resultShape.getRank(), rewriter.getAffineConstantExpr(0));
+  for (int axis : used.set_bits()) {
+    inputCoordinates[axis] = rewriter.getAffineDimExpr(shape.size());
+    resultCoordinates.push_back(rewriter.getAffineDimExpr(axis));
+    shape.push_back(resultShape.getDimSize(axis));
+  }
   for (ExprValue input : inputs) {
     if (!input.buffer)
       return mlir::failure();
     buffers.push_back(input.buffer);
-    maps.push_back(input.indexingMap);
+    maps.push_back(input.indexingMap.replaceDimsAndSymbols(inputCoordinates, {},
+                                                           shape.size(), 0));
   }
   mlir::MemRefType resultType =
       changeElementType(resultShape, resultElementType);
+  if (shape.size() != static_cast<size_t>(resultShape.getRank()))
+    resultType = mlir::MemRefType::get(
+        shape, resultElementType, mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                        MemLayout::Tensor));
   mlir::AffineMap identity =
       getIdentityMap(rewriter.getContext(), resultType.getRank());
   maps.push_back(identity);
@@ -1216,7 +1239,10 @@ createElementwise(ComputeElementwiseKind kind, llvm::ArrayRef<ExprValue> inputs,
       ComputeElementwiseKindAttr::get(rewriter.getContext(), kind), buffers,
       getIndexingMapsAttr(rewriter, maps));
   ++statistics.elementwiseOperations;
-  return ExprValue{operation.getResult(), identity};
+  return ExprValue{operation.getResult(),
+                   mlir::AffineMap::get(resultShape.getRank(), 0,
+                                        resultCoordinates,
+                                        rewriter.getContext())};
 }
 
 static mlir::LogicalResult lowerFill(mlir::linalg::LinalgOp operation,
@@ -1687,21 +1713,13 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
       mlir::MemRefType inputType = getMemRef(input->buffer);
       if (!inputType)
         return mlir::failure();
-      mlir::MemRefType fullInputType = changeShapeAndElementType(
-          inputType, resultType.getShape(), inputType.getElementType());
-      mlir::FailureOr<mlir::Value> fullInput = materializeExprAs(
-          *input, fullInputType, rewriter, location, statistics);
-      if (mlir::failed(fullInput))
-        return mlir::failure();
       mlir::MemRefType convertedType =
-          changeElementType(fullInputType, nested.getResult(0).getType());
+          changeElementType(getOwnedType(inputType), nested.getResult(0).getType());
       mlir::FailureOr<mlir::Value> converted = createConvert(
-          *fullInput, convertedType, rewriter, location, statistics);
+          input->buffer, convertedType, rewriter, location, statistics);
       if (mlir::failed(converted))
         return mlir::failure();
-      values[nested.getResult(0)] =
-          ExprValue{*converted, getIdentityMap(rewriter.getContext(),
-                                               convertedType.getRank())};
+      values[nested.getResult(0)] = ExprValue{*converted, input->indexingMap};
       continue;
     }
     std::optional<ComputeElementwiseKind> kind =

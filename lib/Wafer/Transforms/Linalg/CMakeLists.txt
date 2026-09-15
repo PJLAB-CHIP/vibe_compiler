@@ -4,6 +4,7 @@ add_mlir_library(WaferLinalgTransforms
   CommunicationRegionClosure.cpp
   ContractionAccumulation.cpp
   ConstantTensorFolding.cpp
+  FuseBatchNormInference.cpp
   NormalizeAttention.cpp
   NormalizeStructuredGraph.cpp
   NormalizeTensorReads.cpp

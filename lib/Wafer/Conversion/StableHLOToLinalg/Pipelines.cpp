@@ -44,6 +44,7 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   buildSimplifyStructuredTensorPipeline(pm);
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addNestedPass<mlir::func::FuncOp>(createFoldConvolutionInputCastsPass());
+  pm.addNestedPass<mlir::func::FuncOp>(createFuseBatchNormInferencePass());
   buildNormalizeAttentionPipeline(pm);
   pm.addNestedPass<mlir::func::FuncOp>(
       createNormalizeStructuredTensorGraphPass());
