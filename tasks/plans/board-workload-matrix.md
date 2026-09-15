@@ -1034,3 +1034,33 @@ unsupported/indeterminate均为零，两个查询work耗尽均已消除。正式
 fresh no-card在`build/test/resnet-communication-final-no-card`；本轮source由固定case seed 20260803重新导出，未复用历史payload作测试输入。
 132项Driver与428项Transforms完整通过，最终修正的7项定向回归通过；canonical完整增量构建、Ninja no-op、文本检查及source缓存检查通过。
 本次构造算法与原始ResNet默认search目标闭合；board-testing整体继续doing，剩余模型及设备验收沿原矩阵推进。
+
+### DTE重复完成与cost静态查询
+
+用户仅授权两处局部优化：删除search构造成功后外层重复的DTE wait重建，并在单次不变IR/cohort评分内复用静态effects和局部粗估耗时。
+归属06号cost合同、13号completion输出合同；不开展此前讨论的搜索分解、跨Tile归并或消息配对索引。
+基线为本轮原始ResNet默认8/42日志：总845.348秒，18个accepted、24次actual capacity；最终重复wait调用42次/13.120秒，
+整轮wait重建126次，评分18次/408.023秒、404轮传播、117,493,835次逻辑work及16,096次局部粗估。
+先完成循环/未知effect/跨调用变化的直接cost回归与正式pipeline完成次数检查，再执行一次原始默认search/no-card，
+比较所有候选结果、评分及逻辑计费；完整canonical增量构建和Ninja no-op后提交，仅纳入本项修改。
+
+
+两项局部修改已完成：search成功构造保留已经闭合的DTE wait，固定baseline仍执行原最终completion；
+cost的effect摘要仅保留原规则使用的SSA访问及read/write种类，粗估只缓存与prefix无关的服务耗时。
+每次访问仍解析当前alias/index/SPM范围及动态clock/token，逻辑计费和粗估状态清理未变；摘要在单次评分结束销毁。
+新增rank3、1024/1025/1031与32/33次循环正例，未知call与GS的总ps符合独立公式，静态effect/粗估各求一次；
+同一op改变payload、改变cohort后新评分正确，IR保持只读。58项CostModel/ScheduleCostAnalysis回归与6项pipeline/通信回归通过。
+正式baseline检查最终DTE completion保留；正式search的8候选检查只重建16次wait，实际SPM/target通过。
+
+本轮原始直接Torch XLA ResNet-18 FP16、默认8/42完成：18个accepted、24次actual capacity，unsupported/indeterminate为零，
+verified package及16 Tile fresh no-card退出码均为0。与前一轮对照，1274项search计数（包括全部候选状态、资源指标与评分）逐项相同；
+18次评分、404轮完成传播、117,493,835次逻辑work、16,096次局部粗估和4次传播上限粗估均不变。
+最终候选指标保持1376个Region、51,728指令和131,267,008 DDR bytes，最低评分仍为5,914,966,592 ps。
+静态effect共查询963,235次；粗估服务汇总由16,096次降为448次。Wait重建126→84次，累计38.971→26.310秒；
+评分408.023→380.818秒，下降6.67%。本轮编译830.213秒，含export/no-card总839.845秒，对照845.348秒仅下降5.503秒（0.65%）；
+峰值RSS 5,202,880 KiB，较5,175,408 KiB增加0.53%。其它阶段本轮计时也变化，如Region→Instr累计247.005→263.591秒；
+并行/嵌套计时不能直接相加。本轮证明重复工作减少、候选与评分保持，未观测到显著整网wall加速，不作独立实卡性能结论。
+
+证据为`build/local-query-reuse-cost-tests.log`、`build/local-query-reuse-driver-tests.log`及`build/resnet-local-query-reuse-search.log`；
+产品在`build/test/resnet-local-query-reuse/package`，本轮reference/payload/no-card在`build/test/resnet-local-query-reuse-no-card`。
+Canonical完整增量构建、后续Ninja no-op、diff检查及源码缓存检查通过。本次授权的两项修改闭合，较大的搜索分解/复用方案仍未启动。

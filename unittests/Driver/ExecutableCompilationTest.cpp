@@ -519,9 +519,13 @@ TEST(ExecutableCompilationPolicyTest,
   wafer::compiler::detail::BaselineCurrentIRStatistics baseline;
   wafer::compiler::detail::ExecutableLoweringStatistics executable;
 
+  auto timing =
+      std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+  wafer::support::ScopedCompileTimingActivation activation(timing);
   auto result = wafer::compiler::detail::compileBaselineCurrentIR(
       *parsed.module, program, wafer::compiler::testing::executionConfig(),
       diagnostics, programData, options, &baseline, &executable);
+  timing->finishAndPrintSummary();
   diagnostics.flush();
   ASSERT_TRUE(result.isAccepted())
       << result.gate << ": " << result.detail << "\n"
@@ -534,6 +538,9 @@ TEST(ExecutableCompilationPolicyTest,
   EXPECT_GT(baseline.temporalApplications, 0u);
   EXPECT_EQ(baseline.layoutInvocations, 1u);
   EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+  EXPECT_NE(diagnosticText.find("| stage | current-ir-downstream | "
+                                "final-direct-dte-completion | 1 |"),
+            std::string::npos);
 }
 
 TEST(ExecutableCompilationPolicyTest,
@@ -1165,10 +1172,19 @@ TEST(ExecutableCompilationPolicyTest,
     options.downstream.tilePipelineParallelism = 1;
     wafer::compiler::detail::SearchCurrentIRStatistics search;
     wafer::compiler::detail::ExecutableLoweringStatistics executable;
+    auto timing =
+        std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+    wafer::support::ScopedCompileTimingActivation activation(timing);
     auto result = wafer::compiler::detail::compileSearchCurrentIR(
         *parsed.module, program, wafer::compiler::testing::executionConfig(),
         diagnostics, data, options, &search, &executable);
+    timing->finishAndPrintSummary();
     ASSERT_TRUE(result.isAccepted()) << result.detail << text;
+    EXPECT_EQ(text.find("| stage | current-ir-downstream | "
+                        "final-direct-dte-completion |"),
+              std::string::npos);
+    EXPECT_NE(text.find("| completion | direct-dte | rebuild-waits | 16 |"),
+              std::string::npos);
     ASSERT_TRUE(result.executable && result.physicalIRInventory);
     EXPECT_EQ(search.peakSessionTemporalPrefixes, 1u);
     // Accepted prefixes are retained in the realization slot while another

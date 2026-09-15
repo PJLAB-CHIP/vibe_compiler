@@ -1441,12 +1441,28 @@ ordinary instruction的共享runtime提交先验取1 us，包含命令构造/dis
 
 完成依赖估计在一次current-IR只读调用内传播时间：DDR通过entry的typed binding匹配publication/acquisition，
 静态单次Direct DTE通过peer/message匹配send/recv，wait消费本次动态SSA token的完成时间。
-不同Tile按物理id确定性遍历，重复传播直到时间不再变化或到达32轮工作上限；缓存仅保存当前不变Instr的服务估计。
+不同Tile按物理id确定性遍历，重复传播直到时间不再变化或到达32轮工作上限。
+单次评分内，当前Instr与cohort不变，逐op复用静态memory effects及局部粗估的服务耗时；unknown effect与空effect保持区分，
+effect顺序和重复项保留。每次访问仍从当前解释状态解析SSA alias、index、SPM范围、hazard、token及engine时钟，
+粗估仍在原触发位置叠加当前prefix并执行原状态清理。65536次逻辑work计费、32轮传播、溢出与coarse标记保持原语义。
+这些摘要只在本次只读评分的estimator中存活，不跨candidate、IR mutation或cohort复用；没有摘要时调用原求值实现。
 这不是同步验证：输入须先通过实际completion/transport gate，估计不增删任何join/wait。
 重复DTE与不能解析的控制/alias在最近operation/loop scope使用有限串行服务，标记局部近似；其余scope继续保持已有依赖。
 跨Tile传播未收敛只影响估计质量，并使用有限资源服务兜底，不能据此拒绝合法候选或返回不可比。
 测试补DDR生产者/消费者的访问顺序置换、DTE token等待与同work独立工作重叠、混合完成域及未知scope前后的已知重叠，
 检查只读IR、有限值、无payload重复计费、确定性及饱和；无匹配peer或格式先验不足也不能得到零服务。
+
+本次静态摘要复用的输入为上述accepted current Instr及固定cohort，输出仍为同一SearchObjective和独立的实际查询计数，
+直接交给ActualResultController/SearchCurrentIR/UnifiedSearch；生产入口及评分公式不变。
+不实现跨Tile/candidate等价归并、增量传播调度、消息配对索引或搜索空间调整。
+完成条件为既有精确评分、coarse/overflow及逻辑work保持，实际effects/粗估查询不随同一op的重复访问增长。
+
+| 输入等价类 | 输出与复用要求 | 直接消费者 |
+| --- | --- | --- |
+| rank3、1024/1025/1031，32/33次循环及未知call后的实际GS | 精确ps公式、coarse标记、IR只读；重复访问只做一次静态effect和粗估查询 | 原CostModel比较 |
+| 同一op在两次评分之间改变payload或cohort | 新评分使用当前值，无跨调用摘要泄漏 | 同一SearchObjective入口 |
+| DDR/DTE跨Tile传播、loop-carried index/双slot alias、unknown与饱和 | 保留原就绪顺序、动态状态及逻辑预算结果 | 既有完整cost回归 |
+| 原始ResNet默认8/42 | 全部候选状态、评分、logical work与winner一致；记录实际查询、wall/RSS | verified package及fresh no-card |
 
 DTE无send时startup为0，有n条时为`first + (n-1) × steady`；使用已有首条13us、后续1.5us先验。
 NCC使用已有每call 0.14us和每participant 0.045us，先同Tile组合再取最大。

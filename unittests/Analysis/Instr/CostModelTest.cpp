@@ -3,12 +3,14 @@
 #include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -16,6 +18,7 @@
 
 #include <array>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace {
@@ -567,6 +570,106 @@ TEST(CostModelTest,
     }
     EXPECT_EQ(times[0], times[1]);
     EXPECT_GT(times[0], 256u * extent);
+  }
+}
+
+TEST(CostModelTest, StaticSummariesPreserveRepeatedScopesAndFreshInputs) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const uint64_t bytes = 256 * extent;
+    const uint64_t trips = (extent + 31) / 32;
+    const std::string type = "memref<2x" + std::to_string(extent) +
+                             "x64xf16, #wafer.memory<spm, tensor>>";
+    std::string text;
+    llvm::raw_string_ostream ir(text);
+    ir << "module { func.func private @unknown_effect()\n"
+          "func.func @main() {\n";
+    for (auto [name, offset] : {std::pair{"a", 65536}, {"b", 1048576}})
+      ir << "%" << name << " = memref.alloc() {wafer.spm.offset = "
+         << "#wafer.spm_offset<" << offset << ">} : " << type << '\n';
+    ir << "%c0 = arith.constant 0 : index\n"
+          "%c1 = arith.constant 1 : index\n"
+          "%end = arith.constant "
+       << trips << " : index\n"
+       << "scf.for %iv = %c0 to %end step %c1 {\n"
+          "func.call @unknown_effect() : () -> ()\n"
+          "wafer.instr.gather_scatter %a to %b {byte_count = "
+       << bytes << " : i64, inner_bytes = " << bytes
+       << " : i64, src_strides = array<i64: 0, 0, 0>, "
+          "dst_strides = array<i64: 0, 0, 0>, "
+          "src_iterations = array<i64: 1, 1, 1>, "
+          "dst_iterations = array<i64: 1, 1, 1>} : "
+       << type << " to " << type
+       << "\n}\nwafer.instr.ncc_join [0]\nreturn\n}}\n";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(module) << text;
+    wafer::InstrGatherScatterOp copy;
+    module->walk([&](wafer::InstrGatherScatterOp op) { copy = op; });
+    ASSERT_TRUE(copy);
+    uint64_t logicalWork = 0;
+    for (unsigned phase = 0; phase < 3; ++phase) {
+      SCOPED_TRACE(phase);
+      const uint64_t payload = phase ? bytes / 2 : bytes;
+      mlir::Builder builder(&context);
+      copy.setByteCountAttr(builder.getI64IntegerAttr(payload));
+      copy.setInnerBytesAttr(builder.getI64IntegerAttr(payload));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      SearchCostPolicy policy = unitCostPolicy();
+      policy.unmodeledInstructionPicosecondsEstimate = phase == 2 ? 11 : 7;
+      auto cohort = SearchCostCohort::create(policy);
+      ASSERT_TRUE(mlir::succeeded(cohort));
+      llvm::SmallVector<TileInstructionProgram> programs{
+          {wafer::TileId(0), *module}};
+      auto cost = analyzeInstructionProgramAggregateCost(
+          programs, wafer::getTargetMemoryPolicy());
+      std::string before, after, report;
+      llvm::raw_string_ostream beforeStream(before), afterStream(after),
+          timingStream(report);
+      module->print(beforeStream);
+      auto timing =
+          std::make_shared<wafer::support::CompileTimingSession>(timingStream);
+      wafer::support::ScopedCompileTimingActivation activation(timing);
+      auto objective = deriveSearchObjective(cost, *cohort, programs);
+      timing->finishAndPrintSummary();
+      auto *known = std::get_if<KnownSearchObjective>(&objective);
+      ASSERT_TRUE(known);
+      EXPECT_TRUE(known->usesCoarseEstimate);
+      // Each unknown call orders the following copy after the preceding one.
+      // Unit rates give payload ps per copy and two ps for the final join.
+      EXPECT_EQ(known->estimatedDurationPicoseconds,
+                trips * (payload +
+                         policy.unmodeledInstructionPicosecondsEstimate) +
+                    2);
+      module->print(afterStream);
+      EXPECT_EQ(before, after);
+      auto counter = [&](llvm::StringRef name) {
+        std::string marker = "category=cost name=" + name.str() + " value=";
+        size_t offset = report.find(marker);
+        EXPECT_NE(offset, std::string::npos) << report;
+        if (offset == std::string::npos)
+          return uint64_t{0};
+        auto number = llvm::StringRef(report)
+                          .drop_front(offset + marker.size())
+                          .take_until([](char c) { return c == ' '; });
+        uint64_t value = 0;
+        EXPECT_FALSE(number.getAsInteger(10, value));
+        return value;
+      };
+      EXPECT_EQ(counter("effect-summaries"), 1u);
+      EXPECT_EQ(counter("coarse-service-summaries"), 1u);
+      EXPECT_GT(counter("local-coarse-scopes"), 1u);
+      if (!phase)
+        logicalWork = counter("current-ir-estimate-work");
+      else
+        EXPECT_EQ(counter("current-ir-estimate-work"), logicalWork);
+      EXPECT_GT(logicalWork, 0u);
+    }
   }
 }
 

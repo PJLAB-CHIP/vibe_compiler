@@ -371,15 +371,20 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
             : ExecutableCompilationStatus::CompilerFailure,
         "shared-ddr-completion", sharedCompletion.detail);
 
-  DirectDTECompletionResult finalDTECompletion =
-      timed("final-direct-dte-completion",
-            [&] { return rebuildRequiredDirectDTEWaits(instructionModules); });
-  if (!finalDTECompletion.succeeded())
-    return fail(finalDTECompletion.failure ==
-                        DirectDTECompletionFailureKind::Unsupported
-                    ? ExecutableCompilationStatus::UnsupportedFailure
-                    : ExecutableCompilationStatus::CompilerFailure,
-                "direct-dte-completion", finalDTECompletion.detail);
+  // The search constructor already rebuilt DTE waits and verified the joint
+  // order. Updating the C++ owner relations above does not change its IR.
+  if (options.communication != CommunicationProposalPolicy::DependencyOrdered) {
+    DirectDTECompletionResult finalDTECompletion =
+        timed("final-direct-dte-completion", [&] {
+          return rebuildRequiredDirectDTEWaits(instructionModules);
+        });
+    if (!finalDTECompletion.succeeded())
+      return fail(finalDTECompletion.failure ==
+                          DirectDTECompletionFailureKind::Unsupported
+                      ? ExecutableCompilationStatus::UnsupportedFailure
+                      : ExecutableCompilationStatus::CompilerFailure,
+                  "direct-dte-completion", finalDTECompletion.detail);
+  }
 
   auto completionFailure = runTiles(
       "ncc-completion-workers",

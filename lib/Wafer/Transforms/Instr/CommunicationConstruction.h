@@ -20,6 +20,8 @@ struct CommunicationConstructionResult {
 };
 
 /// Completes a search communication proposal on its actual Instr owner.
+/// Success includes rebuilt Direct-DTE waits and joint-order verification;
+/// these remain valid until the caller changes the corresponding IR facts.
 /// Fixed baseline/qualification choices do not call this constructor.
 /// A failed owner is discarded by the caller. No memory placement is run here.
 CommunicationConstructionResult

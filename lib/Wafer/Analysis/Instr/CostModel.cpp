@@ -464,8 +464,33 @@ public:
   bool usesCoarseEstimate() const { return coarse; }
   uint64_t getWorkCount() const { return work; }
   uint64_t getLocalEstimateCount() const { return localEstimates; }
+  uint64_t getStaticEffectCount() const { return memoryAccesses.size(); }
+  uint64_t getCoarseServiceCount() const { return coarseServices.size(); }
 
 private:
+  struct MemoryAccess {
+    mlir::Value value;
+    bool write;
+  };
+  using MemoryAccesses = std::optional<llvm::SmallVector<MemoryAccess, 4>>;
+
+  const MemoryAccesses &getMemoryAccesses(mlir::Operation *operation) {
+    auto [entry, inserted] = memoryAccesses.try_emplace(operation);
+    if (inserted) {
+      auto effects = mlir::getEffectsRecursively(operation);
+      if (effects) {
+        auto &accesses = entry->second.emplace();
+        for (const auto &effect : *effects)
+          if (effect.getValue() &&
+              mlir::isa<mlir::MemRefType>(effect.getValue().getType()))
+            accesses.push_back(
+                {effect.getValue(),
+                 !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect())});
+      }
+    }
+    return entry->second;
+  }
+
   struct Hazard {
     uint64_t read = 0, write = 0;
   };
@@ -725,19 +750,17 @@ private:
         return false;
       found = services.try_emplace(operation, duration).first;
     }
-    auto effects = mlir::getEffectsRecursively(operation);
+    const auto &effects = getMemoryAccesses(operation);
     if (!effects)
       return false;
     llvm::SmallVector<std::pair<Storage, bool>, 4> accesses;
     for (const auto &effect : *effects) {
-      if (!effect.getValue() ||
-          !mlir::isa<mlir::MemRefType>(effect.getValue().getType()))
-        continue;
-      auto root = storage(effect.getValue());
+      // Resolve each original access in the current loop/propagation state.
+      // Only its static SSA operand and read/write kind are shared.
+      auto root = storage(effect.value);
       if (!root)
         return false;
-      accesses.emplace_back(
-          *root, !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect()));
+      accesses.emplace_back(*root, effect.write);
     }
     uint64_t &engine = engines[static_cast<unsigned>(*worker)][family];
     uint64_t start = std::max(issue, engine);
@@ -893,9 +916,10 @@ private:
     return checkedAdd(issue, policy.instructionFixedPicosecondsEstimate, issue);
   }
 
-  void estimateLocally(mlir::Operation *operation, uint64_t prefix) {
-    coarse = true;
-    ++localEstimates;
+  uint64_t getCoarseService(mlir::Operation *operation) {
+    auto found = coarseServices.find(operation);
+    if (found != coarseServices.end())
+      return found->second;
     auto cost =
         analyzeInstructionProgramCost(operation, getTargetMemoryPolicy());
     auto service = localServiceTime(cost, policy);
@@ -923,6 +947,14 @@ private:
       if (!duration)
         duration = policy.unmodeledInstructionPicosecondsEstimate;
     }
+    coarseServices.try_emplace(operation, duration);
+    return duration;
+  }
+
+  void estimateLocally(mlir::Operation *operation, uint64_t prefix) {
+    coarse = true;
+    ++localEstimates;
+    uint64_t duration = getCoarseService(operation);
     if (!checkedAdd(prefix, duration, issue))
       issue = std::numeric_limits<uint64_t>::max();
     dte = issue;
@@ -1028,6 +1060,10 @@ private:
   llvm::DenseMap<mlir::Value, Hazard> hazards;
   llvm::DenseMap<mlir::Value, uint64_t> tokens;
   llvm::DenseMap<mlir::Operation *, uint64_t> services;
+  // Immutable-IR summaries survive propagation rounds only within this
+  // estimator. They never retain a resolved alias, hazard or token clock.
+  llvm::DenseMap<mlir::Operation *, MemoryAccesses> memoryAccesses;
+  llvm::DenseMap<mlir::Operation *, uint64_t> coarseServices;
 };
 
 } // namespace
@@ -1179,6 +1215,12 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
         complete = true;
         break;
       }
+    }
+    for (const auto &estimator : estimators) {
+      support::addCompileCounter("cost", "effect-summaries",
+                                 estimator->getStaticEffectCount());
+      support::addCompileCounter("cost", "coarse-service-summaries",
+                                 estimator->getCoarseServiceCount());
     }
     if (complete) {
       uint64_t duration =

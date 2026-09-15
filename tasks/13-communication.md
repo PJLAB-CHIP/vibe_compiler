@@ -219,6 +219,9 @@ Read-only input和DDR packet是当前frontier上的表示选择：先用实际do
 所选变换立即物化在candidate-owned IR，旧分析按mutation范围失效。没有相应actual证据的分支不可选。允许的表示/顺序分支有独立work上限；
 budget耗尽返回未完成，已证明的固定依赖冲突与unsupported/contract failure保持typed区分。不得把这些结果改称SPM容量失败。
 最终verifier从最终IR独立重建联合等待关系；它检查构造器，不选择替代消息或修补顺序。
+构造成功的输出已包含共同Direct-DTE completion及联合顺序验证。Driver只更新C++ owner relation而未改变IR时，
+直接进入NCC completion，不再次重建同一DTE wait；固定表示仍在其原位置执行DTE completion。
+这只合并重复求值，不改变wait/token、数据顺序或直接下游SPM/transport验证；正式search检查每个候选只执行一次该最终构造。
 
 | 覆盖输入 | 构造/拒绝结果 | 直接下游证据 |
 | --- | --- | --- |
