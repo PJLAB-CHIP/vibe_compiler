@@ -144,6 +144,10 @@ struct TargetFuncOpLowering
         funcOp.getLoc(), funcOp.getSymName(), llvmType);
     rewriter.modifyOpInPlace(
         newFunc, [&] { newFunc.setVisibility(funcOp.getVisibility()); });
+    for (unsigned index = 0; index < funcOp.getNumArguments(); ++index)
+      if (auto input = funcOp.getArgAttrOfType<ProgramArgumentAttr>(
+              index, kWaferProgramArgumentAttrName))
+        newFunc.setArgAttr(index, kWaferProgramArgumentAttrName, input);
 
     rewriter.inlineRegionBefore(funcOp.getBody(), newFunc.getBody(),
                                 newFunc.end());

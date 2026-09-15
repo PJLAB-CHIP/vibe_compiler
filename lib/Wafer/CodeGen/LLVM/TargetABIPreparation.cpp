@@ -594,7 +594,9 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   }
 
   for (unsigned index = 0; index < originalArgumentCount; ++index) {
-    function.removeArgAttr(index, kWaferProgramArgumentAttrName);
+    // Keep the typed original input identity through scalar memory lowering.
+    // It proves that entry-owned input bytes are immutable during execution;
+    // target conversion consumes it after emitting any DDR read mapping.
     if (ddrBindings[index])
       function.removeArgAttr(index, kWaferDDRBindingAttrName);
   }

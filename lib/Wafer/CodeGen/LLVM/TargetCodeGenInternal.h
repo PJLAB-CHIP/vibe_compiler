@@ -21,6 +21,10 @@
 
 namespace wafer::compiler {
 
+namespace detail {
+void hoistReadOnlyDDRMemoryMappings(llvm::Module &module);
+} // namespace detail
+
 struct TargetLLVMModulesBuilder {
   static TargetLLVMModule
   makeModule(CardId cardId, TileId tileId, LaunchSlotId launchSlotId,

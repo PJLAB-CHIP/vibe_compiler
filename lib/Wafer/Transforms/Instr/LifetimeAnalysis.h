@@ -326,6 +326,11 @@ public:
                              LifetimeFailure *failure = nullptr) const;
 
 private:
+  friend class LifetimeDataflow;
+  // A synchronous scalar accessor does not participate in NCC busytable
+  // ordering. Keep pending allocation accesses through real completion when
+  // the current tracked storage domain has such observers.
+  bool hasScalarStorageObservers = false;
   struct PendingIssue {
     mlir::Operation *origin = nullptr;
     PathCondition path = PathCondition::root();

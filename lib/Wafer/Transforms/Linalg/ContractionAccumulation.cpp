@@ -23,7 +23,7 @@ namespace wafer {
 namespace {
 
 bool isNarrowContraction(mlir::linalg::LinalgOp op) {
-  if (!op.hasPureTensorSemantics() || op.getNumDpsInputs() != 2 ||
+  if (!op || !op.hasPureTensorSemantics() || op.getNumDpsInputs() != 2 ||
       op.getNumDpsInits() != 1 || op->getNumResults() != 1 ||
       !mlir::linalg::isaContractionOpInterface(op))
     return false;
@@ -52,7 +52,7 @@ bool isNarrowContraction(mlir::linalg::LinalgOp op) {
          yield.getOperand(0) == add.getResult();
 }
 
-mlir::Value emptyLike(mlir::IRRewriter &rewriter, mlir::Location loc,
+mlir::Value emptyLike(mlir::OpBuilder &rewriter, mlir::Location loc,
                       mlir::Value source, mlir::Type element) {
   auto type = mlir::cast<mlir::RankedTensorType>(source.getType());
   llvm::SmallVector<mlir::Value> dynamic;
@@ -63,7 +63,7 @@ mlir::Value emptyLike(mlir::IRRewriter &rewriter, mlir::Location loc,
                                                 dynamic, type.getEncoding());
 }
 
-mlir::Value castTensor(mlir::IRRewriter &rewriter, mlir::Location loc,
+mlir::Value castTensor(mlir::OpBuilder &rewriter, mlir::Location loc,
                        mlir::Value input, mlir::Type element) {
   auto type = mlir::cast<mlir::RankedTensorType>(input.getType());
   auto empty = emptyLike(rewriter, loc, input, element);
@@ -102,6 +102,92 @@ struct PromoteContractionAccumulationPass final
 
 } // namespace
 
+mlir::LogicalResult foldContractionInitializers(mlir::func::FuncOp function) {
+  if (!function || mlir::failed(mlir::verify(function)))
+    return mlir::failure();
+  llvm::SmallVector<mlir::linalg::FillOp> fills;
+  function.walk([&](mlir::linalg::FillOp fill) {
+    if (!fill.hasPureTensorSemantics() || fill.getNumResults() != 1)
+      return;
+    auto type =
+        mlir::dyn_cast<mlir::RankedTensorType>(fill.getResult(0).getType());
+    auto scalar = fill.getInputs()[0].getDefiningOp<mlir::arith::ConstantOp>();
+    if (!type || !type.hasStaticShape() || !scalar ||
+        !mlir::isa<mlir::FloatAttr, mlir::IntegerAttr>(scalar.getValue()))
+      return;
+    if (llvm::any_of(fill.getResult(0).getUses(), [&](mlir::OpOperand &use) {
+          auto contraction =
+              mlir::dyn_cast<mlir::linalg::LinalgOp>(use.getOwner());
+          return isNarrowContraction(contraction) &&
+                 contraction.isDpsInit(&use);
+        }))
+      fills.push_back(fill);
+  });
+  mlir::IRRewriter rewriter(function.getContext());
+  for (auto fill : fills) {
+    rewriter.setInsertionPoint(fill);
+    auto type = mlir::cast<mlir::RankedTensorType>(fill.getResult(0).getType());
+    auto scalar = fill.getInputs()[0].getDefiningOp<mlir::arith::ConstantOp>();
+    auto value = mlir::DenseElementsAttr::get(type, scalar.getValue());
+    rewriter.replaceOpWithNewOp<mlir::arith::ConstantOp>(fill, value);
+  }
+  return mlir::verify(function);
+}
+
+bool requiresWideContractionState(mlir::Operation *operation) {
+  return isNarrowContraction(
+      mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(operation));
+}
+
+mlir::Value convertContractionState(mlir::Value state, mlir::Type element,
+                                    mlir::OpBuilder &builder) {
+  return castTensor(builder, state.getLoc(), state, element);
+}
+
+mlir::FailureOr<mlir::linalg::GenericOp>
+materializeContractionState(mlir::linalg::LinalgOp op,
+                            mlir::OpBuilder &builder) {
+  if (!isNarrowContraction(op))
+    return mlir::failure();
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(op);
+  auto loc = op.getLoc();
+  auto &body = op->getRegion(0).front();
+  auto multiply = mlir::cast<mlir::arith::MulFOp>(body.front());
+  auto add = mlir::cast<mlir::arith::AddFOp>(*std::next(body.begin()));
+  auto init = op.getDpsInits()[0];
+  mlir::Value wideInit;
+  if (auto fill = init.getDefiningOp<mlir::linalg::FillOp>()) {
+    auto scalar = builder.createOrFold<mlir::arith::ExtFOp>(
+        loc, builder.getF32Type(), fill.getInputs()[0]);
+    auto empty = emptyLike(builder, loc, init, builder.getF32Type());
+    wideInit = builder
+                   .create<mlir::linalg::FillOp>(loc, mlir::ValueRange{scalar},
+                                                 mlir::ValueRange{empty})
+                   .getResult(0);
+  } else {
+    wideInit = castTensor(builder, loc, init, builder.getF32Type());
+  }
+  auto wide = builder.create<mlir::linalg::GenericOp>(
+      loc, mlir::TypeRange{wideInit.getType()}, op.getDpsInputs(),
+      mlir::ValueRange{wideInit}, op.getIndexingMapsArray(),
+      op.getIteratorTypesArray(),
+      [&](mlir::OpBuilder &builder, mlir::Location nested,
+          mlir::ValueRange arguments) {
+        auto lhs = builder.create<mlir::arith::ExtFOp>(
+            nested, builder.getF32Type(), arguments[0]);
+        auto rhs = builder.create<mlir::arith::ExtFOp>(
+            nested, builder.getF32Type(), arguments[1]);
+        auto product = builder.create<mlir::arith::MulFOp>(nested, lhs, rhs);
+        product.setFastmathAttr(multiply.getFastmathAttr());
+        auto sum =
+            builder.create<mlir::arith::AddFOp>(nested, arguments[2], product);
+        sum.setFastmathAttr(add.getFastmathAttr());
+        builder.create<mlir::linalg::YieldOp>(nested, sum.getResult());
+      });
+  return wide;
+}
+
 mlir::LogicalResult
 promoteContractionAccumulation(mlir::func::FuncOp function) {
   if (mlir::failed(mlir::verify(function)))
@@ -113,44 +199,14 @@ promoteContractionAccumulation(mlir::func::FuncOp function) {
   });
   mlir::IRRewriter rewriter(function.getContext());
   for (auto op : contractions) {
-    rewriter.setInsertionPoint(op);
-    auto loc = op.getLoc();
-    auto &body = op->getRegion(0).front();
-    auto multiply = mlir::cast<mlir::arith::MulFOp>(body.front());
-    auto add = mlir::cast<mlir::arith::AddFOp>(*std::next(body.begin()));
     auto init = op.getDpsInits()[0];
-    mlir::Value wideInit;
-    if (auto fill = init.getDefiningOp<mlir::linalg::FillOp>()) {
-      auto scalar = rewriter.createOrFold<mlir::arith::ExtFOp>(
-          loc, rewriter.getF32Type(), fill.getInputs()[0]);
-      auto empty = emptyLike(rewriter, loc, init, rewriter.getF32Type());
-      wideInit = rewriter
-                     .create<mlir::linalg::FillOp>(
-                         loc, mlir::ValueRange{scalar}, mlir::ValueRange{empty})
-                     .getResult(0);
-    } else {
-      wideInit = castTensor(rewriter, loc, init, rewriter.getF32Type());
-    }
-    auto wide = rewriter.create<mlir::linalg::GenericOp>(
-        loc, mlir::TypeRange{wideInit.getType()}, op.getDpsInputs(),
-        mlir::ValueRange{wideInit}, op.getIndexingMapsArray(),
-        op.getIteratorTypesArray(),
-        [&](mlir::OpBuilder &builder, mlir::Location nested,
-            mlir::ValueRange arguments) {
-          auto lhs = builder.create<mlir::arith::ExtFOp>(
-              nested, builder.getF32Type(), arguments[0]);
-          auto rhs = builder.create<mlir::arith::ExtFOp>(
-              nested, builder.getF32Type(), arguments[1]);
-          auto product = builder.create<mlir::arith::MulFOp>(nested, lhs, rhs);
-          product.setFastmathAttr(multiply.getFastmathAttr());
-          auto sum = builder.create<mlir::arith::AddFOp>(nested, arguments[2],
-                                                         product);
-          sum.setFastmathAttr(add.getFastmathAttr());
-          builder.create<mlir::linalg::YieldOp>(nested, sum.getResult());
-        });
+    auto wide = materializeContractionState(op, rewriter);
+    if (mlir::failed(wide))
+      return mlir::failure();
+    rewriter.setInsertionPointAfter(*wide);
     auto outputType =
         mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
-    auto output = castTensor(rewriter, loc, wide.getResult(0),
+    auto output = castTensor(rewriter, op.getLoc(), wide->getResult(0),
                              outputType.getElementType());
     rewriter.replaceOp(op, output);
     // A replaced fill is no longer a structured root. Preserve it when an

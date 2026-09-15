@@ -170,11 +170,12 @@ func.func @reject_unsupported_dynamic_offset(
 
 func.func @reject_dynamic_loop_bound(
     %input: memref<4xf16, #wafer.memory<ddr, tensor>>,
-    %bounds: memref<1xindex, #wafer.memory<ddr, tensor>>) {
+    %bounds: memref<1xi64, #wafer.memory<ddr, tensor>>) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
-  %upper = memref.load %bounds[%c0]
-      : memref<1xindex, #wafer.memory<ddr, tensor>>
+  %loaded_upper = memref.load %bounds[%c0]
+      : memref<1xi64, #wafer.memory<ddr, tensor>>
+  %upper = arith.index_cast %loaded_upper : i64 to index
   scf.for %i = %c0 to %upper step %c1 {
     %view = memref.subview %input[%i] [1] [1]
         : memref<4xf16, #wafer.memory<ddr, tensor>>

@@ -20,6 +20,7 @@ add_mlir_library(WaferCompiler
   ProgramDirectoryTransaction.cpp
   ProgramResourceVerification.cpp
   SpmdCompilationBridge.cpp
+  InlineConstantData.cpp
   TensorProgramCompilation.cpp
 
   LINK_LIBS PUBLIC

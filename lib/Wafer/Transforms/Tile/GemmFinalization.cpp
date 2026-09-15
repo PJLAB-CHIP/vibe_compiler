@@ -196,8 +196,12 @@ bool exclusivelyFinal(OutputChain &chain, mlir::Operation *terminal) {
         continue;
       if (user->getBlock() == origin->getBlock() &&
           user->isBeforeInBlock(origin)) {
+        // Materializing a prior state into distinct storage observes the old
+        // value before the final GEMM. Removing the final writeback does not
+        // change that snapshot; aliases still follow the recursive view check.
         if (mlir::isa<ComputeFillOp, StorageLoadOp, MoveCopyIntoOp,
-                      mlir::memref::CopyOp>(user))
+                      mlir::memref::CopyOp, LayoutMaterializeOp, MoveCopyOp>(
+                user))
           continue;
       }
       if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {

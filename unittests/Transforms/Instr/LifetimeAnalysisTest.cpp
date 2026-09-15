@@ -1902,6 +1902,53 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
+       ReentryPredicateProvesOnlyActualBackedgeCompletion) {
+  for (int64_t length : {1024, 1025, 1031})
+    for (unsigned variant : {0u, 1u, 2u}) {
+      SCOPED_TRACE(length);
+      SCOPED_TRACE(variant);
+      const std::string type = "memref<2x" + std::to_string(length) +
+                               "x8xf32, #wafer.memory<spm, tensor>>";
+      std::string source =
+          "module { func.func @main(%unknown: i1) { "
+          "%z = arith.constant 0 : index %lower = arith.constant 7 : index "
+          "%step = arith.constant 2 : index %upper = arith.constant " +
+          std::to_string(7 + 2 * length) +
+          " : index "
+          "%zero = arith.constant 0.0 : f32 %buffer = memref.alloc() : " +
+          type + " wafer.instr.fill %buffer, %zero : " + type +
+          ", f32 wafer.instr.ncc_join [0] "
+          "scf.for %i = %lower to %upper step %step { "
+          "%condition = arith.cmpi " +
+          (variant == 1 ? "eq" : "ne") + ", %i, %lower : index scf.if " +
+          (variant == 2 ? "%unknown" : "%condition") +
+          " { wafer.instr.ncc_join [0] } "
+          "%observed = memref.load %buffer[%z, %z, %z] : " +
+          type + " wafer.instr.fill %buffer, %zero : " + type +
+          ", f32 } wafer.instr.ncc_join [0] return } }";
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      auto function = getOnlyFunction(*module);
+      auto allocation = *function.getOps<mlir::memref::AllocOp>().begin();
+      llvm::SmallVector<LifetimeDemand, 1> demands{
+          LifetimeDemand{allocation, 2 * length * 8 * 4, 256, 0}};
+      auto timeline = StructuredTimeline::build(function);
+      ASSERT_TRUE(mlir::succeeded(timeline));
+      LifetimeDataflow dataflow(*timeline, demands,
+                                wafer::isWaferSPMMemRefType);
+      LocalCompletionTracker completion;
+      LifetimeFailure failure;
+      auto result = dataflow.run(function, &completion, &failure);
+      if (variant == 0)
+        EXPECT_TRUE(mlir::succeeded(result)) << static_cast<int>(failure.kind);
+      else {
+        EXPECT_TRUE(mlir::failed(result));
+        EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+      }
+    }
+}
+
+TEST_F(LifetimeAnalysisTest,
        JoinedConditionalPrefixPreservesExactSingleAccessBackedgeOrder) {
   auto module = parse(R"mlir(
 module {

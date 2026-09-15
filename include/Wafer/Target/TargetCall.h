@@ -225,6 +225,25 @@ struct TargetDDRAcquireCommand {
   uint64_t byteCount;
 };
 
+enum class TargetScalarMemorySpace : uint8_t { SPM, DDR };
+struct TargetKcoreReleaseCommand {};
+struct TargetMemoryMappingCommand {
+  TargetScalarMemorySpace space;
+  uint64_t address;
+  uint32_t byteCount;
+};
+struct TargetScalarLoadCommand {
+  TargetScalarMemorySpace space;
+  uint64_t address;
+  uint32_t byteWidth;
+};
+struct TargetScalarStoreCommand {
+  TargetScalarMemorySpace space;
+  uint64_t address;
+  uint64_t value;
+  uint32_t byteWidth;
+};
+
 struct TargetNCCJoinCommand {
   uint32_t participantMask;
 };
@@ -283,6 +302,8 @@ using TargetCommandPayload = std::variant<
     TargetPeripheralBilinearCommand, TargetPeripheralLUTCommand,
     TargetPeripheralRandomCommand, TargetPeripheralElementMaskCommand,
     TargetDDRPublishCommand, TargetDDRAcquireCommand, TargetNCCJoinCommand,
+    TargetMemoryMappingCommand, TargetScalarLoadCommand, TargetScalarStoreCommand,
+    TargetKcoreReleaseCommand,
     TargetDirectDTEBeginCommand, TargetDirectDTESendCommand,
     TargetDirectDTEMultiSendCommand, TargetDirectDTEMultiSendDestinationCommand,
     TargetDirectDTESendIssueCommand, TargetDirectDTEReceiveCommand,
@@ -314,10 +335,12 @@ enum class TargetCallBuiltin : uint8_t {
   DirectDTERecvPrepare,
   DirectDTEWait,
   DirectDTEFinish,
+  DDRReadMapping,
+  SPMMapping,
 };
 
 enum class TargetCallScalarType : uint8_t { I32, I64 };
-enum class TargetCallResultType : uint8_t { Void, I64 };
+enum class TargetCallResultType : uint8_t { Void, I64, Pointer };
 
 /// The real NCC engine reached by one registered target-call implementation.
 /// Absence means that the call does not submit an NCC engine command. This

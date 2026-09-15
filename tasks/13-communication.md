@@ -346,6 +346,39 @@ chunk control flow、independent或rotating buffers、movement issue、compute i
 stage数量、pipeline flag、估算window或IR外resource plan都不能证明流水。unknown性能项不参与比较，但message/range/resource legality
 仍必须证明。
 
+### 结构化循环中的窗口共享与通信构造
+
+- Upstream IR / input：已选择layout/temporal参数的current Tile/Instr、实际SSA和effect、静态有界SCF循环及现有DDR/DTE端点。
+- Current stage responsibility：证明相同只读程序窗口的逐次读取关系，物化共享端点；以完整收发组构造循环体内的可推进顺序。
+- Output IR / files：同一candidate中的实际peer/DTE操作、原结构化循环、精确dynamic token及最终offset/binding；不增加通信计划IR。
+- Downstream consumer：唯一completion、SPM planner、Direct-DTE绑定、实际成本模型、target和SystemC。
+- User-level driver / named pipeline：现有none/search与同一materializeReadOnlyInputSharing/constructCommunication入口。
+- Explicit non-goals：不展开工作负载迭代，不根据模型名选路，不猜测动态分支配对，不创建隐式缓存、跨迭代token或全局barrier。
+- Completion criteria：下表覆盖实际动态次数、窗口、token、资源复用和完整结果；大GEMM正式search中共享候选实际评估并给出选择结果。
+
+窗口等价由ABI数据身份、只读effect、实际subview地址函数、payload dtype/layout及执行域共同证明；同shape或相同循环次数不足以证明内容相同。
+首个支持域为非空、常量边界/正步长的嵌套SCF循环，窗口偏移由其IV的仿射表达式给出。收发必须有相同有序执行域和窗口函数；
+不满足证明的读取不进入共享候选。普通输入共享只消除重复内容；partial贡献保持不同SSA身份和既定merge语义。
+
+现有Kahn依赖前沿递归处理含通信的循环体，以进入/退出依赖保留外层原执行顺序，完整收发组仍满足sender/receiver资源约束。
+收发配对逐层检查实际循环边界；禁止跨迭代悬挂token。Completion生成后，独立顺序验证与原Direct-DTE结构化执行证明检查回边闭合。
+仅在上述循环归纳条件成立时，一次循环体构造代表全部迭代；物理range不变时复用既有invariant message representatives，不展开实例。
+循环外DDR publication/acquisition与循环内DTE共同参与顺序验证；循环内重复DDR通知需要独立的实际完成协议，不能沿用单次通知假装支持。
+
+SPM中仅保留current IR实际创建的面板和接收缓冲，send/recv wait由真实首次读取、复用和release产生。每个共享候选重新规划SPM；
+数据量、迭代次数与估算驻留量只用于成本，不参与内存合法性。失败的构造事务不发布、不经后置插barrier修复。
+
+| 输入/结构 | exact要求 | 下游witness |
+| --- | --- | --- |
+| 相同/不同ABI来源、静态及IV相关窗口、布局差异、非只读写入 | 只合并逐次相同的内容；不同窗口/写入/未知偏移不合并 | 当前load与实际peer替换 |
+| rank3 1024/1025/1031、4/16 Tile、两层循环及main/tail | 每次发送对应唯一接收，payload及次数准确；main与tail不串消息 | Instr、completion、SPM、binding |
+| 合法Ring、连续收发组、混合DDR/DTE、资源复用 | 完整组可推进；回边无悬挂端点，无额外全局drain | 独立顺序验证、SystemC全输出 |
+| 不同trip count、条件通信、跨回边token、未来迭代依赖 | typed拒绝，不输出不可推进候选 | 构造与绑定负例 |
+| GEMM及独立复制/广播机制 | 默认与增加预算记录eligible/actualized/accepted；DDR流量与最终输出完整 | 正式package/no-card及有界numeric oracle |
+
+方法沿用[MLIR仿射访问关系](https://mlir.llvm.org/docs/Dialects/Affine/)和[SDF周期执行证明](https://ptolemy.berkeley.edu/publications/papers/87/synchdataflow/)的分工：
+窗口等价、次数平衡和可推进资源调度分别证明，不将SDF平衡条件当成硬件死锁证明。硬件完成与资源事实仍以本文及runtime ABI为准。
+
 ## 4. Instr IR、Message Identity 与 Completion
 
 Tile-to-Instr conversion生成：

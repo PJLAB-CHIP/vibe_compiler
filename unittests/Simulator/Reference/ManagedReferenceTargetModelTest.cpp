@@ -62,6 +62,59 @@ std::unique_ptr<ManagedReferenceTargetModelBackend> makeBackend() {
 }
 
 TEST(ManagedReferenceTargetModelTest,
+     BF16ConversionAndElementwiseMatchFormalBits) {
+  auto backend = makeBackend();
+  for (uint64_t extent : {1024u, 1025u, 1031u}) {
+    SCOPED_TRACE(extent);
+    auto bf16 = makeTensor(LogicalFormat::BF16, PhysicalTensorLayout::Tensor,
+                           {2, extent, 1});
+    auto f32 = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Tensor,
+                          {2, extent, 1});
+    std::vector<RawLogicalValue> values;
+    const uint32_t samples[] = {0,          0x80000000, 0x00010000, 0x80010000,
+                                0x3f808000, 0x3f818000, 0x3f808001, 0xbf807fff,
+                                0x7f7f0000, 0xff7f0000};
+    for (uint64_t index = 0; index < 2 * extent; ++index)
+      values.push_back({LogicalFormat::F32, samples[index % 10]});
+    const auto *route =
+        findTargetConvertRoute(LogicalFormat::F32, LogicalFormat::BF16);
+    auto convert = llvm::cantFail(createFormalConvertOperation(
+        route->opcode, f32, bf16,
+        TargetConvertParameter::roundingMode(TargetRoundingMode::NearestEven)));
+    TargetModelConvertRequest request{
+        convert, {{makeStorage(f32, values)}, makeTemplate(bf16)}};
+    auto budget = FormalNumericWorkBudget::create(2 * extent, 0);
+    auto output = backend->execute(request, budget);
+    ASSERT_TRUE(static_cast<bool>(output))
+        << llvm::toString(output.takeError());
+    FormalNumericExecutionContext context;
+    auto formal = llvm::cantFail(executeFormalTensorNumeric(
+        context, convert, std::vector<llvm::ArrayRef<RawLogicalValue>>{values},
+        budget));
+    auto narrowed = unpack(*output);
+    for (uint64_t index = 0; index < narrowed.size(); ++index)
+      EXPECT_EQ(narrowed[index].bits, formal.values[index].bits);
+    auto multiply = llvm::cantFail(createFormalElementwiseOperation(
+        TargetElementwiseOperation::Mul, {bf16, bf16}, bf16));
+    std::vector<RawLogicalValue> ones(2 * extent,
+                                      {LogicalFormat::BF16, 0x3f80});
+    TargetModelElementwiseRequest multiplyRequest{
+        multiply,
+        {{makeStorage(bf16, narrowed), makeStorage(bf16, ones)},
+         makeTemplate(bf16)}};
+    auto product = backend->execute(multiplyRequest, budget);
+    ASSERT_TRUE(static_cast<bool>(product))
+        << llvm::toString(product.takeError());
+    auto formalProduct = llvm::cantFail(executeFormalTensorNumeric(
+        context, multiply,
+        std::vector<llvm::ArrayRef<RawLogicalValue>>{narrowed, ones}, budget));
+    auto actual = unpack(*product);
+    for (uint64_t index = 0; index < actual.size(); ++index)
+      EXPECT_EQ(actual[index].bits, formalProduct.values[index].bits);
+  }
+}
+
+TEST(ManagedReferenceTargetModelTest,
      F32ExtremaMatchFormalIncludingZerosAndPadding) {
   auto backend = makeBackend();
   for (uint64_t extent : {1024u, 1025u, 1031u})
@@ -171,7 +224,8 @@ TEST(ManagedReferenceTargetModelTest,
   }
   EXPECT_EQ(managed.evidence.scalarEvaluations, 6u);
   EXPECT_FALSE(managed.evidence.environmentDigest.empty());
-  EXPECT_EQ(managed.evidence.implementation, "native-non-nan-f16-f32-tensor");
+  EXPECT_EQ(managed.evidence.implementation,
+            "native-non-nan-f16-bf16-f32-tensor");
 }
 
 TEST(ManagedReferenceTargetModelTest,

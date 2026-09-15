@@ -1513,6 +1513,107 @@ module {
 }
 
 TEST(SpatialRegionMaterializationTest,
+     NarrowContractionProducesWideSpatialPartialsAndNarrowMergedOutputs) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025, 1031})
+    for (const char *dtype : {"f16", "bf16"}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(dtype);
+      auto context = createContext();
+      std::string lhs =
+          "tensor<2x32x" + std::to_string(extent) + "x" + dtype + ">";
+      std::string rhs =
+          "tensor<2x" + std::to_string(extent) + "x64x" + dtype + ">";
+      std::string output = std::string("tensor<2x32x64x") + dtype + ">";
+      std::string text =
+          "module { wafer.target.topology @target "
+          "{card_grid = array<i64: 1, 1>, card_interconnect = \"mesh\", "
+          "tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>} "
+          "wafer.execution.mesh @logical {axes = [\"card\"], shape = "
+          "array<i64: 1>} "
+          "func.func @main(%a: " +
+          lhs + ", %b: " + rhs + ", %init: " + output + ") -> " + output +
+          " { %r = linalg.batch_matmul ins(%a, %b : " + lhs + ", " + rhs +
+          ") outs(%init : " + output + ") -> " + output +
+          " return %r : " + output + " } }";
+      auto source =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(source);
+      auto function = *source->getOps<mlir::func::FuncOp>().begin();
+      std::string detail;
+      auto dag = StructuredDAGAnalysis::create(function, &detail);
+      ASSERT_TRUE(mlir::succeeded(dag)) << detail;
+      auto topology = TargetTopology::create(*source, &detail);
+      ASSERT_TRUE(mlir::succeeded(topology));
+      auto spatial = buildSpatialPlanDomain(*dag, *topology, CardId(0));
+      ASSERT_TRUE(spatial.succeeded());
+      auto plan = spatial.domain->getFirstPlan();
+      auto &node = plan.nodes.front();
+      node.axes = {{0, IteratorPartitionScheme::BalancedParts, 2},
+                   {1, IteratorPartitionScheme::BalancedParts, 1},
+                   {2, IteratorPartitionScheme::BalancedParts, 1},
+                   {3, IteratorPartitionScheme::BalancedParts, 2}};
+      node.embedding = {TileId(0), TileId(1), TileId(4), TileId(5)};
+      auto groups = deriveSpatialReductionGroups(
+          spatial.domain->getProblem().getRoots().front(), node.axes, &detail);
+      ASSERT_TRUE(mlir::succeeded(groups));
+      ASSERT_EQ(groups->size(), 2u);
+      node.reductionMerges = {{(*groups)[0], TileId(15)},
+                              {(*groups)[1], TileId(0)}};
+      auto evaluated = spatial.domain->evaluate(*dag, plan);
+      ASSERT_TRUE(evaluated.isSatisfied());
+      auto *proof = analysis::getExactDemandProof(*evaluated.demand);
+      ASSERT_TRUE(proof);
+      auto domain = RootWorkDomain::create(*dag, *evaluated.assignment, *proof,
+                                           allTiles(), &detail);
+      ASSERT_TRUE(mlir::succeeded(domain)) << detail;
+      auto collection = collectRootWorks(*domain);
+      auto *work = getRootWorkCollection(collection);
+      ASSERT_TRUE(work);
+      auto regionOutcome = buildCanonicalRegionPlan(work->works);
+      auto *regions = getRegionPlan(regionOutcome);
+      ASSERT_TRUE(regions);
+      llvm::SmallVector<StructuredOperationNodeMapping> mappings;
+      for (auto &entry : dag->getNodes())
+        mappings.push_back({entry.operation, entry.id});
+      SpatialRegionMaterializationFailure failure;
+      auto actual =
+          materializeSpatialRegions(*source, CardId(0), allTiles(), mappings,
+                                    work->works, *regions, &failure);
+      ASSERT_TRUE(mlir::succeeded(actual)) << failure.detail;
+      EXPECT_EQ(actual->relations.structuralOutputs.size(), 2u);
+      EXPECT_EQ(actual->relations.boundaryRelations.size(), 4u);
+      for (const auto &edge : actual->relations.boundaryRelations) {
+        EXPECT_TRUE(
+            mlir::cast<mlir::RankedTensorType>(edge.sourceEndpoint.getType())
+                .getElementType()
+                .isF32());
+        EXPECT_EQ(edge.sourceEndpoint.getType(),
+                  edge.destinationEndpoint.getType());
+      }
+      uint64_t contributions = 0;
+      actual->module->walk([&](mlir::linalg::LinalgOp op) {
+        if (!mlir::linalg::isaContractionOpInterface(op))
+          return;
+        auto input =
+            mlir::cast<mlir::RankedTensorType>(op.getDpsInputs()[0].getType());
+        EXPECT_TRUE(
+            mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType())
+                .getElementType()
+                .isF32());
+        contributions += input.getDimSize(0) * input.getDimSize(2);
+      });
+      EXPECT_EQ(contributions, 2u * extent);
+      EXPECT_EQ(countOps<mlir::arith::TruncFOp>(actual->module->getOperation()),
+                2u);
+      EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(source->getOperation()),
+                1u);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+    }
+}
+
+TEST(SpatialRegionMaterializationTest,
      MaterializesAlignedAndRaggedContractionPieces) {
   for (int64_t reductionExtent : {1024, 1025}) {
     SCOPED_TRACE(reductionExtent);
@@ -1547,14 +1648,22 @@ module {
     std::string failureReason;
     auto materialized = materializeCanonical(*source, failureReason);
     ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
-    EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(
-                  materialized->module->getOperation()),
-              16u);
-    materialized->module->walk([&](mlir::linalg::BatchMatmulOp contraction) {
+    unsigned contractions = 0;
+    materialized->module->walk([&](mlir::linalg::LinalgOp contraction) {
+      if (!mlir::linalg::isaContractionOpInterface(contraction))
+        return;
+      ++contractions;
       auto lhsType = mlir::cast<mlir::RankedTensorType>(
-          contraction.getInputs()[0].getType());
+          contraction.getDpsInputs()[0].getType());
       EXPECT_EQ(lhsType.getShape()[2], reductionExtent);
+      EXPECT_TRUE(lhsType.getElementType().isF16());
+      EXPECT_TRUE(mlir::cast<mlir::RankedTensorType>(
+                      contraction->getResult(0).getType())
+                      .getElementType()
+                      .isF32());
+      EXPECT_TRUE(contraction->getParentOfType<wafer::TileRegionOp>());
     });
+    EXPECT_EQ(contractions, 16u);
   }
 }
 

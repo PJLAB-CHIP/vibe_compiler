@@ -543,14 +543,96 @@ def make_alltoall_transpose(
     )
 
 
+def _outer_product(dtype: torch.dtype, seed: int, *, extent: int) -> PyTorchBoardCase:
+    # The source operation uses F32 opmath, as does the rotary frequency product.
+    if dtype != torch.float32:
+        raise ValueError("outer product opmath qualification requires F32")
+
+    class OuterProduct(torch.nn.Module):
+        def forward(self, lhs: torch.Tensor, rhs: torch.Tensor,
+                    initial: torch.Tensor) -> torch.Tensor:
+            return torch.matmul(lhs, rhs) + initial
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = tuple(_random_tensor(shape, dtype=dtype, generator=generator)
+                   for shape in ((2, extent, 1), (2, 1, 16), (2, extent, 16)))
+    module = OuterProduct().eval()
+    return PyTorchBoardCase(
+        name=f"outer-product-{extent}", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=lambda: (module(*inputs),),
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.EXACT,
+    )
+
+
+def _constant_mask(dtype: torch.dtype, seed: int, *, extent: int, inline: bool = False) -> PyTorchBoardCase:
+    class Masked(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            rows = torch.arange(extent).reshape(1, extent, 1)
+            columns = torch.arange(16).reshape(1, 1, 16)
+            if not inline:
+                self.register_buffer("mask", rows.remainder(31) < columns)
+
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            if inline:
+                mask = torch.tensor(
+                    [[[row % 31 < column for column in range(16)]
+                      for row in range(extent)]],
+                    dtype=torch.bool, device=value.device,
+                )
+            else:
+                mask = self.mask
+            return torch.where(mask, value, 0)
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (_random_tensor((2, extent, 16), dtype=dtype, generator=generator),)
+    module = Masked().eval()
+    return PyTorchBoardCase(
+        name=f"constant-mask-{extent}", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=lambda: (module(*inputs),),
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.EXACT,
+    )
+
+
+def _trigonometry(dtype: torch.dtype, seed: int, *, extent: int) -> PyTorchBoardCase:
+    from torch.testing._comparison import default_tolerances
+
+    class Trigonometry(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            return torch.sin(value), torch.cos(value)
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (_random_tensor((2, extent, 64), dtype=dtype, generator=generator) * 8,)
+    module = Trigonometry().eval()
+    rtol, atol = default_tolerances(dtype)
+    return PyTorchBoardCase(
+        name=f"trigonometry-{extent}", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=lambda: module(*inputs),
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.ComparisonPolicy(rtol=rtol, atol=atol),
+    )
+
+
 def _single_card_gemm(
     dtype: torch.dtype, seed: int, *,
     m: int = 1024, k: int = 256, n: int = 512,
-    batch: int = 1,
+    batch: int = 1, exact_inputs: bool = False,
 ) -> PyTorchBoardCase:
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    lhs = _random_tensor((batch, m, k), dtype=dtype, generator=generator)
-    rhs = _random_tensor((1, k, n), dtype=dtype, generator=generator)
+    if exact_inputs:
+        # Bounded signed binary fractions keep every F32 product/sum exact
+        # for this long-K transport oracle, while narrow partials can round.
+        def values(shape: tuple[int, ...]) -> torch.Tensor:
+            integers = torch.randint(-8, 9, shape, generator=generator)
+            integers[integers == 0] = 1
+            return integers.to(dtype) / 16
+        lhs = values((batch, m, k))
+        rhs = values((1, k, n))
+    else:
+        lhs = _random_tensor((batch, m, k), dtype=dtype, generator=generator)
+        rhs = _random_tensor((1, k, n), dtype=dtype, generator=generator)
     module = Gemm().eval()
 
     def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
@@ -570,7 +652,7 @@ def _single_card_gemm(
         export_program=lambda output: _save_exported_program(
             output, module, (lhs, rhs)
         ),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=common.EXACT if exact_inputs else common.PYTORCH_DEFAULT,
         # The row-sharded none-policy witness describes a single batch only.
         gemm_dimensions=(m, k, n) if batch == 1 else None,
     )
@@ -1263,6 +1345,21 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "single-card-gemm": _single_card_gemm,
+    "outer-product-1024": lambda dtype, seed: _outer_product(dtype, seed, extent=1024),
+    "outer-product-1025": lambda dtype, seed: _outer_product(dtype, seed, extent=1025),
+    "outer-product-1031": lambda dtype, seed: _outer_product(dtype, seed, extent=1031),
+    "constant-mask-inline-1025": lambda dtype, seed: _constant_mask(
+        dtype, seed, extent=1025, inline=True),
+    **{f"constant-mask-{extent}":
+       (lambda dtype, seed, extent=extent: _constant_mask(dtype, seed, extent=extent))
+       for extent in (1024, 1025, 1031)},
+    **{f"trigonometry-{extent}":
+       (lambda dtype, seed, extent=extent: _trigonometry(dtype, seed, extent=extent))
+       for extent in (1024, 1025, 1031)},
+    **{f"gemm-long-k-{extent}":
+       (lambda dtype, seed, extent=extent:
+        _single_card_gemm(dtype, seed, m=4, k=16384, n=extent, exact_inputs=True))
+       for extent in (1024, 1025, 1031)},
     "resnet18": _resnet18,
     "resnet18-large-1024": lambda dtype, seed: _resnet18(dtype, seed, extent=1024),
     "resnet18-tail-1025": lambda dtype, seed: _resnet18(dtype, seed, extent=1025),

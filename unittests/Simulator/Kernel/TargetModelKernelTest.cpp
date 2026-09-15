@@ -804,6 +804,75 @@ TEST(TargetModelKernelTest,
       payload);
 }
 
+TEST(TargetModelKernelTest, PackedMaskExpansionAndMovePreserveFalseAndTail) {
+  for (auto format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32}) {
+    const uint64_t one = format == LogicalFormat::F16    ? 0x3c00
+                         : format == LogicalFormat::BF16 ? 0x3f80
+                                                         : 0x3f800000;
+    for (uint32_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(extent);
+      auto memory = makeRegistry();
+      FormalNumericExecutionContext context;
+      const uint64_t base = memory.getAddressPlan().getSPMBase();
+      auto bits = makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::Tensor,
+                             {1, 1, extent});
+      auto values =
+          makeTensor(format, PhysicalTensorLayout::Cx, {1, 1, extent});
+      std::vector<RawLogicalValue> predicates, source, destination;
+      for (uint64_t index = 0; index < extent; ++index) {
+        predicates.push_back({LogicalFormat::Bool, index % 3 == 1});
+        source.push_back({format, one});
+        destination.push_back({format, 0});
+      }
+      writeTensor(memory, 0, base, bits, predicates);
+      writeTensor(memory, 0, base + 0x4000, values, source);
+      auto initial = llvm::cantFail(
+          packPhysicalTensorLogicalValues(values, destination, UINT8_C(0xa5)));
+      llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
+          0, TargetModelAddressSpace::TileSPM, base + 0x6000, 1, initial}}));
+      TargetCommand expand{
+          CardId(0), TileId(0), LaunchSlotId(0), 0,
+          TargetBit2FPCommand{base, base + 0x2000, extent, format}};
+      auto expanded = executeTargetModelCommand(expand, memory, makeBudget());
+      ASSERT_TRUE(static_cast<bool>(expanded))
+          << llvm::toString(expanded.takeError());
+      ASSERT_EQ(expanded->pendingReads.size(), 1u);
+      llvm::cantFail(
+          applyTargetModelCommandEffect(memory, context, std::move(*expanded)));
+      auto mask = readTensor(memory, 0, base + 0x2000, values);
+      for (uint64_t index = 0; index < extent; ++index)
+        EXPECT_EQ(mask[index].bits, predicates[index].bits ? one : 0);
+      TargetCommand move{
+          CardId(0), TileId(0), LaunchSlotId(0), 1,
+          TargetMaskMoveCommand{base + 0x4000,
+                                static_cast<uint32_t>(base + 0x2000),
+                                base + 0x6000, extent, format}};
+      auto effect = executeTargetModelCommand(move, memory, makeBudget());
+      ASSERT_TRUE(static_cast<bool>(effect))
+          << llvm::toString(effect.takeError());
+      ASSERT_EQ(effect->pendingReads.size(), 3u);
+      llvm::cantFail(
+          applyTargetModelCommandEffect(memory, context, std::move(*effect)));
+      auto result = readTensor(memory, 0, base + 0x6000, values);
+      for (uint64_t index = 0; index < extent; ++index)
+        EXPECT_EQ(result[index].bits, predicates[index].bits ? one : 0);
+      auto expected = llvm::cantFail(
+          packPhysicalTensorLogicalValues(values, result, initial));
+      EXPECT_EQ(llvm::cantFail(
+                    memory.readSnapshot(0, TargetModelAddressSpace::TileSPM,
+                                        base + 0x6000, expected.size(), 1)),
+                expected);
+      mask[0].bits = 2;
+      writeTensor(memory, 0, base + 0x2000, values, mask);
+      EXPECT_NE(
+          expectError(executeTargetModelCommand(move, memory, makeBudget()))
+              .find("canonical zero/one"),
+          std::string::npos);
+    }
+  }
+}
+
 TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
@@ -1283,11 +1352,14 @@ TEST(TargetModelKernelTest, ControlCommandsValidateTypedEndpoints) {
 TEST(TargetModelKernelTest, UnsupportedFamilyIsNotSilentlyApproximated) {
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetCommand bit2fp{
+  TargetCommand random{
       CardId(0), TileId(0), LaunchSlotId(0), 0,
-      TargetBit2FPCommand{spm, spm + UINT64_C(0x1000), 4, LogicalFormat::F32}};
+      TargetPeripheralRandomCommand{{spm, spm + 0x1000},
+                                    {spm + 0x2000, spm + 0x3000, spm + 0x4000},
+                                    4,
+                                    LogicalFormat::F32}};
   std::string error =
-      expectError(executeTargetModelCommand(bit2fp, memory, makeBudget()));
+      expectError(executeTargetModelCommand(random, memory, makeBudget()));
   EXPECT_NE(error.find("unsupported-command"), std::string::npos);
 }
 

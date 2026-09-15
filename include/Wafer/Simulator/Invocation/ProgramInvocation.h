@@ -19,8 +19,7 @@
 namespace wafer::compiler {
 
 /// Checked compact program-boundary byte geometry. Boolean program tensors
-/// are not currently admitted because their source NPY byte representation is
-/// distinct from the target bitpacked representation.
+/// use canonical 0/1 bytes; target bitpacking is a separate materialization.
 std::optional<int64_t>
 computeProgramTensorByteCount(ProgramElementType dtype,
                               llvm::ArrayRef<int64_t> shape);

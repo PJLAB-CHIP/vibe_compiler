@@ -192,11 +192,14 @@ mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
   }
 
   if (info->bitPackedElement) {
-    if (offsetElements != 0)
+    int64_t bits;
+    if (!checkedMul(offsetElements,
+                    info->logicalTensorType.getElementTypeBitWidth(), bits) ||
+        bits < 0 || bits % 8)
       return op->emitError()
-             << "unsupported_target_address: bitpacked view offset must be "
-                "zero for target LLVM lowering";
-    return 0;
+             << "unsupported_target_address: bitpacked view requires a "
+                "byte-aligned offset";
+    return bits / 8;
   }
 
   if (info->elementBytes <= 0)
@@ -708,37 +711,6 @@ int64_t getOptionalIntegerAttrValue(mlir::IntegerAttr attr, int64_t fallback) {
   if (!attr)
     return fallback;
   return getIntegerAttrValue(attr);
-}
-
-mlir::FailureOr<int64_t> getConstantScalarValue(mlir::Operation *op,
-                                                mlir::Value value) {
-  auto constant = value.getDefiningOp<mlir::arith::ConstantOp>();
-  if (!constant)
-    return op->emitError()
-           << "unsupported_target_scalar: target LLVM lowering requires "
-              "scalar operands to be arith.constant";
-
-  mlir::Attribute attr = constant.getValue();
-  if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
-    const llvm::APInt &bits = intAttr.getValue();
-    if (bits.getBitWidth() > 32)
-      return op->emitError()
-             << "unsupported_target_scalar: integer constant is wider than "
-                "the raw 32-bit target scalar field";
-    return bits.getZExtValue();
-  }
-  if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
-    llvm::APInt bits = floatAttr.getValue().bitcastToAPInt();
-    if (bits.getBitWidth() > 64)
-      return op->emitError()
-             << "unsupported_target_scalar: floating constant is wider than "
-                "64 bits";
-    return bits.getZExtValue();
-  }
-
-  return op->emitError()
-         << "unsupported_target_scalar: unsupported scalar constant attr "
-         << attr;
 }
 
 bool isTargetRelationElementwiseKind(InstrElementwiseKind kind) {

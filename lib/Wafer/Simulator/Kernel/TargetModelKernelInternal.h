@@ -39,6 +39,18 @@ executeGatherScatter(const compiler::TargetCommand &command,
                      TargetModelKernelBudget budget);
 
 llvm::Expected<TargetModelCommandEffect>
+executeBit2FP(const compiler::TargetCommand &command,
+              const target::TargetBit2FPCommand &value,
+              const InvocationMemoryRegistry &memory,
+              TargetModelKernelBudget budget);
+
+llvm::Expected<TargetModelCommandEffect>
+executeMaskMove(const compiler::TargetCommand &command,
+                const target::TargetMaskMoveCommand &value,
+                const InvocationMemoryRegistry &memory,
+                TargetModelKernelBudget budget);
+
+llvm::Expected<TargetModelCommandEffect>
 executeElementwise(const compiler::TargetCommand &command,
                    const target::TargetElementwiseCommand &value,
                    const InvocationMemoryRegistry &memory,

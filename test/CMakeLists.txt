@@ -152,17 +152,30 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
       case_name dtype_name dtype_label optimization_policy)
     set(_wafer_test_name
       "wafer-runtime-pytorch-${case_name}-${dtype_label}-optimization-${optimization_policy}-no-card")
+    set(_wafer_compiler $<TARGET_FILE:wafer-compile>)
+    set(_wafer_model_arguments)
+    if(ARGV4 STREQUAL "target-model")
+      set(_wafer_compiler $<TARGET_FILE:wafer-compile-test>)
+      set(_wafer_model_arguments --target-model --dump-compiler-ir
+        ${CMAKE_CURRENT_BINARY_DIR}/pytorch-product/${_wafer_test_name}/compiler-ir)
+      if(ARGC GREATER 5)
+        set(_wafer_model_extra ${ARGN})
+        list(REMOVE_AT _wafer_model_extra 0)
+        list(APPEND _wafer_model_arguments ${_wafer_model_extra})
+      endif()
+    endif()
     add_test(NAME ${_wafer_test_name}
       COMMAND ${WAFER_IMPORTER_PYTHON_COMMAND}
         ${CMAKE_CURRENT_SOURCE_DIR}/Board/PyTorch/wafer_board_pytorch_test.py
         --case ${case_name}
         --dtype ${dtype_name}
         --seed 20260803
-        --wafer-compile $<TARGET_FILE:wafer-compile>
+        --wafer-compile ${_wafer_compiler}
         --wafer-run $<TARGET_FILE:wafer-run>
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/pytorch-product/${_wafer_test_name}
         --optimization-policy ${optimization_policy}
         --no-card
+        ${_wafer_model_arguments}
     )
     set_tests_properties(${_wafer_test_name} PROPERTIES
       LABELS "runtime;no-card;product;pytorch;source;board-ready;${dtype_label};optimization-${optimization_policy}"
@@ -171,6 +184,53 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
       TIMEOUT 5400
     )
   endfunction()
+
+  if(WAFER_ENABLE_SYSTEMC_MODEL)
+    foreach(_wafer_outer_extent IN ITEMS 1024 1025 1031)
+      wafer_add_pytorch_source_no_card_test(
+        outer-product-${_wafer_outer_extent} float32 f32 search target-model)
+    endforeach()
+    wafer_add_pytorch_source_no_card_test(
+      constant-mask-inline-1025 float16 fp16 search target-model)
+    wafer_add_pytorch_source_no_card_test(
+      constant-mask-inline-1025 bfloat16 bf16 search target-model)
+    foreach(_wafer_mask_extent IN ITEMS 1024 1025 1031)
+      wafer_add_pytorch_source_no_card_test(
+        constant-mask-${_wafer_mask_extent} float16 fp16 search target-model)
+      wafer_add_pytorch_source_no_card_test(
+        constant-mask-${_wafer_mask_extent} bfloat16 bf16 search target-model)
+    endforeach()
+    foreach(_wafer_trig_extent IN ITEMS 1024 1025 1031)
+      wafer_add_pytorch_source_no_card_test(
+        trigonometry-${_wafer_trig_extent} float16 fp16 search target-model)
+      wafer_add_pytorch_source_no_card_test(
+        trigonometry-${_wafer_trig_extent} bfloat16 bf16 search target-model)
+      # RoPE's actual trigonometric input/output uses F32 opmath.
+      wafer_add_pytorch_source_no_card_test(
+        trigonometry-${_wafer_trig_extent} float32 f32 search target-model)
+    endforeach()
+    foreach(_wafer_loop_dtype IN ITEMS float16 bfloat16)
+      set(_wafer_loop_test wafer-loop-input-sharing-${_wafer_loop_dtype})
+      add_test(NAME ${_wafer_loop_test}
+        COMMAND ${WAFER_IMPORTER_PYTHON_COMMAND}
+          ${CMAKE_CURRENT_SOURCE_DIR}/Tools/wafer_loop_input_sharing_test.py
+          --wafer-compile $<TARGET_FILE:wafer-compile-test>
+          --work-dir ${CMAKE_CURRENT_BINARY_DIR}/pytorch-product/${_wafer_loop_test}
+          --dtype ${_wafer_loop_dtype} --extent 1025)
+      set_tests_properties(${_wafer_loop_test} PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
+        LABELS "runtime;no-card;product;pytorch;source;numeric;communication"
+        PROCESSORS 16 TIMEOUT 1000)
+    endforeach()
+    foreach(_wafer_gemm_extent IN ITEMS 1024 1025 1031)
+      wafer_add_pytorch_source_no_card_test(
+        gemm-long-k-${_wafer_gemm_extent} float16 fp16 search target-model
+        --target-model-max-fused-multiply-adds 100000000)
+      wafer_add_pytorch_source_no_card_test(
+        gemm-long-k-${_wafer_gemm_extent} bfloat16 bf16 search target-model
+        --target-model-max-fused-multiply-adds 100000000)
+    endforeach()
+  endif()
 
   function(wafer_add_pytorch_communication_no_card_test case_name qualification)
     set(_wafer_test_name

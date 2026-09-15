@@ -1,6 +1,7 @@
 //===- StructuredTiling.cpp - Interface-driven tile traversal ----------===//
 
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
+#include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -257,8 +258,17 @@ mlir::FailureOr<mlir::Value> wafer::combineReductionPartial(
         auto accumulator = operation.getRegionOutputArgs()[resultNumber];
         for (mlir::Value operand : (*combiner)->getOperands())
           mapping.map(operand, operand == accumulator ? args[1] : args[0]);
-        auto *combined = nested.clone(**combiner, mapping);
-        nested.create<mlir::linalg::YieldOp>(loc, combined->getResult(0));
+        if (requiresWideContractionState(operation) &&
+            type.getElementType().isF32()) {
+          auto add = mlir::cast<mlir::arith::AddFOp>(*combiner);
+          auto combined = nested.create<mlir::arith::AddFOp>(
+              loc, mapping.lookup(add.getLhs()), mapping.lookup(add.getRhs()),
+              add.getFastmathAttr());
+          nested.create<mlir::linalg::YieldOp>(loc, combined.getResult());
+        } else {
+          auto *combined = nested.clone(**combiner, mapping);
+          nested.create<mlir::linalg::YieldOp>(loc, combined->getResult(0));
+        }
       });
   return merge.getResult(0);
 }

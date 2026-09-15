@@ -653,6 +653,8 @@ static unsigned getElementwiseArity(ComputeElementwiseKind kind) {
   case ComputeElementwiseKind::Ln:
   case ComputeElementwiseKind::Tanh:
   case ComputeElementwiseKind::Square:
+  case ComputeElementwiseKind::Sin:
+  case ComputeElementwiseKind::Cos:
     return 1;
   }
   llvm_unreachable("unknown compute elementwise kind");

@@ -251,8 +251,6 @@ llvm::StringRef stringifyProgramDataFailureKind(ProgramDataFailureKind kind) {
 }
 
 std::optional<int64_t> getProgramDTypeElementBytes(ProgramElementType dtype) {
-  if (dtype == ProgramElementType::Bool)
-    return std::nullopt;
   return getProgramElementByteCount(dtype);
 }
 

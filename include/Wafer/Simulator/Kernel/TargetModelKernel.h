@@ -273,6 +273,7 @@ struct TargetModelCommandEffect {
   TargetModelOneDNNDispatchEvidence onednnEvidence;
   TargetModelManagedReferenceEvidence managedReferenceEvidence;
   std::vector<TargetModelByteRead> pendingReads;
+  uint64_t scalarResult = 0;
 };
 
 /// Exhaustive field/optional-field validation for every typed target payload.

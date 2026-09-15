@@ -191,6 +191,47 @@ public:
     }
     switch (effect->controlAction) {
     case TargetModelControlAction::None: {
+      uint64_t scalarResult = effect->scalarResult;
+      if (std::holds_alternative<target::TargetKcoreReleaseCommand>(command.payload))
+        pendingKcoreWrites.erase(launchSlot);
+      if (command.nccIssueDomain && pendingKcoreWrites.count(launchSlot)) {
+        auto access = summarizePendingNCCMemoryEffect(*effect);
+        bool conflict = access.hasUnknownRead || access.hasUnknownWrite;
+        for (const auto &written : pendingKcoreWrites[launchSlot]) {
+          for (const auto &read : access.reads)
+            conflict |= memoryIntervalOverlaps(written, launchSlot, read.addressSpace,
+                                                 read.begin, read.end);
+          for (const auto &write : access.writes)
+            conflict |= memoryIntervalOverlaps(written, launchSlot, write.addressSpace,
+                                                 write.begin, write.end);
+        }
+        if (conflict) {
+          latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                       "kcore-publication", launchSlot, command.issueOrdinal,
+                       "NCC access precedes publication of Kcore scalar writes");
+          return currentFailureOrLifecycle("Kcore writes have no release");
+        }
+      }
+      llvm::SmallVector<PendingMemoryInterval, 2> scalarWrites;
+      if (std::holds_alternative<target::TargetScalarStoreCommand>(command.payload))
+        scalarWrites = summarizePendingNCCMemoryEffect(*effect).writes;
+      if (std::holds_alternative<target::TargetMemoryMappingCommand>(command.payload) ||
+          std::holds_alternative<target::TargetScalarLoadCommand>(command.payload) ||
+          std::holds_alternative<target::TargetScalarStoreCommand>(command.payload)) {
+        bool conflict = false;
+        for (const auto &read : effect->pendingReads)
+          conflict |= hasPendingNCCConflict(launchSlot, read.address,
+                                             read.byteCount, false, read.addressSpace);
+        for (const auto &write : effect->pendingWrites)
+          conflict |= hasPendingNCCConflict(launchSlot, write.address,
+                                             write.bytes.size(), true, write.addressSpace);
+        if (conflict) {
+          latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                       "scalar-memory-access", launchSlot, command.issueOrdinal,
+                       "scalar memory access precedes matching NCC completion");
+          return currentFailureOrLifecycle("scalar memory access has pending NCC work");
+        }
+      }
       const TargetModelNumericBackend numericBackend = effect->numericBackend;
       TargetModelOneDNNDispatchEvidence onednnEvidence = effect->onednnEvidence;
       TargetModelManagedReferenceEvidence managedReferenceEvidence =
@@ -206,6 +247,14 @@ public:
                      "command-effect", launchSlot, command.issueOrdinal,
                      llvm::toString(std::move(error)));
         return currentFailureOrLifecycle("applying command effect failed");
+      }
+      for (const auto &write : scalarWrites) {
+        auto &pending = pendingKcoreWrites[launchSlot];
+        if (!pending.empty() && pending.back().addressSpace == write.addressSpace &&
+            pending.back().end == write.begin)
+          pending.back().end = write.end;
+        else
+          pending.push_back(write);
       }
       if (numericBackend == TargetModelNumericBackend::Formal)
         ++formalNumericOperationCount;
@@ -271,7 +320,7 @@ public:
       } else {
         markOrdinalComplete(launchSlot, command.issueOrdinal);
       }
-      return UINT64_C(0);
+      return scalarResult;
     }
     case TargetModelControlAction::DDRPublish:
       return processDDRPublication(command, true);
@@ -620,6 +669,7 @@ private:
 
   llvm::Expected<uint64_t>
   processNCCJoin(const compiler::TargetCommand &command) {
+    pendingKcoreWrites.erase(command.launchSlotId.getValue());
     const auto &join = std::get<target::TargetNCCJoinCommand>(command.payload);
     completeNCCParticipantPending(command.launchSlotId.getValue(),
                                   join.participantMask);
@@ -856,9 +906,12 @@ private:
                            false, false});
     }
     prepared.issued = true;
-    for (size_t index = firstEndpoint; index < endpoints.size(); ++index)
+    // Waiting yields to other Tiles, which may append their own endpoints.
+    // This issue only waits for the destinations created by this invocation.
+    const size_t endEndpoint = endpoints.size();
+    for (size_t index = firstEndpoint; index < endEndpoint; ++index)
       tryMatchEndpoint(index);
-    for (size_t index = firstEndpoint; index < endpoints.size(); ++index) {
+    for (size_t index = firstEndpoint; index < endEndpoint; ++index) {
       DTEEndpoint &endpoint = endpoints[index];
       while (!endpoint.peerReady && !failure) {
         detail::waitSystemCEvent(endpoint.readinessEvent);
@@ -1302,6 +1355,7 @@ private:
   std::deque<DTEEndpoint> endpoints;
   std::map<std::pair<int64_t, uint64_t>, PendingNCCMemoryEffect>
       pendingNCCMemoryEffects;
+  std::map<int64_t, llvm::SmallVector<PendingMemoryInterval, 2>> pendingKcoreWrites;
   std::set<int64_t> completedLaunchSlots;
   std::optional<InvocationFailure> failure;
   std::optional<TargetModelResult> completedResult;

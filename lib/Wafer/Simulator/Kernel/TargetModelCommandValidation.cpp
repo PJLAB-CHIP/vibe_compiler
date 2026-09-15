@@ -520,6 +520,24 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
                 TargetModelKernelErrorCode::InvalidCommandField,
                 "DDR publication requires cache-line aligned storage");
           return llvm::Error::success();
+        } else if constexpr (std::is_same_v<T, target::TargetKcoreReleaseCommand>) {
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<T, target::TargetMemoryMappingCommand>) {
+          if (value.byteCount == 0 ||
+              (value.space != target::TargetScalarMemorySpace::SPM &&
+               value.space != target::TargetScalarMemorySpace::DDR))
+            return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                               "memory mapping requires a nonempty range");
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<T, target::TargetScalarLoadCommand> ||
+                             std::is_same_v<T, target::TargetScalarStoreCommand>) {
+          if ((value.byteWidth != 4 && value.byteWidth != 8) ||
+              value.address % value.byteWidth != 0 ||
+              (value.space != target::TargetScalarMemorySpace::SPM &&
+               value.space != target::TargetScalarMemorySpace::DDR))
+            return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                               "scalar memory access has invalid width or alignment");
+          return llvm::Error::success();
         } else if constexpr (std::is_same_v<T, target::TargetNCCJoinCommand>) {
           if (value.participantMask == 0 ||
               (value.participantMask & ~kAllTargetNCCWorkersMask) != 0)

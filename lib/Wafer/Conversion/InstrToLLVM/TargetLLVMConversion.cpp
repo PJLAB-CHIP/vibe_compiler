@@ -261,6 +261,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   mlir::RewritePatternSet patterns(moduleOp.getContext());
   populateTargetLLVMStructureConversionPatterns(converter, patterns,
                                                 defaultDDRArenaArgumentIndex);
+  populateTargetScalarMemoryConversionPatterns(converter, patterns);
   populateTargetInstructionConversionPatterns(
       converter, patterns, dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
@@ -269,6 +270,10 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   mlir::ConversionTarget target(*moduleOp.getContext());
   target.addLegalOp<mlir::ModuleOp>();
   target.addLegalDialect<mlir::LLVM::LLVMDialect>();
+  target.addDynamicallyLegalOp<mlir::LLVM::FenceOp>([](mlir::LLVM::FenceOp fence) {
+    return fence.getSyncscope() != kTargetKcoreReleaseScope ||
+           fence.getOrdering() != mlir::LLVM::AtomicOrdering::release;
+  });
   target.addIllegalDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
                            mlir::cf::ControlFlowDialect,
                            mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
@@ -279,6 +284,9 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
            << "target_llvm_lowering_failure: full target LLVM conversion "
               "failed";
 
+  for (auto function : moduleOp.getOps<mlir::LLVM::LLVMFuncOp>())
+    for (unsigned index = 0; index < function.getNumArguments(); ++index)
+      function.removeArgAttr(index, kWaferProgramArgumentAttrName);
   if (mlir::failed(collectDirectCalleeSignatures(moduleOp, usedCallees)))
     return mlir::failure();
 

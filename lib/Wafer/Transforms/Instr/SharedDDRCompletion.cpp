@@ -2,6 +2,7 @@
 //--------------------===//
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -400,6 +401,20 @@ verifyOrder(const Collection &collection, llvm::ArrayRef<TileId> tileIds,
             return nested;
           continue;
         }
+        if (auto loop = analysis::getStaticLoopDomain(&op)) {
+          bool repeatedDDR = false;
+          op.walk([&](mlir::Operation *nested) {
+            repeatedDDR |=
+                mlir::isa<SyncDDRPublishOp, SyncDDRAcquireOp>(nested);
+          });
+          if (repeatedDDR)
+            return unsupported(
+                "repeated DDR notification needs an iteration protocol");
+          Result nested = visit(loop->loop.getRegion().front());
+          if (!nested.succeeded())
+            return nested;
+          continue;
+        }
         bool containsBlocking = false;
         op.walk([&](mlir::Operation *nested) {
           containsBlocking |=
@@ -439,6 +454,10 @@ verifyOrder(const Collection &collection, llvm::ArrayRef<TileId> tileIds,
     if (receive == receives.end())
       return contract("shared DDR order has an unmatched Direct DTE endpoint");
     unsigned recv = receive->second;
+    if (!analysis::haveSameStaticLoopDomains(operations[send],
+                                             operations[recv]))
+      return unsupported(
+          "communication endpoints have different iteration domains");
     // CRT send issue consumes peer-ready; waits need both endpoint issues.
     // Match the existing DirectDTETransport wait-graph contract exactly.
     edge(recv, send, DependencyKind::ReceiveReady);
@@ -452,6 +471,12 @@ verifyOrder(const Collection &collection, llvm::ArrayRef<TileId> tileIds,
     if (!wait)
       continue;
     for (mlir::Value token : wait.getTokens()) {
+      if (auto *definition = token.getDefiningOp()) {
+        auto loops = analysis::getEnclosingStaticLoopDomains(definition);
+        if (loops && !loops->empty() &&
+            definition->getBlock() != wait->getBlock())
+          return unsupported("repeated DTE token escapes its iteration block");
+      }
       llvm::DenseSet<mlir::Value> visited;
       while (token && visited.insert(token).second &&
              !prerequisites.count(token.getDefiningOp())) {

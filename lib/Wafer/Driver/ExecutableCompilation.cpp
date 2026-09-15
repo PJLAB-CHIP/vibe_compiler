@@ -225,6 +225,14 @@ ExecutableCompilationResult compileCanonicalInstructionTilesToExecutable(
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
       result.detail = "Tile memory planning failed";
+      if (result.memoryPlanning.spmCapacityOverflow) {
+        llvm::raw_string_ostream detail(result.detail);
+        detail << "; largest_bytes="
+               << result.memoryPlanning.spmLargestDemandBytes
+               << ", type=" << result.memoryPlanning.spmLargestDemandType
+               << ", individually_oversized="
+               << result.memoryPlanning.spmIndividuallyOversizedDemands.size();
+      }
       return;
     }
     result.module = std::move(*memoryPlanned);

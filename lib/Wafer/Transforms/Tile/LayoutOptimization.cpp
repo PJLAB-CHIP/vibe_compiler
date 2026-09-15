@@ -1165,7 +1165,10 @@ static mlir::FailureOr<llvm::SmallVector<ValueGroup, 32>> buildValueGroups(
     groupByValue.try_emplace(value, group);
   }
   for (ValueGroup &group : groups) {
-    bool external = llvm::any_of(group.values, isFunctionEntryArgument);
+    bool external = llvm::any_of(group.values, [](mlir::Value value) {
+      return isFunctionEntryArgument(value) ||
+             value.getDefiningOp<mlir::arith::ConstantOp>();
+    });
     std::optional<llvm::SmallVector<MemLayout, 4>> intersection;
     std::optional<MemLayout> explicitLayout;
     for (mlir::Value value : group.values) {
@@ -1698,6 +1701,62 @@ static void localizeEmptySlices(mlir::ModuleOp module,
   }
 }
 
+// Arith's bufferization interface creates an immutable DDR global, even
+// when the literal occurs inside a TileRegion. Metadata views retain that
+// backing; stage only the current compute operand's selected window in SPM.
+static bool hasConstantBacking(mlir::Value value) {
+  while (value) {
+    if (value.getDefiningOp<mlir::arith::ConstantOp>())
+      return mlir::isa<mlir::RankedTensorType>(value.getType());
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      auto region =
+          mlir::dyn_cast<TileRegionOp>(argument.getOwner()->getParentOp());
+      if (!region)
+        return false;
+      value = region.getInputs()[argument.getArgNumber()];
+      continue;
+    }
+    auto *op = value.getDefiningOp();
+    if (!mlir::isa_and_nonnull<
+            mlir::tensor::ExtractSliceOp, mlir::tensor::CastOp,
+            mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp>(op))
+      return false;
+    value = op->getOperand(0);
+  }
+  return false;
+}
+
+static void materializeConstantReads(mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::OpOperand *> reads;
+  module.walk([&](mlir::linalg::LinalgOp operation) {
+    if (!operation->getParentOfType<TileRegionOp>())
+      return;
+    for (auto &operand : operation->getOpOperands())
+      if (hasConstantBacking(operand.get()))
+        reads.push_back(&operand);
+  });
+  mlir::IRRewriter rewriter(module.getContext());
+  llvm::DenseMap<std::pair<mlir::Value, mlir::Block *>, mlir::Value> copies;
+  for (auto *operand : reads) {
+    auto source = operand->get();
+    auto key = std::make_pair(source, operand->getOwner()->getBlock());
+    auto found = copies.find(key);
+    if (found == copies.end()) {
+      rewriter.setInsertionPoint(operand->getOwner());
+      auto copy = rewriter.create<mlir::bufferization::AllocTensorOp>(
+          operand->getOwner()->getLoc(),
+          mlir::cast<mlir::RankedTensorType>(source.getType()),
+          mlir::ValueRange{}, source);
+      copy.setMemorySpaceAttr(MemoryAttr::get(
+          module.getContext(), MemorySpace::SPM, MemLayout::Tensor));
+      found = copies.try_emplace(key, copy.getResult()).first;
+      support::addCompileCounter("layout", "constant-read-materializations", 1);
+    }
+    rewriter.modifyOpInPlace(operand->getOwner(),
+                             [&] { operand->set(found->second); });
+  }
+}
+
 LayoutOptimizationResult
 prepareCurrentLayoutInput(mlir::ModuleOp module,
                           StructuredMaterializationRelations &relations) {
@@ -1767,6 +1826,7 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
   localizeEmptySlices(module, relations);
+  materializeConstantReads(module);
 
   std::string detail;
   auto boundaryPlans = preflightBoundarySources(relations, detail);

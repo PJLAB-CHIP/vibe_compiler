@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         default="none",
     )
     parser.add_argument("--no-card", action="store_true")
+    parser.add_argument("--target-model", action="store_true",
+                        help="compare full outputs through wafer-compile-test's functional model")
+    parser.add_argument("--target-model-max-scalar-evaluations", type=int, default=10000000)
+    parser.add_argument("--target-model-max-fused-multiply-adds", type=int, default=1000000)
+    parser.add_argument("--target-model-max-movement-bytes", type=int, default=536870912)
+    parser.add_argument("--target-model-max-movement-segments", type=int, default=1000000)
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
     parser.add_argument("--expected-device-name")
@@ -1108,6 +1114,9 @@ def prepare_case_step(
     dict[int, pathlib.Path],
 ]:
     step_number = step_index + 1
+    expected_outputs = None
+    if args.target_model and prepared_step is not None:
+        raise RuntimeError("target-model validation requires this run's source compilation")
     export_start_ns = time.monotonic_ns()
     case.export_program(source)
     print(
@@ -1147,12 +1156,42 @@ def prepare_case_step(
             value = getattr(args, option)
             if value is not None:
                 compile_command.extend(["--" + option.replace("_", "-"), str(value)])
+        if args.target_model:
+            import numpy as np
+
+            expected_outputs = case.materialize_expected_outputs()
+            model_dir = step_dir / "model"
+            model_dir.mkdir()
+            compile_command.append("--target-model")
+            for role, tensors in (("input", case.inputs), ("expected", expected_outputs)):
+                for index, tensor in enumerate(tensors):
+                    path = model_dir / f"{role}_{index}.npy"
+                    tensor = tensor.detach().cpu().contiguous()
+                    # The existing external NPY reader represents BF16 as
+                    # two-byte void elements, preserving every stored bit.
+                    array = (tensor.view(torch.uint16).numpy().view("V2")
+                             if tensor.dtype == torch.bfloat16 else tensor.numpy())
+                    np.save(path, array, allow_pickle=False)
+                    compile_command.extend([f"--model-{role}", f"{index}={path}"])
+            for tolerance in ("atol", "rtol"):
+                value = getattr(case.comparison_policy, tolerance)
+                if value is not None:
+                    compile_command.extend([f"--model-{tolerance}", str(value)])
+            for option in ("target_model_max_scalar_evaluations",
+                           "target_model_max_fused_multiply_adds",
+                           "target_model_max_movement_bytes",
+                           "target_model_max_movement_segments"):
+                compile_command.extend(["--" + option.replace("_", "-"), str(getattr(args, option))])
         compile_result = run(
             compile_command,
             timeout_seconds=args.compile_timeout_seconds,
         )
         if args.compile_timing:
             print(compile_result.stderr, end="", file=sys.stderr)
+        if args.target_model:
+            if "target model outputs matched; tiles=16" not in compile_result.stdout:
+                raise RuntimeError("functional target model did not compare every output")
+            print(compile_result.stdout, end="")
         if (
             "wrote verified package with num-partitions=1 tiles=16"
             not in compile_result.stdout
@@ -1238,7 +1277,8 @@ def prepare_case_step(
             raise RuntimeError("load pipeline qualification did not materialize rotating loads")
         print(f"qualified_pipelined_loads: actual_rotating_load_sites={rotating_loads}")
     oracle_start_ns = time.monotonic_ns()
-    expected_outputs = case.materialize_expected_outputs()
+    if expected_outputs is None:
+        expected_outputs = case.materialize_expected_outputs()
     print(
         "pytorch-board-timing stage=torch-eager-reference "
         f"step={step_number} "

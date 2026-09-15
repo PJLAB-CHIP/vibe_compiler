@@ -801,7 +801,7 @@ TEST(TargetCodeGenTest, CurrentEngineRegistryIncludesDirectDTEIssueAndWait) {
       siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEIssue), 1);
   EXPECT_EQ(siteKindCount(wafer::runtime::ProfileTargetSiteKind::DirectDTEWait),
             1);
-  EXPECT_EQ(descriptors.size(), 115u);
+  EXPECT_EQ(descriptors.size(), 117u);
   EXPECT_EQ(wafer::getTargetCallTSMEngine(
                 getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA)),
             wafer::TargetCallTSMEngine::RDMA);
@@ -2055,6 +2055,86 @@ TEST(TargetCodeGenTest, ReadbackRejectsNonELFAndWrongArchitecture) {
   EXPECT_NE(llvm::toString(wrongArchitecture.takeError())
                 .find("target module is not RISC-V 64-bit ELF"),
             std::string::npos);
+}
+
+TEST(TargetCodeGenTest, DDRMappingMovesOnlyAcrossAReadOnlyExecutingLoop) {
+  using wafer::TargetCallBuiltin;
+  for (uint64_t length : {1024, 1025, 1031})
+    for (unsigned scenario = 0; scenario != 6; ++scenario) {
+      SCOPED_TRACE(length);
+      SCOPED_TRACE(scenario);
+      llvm::LLVMContext context;
+      llvm::Module module("mapped-index-loop", context);
+      module.setTargetTriple("riscv64-unknown-unknown-elf");
+      auto *i64 = llvm::Type::getInt64Ty(context);
+      auto *i32 = llvm::Type::getInt32Ty(context);
+      auto *function = llvm::Function::Create(
+          llvm::FunctionType::get(i32, {i64, i64}, false),
+          llvm::GlobalValue::ExternalLinkage, "entry", module);
+      auto *entry = llvm::BasicBlock::Create(context, "entry", function);
+      auto *header = llvm::BasicBlock::Create(context, "header", function);
+      auto *body = llvm::BasicBlock::Create(context, "body", function);
+      auto *exit = llvm::BasicBlock::Create(context, "exit", function);
+      llvm::IRBuilder<> builder(entry);
+      auto callBuiltin = [&](TargetCallBuiltin builtin,
+                              llvm::ArrayRef<llvm::Value *> arguments) {
+        const auto &descriptor = wafer::getTargetCallDescriptor(builtin);
+        llvm::SmallVector<llvm::Type *, 16> types;
+        for (auto scalar : descriptor.arguments)
+          types.push_back(scalar == wafer::TargetCallScalarType::I64 ? i64 : i32);
+        llvm::Type *result = descriptor.result == wafer::TargetCallResultType::Pointer
+                                 ? llvm::PointerType::getUnqual(context)
+                                 : llvm::Type::getVoidTy(context);
+        auto callee = module.getOrInsertFunction(
+            descriptor.symbol, llvm::FunctionType::get(result, types, false));
+        return builder.CreateCall(callee, arguments);
+      };
+      auto *join = callBuiltin(TargetCallBuiltin::NCCJoin, {builder.getInt32(1)});
+      builder.CreateBr(header);
+      builder.SetInsertPoint(header);
+      auto *index = builder.CreatePHI(i64, 2);
+      auto *sum = builder.CreatePHI(i32, 2);
+      index->addIncoming(builder.getInt64(0), entry);
+      sum->addIncoming(builder.getInt32(0), entry);
+      llvm::Value *bound = builder.getInt64(scenario == 2 ? 0 : length);
+      if (scenario == 1)
+        bound = function->getArg(1);
+      builder.CreateCondBr(builder.CreateICmpULT(index, bound), body, exit);
+      builder.SetInsertPoint(body);
+      if (scenario == 3)
+        callBuiltin(TargetCallBuiltin::NCCJoin, {builder.getInt32(1)});
+      if (scenario == 4) {
+        const auto &descriptor = wafer::getTargetCallDescriptor(TargetCallBuiltin::WDMA);
+        llvm::SmallVector<llvm::Value *, 16> arguments;
+        for (auto scalar : descriptor.arguments)
+          arguments.push_back(scalar == wafer::TargetCallScalarType::I64
+                                  ? builder.getInt64(65536) : builder.getInt32(1));
+        callBuiltin(TargetCallBuiltin::WDMA, arguments);
+      }
+      llvm::Value *address = function->getArg(0);
+      if (scenario == 5)
+        address = builder.CreateAdd(address, index);
+      auto *mapping = callBuiltin(TargetCallBuiltin::DDRReadMapping,
+                                  {address, builder.getInt32(length * 4)});
+      auto *pointer = builder.CreateGEP(i32, mapping, index);
+      auto *loaded = builder.CreateLoad(i32, pointer, true);
+      auto *nextSum = builder.CreateAdd(sum, loaded);
+      auto *nextIndex = builder.CreateAdd(index, builder.getInt64(1));
+      builder.CreateBr(header);
+      index->addIncoming(nextIndex, body);
+      sum->addIncoming(nextSum, body);
+      builder.SetInsertPoint(exit);
+      builder.CreateRet(sum);
+      ASSERT_FALSE(llvm::verifyModule(module, &llvm::errs()));
+      wafer::compiler::detail::hoistReadOnlyDDRMemoryMappings(module);
+      ASSERT_EQ(mapping->getParent(), scenario == 0 ? entry : body);
+      if (scenario == 0) {
+        EXPECT_TRUE(join->comesBefore(mapping));
+      }
+      EXPECT_EQ(loaded->getParent(), body);
+      EXPECT_TRUE(loaded->isVolatile());
+      EXPECT_FALSE(llvm::verifyModule(module, &llvm::errs()));
+    }
 }
 
 } // namespace

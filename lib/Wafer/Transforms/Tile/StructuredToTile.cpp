@@ -285,6 +285,10 @@ getScalarElementwiseKind(mlir::Operation *operation) {
     return ComputeElementwiseKind::Rsqrt;
   if (mlir::isa<mlir::math::TanhOp>(operation))
     return ComputeElementwiseKind::Tanh;
+  if (mlir::isa<mlir::math::SinOp>(operation))
+    return ComputeElementwiseKind::Sin;
+  if (mlir::isa<mlir::math::CosOp>(operation))
+    return ComputeElementwiseKind::Cos;
   if (auto power = mlir::dyn_cast<mlir::math::PowFOp>(operation)) {
     auto constant = power.getRhs().getDefiningOp<mlir::arith::ConstantOp>();
     auto attribute = constant
@@ -311,10 +315,29 @@ getCanonicalElementwiseMaps(mlir::linalg::LinalgOp operation) {
   mlir::MemRefType resultType = getMemRef(operation.getDpsInits().front());
   if (!resultType ||
       maps.size() != static_cast<size_t>(operation.getNumDpsInputs() + 1) ||
-      maps.back().getNumDims() != resultType.getRank() ||
-      maps.back().getNumSymbols() != 0 || !maps.back().isPermutation())
+      maps.back().getNumSymbols() != 0 || !maps.back().isProjectedPermutation())
     return std::nullopt;
   mlir::AffineMap resultToIteration = mlir::inversePermutation(maps.back());
+  if (!resultToIteration) {
+    auto extents = operation.getStaticLoopRanges();
+    if (extents.size() != operation.getNumLoops() ||
+        maps.back().getNumResults() != resultType.getRank())
+      return std::nullopt;
+    llvm::SmallVector<mlir::AffineExpr> inverse(
+        operation.getNumLoops(),
+        mlir::getAffineConstantExpr(0, operation.getContext()));
+    llvm::SmallBitVector seen(operation.getNumLoops());
+    for (auto [axis, expression] : llvm::enumerate(maps.back().getResults())) {
+      unsigned loop = mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+      inverse[loop] = mlir::getAffineDimExpr(axis, operation.getContext());
+      seen.set(loop);
+    }
+    for (auto [loop, extent] : llvm::enumerate(extents))
+      if (!seen.test(loop) && extent != 1)
+        return std::nullopt;
+    resultToIteration = mlir::AffineMap::get(resultType.getRank(), 0, inverse,
+                                             operation.getContext());
+  }
   if (!resultToIteration || !resultType.hasStaticShape())
     return std::nullopt;
   llvm::SmallVector<mlir::AffineExpr, 4> coordinates;
@@ -395,10 +418,11 @@ getCanonicalElementwiseMaps(mlir::linalg::LinalgOp operation) {
   return maps;
 }
 
-static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation) {
+static bool isSupportedElementwiseBody(mlir::linalg::LinalgOp operation,
+                                       bool allowUnitReduction = false) {
   if (!operation || operation.getNumDpsInits() != 1 ||
-      !hasOnlyParallelIterators(operation) || operation->getNumRegions() != 1 ||
-      operation->getRegion(0).empty() ||
+      (!allowUnitReduction && !hasOnlyParallelIterators(operation)) ||
+      operation->getNumRegions() != 1 || operation->getRegion(0).empty() ||
       !getCanonicalElementwiseMaps(operation))
     return false;
   mlir::Block &body = operation->getRegion(0).front();
@@ -801,8 +825,17 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
       plans.push_back({operation, LoweringKind::CapturedFill});
       return mlir::WalkResult::advance();
     }
-    if (mlir::succeeded(buildGemmDescriptor(operation))) {
-      plans.push_back({operation, LoweringKind::Contraction});
+    if (auto descriptor = buildGemmDescriptor(operation);
+        mlir::succeeded(descriptor)) {
+      // An actual one-step F32 reduction has no native GEMM input format.
+      // Lower its existing scalar body with the reduction coordinate zero.
+      // This retains both the multiply and the destination's initial add.
+      bool pointwise =
+          descriptor->kSize == 1 &&
+          getMemRef(operation.getDpsInputs()[0]).getElementType().isF32() &&
+          isSupportedElementwiseBody(operation, true);
+      plans.push_back({operation, pointwise ? LoweringKind::Elementwise
+                                            : LoweringKind::Contraction});
       return mlir::WalkResult::advance();
     }
     if (mlir::succeeded(buildConvDescriptor(operation))) {
@@ -1609,9 +1642,10 @@ lookupExpr(mlir::Value value, llvm::DenseMap<mlir::Value, ExprValue> &values) {
   return found->second;
 }
 
-static ExprValue dropConstantUnitInputAxes(ExprValue value,
-                                           mlir::IRRewriter &rewriter,
-                                           mlir::Location location) {
+static mlir::FailureOr<ExprValue>
+dropConstantUnitInputAxes(ExprValue value, mlir::IRRewriter &rewriter,
+                          mlir::Location location,
+                          StructuredToTileStatistics &statistics) {
   auto type = getMemRef(value.buffer);
   llvm::SmallVector<mlir::AffineExpr, 4> expressions;
   llvm::SmallVector<int64_t, 4> shape;
@@ -1631,10 +1665,31 @@ static ExprValue dropConstantUnitInputAxes(ExprValue value,
   auto reducedType = mlir::cast<mlir::MemRefType>(
       mlir::memref::SubViewOp::inferRankReducedResultType(
           shape, type, offsets, type.getShape(), strides));
+  // Removing a logical unit axis may change a blocked layout's physical
+  // interpretation. Materialize the existing shape before taking that view.
+  if (mlir::failed(
+          analysis::TransferRealizability::proveStaticReshapeMetadataView(
+              type, reducedType, /*destinationMayWrite=*/false))) {
+    auto tensorType = mlir::MemRefType::get(
+        type.getShape(), type.getElementType(),
+        mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                        MemLayout::Tensor));
+    auto materialized = materializeBufferAs(value.buffer, tensorType, rewriter,
+                                            location, statistics);
+    if (mlir::failed(materialized))
+      return mlir::failure();
+    value.buffer = *materialized;
+    type = tensorType;
+    reducedType = mlir::cast<mlir::MemRefType>(
+        mlir::memref::SubViewOp::inferRankReducedResultType(
+            shape, type, offsets, type.getShape(), strides));
+  }
   auto view = rewriter.create<mlir::memref::SubViewOp>(
       location, reducedType, value.buffer, offsets, type.getShape(), strides);
-  return {view, mlir::AffineMap::get(value.indexingMap.getNumDims(), 0,
-                                     expressions, rewriter.getContext())};
+  return ExprValue{view,
+                   mlir::AffineMap::get(value.indexingMap.getNumDims(), 0,
+                                        expressions, rewriter.getContext())};
 }
 
 static mlir::LogicalResult
@@ -1666,10 +1721,12 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
        llvm::zip_equal(body.getArguments(), blockOperands)) {
     mlir::Value input = operand->get();
     if (mlir::MemRefType inputType = getMemRef(input)) {
-      values.try_emplace(
-          argument,
+      auto mapped =
           dropConstantUnitInputAxes({input, maps[operand->getOperandNumber()]},
-                                    rewriter, operation.getLoc()));
+                                    rewriter, operation.getLoc(), statistics);
+      if (mlir::failed(mapped))
+        return mlir::failure();
+      values.try_emplace(argument, *mapped);
     } else {
       mlir::FailureOr<ExprValue> filled = createScalarFill(
           input, resultType, rewriter, operation.getLoc(), statistics);

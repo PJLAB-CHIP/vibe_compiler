@@ -224,10 +224,9 @@ ExecutableCompilationResult compileBaselineCurrentIR(
   if (mlir::failed(function))
     return fail(ExecutableCompilationStatus::CompilerFailure, "baseline-input",
                 "baseline requires exactly one defined TensorProgram");
-  if (mlir::failed(promoteContractionAccumulation(*function)))
+  if (mlir::failed(foldContractionInitializers(*function)))
     return fail(ExecutableCompilationStatus::CompilerFailure,
-                "contraction-accumulation",
-                "cannot materialize F32 accumulators");
+                "contraction-initializer", "cannot fold constant initializer");
   if (mlir::failed(closeStructuredProgramOutputs(*function)))
     return fail(ExecutableCompilationStatus::CompilerFailure,
                 "baseline-output-closure",

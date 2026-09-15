@@ -13,8 +13,11 @@
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
@@ -234,6 +237,118 @@ protected:
 
   std::unique_ptr<mlir::MLIRContext> context;
 };
+
+TEST_F(CapacityFeedbackTest, ImmutableInitializersSurvivePublicationFences) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant : {0u, 1u, 2u}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(variant);
+      auto program = source(extent, 4);
+      ASSERT_TRUE(program);
+      mlir::Builder attrs(context.get());
+      auto tensor =
+          mlir::RankedTensorType::get({1, extent, 2048}, attrs.getF16Type());
+      auto contents =
+          mlir::DenseElementsAttr::get(tensor, attrs.getF16FloatAttr(0.5));
+      program->walk([&](mlir::func::FuncOp function) {
+        mlir::OpBuilder builder(&function.front(), function.front().begin());
+        auto literal = builder.create<mlir::arith::ConstantOp>(
+            function.getLoc(), contents);
+        function.getArgument(0).replaceAllUsesWith(literal);
+      });
+      auto instructions = actual(extent);
+      ASSERT_TRUE(instructions);
+      auto function = *instructions->getOps<mlir::func::FuncOp>().begin();
+      auto memory =
+          mlir::cast<mlir::MemRefType>(function.getArgument(0).getType());
+      mlir::OpBuilder builder(instructions->getBody(),
+                              instructions->getBody()->begin());
+      auto initial = variant == 1 ? mlir::DenseElementsAttr::get(
+                                        tensor, attrs.getF16FloatAttr(0.75))
+                                  : contents;
+      builder.create<mlir::memref::GlobalOp>(
+          instructions->getLoc(), "coefficients",
+          builder.getStringAttr("private"), memory, initial, variant != 2,
+          builder.getI64IntegerAttr(256));
+      builder.setInsertionPointToStart(&function.front());
+      auto global = builder.create<mlir::memref::GetGlobalOp>(
+          function.getLoc(), memory, "coefficients");
+      function.getArgument(0).replaceAllUsesWith(global);
+      builder.create<mlir::LLVM::FenceOp>(function.getLoc(),
+                                          mlir::LLVM::AtomicOrdering::release);
+      auto feedback = observe(*program, std::move(instructions), 3);
+      EXPECT_EQ(feedback.status, CapacityFeedbackStatus::Valid);
+      if (variant == 0) {
+        EXPECT_EQ(feedback.coordinates.size(), 2u);
+        EXPECT_EQ(feedback.coordinates.count({3, 0, 2}), 1u);
+        EXPECT_EQ(feedback.coordinates.count({3, 0, 3}), 1u);
+      } else {
+        EXPECT_TRUE(feedback.coordinates.empty());
+        EXPECT_GT(feedback.unavailableDemands, 0u);
+      }
+    }
+}
+
+TEST_F(CapacityFeedbackTest, FusedOutputAxesReachTheirConsumerParameters) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned tiles : {4u, 16u})
+      for (bool transpose : {false, true}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(tiles);
+        SCOPED_TRACE(transpose);
+        std::string lhs = "tensor<1x" + std::to_string(extent) + "x2048xf16>";
+        std::string rhs = "tensor<1x2048x1024xf16>";
+        std::string wide = "tensor<1x" + std::to_string(extent) + "x1024xf32>";
+        std::string narrow =
+            transpose ? "tensor<1x1024x" + std::to_string(extent) + "xf16>"
+                      : "tensor<1x" + std::to_string(extent) + "x1024xf16>";
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module {\n";
+        for (unsigned tile = 0; tile < tiles; ++tile) {
+          ir << "wafer.tile.module card_id = 0 tile_id = " << tile
+             << " { func.func @entry(%a: " << lhs
+             << " {wafer.program_argument = #wafer.program_argument<0>}, %b: "
+             << rhs
+             << " {wafer.program_argument = #wafer.program_argument<1>}) -> "
+             << narrow << " { %r = wafer.tile.region(%a, %b : " << lhs << ", "
+             << rhs << ") -> (" << narrow << ") { ^bb0(%x: " << lhs
+             << ", %y: " << rhs << "): %zero = arith.constant 0.0 : f32 "
+             << "%empty = tensor.empty() : " << wide
+             << " %init = linalg.fill ins(%zero : f32) outs(%empty : " << wide
+             << ") -> " << wide
+             << " %g = linalg.batch_matmul ins(%x, %y : " << lhs << ", " << rhs
+             << ") outs(%init : " << wide << ") -> " << wide
+             << " %out = tensor.empty() : " << narrow
+             << " %v = linalg.generic {indexing_maps = [affine_map<(b,m,n)->"
+             << (transpose ? "(b,n,m)>, " : "(b,m,n)>, ")
+             << "affine_map<(b,m,n)->(b,m,n)>], iterator_types = "
+             << "[\"parallel\",\"parallel\",\"parallel\"]} ins(%g : " << wide
+             << ") outs(%out : " << narrow
+             << ") { ^bb0(%value: f32, %old: f16): "
+             << "%c = arith.truncf %value : f32 to f16 "
+             << "linalg.yield %c : f16 } -> " << narrow
+             << " wafer.tile.yield %v : " << narrow
+             << " } return %r : " << narrow << " } }\n";
+        }
+        ir << "}\n";
+        auto program =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(program);
+        auto feedback = observe(*program, actual(extent), tiles - 1, true);
+        EXPECT_EQ(feedback.status, CapacityFeedbackStatus::Valid);
+        EXPECT_EQ(feedback.ambiguousInputs, 0u);
+        EXPECT_EQ(feedback.unavailableDemands, 0u);
+        ASSERT_EQ(feedback.coordinates.size(), 2u);
+        EXPECT_EQ(feedback.coordinates.count({tiles - 1, 0, 3}), 1u);
+        EXPECT_EQ(
+            feedback.coordinates.count({tiles - 1, 1, transpose ? 2u : 1u}),
+            1u);
+        // N is absent from this actual A-panel demand. The output map moves
+        // the M repair into the consumer without claiming its unrelated axis.
+        EXPECT_EQ(feedback.coordinates.count({tiles - 1, 0, 1}), 0u);
+      }
+}
 
 TEST_F(CapacityFeedbackTest,
        ActualInputSelectsOnlyItsScopeAndMappedDimensions) {

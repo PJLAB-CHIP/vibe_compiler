@@ -2,9 +2,10 @@
 
 #include "TargetModelKernelInternal.h"
 
-#include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
+#include "Wafer/Target/PhysicalTensor/TargetFloatArithmetic.h"
 #include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
+#include "Wafer/Target/TargetFormat.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -197,6 +198,96 @@ tryExecuteManagedReference(
 }
 
 } // namespace
+
+llvm::Expected<TargetModelCommandEffect>
+executeBit2FP(const compiler::TargetCommand &command,
+              const target::TargetBit2FPCommand &value,
+              const InvocationMemoryRegistry &memory,
+              TargetModelKernelBudget budget) {
+  if (value.format != LogicalFormat::F16 &&
+      value.format != LogicalFormat::BF16 && value.format != LogicalFormat::F32)
+    return kernelError(TargetModelKernelErrorCode::UnsupportedCommand,
+                       "Bit2FP requires F16, BF16 or F32 output");
+  if (value.elementCount >
+      budget.getNumericBudget().getMaximumScalarEvaluations())
+    return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
+                       "Bit2FP exceeds scalar work budget");
+  auto sourceKey = makeTensor(LogicalFormat::Bool, {value.elementCount});
+  auto destinationKey = makeTensor(value.format, {value.elementCount});
+  if (!sourceKey)
+    return sourceKey.takeError();
+  if (!destinationKey)
+    return destinationKey.takeError();
+  const int64_t slot = command.launchSlotId.getValue();
+  auto values = readTensor(memory, slot, value.source, *sourceKey);
+  if (!values)
+    return values.takeError();
+  const uint64_t one =
+      llvm::APFloat::getOne(
+          *target_numeric_detail::getFloatSemantics(value.format))
+          .bitcastToAPInt()
+          .getZExtValue();
+  for (auto &element : *values)
+    element = {value.format, element.bits ? one : 0};
+  auto packed =
+      packTensor(memory, slot, value.destination, *destinationKey, *values);
+  if (!packed)
+    return packed.takeError();
+  return withReads(TargetModelCommandEffect{{TargetModelByteWrite{
+                       slot, TargetModelAddressSpace::TileSPM,
+                       value.destination, 1, std::move(*packed)}}},
+                   {makeTensorRead(slot, value.source, *sourceKey)});
+}
+
+llvm::Expected<TargetModelCommandEffect>
+executeMaskMove(const compiler::TargetCommand &command,
+                const target::TargetMaskMoveCommand &value,
+                const InvocationMemoryRegistry &memory,
+                TargetModelKernelBudget budget) {
+  if (value.format != LogicalFormat::F16 &&
+      value.format != LogicalFormat::BF16 && value.format != LogicalFormat::F32)
+    return kernelError(TargetModelKernelErrorCode::UnsupportedCommand,
+                       "MaskMove requires F16, BF16 or F32");
+  if (value.elementCount >
+      budget.getNumericBudget().getMaximumScalarEvaluations())
+    return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
+                       "MaskMove exceeds scalar work budget");
+  auto key = makeTensor(value.format, {value.elementCount});
+  if (!key)
+    return key.takeError();
+  const int64_t slot = command.launchSlotId.getValue();
+  auto source = readTensor(memory, slot, value.source, *key);
+  if (!source)
+    return source.takeError();
+  auto mask = readTensor(memory, slot, value.mask, *key);
+  if (!mask)
+    return mask.takeError();
+  auto destination = readTensor(memory, slot, value.destination, *key);
+  if (!destination)
+    return destination.takeError();
+  const uint64_t one =
+      llvm::APFloat::getOne(
+          *target_numeric_detail::getFloatSemantics(value.format))
+          .bitcastToAPInt()
+          .getZExtValue();
+  for (auto [input, predicate, output] :
+       llvm::zip_equal(*source, *mask, *destination)) {
+    if (predicate.bits == one)
+      output = input;
+    else if (predicate.bits != 0)
+      return kernelError(TargetModelKernelErrorCode::UnsupportedCommand,
+                         "MaskMove requires canonical zero/one mask values");
+  }
+  auto packed = packTensor(memory, slot, value.destination, *key, *destination);
+  if (!packed)
+    return packed.takeError();
+  return withReads(TargetModelCommandEffect{{TargetModelByteWrite{
+                       slot, TargetModelAddressSpace::TileSPM,
+                       value.destination, 1, std::move(*packed)}}},
+                   {makeTensorRead(slot, value.source, *key),
+                    makeTensorRead(slot, value.mask, *key),
+                    makeTensorRead(slot, value.destination, *key)});
+}
 
 llvm::Expected<TargetModelCommandEffect>
 executeElementwise(const compiler::TargetCommand &command,

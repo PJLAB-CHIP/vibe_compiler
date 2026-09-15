@@ -8,6 +8,11 @@
 
 namespace wafer {
 
+inline constexpr char kTargetKcoreReleaseScope[] = "wafer.kcore";
+// The pinned C908 SDK encodes sync as 0x0180000b. LLVM's RISC-V assembler
+// lacks that vendor mnemonic; emit the same instruction word.
+inline constexpr char kTargetKcoreReleaseAssembly[] = "fence iorw, iorw\n.word 0x0180000b";
+
 /// Hard address, capacity and alignment facts consumed by legality and
 /// allocation. Search budgets, preferred shapes and performance estimates do
 /// not belong to this contract.

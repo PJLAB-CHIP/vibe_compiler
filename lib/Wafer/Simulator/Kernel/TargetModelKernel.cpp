@@ -32,6 +32,12 @@ executeTargetModelCommand(const compiler::TargetCommand &command,
           std::get_if<target::TargetMemsetCommand>(&command.payload))
     return kernel_detail::executeMemset(command, *value, memory);
   if (const auto *value =
+          std::get_if<target::TargetBit2FPCommand>(&command.payload))
+    return kernel_detail::executeBit2FP(command, *value, memory, budget);
+  if (const auto *value =
+          std::get_if<target::TargetMaskMoveCommand>(&command.payload))
+    return kernel_detail::executeMaskMove(command, *value, memory, budget);
+  if (const auto *value =
           std::get_if<target::TargetElementwiseCommand>(&command.payload))
     return kernel_detail::executeElementwise(command, *value, memory, budget,
                                              policy);
@@ -46,6 +52,65 @@ executeTargetModelCommand(const compiler::TargetCommand &command,
   if (const auto *value =
           std::get_if<target::TargetGemmCommand>(&command.payload))
     return kernel_detail::executeGemm(command, *value, memory, budget, policy);
+
+  if (std::holds_alternative<target::TargetKcoreReleaseCommand>(command.payload))
+    return TargetModelCommandEffect{};
+  auto scalarAddressSpace = [](target::TargetScalarMemorySpace space) {
+    return space == target::TargetScalarMemorySpace::SPM
+               ? TargetModelAddressSpace::TileSPM : TargetModelAddressSpace::DDR;
+  };
+  if (const auto *mapping =
+          std::get_if<target::TargetMemoryMappingCommand>(&command.payload)) {
+    auto space = scalarAddressSpace(mapping->space);
+    auto range = memory.getAddressPlan().resolve(
+        command.launchSlotId.getValue(), space, TargetModelAccess::Read,
+        mapping->address, mapping->byteCount, 1);
+    if (!range)
+      return range.takeError();
+    TargetModelCommandEffect effect;
+    effect.scalarResult = mapping->address;
+    if (mapping->space == target::TargetScalarMemorySpace::DDR)
+      effect.pendingReads.push_back({command.launchSlotId.getValue(), space,
+                                      mapping->address, mapping->byteCount,
+                                      std::nullopt});
+    return effect;
+  }
+  if (const auto *load =
+          std::get_if<target::TargetScalarLoadCommand>(&command.payload)) {
+    auto space = scalarAddressSpace(load->space);
+    auto bytes = memory.readSnapshot(command.launchSlotId.getValue(),
+                                      space,
+                                      load->address, load->byteWidth,
+                                      load->byteWidth);
+    if (!bytes)
+      return bytes.takeError();
+    TargetModelCommandEffect effect;
+    for (unsigned byte = 0; byte < load->byteWidth; ++byte)
+      effect.scalarResult |= uint64_t((*bytes)[byte]) << (byte * 8);
+    effect.pendingReads.push_back({command.launchSlotId.getValue(),
+                                    space,
+                                    load->address, load->byteWidth, std::nullopt});
+    return effect;
+  }
+  if (const auto *store =
+          std::get_if<target::TargetScalarStoreCommand>(&command.payload)) {
+    auto space = scalarAddressSpace(store->space);
+    auto range = memory.getAddressPlan().resolve(
+        command.launchSlotId.getValue(), space,
+        TargetModelAccess::Write, store->address, store->byteWidth,
+        store->byteWidth);
+    if (!range)
+      return range.takeError();
+    std::vector<uint8_t> bytes(store->byteWidth);
+    for (unsigned byte = 0; byte < store->byteWidth; ++byte)
+      bytes[byte] = static_cast<uint8_t>(store->value >> (byte * 8));
+    TargetModelCommandEffect effect;
+    effect.pendingWrites.push_back({command.launchSlotId.getValue(),
+                                     space,
+                                     store->address, store->byteWidth,
+                                     std::move(bytes), std::nullopt});
+    return effect;
+  }
 
   TargetModelControlAction control =
       kernel_detail::getControlAction(command.payload);

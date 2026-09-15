@@ -1,6 +1,9 @@
 //===- ReadOnlyInputSharing.cpp - Actual external input reuse ----------===//
 
 #include "ReadOnlyInputSharing.h"
+#include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -26,7 +29,8 @@ struct InputWindow {
   mlir::MemRefType sourceType;
   mlir::MemRefType payloadType;
   llvm::SmallVector<int64_t> strides;
-  int64_t offset;
+  mlir::AffineExpr offset;
+  llvm::SmallVector<std::tuple<int64_t, int64_t, int64_t>, 4> loops;
   int64_t bytes;
 };
 
@@ -109,10 +113,6 @@ mlir::BlockArgument getProgramSource(mlir::Value value) {
                  : mlir::BlockArgument{};
     }
     if (auto view = value.getDefiningOp<mlir::memref::SubViewOp>()) {
-      if (llvm::any_of(view.getStaticOffsets(), mlir::ShapedType::isDynamic) ||
-          llvm::any_of(view.getStaticSizes(), mlir::ShapedType::isDynamic) ||
-          llvm::any_of(view.getStaticStrides(), mlir::ShapedType::isDynamic))
-        return {};
       value = view.getSource();
       continue;
     }
@@ -120,9 +120,110 @@ mlir::BlockArgument getProgramSource(mlir::Value value) {
   }
 }
 
+// Compare actual address functions over the enclosing ordered iteration
+// domain. The expression is query-local; no symbolic window survives mutation.
+class WindowOffsets {
+public:
+  explicit WindowOffsets(llvm::ArrayRef<analysis::StaticLoopDomain> loops)
+      : loops(loops) {}
+
+  mlir::AffineExpr index(mlir::Value value) {
+    auto found = expressions.find(value);
+    if (found != expressions.end())
+      return found->second;
+    auto *context = value.getContext();
+    mlir::AffineExpr result;
+    if (auto constant = mlir::getConstantIntValue(value))
+      result = mlir::getAffineConstantExpr(*constant, context);
+    for (auto [position, domain] : llvm::enumerate(loops))
+      if (mlir::scf::ForOp(domain.loop).getInductionVar() == value)
+        result = mlir::getAffineDimExpr(position, context);
+    if (!result) {
+      if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
+        auto a = index(add.getLhs()), b = index(add.getRhs());
+        if (a && b)
+          result = a + b;
+      } else if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>()) {
+        auto a = index(sub.getLhs()), b = index(sub.getRhs());
+        if (a && b)
+          result = a - b;
+      } else if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>()) {
+        auto a = index(mul.getLhs()), b = index(mul.getRhs());
+        if (a && b &&
+            (mlir::isa<mlir::AffineConstantExpr>(a) ||
+             mlir::isa<mlir::AffineConstantExpr>(b)))
+          result = a * b;
+      } else if (auto apply =
+                     value.getDefiningOp<mlir::affine::AffineApplyOp>()) {
+        llvm::SmallVector<mlir::AffineExpr> operands;
+        for (auto operand : apply.getOperands()) {
+          auto expression = index(operand);
+          if (!expression)
+            return {};
+          operands.push_back(expression);
+        }
+        auto map = apply.getAffineMap();
+        result = map.getResult(0).replaceDimsAndSymbols(
+            llvm::ArrayRef(operands).take_front(map.getNumDims()),
+            llvm::ArrayRef(operands).drop_front(map.getNumDims()));
+      }
+    }
+    if (result)
+      result = mlir::simplifyAffineExpr(result, loops.size(), 0);
+    expressions[value] = result;
+    return result;
+  }
+
+  mlir::AffineExpr buffer(mlir::Value value) {
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      if (auto region =
+              mlir::dyn_cast<TileRegionOp>(argument.getOwner()->getParentOp()))
+        return buffer(region.getInputs()[argument.getArgNumber()]);
+      auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
+      llvm::SmallVector<int64_t> strides;
+      int64_t offset;
+      if (!type ||
+          !mlir::isa<mlir::func::FuncOp>(argument.getOwner()->getParentOp()) ||
+          mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+          mlir::ShapedType::isDynamic(offset))
+        return {};
+      return mlir::getAffineConstantExpr(offset, value.getContext());
+    }
+    auto view = value.getDefiningOp<mlir::memref::SubViewOp>();
+    if (!view)
+      return {};
+    auto result = buffer(view.getSource());
+    llvm::SmallVector<int64_t> strides;
+    int64_t ignored;
+    if (!result || mlir::failed(mlir::getStridesAndOffset(view.getSourceType(),
+                                                          strides, ignored)))
+      return {};
+    for (auto [offset, stride] :
+         llvm::zip_equal(view.getMixedOffsets(), strides)) {
+      if (stride < 0)
+        return {};
+      mlir::AffineExpr expression;
+      if (auto constant = mlir::getConstantIntValue(offset))
+        expression = mlir::getAffineConstantExpr(*constant, value.getContext());
+      else
+        expression = index(mlir::cast<mlir::Value>(offset));
+      if (!expression)
+        return {};
+      result = result + expression * stride;
+    }
+    return mlir::simplifyAffineExpr(result, loops.size(), 0);
+  }
+
+private:
+  llvm::ArrayRef<analysis::StaticLoopDomain> loops;
+  llvm::DenseMap<mlir::Value, mlir::AffineExpr> expressions;
+};
+
 std::optional<InputWindow> getInputWindow(StorageLoadOp load) {
-  auto region = mlir::dyn_cast<TileRegionOp>(load->getParentOp());
-  if (!region || !mlir::isa<mlir::func::FuncOp>(region->getParentOp()))
+  auto region = load->getParentOfType<TileRegionOp>();
+  auto domains = analysis::getEnclosingStaticLoopDomains(load);
+  if (!region || !domains ||
+      !mlir::isa<mlir::func::FuncOp>(region->getParentOp()))
     return std::nullopt;
   auto argument = getProgramSource(load.getSource());
   if (!argument)
@@ -145,7 +246,6 @@ std::optional<InputWindow> getInputWindow(StorageLoadOp load) {
   llvm::SmallVector<int64_t> strides;
   int64_t offset;
   if (mlir::failed(mlir::getStridesAndOffset(source, strides, offset)) ||
-      mlir::ShapedType::isDynamic(offset) || offset < 0 ||
       llvm::any_of(strides, [](int64_t stride) { return stride < 0; }))
     return std::nullopt;
   auto physical = computeWaferPhysicalTensorInfo(payload);
@@ -154,11 +254,19 @@ std::optional<InputWindow> getInputWindow(StorageLoadOp load) {
   llvm::DenseSet<mlir::Value> reads;
   if (!hasOnlyReads(load.getDest(), load, reads))
     return std::nullopt;
-  return InputWindow{identity.getIndex(), source, payload,
-                     std::move(strides),  offset, physical->physicalBytes};
+  WindowOffsets offsets(*domains);
+  auto expression = offsets.buffer(load.getSource());
+  if (!expression)
+    return std::nullopt;
+  InputWindow window{identity.getIndex(),    source,     payload,
+                     std::move(strides),     expression, {},
+                     physical->physicalBytes};
+  for (const auto &domain : *domains)
+    window.loops.push_back(domain.bounds());
+  return window;
 }
 
-llvm::SmallVector<SharingGroup> collectGroups(mlir::ModuleOp module) {
+llvm::SmallVector<SharingGroup, 2> collectGroups(mlir::ModuleOp module) {
   llvm::SmallVector<TileModuleOp> tiles;
   for (auto tile : module.getOps<TileModuleOp>())
     tiles.push_back(tile);
@@ -194,7 +302,7 @@ llvm::SmallVector<SharingGroup> collectGroups(mlir::ModuleOp module) {
     });
   if (!completeBindings)
     return {};
-  llvm::SmallVector<SharingGroup> groups;
+  llvm::SmallVector<SharingGroup, 2> groups;
   for (auto tile : tiles)
     tile.walk([&](StorageLoadOp load) {
       auto window = getInputWindow(load);
@@ -207,6 +315,7 @@ llvm::SmallVector<SharingGroup> collectGroups(mlir::ModuleOp module) {
                group.window.payloadType == window->payloadType &&
                group.window.strides == window->strides &&
                group.window.offset == window->offset &&
+               group.window.loops == window->loops &&
                firstTile.getCardId() == tile.getCardId() &&
                !llvm::any_of(group.endpoints, [&](const Endpoint &endpoint) {
                  return endpoint.tile == tile;

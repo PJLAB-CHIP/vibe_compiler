@@ -7,8 +7,10 @@
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Transforms/Instr/CommunicationConstruction.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -82,6 +84,143 @@ std::string makeSharingInput(int64_t count, int64_t extent,
   }
   out << "}\n";
   return text;
+}
+
+std::string makeLoopSharingInput(int64_t count, int64_t extent,
+                                 bool differentWindows = false,
+                                 bool differentTrips = false) {
+  std::string text;
+  llvm::raw_string_ostream out(text);
+  std::string full = "memref<2x" + std::to_string(extent + 256) +
+                     "x64xf16, #wafer.memory<ddr, tensor>>";
+  int64_t outputExtent =
+      differentWindows || differentTrips ? extent + 256 : extent;
+  std::string output = "memref<2x" + std::to_string(outputExtent) +
+                       "x64xf16, #wafer.memory<ddr, tensor>>";
+  out << "module { wafer.target.topology @topology {card_grid = array<i64: 1, "
+         "1>, "
+         "card_interconnect = \"mesh\", tile_grid = array<i64: "
+      << (count == 4 ? "2, 2" : "4, 4")
+      << ">, unavailable_tiles = array<i64>}\n";
+  for (int64_t tile = 0; tile < count; ++tile) {
+    out << "wafer.tile.module card_id = 0 tile_id = " << tile
+        << " { func.func @entry(%src: " << full
+        << " {wafer.program_argument = #wafer.program_argument<0>}) -> "
+        << output << " { %dst = memref.alloc() : " << output
+        << " wafer.tile.region(%src, %dst : " << full << ", " << output
+        << ") -> () { ^bb0(%input: " << full << ", %output: " << output << "): "
+        << "%c0 = arith.constant 0 : index %c1 = arith.constant 1 : index "
+        << "%c2 = arith.constant 2 : index %step = arith.constant 256 : index "
+        << "%end = arith.constant "
+        << (differentTrips ? 256 * (tile + 1) : 1024)
+        << " : index %shift = arith.constant " << (differentWindows ? tile : 0)
+        << " : index scf.for %b = %c0 to %c2 step %c1 { "
+        << "scf.for %m = %c0 to %end step %step { "
+        << "%row = arith.addi %m, %shift : index ";
+    auto panel = [&](int64_t rows, llvm::StringRef offset,
+                     llvm::StringRef tag) {
+      std::string shape = "memref<1x" + std::to_string(rows) + "x64xf16";
+      std::string view = shape + ", strided<[" +
+                         std::to_string((extent + 256) * 64) +
+                         ", 64, 1], offset: ?>, #wafer.memory<ddr, tensor>>";
+      std::string writeView =
+          shape + ", strided<[" + std::to_string(outputExtent * 64) +
+          ", 64, 1], offset: ?>, #wafer.memory<ddr, tensor>>";
+      std::string local = shape + ", #wafer.memory<spm, tensor>>";
+      out << "%read" << tag << " = memref.subview %input[%b, " << offset
+          << ", 0] [1, " << rows << ", 64] [1, 1, 1] : " << full << " to "
+          << view << " %local" << tag << " = memref.alloc() : " << local
+          << " wafer.tile.load %read" << tag << " into %local" << tag << " : "
+          << view << " into " << local << " %write" << tag
+          << " = memref.subview %output[%b, " << offset << ", 0] [1, " << rows
+          << ", 64] [1, 1, 1] : " << output << " to " << writeView
+          << " wafer.tile.store %local" << tag << ", %write" << tag << " : "
+          << local << " -> " << writeView << " ";
+    };
+    panel(256, "%row", "main");
+    out << "} ";
+    if (extent > 1024 && !differentWindows && !differentTrips) {
+      out << "%tail = arith.constant 1024 : index ";
+      panel(extent - 1024, "%tail", "tail");
+    }
+    out << "} wafer.tile.yield } return %dst : " << output << " } }\n";
+  }
+  out << "}\n";
+  return text;
+}
+
+TEST(ReadOnlyInputSharingTest,
+     LoopWindowsReachConstructionCompletionAndBinding) {
+  mlir::DialectRegistry registry;
+  registerCompilationDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t count : {4, 16})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(::testing::Message() << count << "/" << extent);
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(
+          makeLoopSharingInput(count, extent), &context);
+      ASSERT_TRUE(module);
+      ASSERT_TRUE(hasReadOnlyInputSharing(*module));
+      StructuredMaterializationRelations relations;
+      rebuildCurrentBufferOwnerRelations(*module, relations);
+      auto shared = materializeReadOnlyInputSharing(*module, relations);
+      ASSERT_TRUE(shared.succeeded()) << shared.detail;
+      const unsigned families = extent > 1024 ? 2 : 1;
+      EXPECT_EQ(shared.statistics.peerSends, (count - 1) * families);
+      EXPECT_EQ(shared.statistics.peerReceives, (count - 1) * families);
+      unsigned loads = 0;
+      module->walk([&](StorageLoadOp) { ++loads; });
+      EXPECT_EQ(loads, families);
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone));
+      llvm::SmallVector<mlir::ModuleOp> instructions;
+      llvm::SmallVector<TileId> tileIds;
+      for (auto &tile : *standalone) {
+        TileRegionToInstrLoweringSession conversion(context);
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk(
+            [&](TileRegionOp region) { regions.push_back(region); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, conversion)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, conversion)));
+        instructions.push_back(*tile.module);
+        tileIds.push_back(tile.tileId);
+      }
+      auto construction = constructCommunication(instructions, tileIds);
+      ASSERT_TRUE(construction.outcome.succeeded())
+          << construction.outcome.detail;
+      EXPECT_EQ(analyzeCurrentCommunicationOrder(instructions, tileIds).status,
+                CommunicationOrderStatus::Acyclic);
+      instructions.clear();
+      for (auto &tile : *standalone) {
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        auto planned = planTileMemory(std::move(tile.module));
+        ASSERT_TRUE(mlir::succeeded(planned));
+        tile.module = std::move(*planned);
+        instructions.push_back(*tile.module);
+      }
+      EXPECT_TRUE(
+          mlir::succeeded(verifyDirectDTETransportSchedule(instructions)));
+      EXPECT_TRUE(mlir::succeeded(bindDirectDTETransport(instructions)));
+    }
+}
+
+TEST(ReadOnlyInputSharingTest, DifferentLoopWindowsAndCountsAreNotShared) {
+  mlir::DialectRegistry registry;
+  registerCompilationDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (bool trips : {false, true}) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        makeLoopSharingInput(4, 1024, !trips, trips), &context);
+    ASSERT_TRUE(module);
+    EXPECT_FALSE(hasReadOnlyInputSharing(*module));
+  }
 }
 
 TEST(ReadOnlyInputSharingTest, EqualStaticWindowsReachActualCompletionAndSPM) {
@@ -224,12 +363,14 @@ TEST(ReadOnlyInputSharingTest, RequiresIdentityExactWindowAndReadOnlyEffects) {
       }
     }
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-    EXPECT_FALSE(hasReadOnlyInputSharing(*module));
+    EXPECT_EQ(hasReadOnlyInputSharing(*module), variant == 4);
     StructuredMaterializationRelations relations;
     rebuildCurrentBufferOwnerRelations(*module, relations);
     auto result = materializeReadOnlyInputSharing(*module, relations);
-    EXPECT_EQ(result.failure, BoundaryMovementFailureKind::Unsupported);
-    EXPECT_EQ(result.statistics.peerSends, 0u);
+    EXPECT_EQ(result.failure, variant == 4
+                                  ? BoundaryMovementFailureKind::None
+                                  : BoundaryMovementFailureKind::Unsupported);
+    EXPECT_EQ(result.statistics.peerSends, variant == 4 ? 3u : 0u);
   }
 }
 

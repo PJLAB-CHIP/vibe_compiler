@@ -232,7 +232,10 @@ func.func @cross_worker_backedge(%zero: f32) {
 
 // CHECK-LABEL: func.func @cross_worker_backedge
 // CHECK: scf.for
-// CHECK: wafer.instr.ncc_join [1]
+// CHECK: arith.cmpi ne
+// CHECK-NEXT: scf.if
+// CHECK-NEXT: wafer.instr.ncc_join [1]
+// CHECK-NEXT: }
 // CHECK-NEXT: wafer.instr.fill
 // CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: wafer.instr.elementwise

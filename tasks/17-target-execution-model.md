@@ -268,3 +268,18 @@ Whole-program scale默认只要求compiler/package/no-card闭合；只有model c
 - target-call成功不证明current loader/provider可执行同一module；exact package execution另行验证。
 - model与board相关性必须使用current source/config/payload/ABI和held-out cases，不能读取历史raw重新签发。
 - Host qualification在fresh package/no-card完整矩阵通过后只能到`board-ready`；真实matched A/B通过前不得标`done`。
+
+### Packed predicate 与 select movement
+
+输入为actual TargetBit2FPCommand/TargetMaskMoveCommand及其SPM内容，输出为精确read/write effects；SystemC仍负责原有worker及completion。
+Bit2FP按logical bit解包为目标F16/BF16/F32的0/1。MaskMove消费相同格式的canonical 0/1 mask，true复制source、false保留原destination；
+其它mask值保持typed unsupported，不推测硬件语义。两项按原预算约束工作，physical codec保留padding/guard。
+覆盖rank3 1024/1025/1031 Bool常量、广播mask、两种半精度、inline与参数常量的source→package→SystemC完整输出；
+直接命令检查false保留、packed tail和不支持的mask编码。本项不增加compiler opcode或修改target ABI。
+
+Native控制流白名单允许i32与F32之间的等宽bitcast，以承接mapped scalar读取和Memset raw value；不由此开放native浮点算术、
+pointer reinterpretation或浮点control flow。逐bit检查正负零、普通值、Infinity和NaN payload，经16个Tile的实际host JIT转回同一原始字段。
+
+Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是精确扩宽；写回复用共享`convertTargetScalar`的F32→BF16 nearest-even规则，
+不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约继续保持原F32 sum/max/min合同，NaN和其它原不支持域仍typed拒绝。
+覆盖rank3 1024/1025/1031、正负零、subnormal、普通值、最大有限数与舍入边界，对照formal完整codeword；全LM继续使用原比较合同。

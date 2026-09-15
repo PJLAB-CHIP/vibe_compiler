@@ -89,7 +89,9 @@ std::optional<uint64_t> checkedRawByteSize(llvm::ArrayRef<int64_t> shape,
   if (dtypeString(elementType).empty())
     return std::nullopt;
 
-  unsigned bitWidth = elementType.getIntOrFloatBitWidth();
+  // NPY Bool has one byte per logical element. Target packing is separate.
+  unsigned bitWidth =
+      elementType.isInteger(1) ? 8 : elementType.getIntOrFloatBitWidth();
   if (bitWidth == 0 || bitWidth % 8 != 0)
     return std::nullopt;
 

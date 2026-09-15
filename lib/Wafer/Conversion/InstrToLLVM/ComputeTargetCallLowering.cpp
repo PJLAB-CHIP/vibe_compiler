@@ -22,6 +22,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -71,18 +72,41 @@ mlir::FailureOr<int64_t> getFillElementCount(InstrFillOp op) {
 } // namespace
 
 mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
+  mlir::Type scalarType = op.getValue().getType();
+  if (!mlir::isa<mlir::IntegerType, mlir::FloatType>(scalarType) ||
+      scalarType.getIntOrFloatBitWidth() > 32)
+    return op.emitError("unsupported_target_scalar: fill value must fit the "
+                        "raw 32-bit target field");
+  mlir::Value scalar = convertedValues.lookup(op.getValue());
+  if (!scalar || scalar.getType() != scalarType)
+    return op.emitError("target_llvm_lowering_failure: fill scalar has no "
+                        "matching converted SSA value");
   llvm::SmallVector<mlir::Value, 5> args;
   mlir::FailureOr<mlir::Value> dest =
       materializeAddress(op, op.getDest(), "fill dest");
   mlir::FailureOr<int64_t> elements = getFillElementCount(op);
-  mlir::FailureOr<int64_t> scalar = getConstantScalarValue(op, op.getValue());
   mlir::FailureOr<int64_t> fmt =
       getDataFormatCode(op, op.getDest(), "fill dest");
-  if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(scalar) ||
-      mlir::failed(fmt))
+  if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(fmt))
     return mlir::failure();
+  const unsigned width = scalarType.getIntOrFloatBitWidth();
+  mlir::Attribute constant;
+  if (mlir::matchPattern(op.getValue(), mlir::m_Constant(&constant))) {
+    llvm::APInt bits =
+        mlir::isa<mlir::IntegerAttr>(constant)
+            ? mlir::cast<mlir::IntegerAttr>(constant).getValue()
+            : mlir::cast<mlir::FloatAttr>(constant).getValue().bitcastToAPInt();
+    scalar = constantI32(op.getLoc(), bits.getZExtValue());
+  } else {
+    if (mlir::isa<mlir::FloatType>(scalarType))
+      scalar = builder.createOrFold<mlir::LLVM::BitcastOp>(
+          op.getLoc(), builder.getIntegerType(width), scalar);
+    if (width < 32)
+      scalar = builder.createOrFold<mlir::LLVM::ZExtOp>(op.getLoc(), i32Type,
+                                                        scalar);
+  }
   args.push_back(*dest);
-  appendI32(op.getLoc(), args, *scalar);
+  args.push_back(scalar);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
   emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Memset),

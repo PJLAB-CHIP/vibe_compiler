@@ -1,12 +1,63 @@
 # 扩展板测矩阵与三轮性能调优
 
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
-[模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、YOLOv5、
+[模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
-按用户最新要求移除DLRM；原42个配置及尚未修复的BF16 LLaMA一起进入本轮验证。
+按用户最新要求移除DLRM和YOLOv5s；原42个配置及尚未修复的BF16 LLaMA一起进入本轮验证。
 先完成正确性压测，再进行三轮“profile→根因→通用修改→正确性/性能回归”，正确性准备不占用三轮调优名额。
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
+
+## 本轮优先项：GEMM局部累加，再完成单层LM
+
+当前授权顺序为闭合13号结构化循环窗口共享/DDR-DTE构造，再完成4096³ FP16/BF16与4097³ FP16正式search/package/no-card，然后带embedding及LM head的原始单层LLaMA2。
+YOLOv5s退出当前验收范围，下文旧检查点中的YOLO仅作历史背景；不再为它添加case或依赖。
+本轮默认8/42重跑4096³ FP16：42 actual、0 accepted、42 capacity、0 unsupported/indeterminate；compiler 13.318秒、runner 17.921秒。
+实际SPM输入显示GEMM已缩至8×8×32，初始化与结果仍各有1024×1024 F32 allocation（4 MiB），并保留独立转换。
+修复由06号累加精度边界拥有：普通TensorProgram不提前扩出独立F32 fill/结果/cast root；已选空间贡献及其merge显式携带F32，
+局部Region内建立temporal累加实现并交给既有psum和最终output-format消费者。数值、预算与原始模型不变。
+
+覆盖矩阵：
+
+| 输入/分支 | exact要求 | 直接下游 |
+| --- | --- | --- |
+| 普通named/generic contraction，FP16/BF16，rank3 1024/1025/1031 | 原TensorProgram输入输出dtype不变；局部K state为F32，最终窄输出；不增加独立累加/转换Region | 实际Instr/completion/SPM |
+| spatial K分块、temporal K分块及二者组合 | 每个K贡献exact一次，跨Tile partial为F32，merge后仅最终窄化；原init只消费一次 | actual boundary、target与数值oracle |
+| 非零init、多use、已有mixed precision及非contraction | 保持原语义和观察者；未知关系typed拒绝，不能丢弃读写或降精度 | verifier及直接lowering |
+| 4096³ FP16/BF16、4097³ FP16 | 默认8/42可行；全输出reference、verified package与fresh no-card，记录actual内存和首次可行候选 | 正式PyTorch helper |
+| 完整单层LLaMA2 | 原始整数ID、embedding、decoder、final norm与全部词表logits | 同一Torch XLA产品入口与package/no-card |
+
+### 当前主机检查点
+
+GEMM局部累加、融合参数容量反馈及循环输入共享已接通。4096³ FP16/BF16、4097³ FP16均在默认8/42下为9 accepted、33 capacity、
+0 unsupported/indeterminate；每项2个共享候选实际评估并通过，最终包含DTE。4096³ DDR read=268435456 bytes、write=33554432 bytes；
+4097³ read=335708180 bytes、write=33570818 bytes。三个当前包均通过fresh no-card，source及PyTorch reference沿本轮相同模型输入复用。
+增加至126次的中间版本曾仍无共享候选实际化；根因是共享查询不识别循环窗口，当前修复已使默认42次实际覆盖共享，并未修改默认预算。
+
+六个长K FP16/BF16×1024/1025/1031配置从原始PyTorch→source→search→SystemC全输出逐bit一致；输入使用有符号二进制分数，
+保证本机制的F32累计可精确表示。两项FP16/BF16非整除循环输入共享经同一生产materializer与SystemC完整输出逐bit一致。
+原大GEMM的随机输入、原比较合同和dtype不变。432项Transforms全量通过；此前Driver全量通过，最新通信/容量定向22项通过。
+同一canonical完整增量构建已通过，最终文本/构建收尾随本轮后续修复重签。
+
+完整单层LM的S16 FP16/BF16已从原始Torch XLA source完成search、verified package及本轮fresh no-card；此次使用width8/trials12，
+两项各1 accepted、11 capacity、0 unsupported/indeterminate，7次有效容量refinement。完整输出均为`[1,16,32000]`，
+输入为原始i64 token IDs，模型仍含embedding、decoder、final norm与LM head；reference、payload与prepared source等价检查已执行。
+这些结果证明编译与无卡装载闭合，不证明整层数值或设备执行。整层SystemC数值核对仍在进行，沿用原`atol=0.004, rtol=0.002`。
+
+本轮沿直接失败边界补齐通用Sin/Cos映射、literal的数据归属、Bool source-byte/target-bit编码、byte-aligned packed mask加载、
+F32单步归约的逐元素lowering以及mapped F32 scalar→dynamic fill。容量反馈的核心根因是publication fence被误作内容写；
+现在只在数据来源分析中排除fence，completion合同不变。单位轴消除同样先证明physical metadata等价，NCx不等价时实际materialize。
+机制数值验证包括九项Sin/Cos、八项常量mask和三项F32 outer product；后两者全部输出逐bit一致，覆盖1024/1025/1031及两种半精度。
+
+补充覆盖矩阵：
+
+| 输入/结构 | 正反分支与exact要求 | 直接下游witness |
+| --- | --- | --- |
+| 非splat tensor literal与只读参数 | 现有ProgramData owns payload；相同literal只绑定一次，Bool canonical 0/1 byte与target packed bits分开；非canonical值拒绝 | ProgramData source/range、TargetTensor、package及SystemC完整输出 |
+| i1 mask，rank3 1024/1025/1031 | 静态byte-aligned连续窗口、末byte自有尾部；不对齐、跨owner尾部及未知stride拒绝；offset以bit→byte精确换算 | 实际RDMA descriptor、DDR planner和target LLVM；mask广播后完整输出 |
+| F32 contraction，K=1/非1，named/generic与置换maps | K=1保留原mul/add与非零init；Tensor/NCx单位轴只有physical等价才作view；K>1不套用 | Tile→Instr，单元素attention PV tail和PyTorch outer product |
+| scalar F32参数→fill | mapped load保留raw bits，SSA经bitcast进入Memset uint32字段；常量仍折成相同字段；未知/超宽类型拒绝 | LLVM转换、16-Tile native bitcast oracle、完整LM包和数值模型 |
+
 
 ## 输入、输出与边界
 
@@ -17,9 +68,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 - Downstream consumer：统一 `wafer-run` 板端验证、`board-testing`完成判定、通用compiler修复的回归。
 - User-level driver / named pipeline：原 `wafer_board_pytorch_test.py`、生产 `wafer-compile --optimization-policy=search`、
   `wafer-run`；DDR/DTE显式资格复用 `wafer-compile-test`，不增加第二套模型runner或生产搜索路径。
-- Explicit non-goals：本次不训练、不测任务准确率、不实现32层重复LLaMA、不做文本采样生成；YOLO模型边界止于NMS前的
-  完整Detect输出。模型缺失算子不得删除、主机预计算或用另一网络替换；不修改模型算术或放宽容差以过测试。
-- Completion criteria：原42项、八类新增主配置及下列必要尾部/结构分支经过真实source和直接下游验证，BF16 LLaMA缺陷闭合；
+- Explicit non-goals：本次不训练、不测任务准确率、不实现32层重复LLaMA、不做文本采样生成；YOLOv5s不在范围内。模型缺失算子不得删除、主机预计算或用另一网络替换；不修改模型算术或放宽容差以过测试。
+- Completion criteria：原42项、七类新增主配置及下列必要尾部/结构分支经过真实source和直接下游验证，BF16 LLaMA缺陷闭合；
   全部输出按预先确定的合同与PyTorch比较，host/no-card与board分别登记；三轮都有完整归因及回归记录，
   GEMM额外具备合法DDR/DTE配对、实际流量与匹配profile。交付修改不得造成关键case可确认的性能退化；仅取得计时不算数值通过。
 
@@ -47,10 +97,6 @@ baseline构包通过不代签实卡完成。
 - ResNet选择 **ResNet-18**，ViT选择 **ViT-B参数的单个EncoderBlock**，使用仓库managed torchvision 0.20.0原始module。
   定义见[ResNet源码](https://docs.pytorch.org/vision/0.20/_modules/torchvision/models/resnet.html)及
   [ViT源码](https://docs.pytorch.org/vision/0.20/_modules/torchvision/models/vision_transformer.html)。
-- YOLO选择 **YOLOv5s v7.0，80类**，源码固定为 `915bbf294bb74c859f0b41f1c23bc395014ea679`，使用原始
-  [模型配置](https://github.com/ultralytics/yolov5/blob/915bbf294bb74c859f0b41f1c23bc395014ea679/models/yolov5s.yaml)与
-  [Detect实现](https://github.com/ultralytics/yolov5/blob/915bbf294bb74c859f0b41f1c23bc395014ea679/models/yolo.py)。
-  包含backbone、neck、多尺度检测头及坐标/置信度decode；不把只返回backbone特征当成YOLO完成。
 - LLaMA使用仓内[LLaMA2配置](../../test/Tools/Inputs/hf/llama-2-7b-block-config.json)与当前正式HF module；完整wrapper采用 `LlamaForCausalLM`，
   仅将 `num_hidden_layers` 设为1，保持hidden4096、MLP11008、32个Q/KV heads、head dim128、vocab32000、
   context4096及 `tie_word_embeddings=false`。依赖版本、config与参数digest进入每次source证据。
@@ -65,7 +111,7 @@ baseline构包通过不代签实卡完成。
    单层完整LM已注册S16 FP16/BF16及1024/1025 FP16，S16两种dtype的完整eager oracle通过；
    原始HF wrapper已切到产品直接XLA导出，Dynamo装饰器/ModuleList追踪阻塞解除；完整source及主机数值证据见下方检查点，
    尚无完整package/board资格。原block仍是hidden states输入/输出，不能代签完整LM。
-   YOLO尚未接入。
+   YOLOv5s已移出范围。
 2. case构造已改成逐端口CPU及manifest支持dtype检查，整数ID、实际F32输出不再被模型精度限制；
    整数输出始终exact。六组混合dtype/整除尾部配置通过真实export、metadata及payload文件边界检查；
    这些证据不代签动态索引的完整lowering、package或板端资格。
@@ -76,18 +122,17 @@ baseline构包通过不代签实卡完成。
 5. ResNet首轮的20个 `stablehlo.batch_norm_inference`残留已补通用合法化，PyTorch导出同时保留官方F32 opmath分解；
    直接source→Linalg及定向主机数值已通过，整网package/no-card尚未闭合。ViT的GELU公开`mhlo.erf`扩展和
    LayerNorm opmath已补通用入口合法化，整除/尾部source通过；1024真实输入已到带attention的structured IR，
-   整块search/package仍未完成。YOLO上采样/拼接/Detect及LLaMA整数输入的完整产品链仍待验证。
+   整块search/package仍未完成。LLaMA整数输入的完整产品链仍待验证。
    源码缺少专门op名字不能作为“不支持”的结论；应以实际导出图、正式lowering与typed结果确定缺口。
 
 ## 主配置矩阵
 
-表中序号仅作覆盖索引，不进入CLI、IR或产物协议。八个主配置均以FP16计算为主，整数索引另列。
+表中序号仅作覆盖索引，不进入CLI、IR或产物协议。七个主配置均以FP16计算为主，整数索引另列。
 每个网络保持原始module计算；适配层只选择既定输出、绑定静态配置及组织typed输入。
 
 | 索引 | 主配置与完整输入→输出 | 关键结构及性能问题 | 必要补充覆盖 |
 | --- | --- | --- | --- |
 | 1 | ResNet-18整网：图像`[1,3,224,224]`→全部分类logits`[1,1000]` | 多层Conv、BN、ReLU、池化、残差、FC；二维空间切分、halo、跨层中间buffer复用 | 整网大图`[1,3,1024,1024]`及`[1,3,1025,1025]`，全输出仍为`[1,1000]`；两轴均经过切分与尾部 |
-| 2 | YOLOv5s整网：图像`[1,3,640,640]`→NMS前全部预测`[1,25200,85]` | C3/SPPF、上采样、concat、跨尺度skip、三个Detect尺度及decode；跨Region存活和重复DDR搬运 | 整网`[1,3,1024,1024]`→`[1,64512,85]`；卷积/拼接的1025尾部由实际机制case覆盖，不向原网络直接输入不满足stride/concat要求的641或1025 |
 | 3 | ViT-B单EncoderBlock：tokens`[1,1024,768]`，12 heads、head dim64、MLP3072→`[1,1024,768]` | 非causal attention、LayerNorm、GELU和残差；识别、融合、布局和归约复用 | S=1025，同一参数；输入已是embedding/位置编码之后的tokens，此行不宣称完整ViT或分类头资格 |
 | 4 | LLaMA2单层完整LM：i64 token IDs`[1,16]`→embedding→1个原始decoder block→final RMSNorm→LM head→logits`[1,16,32000]` | token lookup、现有block、新增词表投影及完整输出；embedding与LM head权重访问、GEMM复用、输出写回 | S=1024/1025→`[1,S,32000]`；S16另补BF16；词表大小/hidden保持不变，包含重复ID及首末有效ID |
 | 5 | GEMM4096³：A/B均为运行时输入`[1,4096,4096]`→C`[1,4096,4096]` | 大矩阵spatial/temporal切分、FP32 K partial、只读输入共享；重点比较DDR/DTE | 同shape BF16；FP16 `M=N=K=4097`的三轴尾部；自动search及下节控制其它选择的DDR/DTE配对 |
@@ -101,13 +146,13 @@ LLaMA的完成边界是全部位置、全部32000个词表logits；设置 `logit
 
 ## 整网与机制覆盖的衔接
 
-224/640是整网原生规模样本，不用来代替编译器大shape机制验收。每个新增或修改的IR/analysis/lowering机制仍须具备
+224是整网原生规模样本，不用来代替编译器大shape机制验收。每个新增或修改的IR/analysis/lowering机制仍须具备
 rank≥3、至少一个主要迭代维度≥1024的正例及1025/1031非整除配对，实际经过多Tile、多block/wave、尾部与直接下游。
-ResNet及YOLO另有1024整网输入；整数索引的源rank不得为了测试规则伪造。
+ResNet另有1024整网输入；整数索引的源rank不得为了测试规则伪造。
 
 | 输入等价类/结构分支 | exact要求与typed failure | 直接下游witness |
 | --- | --- | --- |
-| 卷积stride1/2、二维halo、pooling、残差/concat、多尺度live range | 输出窗口exact覆盖、无重叠写；每个reader取得所需halo；merge不扩大无关live range；错误shape/不合法合并明确拒绝 | ResNet/YOLO实际导出子图→Tile→Instr→completion/SPM；1024/1025及行列切分/尾部 |
+| 卷积stride1/2、二维halo、pooling、残差/concat、多尺度live range | 输出窗口exact覆盖、无重叠写；每个reader取得所需halo；merge不扩大无关live range；错误shape/不合法合并明确拒绝 | ResNet实际导出子图→Tile→Instr→completion/SPM；1024/1025及行列切分/尾部 |
 | i64运行时ID、Embedding、重复ID及首末有效行 | 输入保持整数，源/target/manifest/raw dtype一致；lookup位置准确；本轮修改ID后输出跟随变化；越界先在host负例拒绝 | 原始单层LM输入→source→正式lowering→package；通用索引机制1024/1025及实际运行时payload |
 | causal/noncausal/GQA、LayerNorm/RMSNorm、GELU/SiLU | 原mask、head映射及dtype保持；每个query读取准确KV范围；不以attention名字恢复语义；未知分支保留typed unsupported | 原ViT/HF modules→实际attention/通用路径→verified Instr及全量输出 |
 | GEMM长K、batch广播、三轴tail、FP16/BF16 | K贡献all-and-only，FP32 partial与块间累加，末次GEMM按原输出format产出；广播不引入语义上的重复输入，尾部精确 | 4096³/4097³及rank3 batch pair→actual allocator/completion/target→PyTorch |
@@ -147,14 +192,14 @@ DDR/DTE两包先各做一次正确性执行，随后按下节统一的平衡A/B�
 ## 正确性压测：先跑通，再冻结性能基线
 
 压测范围是本矩阵的真实规模、整除/尾部、dtype、跨Tile、多wave、连续KV及全输出；不运行无限循环或扩成全硬件稳定性测试。
-沿用唯一PyTorch runner和canonical build，不新增模型runner、主工程build或共享账号环境配置；YOLO依赖由仓库managed入口固定revision。
+沿用唯一PyTorch runner和canonical build，不新增模型runner、主工程build或共享账号环境配置。
 
 | 顺序 | 实际工作 | 退出条件 |
 | --- | --- | --- |
 | 1 | 修复现有 `llama-2-7b-block` BF16；固定原 `[1,16,4096]`、参数和reference，沿source算术、current IR、GEMM/activation format及回读定位首个数值分歧 | 原65,536个输出全部通过原容差；FP16同配置回归；实际缺陷机制有直接下游及dtype/尾部覆盖 |
-| 2 | 接入八类新主配置及表内补充。依次推进GEMM及DDR/DTE配对、ResNet、ViT、YOLO、整数端口/Embedding及单层完整LM、长cache/GQA/batch GEMM | 各case的原始PyTorch前向、typed输入/全部输出、正式source→package和strict no-card齐全；主机接入不依赖第1项板端窗口 |
+| 2 | 接入七类新主配置及表内补充。依次推进GEMM及DDR/DTE配对、ResNet、ViT、整数端口/Embedding及单层完整LM、长cache/GQA/batch GEMM | 各case的原始PyTorch前向、typed输入/全部输出、正式source→package和strict no-card齐全；主机接入不依赖第1项板端窗口 |
 | 3 | 每个达到board-ready的case串行执行并检查全部输出、guard、completion和cleanup；新机制先经过真实规模及tail主机门禁 | 失败按下表修复后，用新产物重签受影响case；数值失败不能只有计时记录 |
-| 4 | 在修复后的同一版本完成原42项、八类新增主配置及必要补充的正确性收口；冻结source/config/seed/dtype、预算、compiler/runtime/SDK和package身份 | 全部规定分支通过才建立性能基线B0；未执行、unsupported、失败和外部阻塞逐项列出，不缩矩阵签通过 |
+| 4 | 在修复后的同一版本完成原42项、七类新增主配置及必要补充的正确性收口；冻结source/config/seed/dtype、预算、compiler/runtime/SDK和package身份 | 全部规定分支通过才建立性能基线B0；未执行、unsupported、失败和外部阻塞逐项列出，不缩矩阵签通过 |
 
 已知BF16错误来自[全部42项实测记录](../../docs/board-performance-results.md#2026-09-14全部42个默认search配置的实卡计时)：
 51/65,536项超 `rtol=0.002, atol=0.004`，最大绝对误差0.0078125，设备正常执行且无NaN/Inf；根因尚未确定。
@@ -163,8 +208,8 @@ FP16 LLaMA的14.113 ms、decode的6.545/6.937 ms及4K prefill的278.981 ms保留
 正确性修复开始前也要冻结原已正确41项的可复现对照；每次修复对受影响的原关键case执行下节性能门槛，
 不能把准备阶段引入的退化藏进重新定义的B0。新case和原失败BF16 case在完整数值通过后才有正确性能基线。
 
-基础清单为原42个配置加八个新增FP16主配置，共50个配置；原两种dtype的decode和新长cache均为两步，
-因此完整普通执行基数为53次。新矩阵另有11个明确的shape/dtype补充配置，以及GEMM受控DDR/DTE配对；
+基础清单为原42个配置加七个新增FP16主配置，共49个配置；原两种dtype的decode和新长cache均为两步，
+因此完整普通执行基数为52次。新矩阵另有10个明确的shape/dtype补充配置，以及GEMM受控DDR/DTE配对；
 不把复测或一次profile的内部launch算成新case，不做shape×dtype×policy×预算的全笛卡尔积。
 分项开发过程中已取得且实现/身份未变的本轮资格可以保留；实现改变后按受影响范围重建和复验，冻结版本的清单必须完整对账。
 上述数量是一次完整覆盖的账目，不是每次修改或每轮调优的运行次数；开发中按下面的分层策略执行。
@@ -178,15 +223,15 @@ FP16 LLaMA的14.113 ms、decode的6.545/6.937 ms及4K prefill的278.981 ms保留
 | 真正device timeout/异常 | 当次立即停止设备批次，不自动retry/reset；从已有实际IR、token/lifetime、ABI和设备证据定位 | 修复和主机/no-card先闭合；设备由用户恢复后再确认会话，风险执行放在普通批次之后 |
 | CPU reference/profile报告慢或失败 | 单独记录主机阶段及资源，修报告/准备问题，不套用device completion期限 | 主机产物完整、已完成设备结果可审计；不据此声称卡死或停止无关正常设备任务 |
 
-所有浮点输出均做全量PyTorch比较，输入ID、原样copy、KV旧prefix用exact检查。GEMM/ResNet/YOLO/ViT及batch GEMM
+所有浮点输出均做全量PyTorch比较，输入ID、原样copy、KV旧prefix用exact检查。GEMM/ResNet/ViT及batch GEMM
 首版采用仓内PyTorch默认dtype容差；LLaMA完整LM沿用block的 `rtol=0.002, atol=0.004`，attention/GQA/decode沿用
 `rtol=0.006, atol=0.008`，`equal_nan=false`。容差在设备执行前固定；失败时定位算术/舍入来源，不以分类top-1相同、
 平均误差小、抽样通过或放宽阈值代替完整数值验收。dtype保留framework语义，若内部有F32计算则在导出图中明确体现。
 
 ## Profile范围与根因判定
 
-正确性收口后，为新增八个主配置和原42个配置建立profile证据索引，逐项注明已采集、仅普通计时或待定向采集。
-先覆盖新增八个主配置、原LLaMA/prefill/decode/混合conv的不同主路径及当轮热点；原机制case按actual执行结构选代表，
+正确性收口后，为新增七个主配置和原42个配置建立profile证据索引，逐项注明已采集、仅普通计时或待定向采集。
+先覆盖新增七个主配置、原LLaMA/prefill/decode/混合conv的不同主路径及当轮热点；原机制case按actual执行结构选代表，
 不默认将原42项的所有尾部逐个编译为profile产物。历史profile用于提出假设，不能写成本轮测量；代表也不能代签其它case已采集。
 尾部/长序列补充先用已有ordinary时间和actual工作量调查，出现不同执行结构、热点或退化时再补匹配profile。
 每轮只重采变化的热点及异常结构；最终保留每项优化和退化判断需要的匹配证据，不要求全矩阵各有一次完整Trace。
@@ -254,7 +299,7 @@ workload的source→package编译、CPU reference、设备执行及profile报告
 | 第三轮最终收口 | 冻结最终版本，全矩阵逐case实际板测一次，完整PyTorch与普通计时；关键性能另按匹配A/B验收 | 最终版本已准备的包复用，仅补缺失/失效编译；最终实卡全量不得因先前通过或推断无影响而免测 |
 
 影响范围以正式pass调用、规则适用语义、shared helper和candidate选择依赖判断，不能仅按修改文件名或最终winner是否含某条指令判断。
-例如修改BF16 GEMM format，先验证该格式的实际contraction及FP16不适用分支，再验证受影响模型；不能因YOLO是检测网络就直接排除。
+例如修改BF16 GEMM format，先验证该格式的实际contraction及FP16不适用分支，再验证受影响模型；受影响范围依据实际format和指令路径确定。
 若修改全局cost、搜索调度、共用SPM或completion，影响可能覆盖整个关键集合，须在稳定检查点扩大验证；
 这类改动不能只跑目标LLaMA就接纳，但也不必每次局部试修都重复所有长编译。
 无法确定影响的case标记待验证，不把“没跑”写成“未受影响”；需要的门槛未闭合时修改仍待验收。
@@ -276,7 +321,7 @@ compiler发生变化时，尚未重编的旧包只能作已冻结的A/B控制和
 
 | 范围 | 固定配置 |
 | --- | --- |
-| 新模型/复用 | 八个新增FP16主配置；另加GEMM4096³ BF16及单层完整LM S16 BF16 |
+| 新模型/复用 | 七个新增FP16主配置；另加GEMM4096³ BF16及单层完整LM S16 BF16 |
 | 原模型 | LLaMA block FP16/BF16；原两步decode FP16/BF16；4K prefill FP16；小prefill FP16/BF16；conv-mixed-dag FP16/BF16 |
 | 原机制与尾部 | single-card-gemm-tail-1025、local-conv-tail-1025、biased-conv-tail-1031、local-reduce-tail-1031、heterogeneous-tiling-dataflow |
 | 通信 | allgather-add-tail-1025、alltoall-transpose-tail-1025、reduce-scatter-sum-tail-1031、all-reduce-sum-tail-1031 |
@@ -298,7 +343,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 - **触发时机**：影响或可能影响共用search/cost、spatial/temporal/fusion、e-graph、layout、GEMM/reduce、
   buffer/movement、SPM/completion或lowering的修改，在一个根因的候选稳定后、作为已接受优化继续叠加前，必须通过LLaMA检查。
   无法确定影响也按可能影响处理；纯文档及有明确隔离边界的新增case适配不触发逐项LLaMA重编。
-  每轮结束都必须有该轮最终版本的LLaMA资格，不能以“本轮在优化YOLO”延后到第三轮。
+  每轮结束都必须有该轮最终版本的LLaMA资格，不能以“本轮在优化其它网络”延后到第三轮。
 - **控制成本**：同一根因的局部试修仍先跑机制测试，稳定后LLaMA只编译一次，完整no-card后用该包完成PyTorch和A/B、B/A。
   轮末版本若与刚验证的compiler/产物相同则复用结果，不再重复编译/launch；版本改变则补新产物，不能拿旧包测量冒充新compiler结果。
 - **拒绝退化**：同时对比初始快版本和上一接受版本；匹配重复中出现超出波动的稳定变慢，就暂停叠加优化，定位本项变化并修正或撤下。
@@ -328,7 +373,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 ## 每轮记录与最终交付
 
 三轮结束后冻结最终compiler、source/config/参数、预算和SDK/ABI，执行一次完整实卡验收：原42项、
-新增八类主配置、表内shape/dtype补充及本轮GEMM DDR/DTE对照全部实际执行，逐项完整PyTorch、guard、completion/cleanup及普通计时。
+新增七类主配置、表内shape/dtype补充及本轮GEMM DDR/DTE对照全部实际执行，逐项完整PyTorch、guard、completion/cleanup及普通计时。
 两步decode必须完成本次actual KV接续。已有最终版本prepared产物不重编，缺失/失效的产物先补编译/no-card；
 先前通过、推断不受影响或包相同不能代替这次最终运行。失败项先修复，最终报告绑定实际版本，不能混用旧结果标全通过。
 关键case另有规定的匹配性能证据；一次全量计时不代替A/B。Profile只补热点、异常及归因缺口，不要求最终全矩阵再采一套Trace。

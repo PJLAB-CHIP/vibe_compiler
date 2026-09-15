@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -10,6 +11,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/CallInterfaces.h"
@@ -38,6 +40,7 @@ namespace {
 
 struct NCCOutstandingAccessSummary {
   uint32_t workers = 0;
+  llvm::DenseSet<mlir::Value> kcoreWrites;
   llvm::DenseMap<mlir::Value, uint32_t> readers;
   llvm::DenseMap<mlir::Value, uint32_t> writers;
 };
@@ -72,6 +75,7 @@ static void
 mergeOutstandingAccessSummaries(NCCOutstandingAccessSummary &destination,
                                 const NCCOutstandingAccessSummary &source) {
   destination.workers |= source.workers;
+  destination.kcoreWrites.insert(source.kcoreWrites.begin(), source.kcoreWrites.end());
   for (const auto &entry : source.readers)
     destination.readers[entry.first] |= entry.second;
   for (const auto &entry : source.writers)
@@ -92,6 +96,8 @@ static bool
 haveEqualOutstandingAccessSummaries(const NCCOutstandingAccessSummary &lhs,
                                     const NCCOutstandingAccessSummary &rhs) {
   return lhs.workers == rhs.workers &&
+         lhs.kcoreWrites.size() == rhs.kcoreWrites.size() &&
+         llvm::all_of(lhs.kcoreWrites, [&](mlir::Value v) { return rhs.kcoreWrites.contains(v); }) &&
          haveEqualMasks(lhs.readers, rhs.readers) &&
          haveEqualMasks(lhs.writers, rhs.writers);
 }
@@ -112,6 +118,15 @@ static void collectAccessRoots(mlir::Value value,
       collectAccessRoots(tileRegion.getInputs()[blockArgument.getArgNumber()],
                          roots, visited);
       return;
+    }
+    if (auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent);
+        loop && owner == loop.getBody() && blockArgument.getArgNumber() > 0) {
+      unsigned index = blockArgument.getArgNumber() - 1;
+      auto yield = mlir::cast<mlir::scf::YieldOp>(owner->getTerminator());
+      if (yield.getOperand(index) == blockArgument) {
+        collectAccessRoots(loop.getInitArgs()[index], roots, visited);
+        return;
+      }
     }
     // Keep same-iteration SCF state variables distinct here. Expanding each
     // one independently through init/yield loses the relational fact that a
@@ -264,17 +279,6 @@ getParticipants(uint32_t mask) {
   return participants;
 }
 
-static void insertNCCJoinBefore(mlir::Operation *operation, uint32_t mask,
-                                NCCOutstandingAccessSummary &state) {
-  mask &= state.workers;
-  if (mask == 0)
-    return;
-  mlir::OpBuilder builder(operation);
-  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask),
-                                mlir::UnitAttr{});
-  clearSynchronizedWorkers(state, mask);
-}
-
 static void recordNCCIssue(mlir::Operation *operation, uint32_t workerMask,
                            NCCOutstandingAccessSummary &state) {
   state.workers |= workerMask;
@@ -405,15 +409,204 @@ public:
                 "placement requires structured single-block function IR";
     }
     NCCOutstandingAccessSummary state;
-    return processBlock(function.getBody().front(), state);
+    if (mlir::failed(processBlock(function.getBody().front(), state)))
+      return mlir::failure();
+    return apply(function.getOperation());
   }
 
   mlir::LogicalResult run(TileRegionOp tileRegion) {
     NCCOutstandingAccessSummary state;
-    return processOperation(tileRegion.getOperation(), state);
+    if (mlir::failed(processOperation(tileRegion.getOperation(), state)))
+      return mlir::failure();
+    return apply(tileRegion.getOperation());
   }
 
 private:
+  struct LoopPhase {
+    mlir::scf::ForOp loop;
+    bool first;
+    friend bool operator==(const LoopPhase &lhs, const LoopPhase &rhs) {
+      return lhs.loop == rhs.loop && lhs.first == rhs.first;
+    }
+  };
+  struct JoinRequest {
+    llvm::SmallVector<LoopPhase, 4> phases;
+    uint32_t mask;
+    bool kcoreRelease = false;
+  };
+  llvm::SmallVector<LoopPhase, 4> phases;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<JoinRequest, 4>> requests;
+  llvm::DenseSet<mlir::Operation *> nonemptyLoops;
+
+  static void mergeRequest(llvm::SmallVectorImpl<JoinRequest> &into,
+                           JoinRequest request) {
+    for (auto &existing : into)
+      if (existing.phases == request.phases) {
+        existing.mask |= request.mask;
+        existing.kcoreRelease |= request.kcoreRelease;
+        return;
+      }
+    into.push_back(std::move(request));
+  }
+
+  void insertNCCJoinBefore(mlir::Operation *operation, uint32_t mask,
+                           NCCOutstandingAccessSummary &state) {
+    mask &= state.workers;
+    if (!mask)
+      return;
+    mergeRequest(requests[operation], {phases, mask});
+    clearSynchronizedWorkers(state, mask);
+    state.kcoreWrites.clear();
+  }
+
+  void releaseKcoreWritesBefore(mlir::Operation *op,
+                                NCCOutstandingAccessSummary &state) {
+    if (state.kcoreWrites.empty())
+      return;
+    auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
+    if (!effects)
+      return;
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance> instances;
+    effects.getEffects(instances);
+    bool conflict = false;
+    for (const auto &effect : instances) {
+      if (!effect.getValue() || !mlir::isa<mlir::MemoryEffects::Read,
+                                          mlir::MemoryEffects::Write>(effect.getEffect()))
+        continue;
+      for (auto root : getAccessRoots(effect.getValue()))
+        for (auto written : state.kcoreWrites)
+          conflict |= !areKnownDistinctRoots(root, written);
+    }
+    if (conflict) {
+      mergeRequest(requests[op], {phases, 0, true});
+      state.kcoreWrites.clear();
+    }
+  }
+
+  static void simplifyRequests(llvm::SmallVectorImpl<JoinRequest> &items) {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (size_t i = 0; i < items.size() && !changed; ++i)
+        for (size_t j = i + 1; j < items.size(); ++j) {
+          uint32_t common = items[i].mask & items[j].mask;
+          bool commonRelease = items[i].kcoreRelease && items[j].kcoreRelease;
+          if ((!common && !commonRelease) || items[i].phases.size() != items[j].phases.size())
+            continue;
+          unsigned differences = 0, differentPhase = 0;
+          bool sameLoops = true;
+          for (unsigned k = 0; k < items[i].phases.size(); ++k) {
+            sameLoops &= items[i].phases[k].loop == items[j].phases[k].loop;
+            if (items[i].phases[k].first != items[j].phases[k].first) {
+              ++differences;
+              differentPhase = k;
+            }
+          }
+          if (!sameLoops || differences != 1)
+            continue;
+          JoinRequest combined = items[i];
+          combined.phases.erase(combined.phases.begin() + differentPhase);
+          combined.mask = common;
+          combined.kcoreRelease = commonRelease;
+          items[i].mask &= ~common;
+          items[j].mask &= ~common;
+          if (commonRelease) {
+            items[i].kcoreRelease = false;
+            items[j].kcoreRelease = false;
+          }
+          mergeRequest(items, std::move(combined));
+          changed = true;
+          break;
+        }
+    }
+  }
+
+  bool canHoistEntryJoin(mlir::Operation *operation,
+                         mlir::scf::ForOp loop, uint32_t mask, bool kcoreRelease) const {
+    if (!nonemptyLoops.contains(loop.getOperation()))
+      return false;
+    for (mlir::Operation *current = operation; current != loop.getOperation();) {
+      if (!current->getBlock())
+        return false;
+      for (auto &previous : *current->getBlock()) {
+        if (&previous == current)
+          break;
+        bool issuesParticipant = false;
+        previous.walk([&](mlir::Operation *nested) {
+          if (kcoreRelease && mlir::isa<mlir::memref::StoreOp>(nested))
+            issuesParticipant = true;
+          auto completion = getNCCOperationCompletion(nested);
+          if (completion.issueWorker)
+            issuesParticipant |= (mask & (uint32_t{1} <<
+                static_cast<uint32_t>(*completion.issueWorker))) != 0;
+        });
+        if (issuesParticipant)
+          return false;
+      }
+      current = current->getParentOp();
+      if (!current)
+        return false;
+      if (current != loop.getOperation() && !mlir::isa<TileRegionOp>(current) &&
+          !nonemptyLoops.contains(current))
+        return false;
+    }
+    return true;
+  }
+
+  mlir::LogicalResult apply(mlir::Operation *root) {
+    llvm::SmallVector<mlir::Operation *> points;
+    root->walk([&](mlir::Operation *op) {
+      if (requests.count(op) || mlir::isa<SyncNCCJoinOp>(op))
+        points.push_back(op);
+    });
+    for (mlir::Operation *point : points) {
+      auto found = requests.find(point);
+      if (found != requests.end()) {
+        simplifyRequests(found->second);
+        for (const JoinRequest &request : found->second) {
+          if (!request.mask && !request.kcoreRelease)
+            continue;
+          mlir::Operation *anchor = point;
+          bool hoisted = !request.phases.empty() &&
+              llvm::all_of(request.phases, [](const LoopPhase &phase) { return phase.first; }) &&
+              canHoistEntryJoin(point, request.phases.front().loop, request.mask, request.kcoreRelease);
+          if (hoisted) {
+            auto loop = request.phases.front().loop;
+            anchor = loop.getOperation();
+          }
+          mlir::OpBuilder builder(anchor);
+          mlir::UnitAttr boundary;
+          if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(point))
+            boundary = join.getScheduleBoundaryAttr();
+          if (!hoisted && !request.phases.empty()) {
+            mlir::Value condition;
+            for (auto phase : request.phases) {
+              auto comparison = builder.create<mlir::arith::CmpIOp>(
+                  point->getLoc(), phase.first ? mlir::arith::CmpIPredicate::eq
+                                               : mlir::arith::CmpIPredicate::ne,
+                  phase.loop.getInductionVar(), phase.loop.getLowerBound());
+              condition = condition ? builder.create<mlir::arith::AndIOp>(
+                                          point->getLoc(), condition, comparison).getResult()
+                                    : comparison.getResult();
+            }
+            auto branch = builder.create<mlir::scf::IfOp>(point->getLoc(), condition, false);
+            builder.setInsertionPointToStart(&branch.getThenRegion().front());
+          }
+          if (request.mask)
+            builder.create<SyncNCCJoinOp>(point->getLoc(), getParticipants(request.mask), boundary);
+          else if (request.kcoreRelease) {
+            builder.getContext()->getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+            builder.create<mlir::LLVM::FenceOp>(point->getLoc(), mlir::LLVM::AtomicOrdering::release,
+                                               kTargetKcoreReleaseScope);
+          }
+        }
+      }
+      if (mlir::isa<SyncNCCJoinOp>(point))
+        point->erase();
+    }
+    return mlir::success();
+  }
+
   mlir::LogicalResult processBlock(mlir::Block &block,
                                    NCCOutstandingAccessSummary &state) {
     for (auto iterator = block.begin(); iterator != block.end();) {
@@ -426,6 +619,12 @@ private:
 
   mlir::LogicalResult processOperation(mlir::Operation *operation,
                                        NCCOutstandingAccessSummary &state) {
+    if (auto fence = mlir::dyn_cast<mlir::LLVM::FenceOp>(operation);
+        fence && fence.getSyncscope() == kTargetKcoreReleaseScope &&
+        fence.getOrdering() == mlir::LLVM::AtomicOrdering::release) {
+      state.kcoreWrites.clear();
+      return mlir::success();
+    }
     if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(operation)) {
       if (!tileRegion.getBody().hasOneBlock())
         return tileRegion.emitError()
@@ -469,9 +668,6 @@ private:
       if (lower && upper && step && *step > 0 && *lower >= *upper)
         return mlir::success();
 
-      NCCOutstandingAccessSummary bodyState = state;
-      if (mlir::failed(processBlock(*forOp.getBody(), bodyState)))
-        return mlir::failure();
       bool guaranteedToExecute =
           lower && upper && step && *step > 0 && *lower < *upper;
       std::optional<__int128> tripCount;
@@ -481,37 +677,46 @@ private:
         tripCount = (span + static_cast<__int128>(*step) - 1) /
                     static_cast<__int128>(*step);
       }
+      if (guaranteedToExecute)
+        nonemptyLoops.insert(forOp.getOperation());
+      NCCOutstandingAccessSummary bodyState = state;
+      bool repeated = !tripCount || *tripCount > 1;
+      if (repeated)
+        phases.push_back({forOp, true});
+      auto firstResult = processBlock(*forOp.getBody(), bodyState);
+      if (repeated)
+        phases.pop_back();
+      if (mlir::failed(firstResult))
+        return mlir::failure();
       if (tripCount && *tripCount == 1) {
         state = std::move(bodyState);
         return mlir::success();
       }
 
-      // A later iteration observes the prior iteration's pending access state.
-      // Reprocess to a finite typed-worker fixed point so a cross-worker
-      // loop-carried RAW/WAR/WAW cut is explicit in the loop body, while a
-      // same-worker chain remains a join-free ordered issue stream.
-      const unsigned convergenceLimit =
-          static_cast<unsigned>(kNCCWorkerCount) *
-              (static_cast<unsigned>(std::distance(forOp.getBody()->begin(),
-                                                   forOp.getBody()->end())) +
-               1) +
-          1;
+      // Analyze entry and backedges without editing the shared body. The
+      // backedge header is a monotone union of states reachable after at least
+      // one iteration; entry-only requirements remain separate requests.
+      const unsigned convergenceLimit = static_cast<unsigned>(kNCCWorkerCount) *
+          (static_cast<unsigned>(std::distance(forOp.getBody()->begin(),
+                                              forOp.getBody()->end())) +
+           state.readers.size() + state.writers.size() + 1) + 1;
+      NCCOutstandingAccessSummary header = bodyState;
       bool converged = false;
       for (unsigned iteration = 0; iteration < convergenceLimit; ++iteration) {
-        // This is a sequential backedge, not an alternative control-flow
-        // merge. `bodyState` already contains the entry state followed by one
-        // complete iteration; feed that exact pending state into the next.
-        // Optional same-worker issues remain ordered on every path where they
-        // occur, and paths without an issue require no completion.
-        NCCOutstandingAccessSummary nextState = bodyState;
-        if (mlir::failed(processBlock(*forOp.getBody(), nextState)))
+        NCCOutstandingAccessSummary nextState = header;
+        phases.push_back({forOp, false});
+        auto nextResult = processBlock(*forOp.getBody(), nextState);
+        phases.pop_back();
+        if (mlir::failed(nextResult))
           return mlir::failure();
-        if (haveEqualOutstandingAccessSummaries(nextState, bodyState)) {
+        auto merged = header;
+        mergeOutstandingAccessSummaries(merged, nextState);
+        bodyState = std::move(nextState);
+        if (haveEqualOutstandingAccessSummaries(merged, header)) {
           converged = true;
-          bodyState = std::move(nextState);
           break;
         }
-        bodyState = std::move(nextState);
+        header = std::move(merged);
       }
       if (!converged)
         return forOp.emitError()
@@ -557,20 +762,14 @@ private:
                                   /*ignoreTypedIssueResources=*/true) &
           ~workerMask;
       insertNCCJoinBefore(operation, crossWorkerConflicts, state);
+      releaseKcoreWritesBefore(operation, state);
       recordNCCIssue(operation, workerMask, state);
     }
 
     if (contract.kind == NCCCompletionKind::ParticipantJoin) {
       uint32_t requested = contract.participantMask & kAllNCCWorkersMask;
       if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
-        uint32_t effective = requested & state.workers;
-        if (effective == 0) {
-          join.erase();
-          return mlir::success();
-        }
-        if (effective != requested)
-          join.setParticipants(getParticipants(effective));
-        clearSynchronizedWorkers(state, effective);
+        insertNCCJoinBefore(operation, requested, state);
         return mlir::success();
       }
       clearSynchronizedWorkers(state, requested);
@@ -596,6 +795,7 @@ private:
       uint32_t conflicts = getExternalConflictMask(
           operation, state, /*ignoreTypedIssueResources=*/true);
       insertNCCJoinBefore(operation, conflicts, state);
+      releaseKcoreWritesBefore(operation, state);
       return mlir::success();
     }
 
@@ -615,6 +815,9 @@ private:
 
     uint32_t conflicts = getExternalConflictMask(operation, state);
     insertNCCJoinBefore(operation, conflicts, state);
+    if (auto store = mlir::dyn_cast<mlir::memref::StoreOp>(operation))
+      for (auto root : getAccessRoots(store.getMemref()))
+        state.kcoreWrites.insert(root);
     return mlir::success();
   }
 };
@@ -627,6 +830,26 @@ static void eraseDerivedNCCJoins(mlir::Operation *root) {
   });
   for (SyncNCCJoinOp join : llvm::reverse(joins))
     join.erase();
+  llvm::SmallVector<mlir::LLVM::FenceOp> releases;
+  root->walk([&](mlir::LLVM::FenceOp fence) {
+    if (fence.getOrdering() == mlir::LLVM::AtomicOrdering::release &&
+        fence.getSyncscope() == kTargetKcoreReleaseScope)
+      releases.push_back(fence);
+  });
+  for (auto release : releases)
+    release.erase();
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    root->walk<mlir::WalkOrder::PostOrder>([&](mlir::Operation *op) {
+      if (op != root && mlir::isa<mlir::scf::IfOp, mlir::arith::CmpIOp,
+                                  mlir::arith::AndIOp>(op) &&
+          mlir::isOpTriviallyDead(op)) {
+        op->erase();
+        changed = true;
+      }
+    });
+  }
 }
 
 static mlir::LogicalResult

@@ -21,6 +21,7 @@ add_mlir_library(WaferTileTransforms
   WaferIR
   WaferPlanning
   MLIRAnalysis
+  MLIRAffineDialect
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect

@@ -15,6 +15,8 @@
 using namespace wafer;
 using namespace wafer::tile_region_to_instr;
 
+#include <limits>
+
 namespace {
 
 constexpr int64_t kNchw2NhwcPermutation[] = {0, 2, 3, 1};
@@ -92,6 +94,67 @@ mlir::FailureOr<MovementEndpoint> resolveMovementEndpoint(mlir::Value value) {
   return resolveStaticMovementEndpoint(value);
 }
 
+// A complete packed destination allocation owns its final padding byte. An
+// aligned contiguous source view can therefore be copied as physical bytes;
+// partial packed destinations still require a bit-preserving route.
+static bool isContiguousByteAlignedPackedView(mlir::MemRefType type) {
+  auto memory = getWaferMemoryAttr(type);
+  if (!memory || memory.getLayout() != MemLayout::Tensor ||
+      !type.hasStaticShape() || !type.getElementType().isInteger(1))
+    return false;
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset;
+  if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+      mlir::ShapedType::isDynamic(offset) || offset < 0 || offset % 8)
+    return false;
+  int64_t expected = 1;
+  for (int64_t dim = type.getRank(); dim-- > 0;) {
+    int64_t extent = type.getDimSize(dim);
+    if (extent <= 0 || (extent > 1 && strides[dim] != expected) ||
+        expected > std::numeric_limits<int64_t>::max() / extent)
+      return false;
+    expected *= extent;
+  }
+  return true;
+}
+
+static bool canCopyPackedBytes(mlir::Value source, mlir::Value destination) {
+  auto src = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto dst = mlir::dyn_cast<mlir::MemRefType>(destination.getType());
+  if (!src || !dst || src.getShape() != dst.getShape() ||
+      !isContiguousByteAlignedPackedView(src) ||
+      !isContiguousByteAlignedPackedView(dst))
+    return false;
+  if (dst.getNumElements() % 8 == 0)
+    return true;
+  mlir::Value root = destination;
+  while (true) {
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(root)) {
+      auto region =
+          mlir::dyn_cast<TileRegionOp>(argument.getOwner()->getParentOp());
+      if (!region)
+        return false;
+      root = region.getInputs()[argument.getArgNumber()];
+      continue;
+    }
+    if (auto view = root.getDefiningOp<mlir::memref::SubViewOp>()) {
+      root = view.getSource();
+      continue;
+    }
+    if (auto cast = root.getDefiningOp<mlir::memref::CastOp>()) {
+      root = cast.getSource();
+      continue;
+    }
+    break;
+  }
+  auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset;
+  return allocation && allocation.getType().getShape() == dst.getShape() &&
+         mlir::succeeded(mlir::getStridesAndOffset(dst, strides, offset)) &&
+         offset == 0;
+}
+
 class TileLoadLowering : public mlir::OpRewritePattern<StorageLoadOp> {
 public:
   TileLoadLowering(mlir::MLIRContext *context)
@@ -109,6 +172,15 @@ public:
       return failPattern(rewriter, op,
                          "tile.load identity relation is not exact");
 
+    if (canCopyPackedBytes(op.getSource(), op.getDest())) {
+      auto descriptor = getContiguousDescriptor(rewriter, op, destType);
+      if (mlir::failed(descriptor))
+        return mlir::failure();
+      createRDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
+                 *descriptor);
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
     if (mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
             sourceType, destType, *relation.get()))) {
       mlir::FailureOr<MovementDescriptor> descriptor =
@@ -157,6 +229,15 @@ public:
       return failPattern(rewriter, op,
                          "tile.store identity relation is not exact");
 
+    if (canCopyPackedBytes(op.getSource(), op.getDest())) {
+      auto descriptor = getContiguousDescriptor(rewriter, op, destType);
+      if (mlir::failed(descriptor))
+        return mlir::failure();
+      createWDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
+                 *descriptor);
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
     auto source = resolveMovementEndpoint(op.getSource());
     if (mlir::failed(source))
       return failPattern(rewriter, op,
@@ -464,10 +545,17 @@ public:
     };
     if (sourceMemory.getSpace() == MemorySpace::DDR &&
         destMemory.getSpace() == MemorySpace::SPM) {
-      if (source->base == op.getSource() &&
-          destination->base == op.getTarget() &&
-          mlir::succeeded(analysis::TransferRealizability::proveCompactDma(
-              sourceType, destType, *relation.get()))) {
+      if (canCopyPackedBytes(op.getSource(), op.getTarget())) {
+        auto descriptor = getContiguousDescriptor(rewriter, op, destType);
+        if (mlir::failed(descriptor))
+          return mlir::failure();
+        record(createRDMA(rewriter, op.getLoc(), op.getSource(), op.getTarget(),
+                          *descriptor));
+      } else if (source->base == op.getSource() &&
+                 destination->base == op.getTarget() &&
+                 mlir::succeeded(
+                     analysis::TransferRealizability::proveCompactDma(
+                         sourceType, destType, *relation.get()))) {
         auto descriptor = getStridedTensorDescriptor(rewriter, op, sourceType,
                                                      "memref.copy RDMA source");
         if (mlir::failed(descriptor))

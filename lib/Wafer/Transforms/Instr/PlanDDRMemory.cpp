@@ -807,10 +807,16 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
       if (!viewInfo->bitPackedElement || !rootInfo->bitPackedElement)
         return op->emitError()
                << "unsupported_ddr_view: DDR view and root bitpacking differ";
-      if (viewOffsetElementsRange.min != 0 || viewOffsetElementsRange.max != 0)
+      int64_t bits;
+      if (viewOffsetElementsRange.min != viewOffsetElementsRange.max ||
+          !checkedMul(viewOffsetElementsRange.min,
+                      viewInfo->logicalTensorType.getElementTypeBitWidth(),
+                      bits) ||
+          bits < 0 || bits % 8)
         return op->emitError()
-               << "unsupported_ddr_view: bitpacked DDR view must have zero "
-                  "element offset";
+               << "unsupported_ddr_view: bitpacked DDR view requires a "
+                  "statically byte-aligned offset";
+      minViewOffsetBytes = maxViewOffsetBytes = bits / 8;
     } else {
       if (viewInfo->elementBytes != rootInfo->elementBytes)
         return op->emitError()

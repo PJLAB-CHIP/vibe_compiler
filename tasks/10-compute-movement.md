@@ -193,6 +193,11 @@ low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的can
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof
 支持。relation result保持logical i1，bitpacking只由encoding与Instr lowering决定。
 
+`math.sin/cos`保留原dtype和indexing maps，分别映射到`wafer.tile.elementwise<sin/cos>`，随后使用既有
+`InstrElementwiseKind::Sin/Cos`与target/runtime接口。它们和exp/ln一样是一元transcendental，不引入模型名分支或主机预计算。
+覆盖F16/BF16/F32、rank3及1024/1025/1031，检查typed kind、实际Instr和原始PyTorch/SystemC全输出；F32对应RoPE实际输入精度。
+
+
 StableHLO `power`只有在current Tensor/Linalg IR证明exponent为exact floating-point splat `2.0`时收窄为unary
 `wafer.tile.elementwise<square>`，并确定性lower到`InstrElementwiseKind::Square`/`SquareVV`。证明在splat constant仍可见时写入scalar
 body；一般`math.powf`不匹配，也不通过buffer名称、shape或allocation位置恢复exponent。
@@ -393,3 +398,14 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 - Tile-to-Instr、fresh completion、SPM/DDR、communication、target与package全链实际执行。
 
 本文不得用local lowering或movement特判代替physical-dataflow能力，也不得据单op或局部fixture宣称joint search完成。
+
+### 单步归约的逐元素 legalization
+
+输入为已选Tile、layout与bufferization之后的Linalg contraction。F32输入无native GEMM支持时，只有actual K extent为1才可复用
+既有scalar-body→Tile elementwise lowering；用输出坐标与唯一归约坐标0建立exact indexing map，单位输入轴用typed view消去。
+单位轴消除必须证明physical metadata view等价；blocked layout不等价时，先实际materialize同shape Tensor布局，再作rank-reduced view。
+保留原始F32 mul/add次序和实际destination初值，不把它转换为F16/BF16/TF32，也不删除加零的算术。输出仍为既有Tile elementwise，
+直接下游仍是Tile→Instr/completion/SPM。此规则属于target legalization，不参与TensorProgram的e-graph等价搜索。
+方法参考MLIR Linalg的unit-extent elimination；pinned DropUnitDims以actual loop extent和map替换证明单步坐标，本处不调用全局canonicalizer。
+覆盖rank3 1024/1025/1031、非零init、generic/named与置换maps；检查一个mul和一个add、无F32 GEMM、F32结果与原初值精确消费，
+并由实际PyTorch outer product和完整LM进入直接下游。K>1不套用此规则。

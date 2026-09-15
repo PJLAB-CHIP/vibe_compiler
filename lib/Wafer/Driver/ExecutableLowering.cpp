@@ -20,6 +20,7 @@
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -351,6 +352,11 @@ bool hasBoundaryOnlyDDRMovementEvidence(const TileExecutable &tile) {
     } else if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(operation)) {
       mlir::Value root = resolveDDRMovementRoot(wdma.getDest());
       valid = root && writableRoots.contains(root);
+    } else if (auto load = mlir::dyn_cast<mlir::memref::LoadOp>(operation)) {
+      if (isWaferDDRMemRefType(load.getMemref().getType())) {
+        mlir::Value root = resolveDDRMovementRoot(load.getMemref());
+        valid = root && readableRoots.contains(root);
+      }
     }
     return valid ? mlir::WalkResult::advance() : mlir::WalkResult::interrupt();
   });
@@ -379,6 +385,9 @@ verifyTileExecutableModule(mlir::ModuleOp module, const ExecutionConfig &config,
     bool allowed = dialect == "builtin" || dialect == "func" ||
                    dialect == "arith" || dialect == "math" ||
                    dialect == "memref" || dialect == "scf" || dialect == "cf";
+    if (auto fence = mlir::dyn_cast<mlir::LLVM::FenceOp>(operation))
+      allowed = fence.getOrdering() == mlir::LLVM::AtomicOrdering::release &&
+                fence.getSyncscope() == kTargetKcoreReleaseScope;
     if (dialect == "wafer")
       allowed = mlir::isa<TargetTopologyOp, ExecutionMeshOp, TileRegionOp,
                           TileYieldOp>(operation) ||

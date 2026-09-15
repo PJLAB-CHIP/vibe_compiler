@@ -191,7 +191,7 @@ decodeNpyDescr(llvm::StringRef descr) {
   if (descr == "|V2")
     return std::pair<llvm::StringRef, uint64_t>{"bf16", 2};
   if (descr == "|b1")
-    return std::pair<llvm::StringRef, uint64_t>{"i1", 1};
+    return std::pair<llvm::StringRef, uint64_t>{"bool", 1};
   if (descr == "|i1")
     return std::pair<llvm::StringRef, uint64_t>{"i8", 1};
   if (descr == "<i2" || (nativeIsLittle && descr == "=i2"))
@@ -204,11 +204,6 @@ decodeNpyDescr(llvm::StringRef descr) {
 }
 
 bool npyDescrMatchesDtype(llvm::StringRef descr, Type elementType) {
-  // NumPy's one-byte signed-integer descriptor was historically accepted for
-  // i1 program payloads as well as i8. Preserve that verifier compatibility;
-  // the generic payload loader decodes the unambiguous storage dtype as i8.
-  if (elementType.isInteger(1) && descr == "|i1")
-    return true;
   auto decoded = decodeNpyDescr(descr);
   return decoded && decoded->first == dtypeString(elementType);
 }

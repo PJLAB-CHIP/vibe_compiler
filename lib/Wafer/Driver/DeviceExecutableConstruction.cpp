@@ -1,5 +1,6 @@
 //===- DeviceExecutableConstruction.cpp - Product policy routing -------===//
 
+#include "InlineConstantData.h"
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 
 #include "PhysicalDataflow/BaselineCurrentIR.h"
@@ -23,7 +24,7 @@ namespace {
 
 static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
-    const frontend::FrontendProgramVerificationResult &program,
+    frontend::FrontendProgramVerificationResult program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CompilationIRTrace *irTrace,
@@ -35,6 +36,9 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
   if (qualification && !optimizations.isNone())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "explicit qualification cannot run search");
+  if (auto error =
+          outlineInlineConstantData(tensorModule, program, programData))
+    return std::move(error);
   ExecutableLoweringStatistics executableStatistics;
   ExecutableCompilationResult compiled;
   if (optimizations.isSearch()) {

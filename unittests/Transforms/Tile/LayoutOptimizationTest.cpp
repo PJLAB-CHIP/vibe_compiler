@@ -557,6 +557,86 @@ module {
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
+TEST_F(LayoutOptimizationTest, ConstantViewsBecomeExplicitSelectedSPMReads) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool predicate : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(predicate);
+      std::string constantElement = predicate ? "i1" : "f32";
+      std::string full = "tensor<2x" + std::to_string(extent + 32) + "x16x" +
+                         constantElement + ">";
+      std::string window =
+          "tensor<2x" + std::to_string(extent) + "x16x" + constantElement + ">";
+      std::string output = "tensor<2x" + std::to_string(extent) + "x16xf32>";
+      std::string text =
+          "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+          "func.func @entry(%input: " +
+          output + ") -> " + output +
+          " { %result = wafer.tile.region(%input : " + output + ") -> (" +
+          output + ") { ^bb0(%local: " + output +
+          "): %constant = arith.constant dense<" +
+          (predicate ? "false" : "0.0") + "> : " + full +
+          " %view = tensor.extract_slice %constant[0, 7, 0] [2, " +
+          std::to_string(extent) + ", 16] [1, 1, 1] : " + full + " to " +
+          window + " %empty = tensor.empty() : " + output +
+          " %mapped = linalg.generic {indexing_maps = "
+          "[affine_map<(b,m,n)->(b,m,n)>, "
+          "affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>], "
+          "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+          "ins(%view, %local : " +
+          window + ", " + output + ") outs(%empty : " + output +
+          ") { ^bb0(%c: " + constantElement + ", %v: f32, %old: f32): " +
+          (predicate ? "%zero = arith.constant 0.0 : f32 %x = arith.select %c, "
+                       "%v, %zero : f32 "
+                     : "%x = arith.addf %c, %v : f32 ") +
+          "linalg.yield %x : f32 } -> " + output +
+          " wafer.tile.yield %mapped : " + output +
+          " } return %result : " + output + " } } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      module->walk([&](mlir::arith::ConstantOp constant) {
+        auto type = mlir::dyn_cast<mlir::RankedTensorType>(constant.getType());
+        if (!type)
+          return;
+        llvm::SmallVector<mlir::Attribute> elements;
+        for (int64_t index = 0; index < type.getNumElements(); ++index) {
+          bool bit = (index / 16) % 31 < index % 16;
+          elements.push_back(
+              predicate ? mlir::Attribute(mlir::IntegerAttr::get(
+                              type.getElementType(), bit))
+                        : mlir::Attribute(mlir::FloatAttr::get(
+                              type.getElementType(), bit ? 0.25 : -0.5)));
+        }
+        constant.setValueAttr(mlir::DenseElementsAttr::get(type, elements));
+      });
+      auto relations = outputRelation(*module);
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      unsigned copiedWindows = 0;
+      module->walk([&](mlir::memref::CopyOp copy) {
+        mlir::Value source = copy.getSource();
+        while (auto view = source.getDefiningOp<mlir::memref::SubViewOp>())
+          source = view.getSource();
+        if (!source.getDefiningOp<mlir::memref::GetGlobalOp>())
+          return;
+        auto type = mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+        EXPECT_EQ(llvm::to_vector(type.getShape()),
+                  (llvm::SmallVector<int64_t>{2, extent, 16}));
+        EXPECT_TRUE(isWaferDDRMemRefType(type));
+        EXPECT_TRUE(isWaferSPMMemRefType(copy.getTarget().getType()));
+        ++copiedWindows;
+      });
+      EXPECT_EQ(copiedWindows, 1u);
+      module->walk([&](mlir::linalg::LinalgOp op) {
+        for (auto input : op.getDpsInputs())
+          EXPECT_TRUE(isWaferSPMMemRefType(input.getType()));
+      });
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
 TEST_F(LayoutOptimizationTest, FunctionBoundarySpaceIsQueriedOncePerFunction) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

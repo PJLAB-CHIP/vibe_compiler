@@ -2,6 +2,7 @@
 
 #include "CommunicationScheduling.h"
 #include "DirectDTETransport.h"
+#include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/DirectDTE.h"
@@ -281,8 +282,10 @@ private:
         }
         if (!isIssue(op) && !mlir::isa<SyncDDRPublishOp, SyncDDRAcquireOp>(op))
           return;
-        auto region = mlir::dyn_cast_or_null<TileRegionOp>(op->getParentOp());
-        if (!region || region->getBlock() != &entry.getBody().front())
+        auto region = op->getParentOfType<TileRegionOp>();
+        auto loops = analysis::getEnclosingStaticLoopDomains(op);
+        if (!region || region->getBlock() != &entry.getBody().front() ||
+            !loops || (!isIssue(op) && !loops->empty()))
           valid = false;
         if (isIssue(op)) {
           if (llvm::any_of(op->getResult(0).getUsers(),
@@ -301,8 +304,9 @@ private:
         return false;
       }
       if (!valid) {
-        failure(Status::Unsupported, "communication construction requires "
-                                     "unbound single-execution issues");
+        failure(Status::Unsupported,
+                "communication construction requires "
+                "unbound issues in matching static execution domains");
         return false;
       }
     }
@@ -359,11 +363,19 @@ private:
             valid = false;
             break;
           }
+          if (!analysis::haveSameStaticLoopDomains(op, found->second)) {
+            failure(Status::Unsupported,
+                    "communication endpoints have different iteration domains");
+            valid = false;
+            break;
+          }
           nodeOf[found->second] = index;
           nodes[index].operations.push_back(found->second);
         }
       });
       if (!valid) {
+        if (result.status == Status::Unsupported)
+          return false;
         failure(Status::Contract,
                 "communication has unmatched endpoints or payloads");
         return false;
@@ -387,13 +399,30 @@ private:
       if (!nodeOf.count(&op))
         addNode(&op);
     }
+    llvm::DenseMap<mlir::Operation *, unsigned> loopEntries;
+    for (auto *op : operations) {
+      auto loop = analysis::getStaticLoopDomain(op);
+      if (!loop)
+        continue;
+      bool communication = false;
+      op->walk(
+          [&](mlir::Operation *nested) { communication |= isIssue(nested); });
+      if (!communication)
+        continue;
+      unsigned entry = addNode(nullptr);
+      loopEntries[op] = entry;
+      if (!collectBlock(loop->loop.getRegion().front(), entry,
+                        nodeOf.lookup(op)))
+        return false;
+    }
     unsigned previous = begin;
     for (auto *op : operations) {
       unsigned index = nodeOf.lookup(op);
-      edge(begin, index, op);
+      unsigned entry = loopEntries.count(op) ? loopEntries.lookup(op) : index;
+      edge(begin, entry, op);
       edge(index, end);
       if (!isIssue(op)) {
-        edge(previous, index);
+        edge(previous, entry);
         previous = index;
       }
       if (auto publish = mlir::dyn_cast<SyncDDRPublishOp>(op)) {
@@ -412,8 +441,9 @@ private:
         }
         acquisitions.emplace_back(binding.getResourceId(), op);
       }
-      // Nested local loops are opaque current operations. Their operand and
-      // effect closure constrain issues without unrolling dynamic executions.
+      // Nested operand/effect closure constrains the loop boundary. Loops
+      // containing communication also have a separately collected body; no
+      // dynamic iteration is expanded.
       op->walk([&](mlir::Operation *nested) {
         for (auto operand : nested->getOperands()) {
           auto *definition = operand.getDefiningOp();

@@ -90,7 +90,7 @@ decodeCompactProgramTensor(const compiler::ProgramTensor &tensor,
                            LogicalFormat format) {
   const LogicalFormatDescriptor *descriptor =
       findLogicalFormatDescriptor(format);
-  if (!descriptor || descriptor->bitpacked)
+  if (!descriptor || (descriptor->bitpacked && format != LogicalFormat::Bool))
     return invocationError(
         TargetModelInvocationErrorCode::UnsupportedProgramTensor,
         "compact source invocation does not support bitpacked program tensors");
@@ -100,18 +100,18 @@ decodeCompactProgramTensor(const compiler::ProgramTensor &tensor,
     return invocationError(
         TargetModelInvocationErrorCode::InvalidProgramInvocation,
         "program tensor compact byte geometry is invalid");
-  const uint64_t elementBytes = descriptor->storageBits / 8;
+  const uint64_t elementBytes =
+      format == LogicalFormat::Bool ? 1 : descriptor->storageBits / 8;
   if (elementBytes == 0 || tensor.getBytes().size() % elementBytes != 0)
     return invocationError(
         TargetModelInvocationErrorCode::InvalidProgramInvocation,
         "program tensor storage width is inconsistent");
-  const LogicalScalarCodecPolicy policy = getTargetTensorScalarCodecPolicy();
   std::vector<RawLogicalValue> values;
   values.reserve(tensor.getBytes().size() / elementBytes);
   for (uint64_t offset = 0; offset < tensor.getBytes().size();
        offset += elementBytes) {
-    llvm::Expected<RawLogicalValue> value =
-        readRawLogicalValue(format, tensor.getBytes(), offset * 8, policy);
+    llvm::Expected<RawLogicalValue> value = readProgramElement(
+        tensor.getDType(), tensor.getBytes(), offset / elementBytes);
     if (!value)
       return invocationError(
           TargetModelInvocationErrorCode::InvalidProgramInvocation,
@@ -126,11 +126,12 @@ encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
                            LogicalFormat format) {
   const LogicalFormatDescriptor *descriptor =
       findLogicalFormatDescriptor(format);
-  if (!descriptor || descriptor->bitpacked)
+  if (!descriptor || (descriptor->bitpacked && format != LogicalFormat::Bool))
     return invocationError(
         TargetModelInvocationErrorCode::UnsupportedProgramTensor,
         "compact target output does not support bitpacked program tensors");
-  const uint64_t elementBytes = descriptor->storageBits / 8;
+  const uint64_t elementBytes =
+      format == LogicalFormat::Bool ? 1 : descriptor->storageBits / 8;
   if (elementBytes == 0 ||
       values.size() > std::numeric_limits<size_t>::max() / elementBytes)
     return invocationError(TargetModelInvocationErrorCode::AddressOverflow,

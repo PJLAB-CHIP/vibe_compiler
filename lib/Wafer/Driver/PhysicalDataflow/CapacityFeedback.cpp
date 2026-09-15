@@ -5,8 +5,12 @@
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -34,22 +38,66 @@ std::optional<int64_t> getProgramArgument(mlir::Value value) {
   return identity ? std::optional<int64_t>(identity.getIndex()) : std::nullopt;
 }
 
+struct InputIdentity {
+  enum class Kind { Argument, Constant };
+  Kind kind;
+  uint64_t index;
+  friend bool operator==(InputIdentity a, InputIdentity b) {
+    return a.kind == b.kind && a.index == b.index;
+  }
+  friend bool operator!=(InputIdentity a, InputIdentity b) { return !(a == b); }
+  friend bool operator<(InputIdentity a, InputIdentity b) {
+    return std::tie(a.kind, a.index) < std::tie(b.kind, b.index);
+  }
+};
+
+// IDs are only container indices for this call. Constant identity comes from
+// the actual immutable initializer attribute, never symbol spelling, shape,
+// or an ordinal correspondence between source and lowered operations.
+class InputIdentities {
+public:
+  std::optional<InputIdentity> get(mlir::Value value) {
+    if (auto argument = getProgramArgument(value))
+      return InputIdentity{InputIdentity::Kind::Argument,
+                           static_cast<uint64_t>(*argument)};
+    mlir::Attribute contents;
+    if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
+      if (mlir::isa<mlir::RankedTensorType>(value.getType()))
+        contents = constant.getValue();
+    if (auto read = value.getDefiningOp<mlir::memref::GetGlobalOp>()) {
+      auto global =
+          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+              read, read.getNameAttr());
+      if (global && global.getConstant())
+        contents = global.getInitialValueAttr();
+    }
+    if (!contents || !mlir::isa<mlir::ElementsAttr>(contents))
+      return std::nullopt;
+    auto inserted = constants.try_emplace(contents, constants.size());
+    return InputIdentity{InputIdentity::Kind::Constant, inserted.first->second};
+  }
+
+private:
+  llvm::DenseMap<mlir::Attribute, uint64_t> constants;
+};
+
 // A derived non-view producer can also read an input. Its consumer scope
 // must participate in ambiguity detection even when no parameter map is
 // available. Stop at another explicit scope, which owns that producer's
 // accesses independently; this is only an SSA dependency walk, not an alias
 // or numeric provenance proof through computation.
-std::set<int64_t> getUnattributedInputs(
-    mlir::Value value,
-    const llvm::DenseSet<mlir::Operation *> &scopeBoundaries) {
-  std::set<int64_t> inputs;
+std::set<InputIdentity>
+getUnattributedInputs(mlir::Value value,
+                      const llvm::DenseSet<mlir::Operation *> &scopeBoundaries,
+                      InputIdentities &identities) {
+  std::set<InputIdentity> inputs;
   llvm::SmallVector<mlir::Value> pending{value};
   llvm::DenseSet<mlir::Value> visited;
   while (!pending.empty()) {
     mlir::Value current = pending.pop_back_val();
     if (!visited.insert(current).second)
       continue;
-    if (auto input = getProgramArgument(current)) {
+    if (auto input = identities.get(current)) {
       inputs.insert(*input);
       continue;
     }
@@ -78,17 +126,19 @@ std::set<int64_t> getUnattributedInputs(
 }
 
 struct TensorInputAccesses {
-  std::set<int64_t> known;
-  std::set<int64_t> incomplete;
+  std::set<InputIdentity> known;
+  std::set<InputIdentity> incomplete;
 };
 
 TensorInputAccesses
 getTensorInputs(mlir::Value value, InputCapacityFeedback &feedback,
                 const llvm::DenseSet<mlir::Operation *> &fusedProducers,
-                const llvm::DenseSet<mlir::Operation *> &scopeBoundaries) {
+                const llvm::DenseSet<mlir::Operation *> &scopeBoundaries,
+                InputIdentities &identities) {
   TensorInputAccesses accesses;
   auto unknown = [&](mlir::Value current) {
-    auto dependencies = getUnattributedInputs(current, scopeBoundaries);
+    auto dependencies =
+        getUnattributedInputs(current, scopeBoundaries, identities);
     accesses.incomplete.insert(dependencies.begin(), dependencies.end());
   };
   auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
@@ -116,7 +166,7 @@ getTensorInputs(mlir::Value value, InputCapacityFeedback &feedback,
       unknown(value);
       return accesses;
     }
-    if (auto identity = getProgramArgument(current.value)) {
+    if (auto identity = identities.get(current.value)) {
       accesses.known.insert(*identity);
       continue;
     }
@@ -193,9 +243,14 @@ getTensorInputs(mlir::Value value, InputCapacityFeedback &feedback,
 /// external input origin; compute, opaque writes and receives remain unknown.
 class InputOrigins {
 public:
-  explicit InputOrigins(mlir::func::FuncOp function) {
+  explicit InputOrigins(mlir::func::FuncOp function,
+                        InputIdentities &identities)
+      : identities(identities) {
     function.walk([&](mlir::Operation *operation) {
+      // A fence orders existing accesses but does not change any buffer's
+      // data origin. Treating it as an opaque write hid all weight feedback.
       if (operation == function.getOperation() ||
+          mlir::isa<mlir::LLVM::FenceOp>(operation) ||
           operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())
         return;
       auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
@@ -230,10 +285,10 @@ public:
     });
   }
 
-  std::optional<int64_t> get(mlir::Value value) {
+  std::optional<InputIdentity> get(mlir::Value value) {
     if (opaqueMemoryWrite)
       return std::nullopt;
-    std::optional<int64_t> identity;
+    std::optional<InputIdentity> identity;
     const auto &storage = roots.getStorageRoots(value);
     if (storage.empty())
       return std::nullopt;
@@ -253,24 +308,24 @@ private:
         unknown.insert(root);
   }
 
-  std::optional<int64_t> getRoot(mlir::Value root) {
+  std::optional<InputIdentity> getRoot(mlir::Value root) {
     if (unknown.contains(root))
       return std::nullopt;
     if (auto found = origins.find(root); found != origins.end())
       return found->second;
     if (!active.insert(root).second)
       return std::nullopt;
-    auto finish = [&](std::optional<int64_t> value) {
+    auto finish = [&](std::optional<InputIdentity> value) {
       active.erase(root);
       origins.try_emplace(root, value);
       return value;
     };
     auto found = writers.find(root);
-    if (auto argument = getProgramArgument(root))
+    if (auto argument = identities.get(root))
       return finish(found == writers.end() ? argument : std::nullopt);
     if (found == writers.end() || found->second.empty())
       return finish(std::nullopt);
-    std::optional<int64_t> identity;
+    std::optional<InputIdentity> identity;
     for (mlir::Operation *writer : found->second) {
       mlir::Value source;
       if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(writer))
@@ -287,11 +342,12 @@ private:
     return finish(identity);
   }
 
+  InputIdentities &identities;
   StorageRootMemo roots;
   bool opaqueMemoryWrite = false;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<mlir::Operation *, 2>> writers;
   llvm::DenseSet<mlir::Value> unknown, active;
-  llvm::DenseMap<mlir::Value, std::optional<int64_t>> origins;
+  llvm::DenseMap<mlir::Value, std::optional<InputIdentity>> origins;
 };
 
 } // namespace
@@ -312,7 +368,8 @@ deriveInputCapacityFeedback(CardId card, TileId tile,
     std::set<TemporalCoordinate> coordinates;
     bool complete = true;
   };
-  std::map<int64_t, std::map<Scope, InputAccess>> inputs;
+  InputIdentities identities;
+  std::map<InputIdentity, std::map<Scope, InputAccess>> inputs;
   llvm::DenseSet<mlir::Operation *> scopeBoundaries;
   for (const auto &choice : choices)
     for (const auto &scope : choice.scopes)
@@ -333,15 +390,72 @@ deriveInputCapacityFeedback(CardId card, TileId tile,
       result.detail = "capacity feedback has mismatched temporal scopes";
       return result;
     }
+    // A fused producer's parallel coordinates are controlled by its actual
+    // consumer traversal. Follow the same proved view/result maps that the
+    // temporal materializer uses instead of dropping these repair directions.
+    auto appendCoordinates = [&](mlir::Operation *operation, unsigned iterator,
+                                 std::set<TemporalCoordinate> &coordinates) {
+      llvm::SmallVector<std::pair<mlir::Operation *, unsigned>> pending{
+          {operation, iterator}};
+      llvm::DenseSet<std::pair<mlir::Operation *, unsigned>> visited;
+      while (!pending.empty()) {
+        auto current = pending.pop_back_val();
+        if (!visited.insert(current).second)
+          continue;
+        auto scope = llvm::find_if(choice.scopes, [&](const auto &scope) {
+          return scope.operation == current.first;
+        });
+        if (scope != choice.scopes.end()) {
+          size_t index = std::distance(choice.scopes.begin(), scope);
+          const auto &descriptor = descriptors[index];
+          if (current.second < descriptor.iteratorCapabilities.size() &&
+              descriptor.iteratorCapabilities[current.second] ==
+                  IteratorTilingCapability::Tileable &&
+              descriptor.iterationExtents[current.second] > 1) {
+            coordinates.insert({domainIndex, index, current.second});
+            continue;
+          }
+        }
+        if (choice.kind != TemporalTraversalKind::Joint)
+          continue;
+        for (const auto &fusion : domain->getFusions()) {
+          if (fusion.producer.getOwner() != current.first)
+            continue;
+          auto resultMap = analysis::getStructuredResultMap(fusion.producer);
+          if (mlir::failed(resultMap))
+            continue;
+          for (auto [dimension, expression] :
+               llvm::enumerate(resultMap->getResults())) {
+            auto projected = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+            if (!projected || projected.getPosition() != current.second)
+              continue;
+            for (const auto &use : fusion.uses) {
+              if (dimension >= use.producerDimensions.size())
+                continue;
+              int32_t view = use.producerDimensions[dimension].viewDimension;
+              auto inputMap = analysis::getStructuredOperandMap(*use.operand);
+              if (view < 0 || mlir::failed(inputMap) ||
+                  static_cast<unsigned>(view) >= inputMap->getNumResults())
+                continue;
+              auto consumerAxis = mlir::dyn_cast<mlir::AffineDimExpr>(
+                  inputMap->getResult(view));
+              if (consumerAxis)
+                pending.push_back(
+                    {use.operand->getOwner(), consumerAxis.getPosition()});
+            }
+          }
+        }
+      }
+    };
     for (auto [scopeIndex, scope] : llvm::enumerate(choice.scopes))
       for (mlir::OpOperand &operand : scope.operation->getOpOperands()) {
         auto sources = getTensorInputs(operand.get(), result, fusedProducers,
-                                       scopeBoundaries);
+                                       scopeBoundaries, identities);
         if (result.status == CapacityFeedbackStatus::BrokenContract)
           return result;
-        for (int64_t dependency : sources.incomplete)
+        for (auto dependency : sources.incomplete)
           inputs[dependency][{domainIndex, scopeIndex}].complete = false;
-        for (int64_t input : sources.known) {
+        for (auto input : sources.known) {
           // Retain all readers of every actually demanded input piece.
           auto &access = inputs[input][{domainIndex, scopeIndex}];
           auto map = analysis::getStructuredOperandMap(operand);
@@ -350,15 +464,13 @@ deriveInputCapacityFeedback(CardId card, TileId tile,
             continue;
           }
           auto simplified = mlir::simplifyAffineMap(*map);
-          for (auto [iterator, capability] :
-               llvm::enumerate(descriptors[scopeIndex].iteratorCapabilities))
-            if (capability == IteratorTilingCapability::Tileable &&
-                descriptors[scopeIndex].iterationExtents[iterator] > 1 &&
-                llvm::any_of(simplified.getResults(),
+          for (unsigned iterator = 0; iterator < simplified.getNumDims();
+               ++iterator)
+            if (llvm::any_of(simplified.getResults(),
                              [&](mlir::AffineExpr expr) {
                                return expr.isFunctionOfDim(iterator);
                              }))
-              access.coordinates.insert({domainIndex, scopeIndex, iterator});
+              appendCoordinates(scope.operation, iterator, access.coordinates);
         }
       }
   }
@@ -373,7 +485,7 @@ deriveInputCapacityFeedback(CardId card, TileId tile,
     }
     auto &index = origins[function.getOperation()];
     if (!index)
-      index = std::make_unique<InputOrigins>(function);
+      index = std::make_unique<InputOrigins>(function, identities);
     auto input = index->get(demand.allocation);
     auto found = input ? inputs.find(*input) : inputs.end();
     if (found == inputs.end()) {

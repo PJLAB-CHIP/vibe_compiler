@@ -990,7 +990,7 @@ def check_ncc_worker_command_abi(
         registry_text,
         r"addEnumSelectedCalls\(\);.*?"
         r'addVoid\("direct_dte_send_issue".*?'
-        r"assert\(result\.size\(\)\s*==\s*115",
+        r"assert\(result\.size\(\)\s*==\s*117",
         "target-call registry current-only closure",
     )
     require_pattern(

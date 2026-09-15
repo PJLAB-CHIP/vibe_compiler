@@ -874,7 +874,7 @@ parseSite(const llvm::json::Value &value, uint64_t index,
   if (descriptor.symbol != *symbol)
     return invalid(context +
                    " target-call registry ordinal/symbol do not agree");
-  const ProfileTargetSiteKind descriptorKind =
+  const auto descriptorKind =
       getProfileTargetSiteKind(descriptor);
   if (descriptorKind != *siteKind)
     return invalid(context + " target-call registry semantic/site_kind do not "

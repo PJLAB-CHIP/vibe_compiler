@@ -448,6 +448,7 @@ translatePreparedTile(PreparedTile prepared, llvm::StringRef entrySymbol) {
                     prepared.launchSlotId.getValue())
           .str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
+  hoistReadOnlyDDRMemoryMappings(*llvmModule);
   if (llvm::Error error = instrumentProfileTargetModule(
           *llvmModule, entrySymbol, prepared.profileCapture))
     return std::move(error);

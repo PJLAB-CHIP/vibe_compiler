@@ -295,7 +295,17 @@ TEST(OnlineAttentionDecompositionTest,
         lowerStructuredComputeToTile(*module, relations);
     ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
     EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
-    EXPECT_EQ(tileLowering.statistics.contractions, onlineBefore * 2);
+    // A one-element PV tail is an F32 outer product. Its original mul/add
+    // lowers to elementwise instructions because F32 is not a GEMM input
+    // format.
+    EXPECT_EQ(tileLowering.statistics.contractions,
+              onlineBefore * 2 - (extent % 128 == 1 ? 1 : 0));
+    module->walk([&](ComputeGemmOp op) {
+      auto lhs = mlir::cast<mlir::MemRefType>(op.getLhs().getType());
+      if (lhs.getElementType().isF32()) {
+        EXPECT_NE(lhs.getShape().back(), 1);
+      }
+    });
     EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
     EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
     EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(

@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 
 #include "OnlineAttentionMaterialization.h"
+#include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
@@ -2041,6 +2042,10 @@ struct GroupBuilder {
       auto resultBoxes = resultDomain->getBoxes();
       const auto &resultBox = resultBoxes.front();
       mlir::Value merged = resultDestinations[resultIndex];
+      const bool wideContraction =
+          requiresWideContractionState(work.rootOperation);
+      if (wideContraction)
+        merged = convertContractionState(merged, builder.getF32Type(), builder);
       for (unsigned index : order) {
         const auto &contribution = merge.contributions[index];
         auto slice =
@@ -2073,6 +2078,13 @@ struct GroupBuilder {
               detail);
         merged = *combined;
       }
+      if (wideContraction)
+        merged = convertContractionState(
+            merged,
+            mlir::cast<mlir::RankedTensorType>(
+                resultDestinations[resultIndex].getType())
+                .getElementType(),
+            builder);
       mergedValues.push_back(merged);
     }
 
@@ -2406,6 +2418,14 @@ struct GroupBuilder {
 
     mlir::Operation *adapter = builder.clone(*sourceRoot, rootMapping);
     if (standardContribution) {
+      if (requiresWideContractionState(adapter)) {
+        auto wide = materializeContractionState(
+            mlir::cast<mlir::linalg::LinalgOp>(adapter), builder);
+        if (mlir::failed(wide))
+          return mlir::failure();
+        adapter->erase();
+        adapter = wide->getOperation();
+      }
       std::string partialFailure;
       auto partial = materializePartialReductionTile(adapter, builder, offsets,
                                                      sizes, &partialFailure);
@@ -2990,7 +3010,11 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
                        StandardPartialBoundaryRequirement{
                            contribution.tile,
                            mlir::RankedTensorType::get(
-                               partialBox->sizes, resultType.getElementType())})
+                               partialBox->sizes,
+                               requiresWideContractionState(
+                                   contributionWork->rootOperation)
+                                   ? mlir::Float32Type::get(source.getContext())
+                                   : resultType.getElementType())})
                    .second)
             return fail<SpatialRegionMaterializationResult>(
                 failure,
@@ -3355,8 +3379,15 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           "observable structured result has no selected Tile endpoint");
   }
 
-  if (mlir::failed(materializeTileLocalSplatConstants(*result.module)) ||
-      mlir::failed(mlir::verify(*result.module)) ||
+  if (mlir::failed(materializeTileLocalSplatConstants(*result.module)))
+    return mlir::failure();
+  bool invalidAccumulation = false;
+  result.module->walk([&](mlir::func::FuncOp function) {
+    if (!function.isExternal() &&
+        mlir::failed(promoteContractionAccumulation(function)))
+      invalidAccumulation = true;
+  });
+  if (invalidAccumulation || mlir::failed(mlir::verify(*result.module)) ||
       mlir::failed(verifyTileModuleCollection(*result.module)) ||
       mlir::failed(verifyStructuralTileRegions(*result.module)) ||
       mlir::failed(compiler::detail::checkStructuredBufferRelationsCurrent(

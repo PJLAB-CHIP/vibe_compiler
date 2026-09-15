@@ -7,7 +7,8 @@
 
 namespace wafer::compiler::detail {
 
-/// Query only existing, once-executed loads of equal static program windows.
+/// Query existing loads with proved equal windows in matching static loop
+/// domains.
 bool hasReadOnlyInputSharing(mlir::ModuleOp module);
 
 /// Replace duplicate DDR loads with actual peer messages in this transaction.

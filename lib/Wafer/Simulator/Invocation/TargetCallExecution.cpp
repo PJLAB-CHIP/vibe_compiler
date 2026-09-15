@@ -1,6 +1,7 @@
 //===- TargetCallExecution.cpp - Host target-call execution -------------===//
 
 #include "Wafer/Simulator/Invocation/TargetCallExecution.h"
+#include "Wafer/Target/TargetMemory.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -32,6 +33,7 @@ namespace wafer::compiler {
 namespace {
 
 constexpr llvm::StringLiteral kDispatcherSymbol = "wafer_target_call_dispatch";
+constexpr llvm::StringLiteral kMemoryDispatcherSymbol = "wafer_target_memory_dispatch";
 constexpr llvm::StringLiteral kEntryThunkSymbol = "wafer_target_entry_thunk";
 
 using HostEntryThunk = void(const uint64_t *);
@@ -70,6 +72,47 @@ enum class TileExecutionState : uint8_t {
   Completed,
 };
 
+static uint64_t dispatchPayload(
+    TileInvocationContext &context, target::TargetCommandPayload payload,
+    std::optional<TargetNCCIssueDomain> domain = std::nullopt) {
+  if (!context.invocation || context.invocation->failure || !context.invocation->sink)
+    return 0;
+  TargetCommand command{context.cardId, context.tileId, context.launchSlotId,
+                        context.nextIssueOrdinal++, std::move(payload)};
+  command.nccIssueDomain = domain;
+  auto result = context.invocation->sink->issue(command);
+  if (!result) {
+    context.invocation->failure = llvm::toString(result.takeError());
+    return 0;
+  }
+  ++context.issuedCommandCount;
+  return *result;
+}
+
+extern "C" uint64_t waferTargetMemoryDispatch(
+    uint64_t contextAddress, uint32_t space, uint32_t write,
+    uint64_t address, uint64_t value, uint32_t width,
+    uint64_t mappingBase, uint64_t mappingBytes) {
+  auto *context = reinterpret_cast<TileInvocationContext *>(
+      static_cast<uintptr_t>(contextAddress));
+  if (!context || !context->invocation)
+    return 0;
+  if (write == 2)
+    return dispatchPayload(*context, target::TargetKcoreReleaseCommand{});
+  auto memorySpace = static_cast<target::TargetScalarMemorySpace>(space);
+  if (memorySpace == target::TargetScalarMemorySpace::DDR &&
+      (address < mappingBase || width > mappingBytes ||
+       address - mappingBase > mappingBytes - width)) {
+    context->invocation->failure = "scalar read is outside its acquired DDR range";
+    return 0;
+  }
+  if (write)
+    return dispatchPayload(*context,
+        target::TargetScalarStoreCommand{memorySpace, address, value, width});
+  return dispatchPayload(*context,
+      target::TargetScalarLoadCommand{memorySpace, address, width});
+}
+
 extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
                                             uint32_t descriptorIndex,
                                             const uint64_t *arguments,
@@ -105,21 +148,28 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     context->invocation->failure = llvm::toString(worker.takeError());
     return 0;
   }
-  TargetCommand command{context->cardId, context->tileId,
-                        context->launchSlotId, context->nextIssueOrdinal++,
-                        std::move(*payload)};
+  std::optional<TargetNCCIssueDomain> domain;
   if (descriptor.issueDomain && *worker)
-    command.nccIssueDomain =
+    domain =
         TargetNCCIssueDomain{descriptor.issueDomain->engine, **worker,
                              descriptor.issueDomain->completionBehavior};
-  llvm::Expected<uint64_t> issueResult =
-      context->invocation->sink->issue(command);
-  if (!issueResult) {
-    context->invocation->failure = llvm::toString(issueResult.takeError());
-    return 0;
-  }
-  ++context->issuedCommandCount;
-  return descriptor.result == TargetCallResultType::I64 ? *issueResult : 0;
+  uint64_t result = dispatchPayload(*context, std::move(*payload), domain);
+  return descriptor.result == TargetCallResultType::Void ? 0 : result;
+}
+
+static std::optional<target::TargetScalarMemorySpace>
+getMappedPointerSpace(const llvm::Value *pointer) {
+  while (const auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(pointer))
+    pointer = gep->getPointerOperand();
+  auto *call = llvm::dyn_cast<llvm::CallInst>(pointer);
+  auto *callee = call ? call->getCalledFunction() : nullptr;
+  auto *descriptor = callee ? findTargetCallDescriptor(callee->getName()) : nullptr;
+  auto *builtin = descriptor ? std::get_if<TargetCallBuiltin>(&descriptor->semantic) : nullptr;
+  if (builtin && *builtin == TargetCallBuiltin::DDRReadMapping)
+    return target::TargetScalarMemorySpace::DDR;
+  if (builtin && *builtin == TargetCallBuiltin::SPMMapping)
+    return target::TargetScalarMemorySpace::SPM;
+  return std::nullopt;
 }
 
 static bool hasNonZeroAddressSpace(llvm::Type *type) {
@@ -127,8 +177,34 @@ static bool hasNonZeroAddressSpace(llvm::Type *type) {
   return pointer && pointer->getAddressSpace() != 0;
 }
 
+static bool isKcoreRelease(const llvm::Instruction &instruction) {
+  auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+  auto *assembly = call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand()) : nullptr;
+  return assembly && call->arg_empty() && call->getType()->isVoidTy() &&
+         assembly->hasSideEffects() && assembly->getConstraintString() == "~{memory}" &&
+         assembly->getAsmString() == kTargetKcoreReleaseAssembly;
+}
+
 static llvm::Error
 verifyNativeInstruction(const llvm::Instruction &instruction) {
+  if (isKcoreRelease(instruction))
+    return llvm::Error::success();
+  if (const auto *load = llvm::dyn_cast<llvm::LoadInst>(&instruction)) {
+    if (!load->isAtomic() && (load->getType()->isIntegerTy(32) ||
+                             load->getType()->isIntegerTy(64)) &&
+        getMappedPointerSpace(load->getPointerOperand()))
+      return llvm::Error::success();
+  }
+  if (const auto *store = llvm::dyn_cast<llvm::StoreInst>(&instruction)) {
+    auto space = getMappedPointerSpace(store->getPointerOperand());
+    auto *type = store->getValueOperand()->getType();
+    if (!store->isAtomic() && (type->isIntegerTy(32) || type->isIntegerTy(64)) &&
+        space && *space == target::TargetScalarMemorySpace::SPM)
+      return llvm::Error::success();
+  }
+  if (const auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&instruction))
+    if (getMappedPointerSpace(gep))
+      return llvm::Error::success();
   if (const auto *result = llvm::dyn_cast<llvm::ReturnInst>(&instruction)) {
     if (!result->getReturnValue() ||
         result->getReturnValue()->getType()->isIntegerTy())
@@ -155,6 +231,11 @@ verifyNativeInstruction(const llvm::Instruction &instruction) {
   }
   if (const auto *cast = llvm::dyn_cast<llvm::CastInst>(&instruction)) {
     if (cast->getSrcTy()->isIntegerTy() && cast->getDestTy()->isIntegerTy())
+      return llvm::Error::success();
+    if (llvm::isa<llvm::BitCastInst>(cast) &&
+        ((cast->getSrcTy()->isIntegerTy(32) &&
+          cast->getDestTy()->isFloatTy()) ||
+         (cast->getSrcTy()->isFloatTy() && cast->getDestTy()->isIntegerTy(32))))
       return llvm::Error::success();
   }
   if (const auto *freeze = llvm::dyn_cast<llvm::FreezeInst>(&instruction)) {
@@ -202,7 +283,9 @@ verifyDescriptorType(const llvm::Function &function,
     return llvm::createStringError(
         "target call @%s has an incompatible argument count",
         function.getName().str().c_str());
-  bool resultMatches = descriptor.result == TargetCallResultType::Void
+  bool resultMatches = descriptor.result == TargetCallResultType::Pointer
+                           ? type->getReturnType()->isPointerTy()
+                       : descriptor.result == TargetCallResultType::Void
                            ? type->getReturnType()->isVoidTy()
                            : type->getReturnType()->isIntegerTy(64);
   if (!resultMatches)
@@ -244,6 +327,7 @@ verifyTargetModuleForHostExecution(const TargetLLVMModule &targetModule) {
         "target entry does not use the C calling convention");
 
   if (module.getNamedValue(kDispatcherSymbol) ||
+      module.getNamedValue(kMemoryDispatcherSymbol) ||
       module.getNamedValue(kEntryThunkSymbol))
     return llvm::createStringError(
         "target module collides with a reserved host frontend symbol");
@@ -356,6 +440,8 @@ static llvm::Error defineTargetCallBridges(llvm::Module &module,
                      llvm::ConstantInt::get(i32, descriptor.arguments.size())});
     if (descriptor.result == TargetCallResultType::Void)
       builder.CreateRetVoid();
+    else if (descriptor.result == TargetCallResultType::Pointer)
+      builder.CreateRet(builder.CreateIntToPtr(result, function->getReturnType()));
     else
       builder.CreateRet(result);
   }
@@ -407,6 +493,63 @@ static llvm::Error initializeNativeBackend() {
   return llvm::Error::success();
 }
 
+static void instrumentMappedMemory(llvm::Module &module,
+                                    TileInvocationContext &context) {
+  llvm::SmallVector<llvm::Instruction *> accesses;
+  for (llvm::Function &function : module)
+    for (llvm::BasicBlock &block : function)
+      for (llvm::Instruction &instruction : block)
+        if (llvm::isa<llvm::LoadInst, llvm::StoreInst>(instruction) || isKcoreRelease(instruction))
+          accesses.push_back(&instruction);
+  if (accesses.empty())
+    return;
+  auto &ctx = module.getContext();
+  auto *i64 = llvm::Type::getInt64Ty(ctx);
+  auto *i32 = llvm::Type::getInt32Ty(ctx);
+  auto *dispatcher = llvm::Function::Create(
+      llvm::FunctionType::get(i64, {i64, i32, i32, i64, i64, i32, i64, i64}, false),
+      llvm::GlobalValue::ExternalLinkage, kMemoryDispatcherSymbol, module);
+  for (llvm::Instruction *instruction : accesses) {
+    if (isKcoreRelease(*instruction)) {
+      llvm::IRBuilder<> builder(instruction);
+      builder.CreateCall(dispatcher, {
+          llvm::ConstantInt::get(i64, reinterpret_cast<uintptr_t>(&context)),
+          llvm::ConstantInt::get(i32, static_cast<uint32_t>(target::TargetScalarMemorySpace::SPM)),
+          llvm::ConstantInt::get(i32, 2), llvm::ConstantInt::get(i64, 0),
+          llvm::ConstantInt::get(i64, 0), llvm::ConstantInt::get(i32, 0),
+          llvm::ConstantInt::get(i64, 0), llvm::ConstantInt::get(i64, 0)});
+      instruction->eraseFromParent();
+      continue;
+    }
+    auto *load = llvm::dyn_cast<llvm::LoadInst>(instruction);
+    auto *store = llvm::dyn_cast<llvm::StoreInst>(instruction);
+    llvm::Value *pointer = load ? load->getPointerOperand() : store->getPointerOperand();
+    auto space = getMappedPointerSpace(pointer);
+    assert(space && "mapped memory was verified before cloning");
+    llvm::Value *root = pointer;
+    while (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(root))
+      root = gep->getPointerOperand();
+    auto *mapping = llvm::cast<llvm::CallInst>(root);
+    llvm::IRBuilder<> builder(instruction);
+    llvm::Value *value = load ? llvm::ConstantInt::get(i64, 0)
+                             : builder.CreateZExtOrTrunc(store->getValueOperand(), i64);
+    auto *type = load ? load->getType() : store->getValueOperand()->getType();
+    llvm::Value *bytes = *space == target::TargetScalarMemorySpace::DDR
+                            ? builder.CreateZExt(mapping->getArgOperand(1), i64)
+                            : llvm::ConstantInt::get(i64, 0);
+    auto *result = builder.CreateCall(dispatcher, {
+        llvm::ConstantInt::get(i64, reinterpret_cast<uintptr_t>(&context)),
+        llvm::ConstantInt::get(i32, static_cast<uint32_t>(*space)),
+        llvm::ConstantInt::get(i32, store != nullptr),
+        builder.CreatePtrToInt(pointer, i64), value,
+        llvm::ConstantInt::get(i32, type->getIntegerBitWidth() / 8),
+        mapping->getArgOperand(0), bytes});
+    if (load)
+      load->replaceAllUsesWith(builder.CreateZExtOrTrunc(result, type));
+    instruction->eraseFromParent();
+  }
+}
+
 static llvm::Expected<MaterializedTile>
 materializeTile(const TargetLLVMModule &targetModule,
                 TileInvocationContext &context) {
@@ -424,6 +567,7 @@ materializeTile(const TargetLLVMModule &targetModule,
     return jit.takeError();
   owned->second->setTargetTriple((*jit)->getTargetTriple().str());
   owned->second->setDataLayout((*jit)->getDataLayout());
+  instrumentMappedMemory(*owned->second, context);
   if (llvm::Error error = defineTargetCallBridges(*owned->second, context))
     return std::move(error);
   if (llvm::Error error =
@@ -441,6 +585,10 @@ materializeTile(const TargetLLVMModule &targetModule,
   llvm::orc::SymbolMap symbols;
   symbols[mangle(kDispatcherSymbol)] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&waferTargetCallDispatch),
+      llvm::JITSymbolFlags(llvm::JITSymbolFlags::Exported |
+                           llvm::JITSymbolFlags::Callable));
+  symbols[mangle(kMemoryDispatcherSymbol)] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&waferTargetMemoryDispatch),
       llvm::JITSymbolFlags(llvm::JITSymbolFlags::Exported |
                            llvm::JITSymbolFlags::Callable));
   if (llvm::Error error = (*jit)->getMainJITDylib().define(

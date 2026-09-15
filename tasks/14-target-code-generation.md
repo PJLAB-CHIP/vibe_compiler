@@ -97,6 +97,25 @@ Enclosing branch的unsigned比较仅在operand区间与常量均已非负时按�
 
 完成条件为上述主机矩阵实际执行、canonical完整增量构建及no-op通过；本节不改变板端完成门禁。
 
+### 映射内存的标量存取
+
+输入为completion及memory-planned Instr中的标准`memref.load/store`，memref具有已确定的空间、Tensor layout、
+static shape/stride和i32/i64/f32元素。索引及其clamp/cast保持原SSA。转换在首次mutation前验证每轴范围、字节地址和位宽，
+输出原生LLVM整数load/store，F32仅通过bitcast保留位模式；不新增逐元素Wafer CRT读写包装。SPM使用已有`get_spm_memory_mapping`，
+DDR读取使用已有`get_ddr_memory_mapping_with_size`，参数范围必须能由正int32字节数表达。
+
+原始只读输入的`ProgramArgumentAttr`在ABI准备后继续保留到标量地址lowering消费，随后从最终LLVM删除。
+该事实允许同一输入在entry取得一次覆盖输入的DDR mapping，后续通过实际SSA地址差和element index访问；
+没有此事实的地址不提升到entry。DDR mapping执行range invalidate和ordering，不完成尚未结束的NCC写入。
+设备内生成的DDR数据仍须先经过matching completion及其实际publication/acquire，不能按输入形状猜测只读性。
+SPM不执行dcache维护。现阶段DDR scalar store没有publication合同，明确拒绝；其它非Tensor layout、非i32/i64/f32、
+无界或越界坐标同样保持typed拒绝。
+
+直接消费者为既有SDK映射ABI、原生LLVM代码生成及17号主机内存执行；named pipeline和生产driver共用同一转换。
+覆盖矩阵：rank3、1024/1025/1031、i32/i64/f32、静态/循环/夹界及tail，精确load/store地址和位型；DDR原始输入mapping动态
+次数为一次，重复输入更换内容仍正确；越界/错误空间/位宽负例；实际索引驱动gather的target、host和fresh no-card。
+设备资格和发令开销单独验收，不以减少静态call数量宣称性能改善。
+
 ## 2. 稳定对象与身份
 
 CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。
@@ -374,3 +393,19 @@ LLVM对象编译/归一化与CRT对象编译/归一化写入不同文件，最�
 也不在后台编译尚未退出时删除其工作目录。打印命令、ABI、归一化规则及package消费者保持原合同。
 完成条件为并发启动的有界oracle、两路失败/清理的确定性检查，以及原真实device-link成功/负例和fresh package/no-card通过。
 不引入多份target-module格式、不同link路径或真实设备并行执行。
+
+### 编译期 tensor literal 的数据归属
+
+TensorProgram 中仍存活的非splat tensor literal 在进入物理搜索前，由compiler driver与当前函数ABI一起物化为既有
+Constant/ProgramDataRange；用户输入输出端口不变。每份实际literal内容先写入transaction-owned数据，再创建其只读参数，
+相同attribute可共用一个绑定。下游使用同一TargetTensor/ExecutablePackage数据路径，不把Kcore模块的虚拟rodata地址当DDR物理地址。
+Source NPY Bool采用canonical 0/1字节；ProgramTensor和ProgramDataRange按一字节计算，Package与SystemC通过同一program-element
+解码得到Bool逻辑值，再由现有physical codec打包为target bitpacked BOOL。非canonical字节拒绝；用户边界、内部数据与target packing不混用。
+
+### Fill 的实际 scalar operand
+
+memory-planned InstrFillOp 的value始终是typed SSA，可来自arith.constant，也可来自已完成的mapped load或算术。
+Target lowering保留这条def-use，将F16/BF16/F32位模式bitcast为同宽整数、再零扩展至既有Memset的uint32字段；整数同样按raw bits扩展。
+位宽大于32或没有既有字段编码的类型typed拒绝。所有dtype/shape/descriptor检查仍在发射前完成；不更改dtype，不把运行期参数折成常量。
+直接消费者仍是同一个CRT Memset ABI及SystemC TargetMemsetCommand。覆盖rank3 1024/1025/1031、F32参数load→fill→store、
+constant与dynamic值、raw bits及完整LM的缩放系数；映射及跨worker完成继续由原owner负责。

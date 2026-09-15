@@ -8,6 +8,7 @@ add_mlir_library(WaferCodeGen
   LLVM/TargetKernelAggregate.cpp
   LLVM/TargetLLVMModule.cpp
   LLVM/TargetLLVMTranslation.cpp
+  LLVM/TargetMemoryMapping.cpp
   LLVM/TargetModuleLinking.cpp
   LLVM/TargetModuleReadback.cpp
   LLVM/TileEntryArgumentCompatibility.cpp
@@ -15,6 +16,7 @@ add_mlir_library(WaferCodeGen
   LINK_LIBS PUBLIC
   LLVMSupport
   LLVMCore
+  LLVMAnalysis
   LLVMBitReader
   LLVMBitWriter
   LLVMLinker

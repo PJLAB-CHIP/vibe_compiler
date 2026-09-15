@@ -3344,6 +3344,151 @@ TEST_F(StructuredToTileTest,
   }
 }
 
+TEST_F(StructuredToTileTest,
+       OneStepF32ContractionKeepsScalarBodyAndInitialValue) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool generic : {false, true})
+      for (bool blocked : {false, true}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(generic);
+        std::string lhs = "memref<2x" + std::to_string(extent) +
+                          "x1xf32, #wafer.memory<spm, tensor>>";
+        std::string rhs = "memref<2x1x16xf32, #wafer.memory<spm, tensor>>";
+        std::string out = "memref<2x" + std::to_string(extent) +
+                          "x16xf32, #wafer.memory<spm, tensor>>";
+        std::string ddr = "memref<2x" + std::to_string(extent) +
+                          "x16xf32, #wafer.memory<ddr, tensor>>";
+        std::string text = "module { func.func @main(%out: " + ddr +
+                           ") { "
+                           "wafer.tile.region(%out : " +
+                           ddr + ") -> () { ^bb0(%dest: " + ddr +
+                           "): "
+                           "%x = memref.alloc() : " +
+                           lhs + " %y = memref.alloc() : " + rhs +
+                           " %z = memref.alloc() : " + out +
+                           " %one = arith.constant 1.0 : f32 "
+                           "wafer.instr.fill %x, %one {fill_domain = "
+                           "#wafer.fill_domain<physical_footprint>} : " +
+                           lhs +
+                           ", f32 "
+                           "wafer.instr.fill %y, %one {fill_domain = "
+                           "#wafer.fill_domain<physical_footprint>} : " +
+                           rhs +
+                           ", f32 "
+                           "wafer.instr.fill %z, %one {fill_domain = "
+                           "#wafer.fill_domain<physical_footprint>} : " +
+                           out + ", f32 ";
+        if (generic)
+          text += "linalg.generic {indexing_maps = "
+                  "[affine_map<(b,n,m,k)->(b,m,k)>, "
+                  "affine_map<(b,n,m,k)->(b,k,n)>, "
+                  "affine_map<(b,n,m,k)->(b,m,n)>], iterator_types = "
+                  "[\"parallel\",\"parallel\",\"parallel\",\"reduction\"]} "
+                  "ins(%x, %y : " +
+                  lhs + ", " + rhs + ") outs(%z : " + out +
+                  ") { ^bb0(%u: f32, %v: f32, %initial: f32): %p = arith.mulf "
+                  "%u, %v : f32 %s = arith.addf %p, %initial : f32 "
+                  "linalg.yield %s : f32 } ";
+        else
+          text += "linalg.batch_matmul ins(%x, %y : " + lhs + ", " + rhs +
+                  ") outs(%z : " + out + ") ";
+        text += "memref.copy %z, %dest : " + out + " to " + ddr +
+                " wafer.tile.yield } return } }";
+        if (blocked) {
+          const std::string from = "memory<spm, tensor>";
+          for (size_t at = 0;
+               (at = text.find(from, at)) != std::string::npos;) {
+            text.replace(at, from.size(), "memory<spm, ncx>");
+            at += 16;
+          }
+        }
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        mlir::Value initial;
+        module->walk([&](mlir::linalg::LinalgOp op) {
+          if (!mlir::isa<mlir::linalg::FillOp>(op))
+            initial = op.getDpsInits().front();
+        });
+        StructuredMaterializationRelations relations;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        EXPECT_EQ(countOps<ComputeGemmOp>(*module), 0u);
+        EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 2u);
+        TileRegionOp region;
+        module->walk([&](TileRegionOp op) { region = op; });
+        unsigned initialUses = 0;
+        module->walk([&](ComputeElementwiseOp op) {
+          EXPECT_TRUE(mlir::cast<mlir::MemRefType>(op.getResult().getType())
+                          .getElementType()
+                          .isF32());
+          if (op.getKind() == ComputeElementwiseKind::Add)
+            for (auto input : op.getInputs())
+              initialUses += input == initial;
+        });
+        EXPECT_EQ(initialUses, 1u);
+        TileRegionToInstrLoweringSession conversion(*module->getContext());
+        ASSERT_TRUE(
+            mlir::succeeded(convertTileRegionToInstr(region, conversion)));
+        EXPECT_EQ(countOps<InstrGemmOp>(*module), 0u);
+        EXPECT_EQ(countOps<InstrElementwiseOp>(*module), 2u);
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
+TEST_F(StructuredToTileTest, TrigonometryKeepsItsNativeUnaryInstruction) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool sine : {false, true})
+      for (llvm::StringRef dtype : {"f16", "bf16", "f32"}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(sine);
+        SCOPED_TRACE(dtype.str());
+        std::string source = makeSquareSource(extent, 2);
+        for (size_t position = 0;
+             (position = source.find("f32", position)) != std::string::npos;) {
+          source.replace(position, 3, dtype.str());
+          position += dtype.size();
+        }
+        auto module = parse(source);
+        ASSERT_TRUE(module);
+        mlir::math::PowFOp original;
+        module->walk([&](mlir::math::PowFOp op) { original = op; });
+        ASSERT_TRUE(original);
+        mlir::IRRewriter rewriter(module->getContext());
+        rewriter.setInsertionPoint(original);
+        if (sine)
+          rewriter.replaceOpWithNewOp<mlir::math::SinOp>(original,
+                                                         original.getLhs());
+        else
+          rewriter.replaceOpWithNewOp<mlir::math::CosOp>(original,
+                                                         original.getLhs());
+        TileRegionOp region;
+        module->walk([&](TileRegionOp current) { region = current; });
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        TileRegionToInstrLoweringSession conversion(*module->getContext());
+        llvm::SmallVector<TileRegionOp> regions;
+        module->walk([&](TileRegionOp current) { regions.push_back(current); });
+        for (auto current : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(current, conversion)));
+        unsigned count = 0;
+        module->walk([&](InstrElementwiseOp op) {
+          EXPECT_EQ(op.getKind(), sine ? InstrElementwiseKind::Sin
+                                       : InstrElementwiseKind::Cos);
+          EXPECT_EQ(op.getInputs().size(), 1u);
+          ++count;
+        });
+        EXPECT_EQ(count, 1u);
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
 TEST_F(StructuredToTileTest, ExactPowerTwoLowersToUnarySquareInstruction) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

@@ -105,7 +105,9 @@ compileElementwiseTargetModules(std::string &diagnosticText) {
         argumentTypes.push_back(type);
         arguments.push_back(llvm::ConstantInt::get(type, value));
       }
-      llvm::Type *resultType = call.result == wafer::TargetCallResultType::I64
+      llvm::Type *resultType = call.result == wafer::TargetCallResultType::Pointer
+                                   ? llvm::PointerType::get(*context, 0)
+                               : call.result == wafer::TargetCallResultType::I64
                                    ? llvm::Type::getInt64Ty(*context)
                                    : llvm::Type::getVoidTy(*context);
       llvm::FunctionCallee callee = module->getOrInsertFunction(
@@ -262,6 +264,8 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     switch (*builtin) {
     case wafer::TargetCallBuiltin::DDRPublish:
     case wafer::TargetCallBuiltin::DDRAcquire:
+    case wafer::TargetCallBuiltin::DDRReadMapping:
+    case wafer::TargetCallBuiltin::SPMMapping:
       break;
 
     case wafer::TargetCallBuiltin::RDMA:
@@ -432,6 +436,16 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
 
   if (const auto *builtin = std::get_if<wafer::TargetCallBuiltin>(&semantic)) {
     switch (*builtin) {
+    case wafer::TargetCallBuiltin::DDRReadMapping:
+    case wafer::TargetCallBuiltin::SPMMapping: {
+      const auto &mapping = std::get<wafer::target::TargetMemoryMappingCommand>(payload);
+      EXPECT_EQ(mapping.address, arguments[0]);
+      bool ddr = *builtin == wafer::TargetCallBuiltin::DDRReadMapping;
+      EXPECT_EQ(mapping.space, ddr ? wafer::target::TargetScalarMemorySpace::DDR
+                                  : wafer::target::TargetScalarMemorySpace::SPM);
+      EXPECT_EQ(mapping.byteCount, ddr ? u32(1) : 1u);
+      return;
+    }
     case wafer::TargetCallBuiltin::DDRPublish:
       EXPECT_EQ(
           std::get<wafer::target::TargetDDRPublishCommand>(payload).dataAddress,
@@ -889,7 +903,7 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   llvm::ArrayRef<wafer::TargetCallDescriptor> descriptors =
       wafer::getTargetCallDescriptors();
-  ASSERT_EQ(descriptors.size(), 115u);
+  ASSERT_EQ(descriptors.size(), 117u);
   llvm::DenseSet<llvm::StringRef> symbols;
   size_t issueDomainCount = 0;
   size_t nccIssueDomainCount = 0;
@@ -897,7 +911,8 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   size_t synchronousWritebackCount = 0;
   size_t directDTEIssueDomainCount = 0;
   for (const wafer::TargetCallDescriptor &descriptor : descriptors) {
-    EXPECT_TRUE(llvm::StringRef(descriptor.symbol).starts_with("wafer_tx81_"));
+    EXPECT_TRUE(llvm::StringRef(descriptor.symbol).starts_with("wafer_tx81_") ||
+                descriptor.result == wafer::TargetCallResultType::Pointer);
     EXPECT_TRUE(symbols.insert(descriptor.symbol).second);
     EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.symbol), &descriptor);
     EXPECT_EQ(wafer::findTargetCallDescriptor(descriptor.semantic),
@@ -1017,7 +1032,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
-  EXPECT_EQ(decoded, 115u);
+  EXPECT_EQ(decoded, 117u);
 }
 
 TEST(TargetCallRegistryTest, DecodesIndependentGemmFormatsAndOrientations) {
@@ -1377,6 +1392,57 @@ TEST(TargetCallExecutionTest, LateTileFailureAbortsTheWholeInvocation) {
   EXPECT_FALSE(sink.invocationCompleted);
   EXPECT_TRUE(sink.commands.empty());
   EXPECT_TRUE(sink.completedLaunchSlots.empty());
+}
+
+// Bit-pattern oracle: no floating arithmetic is performed by native control.
+// Full-rank dynamic fill is covered by the conversion and source pipelines.
+TEST(TargetCallExecutionTest, NativeF32BitcastsPreserveEveryPayloadBit) {
+  std::string diagnostics;
+  auto modules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(modules))
+      << llvm::toString(modules.takeError());
+  const std::array<uint32_t, 6> patterns = {0,          0x80000000, 0x3fb504f3,
+                                            0x7f800000, 0x7fc00001, 0xffffffff};
+  std::vector<uint64_t> expected;
+  for (const auto &owner : modules->getModules()) {
+    auto &module = const_cast<llvm::Module &>(owner.getModule());
+    auto *entry = module.getFunction("main");
+    entry->deleteBody();
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(module.getContext(), "entry", entry));
+    auto *rdma = module.getFunction("wafer_tx81_rdma");
+    ASSERT_NE(rdma, nullptr);
+    auto raw = makeDecodableArguments(
+        wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA));
+    uint64_t address = 0x100000 + owner.getLaunchSlotId().getValue() * 0x100000;
+    auto *runtime = builder.CreateTrunc(
+        builder.CreateSub(entry->getArg(0), builder.getInt64(address)),
+        builder.getInt32Ty());
+    for (uint32_t pattern : patterns) {
+      auto *bits = builder.CreateAdd(runtime, builder.getInt32(pattern));
+      auto *floating = builder.CreateBitCast(bits, builder.getFloatTy());
+      // Create both instructions explicitly so the admission test sees them.
+      auto *restored = new llvm::BitCastInst(floating, builder.getInt32Ty(),
+                                             "raw", builder.GetInsertBlock());
+      llvm::SmallVector<llvm::Value *> arguments;
+      for (auto [index, value] : llvm::enumerate(raw))
+        arguments.push_back(index < 2 ? builder.getInt64(value)
+                                      : builder.getInt32(value));
+      arguments[0] = builder.CreateZExt(restored, builder.getInt64Ty());
+      builder.CreateCall(rdma, arguments);
+      expected.push_back(pattern);
+    }
+    builder.CreateRetVoid();
+  }
+  RecordingSink sink;
+  auto result = wafer::compiler::executeTargetCalls(
+      *modules, makeInvocationArguments(*modules), sink);
+  ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+  ASSERT_EQ(sink.commands.size(), expected.size());
+  for (auto [command, value] : llvm::zip_equal(sink.commands, expected))
+    EXPECT_EQ(std::get<wafer::target::TargetStridedDMACommand>(command.payload)
+                  .source,
+              value);
 }
 
 // Scalar bitwidth oracles deliberately use scalar LLVM and a recording sink;

@@ -1,6 +1,8 @@
 //===- ProgramDataTest.cpp - Transaction-owned program data tests --------===//
 
 #include "Wafer/Driver/ProgramData/ProgramData.h"
+#include "Wafer/CodeGen/ProgramElementTypeConversion.h"
+#include "Wafer/Driver/InlineConstantData.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Simulator/Invocation/ProgramInvocation.h"
@@ -201,19 +203,22 @@ TEST_F(ProgramDataTest, EstablishmentClassifiesPayloadFailures) {
   classify("bad-magic.npy", ProgramDataFailureKind::HeaderInvalid);
 }
 
-TEST_F(ProgramDataTest, EstablishmentRejectsNonAdmittedProgramDtype) {
-  // Bitpacked boolean decodes at the NPY source layer as i1, but the program
-  // boundary admits no boolean target representation yet: establishment must
-  // fail closed with a typed classification.
-  std::vector<uint8_t> payload = {1, 0, 1, 0};
-  writeNpy("bool.npy", "|b1", {2, 2}, payload);
-
-  ProgramDataFailure failure;
-  auto source = ProgramDataSource::establish(
-      path("bool.npy"), ownedPath("bool"), "data/bool", &failure);
-  ASSERT_FALSE(static_cast<bool>(source));
-  llvm::consumeError(source.takeError());
-  EXPECT_EQ(failure.kind, ProgramDataFailureKind::UnsupportedEncoding);
+TEST_F(ProgramDataTest, EstablishmentAdmitsCanonicalBooleanSourceBytes) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::vector<uint8_t> payload(2 * extent);
+    for (uint64_t index = 0; index < payload.size(); ++index)
+      payload[index] = index % 3 == 1;
+    writeNpy("bool.npy", "|b1", {2, extent, 1}, payload);
+    ProgramDataFailure failure;
+    auto source = ProgramDataSource::establish(
+        path("bool.npy"), ownedPath("bool"), "data/bool", &failure);
+    ASSERT_TRUE(static_cast<bool>(source))
+        << llvm::toString(source.takeError());
+    EXPECT_EQ(source->getDType(), wafer::ProgramElementType::Bool);
+    EXPECT_EQ(source->getPayloadFileSize() - source->getPayloadOffset(),
+              payload.size());
+  }
 }
 
 TEST_F(ProgramDataTest, EstablishmentOwnsContentAgainstInPlaceMutation) {
@@ -775,16 +780,67 @@ TEST_F(ProgramDataTest, SharedProgramTensorViewsNeverDuplicatePayload) {
   llvm::consumeError(invalid.takeError());
 }
 
+TEST_F(ProgramDataTest, InlineBooleanLiteralsOwnCanonicalSourceBytes) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string type = "tensor<2x" + std::to_string(extent) + "x1xi1>";
+    std::string text = "module { func.func @main() -> (" + type + ", " + type +
+                       ") { %a = arith.constant dense<false> : " + type +
+                       " %b = arith.constant dense<false> : " + type +
+                       " return %a, %b : " + type + ", " + type + " } }";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(module);
+    llvm::SmallVector<llvm::APInt> elements;
+    for (int64_t index = 0; index < 2 * extent; ++index)
+      elements.emplace_back(1, index % 3 == 1);
+    module->walk([&](mlir::arith::ConstantOp op) {
+      op.setValueAttr(mlir::DenseElementsAttr::get(
+          mlir::cast<mlir::RankedTensorType>(op.getType()), elements));
+    });
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    ProgramDataHandoff handoff(temporaryDirectory.str().str());
+    auto error = wafer::compiler::detail::outlineInlineConstantData(
+        *module, program, handoff);
+    ASSERT_FALSE(error) << llvm::toString(std::move(error));
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    EXPECT_EQ(function.getNumArguments(), 1u);
+    EXPECT_EQ(program.programUserInputCount, 0u);
+    ASSERT_EQ(program.constants.size(), 1u);
+    EXPECT_EQ(program.constants.front().dtype, wafer::ProgramElementType::Bool);
+    ASSERT_EQ(handoff.getRanges().size(), 1u);
+    auto ranges = handoff.getRanges();
+    const auto &range = ranges.front();
+    EXPECT_EQ(range.getRegionLength(), 2u * extent);
+    std::vector<uint8_t> bytes(range.getRegionLength());
+    ASSERT_FALSE(handoff.materializeRange(range, bytes));
+    for (uint64_t index = 0; index < bytes.size(); ++index) {
+      auto value = wafer::readProgramElement(wafer::ProgramElementType::Bool,
+                                             bytes, index);
+      ASSERT_TRUE(static_cast<bool>(value))
+          << llvm::toString(value.takeError());
+      EXPECT_EQ(value->bits, index % 3 == 1);
+    }
+    bytes[0] = 2;
+    auto invalid =
+        wafer::readProgramElement(wafer::ProgramElementType::Bool, bytes, 0);
+    EXPECT_FALSE(static_cast<bool>(invalid));
+    llvm::consumeError(invalid.takeError());
+  }
+}
+
 TEST_F(ProgramDataTest, DTypeWidthTableAdmitsProgramBoundaryDtypes) {
   EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::F16), 2);
   EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::BF16), 2);
   EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::F32), 4);
   EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::I64), 8);
   EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::I8), 1);
-  // Boolean has no target representation yet: not admitted at the program
-  // boundary even though the NPY source layer can decode it.
-  EXPECT_FALSE(
-      getProgramDTypeElementBytes(wafer::ProgramElementType::Bool).has_value());
+  // Source Bool uses one canonical byte; target storage is packed separately.
+  EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::Bool), 1);
   auto unknown = wafer::parseProgramElementType("f128");
   EXPECT_FALSE(static_cast<bool>(unknown));
   llvm::consumeError(unknown.takeError());

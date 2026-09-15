@@ -2072,3 +2072,21 @@
   用局部迭代postorder复用共享SSA，checked index循环路径继续单独处理。区间仅证明地址安全，不作精确元素需求或SPM合法性。
 - 防复发：穷举小位宽位型核对cast、wrap和夹界，配合真实规模view检查最终LLVM字节地址及越界拒绝。
   Unsigned比较`ugt(x, 0)`允许负数位型，不能据此将signed地址范围收紧为正数；只在两端已非负时复用signed区间比较。
+
+## 窄输入 contraction 的累加状态不能提前变成全局结果
+
+- 根因：在spatial/Region选择前把F16/BF16 contraction扩成独立F32 fill、结果和cast，会让局部K tile缩小后仍保留全输出大小的F32 allocation。
+- 修复边界：TensorProgram保留原输入输出类型；已选spatial partial及merge显式携带F32，在实际Tile/Region内形成temporal状态，最终交给native psum/output-format融合。
+- 防复发：检查真实大GEMM最终只有局部F32 psum、最后一次GEMM直接窄输出；同时覆盖spatial K、temporal K、非零init、额外读者和非整除尾部，不能只检查中间cast数量。
+
+## Publication fence 不等于数据内容写入
+
+- 根因：数据来源分析把LLVM fence的全局memory effect当作未知内容写，导致此前已证明的只读参数来源全部丢失，实际SPM容量冲突无法映射回可缩小的tile坐标。
+- 修复边界：仅在内容来源分析中忽略fence；真实DMA/store和未知写仍使来源失效。Fence本身及completion/lifetime消费者保持不变。
+- 防复发：同一actual allocation在fence前后保留来源，真实改写或可变initializer仍拒绝归因；用actual planner拒绝及下一轮成功缩块闭合。
+
+## Blocked layout 的单位轴消除必须证明物理等价
+
+- 根因：逻辑extent为1不保证删除该轴后NCx的bank/stride/axis解释保持不变；直接rank-reduced subview会将不同physical layout当成alias。
+- 修复边界：先查询current source/result的physical metadata-view等价性；不等价时显式materialize同shape Tensor布局，再建立单位轴view。
+- 防复发：Tensor/NCx、named/generic及置换map成对覆盖，沿实际Tile→Instr及全输出数值检查，不能只在逻辑shape相等时认定零拷贝。

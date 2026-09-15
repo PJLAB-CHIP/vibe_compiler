@@ -1,10 +1,31 @@
 //===- ProgramElementTypeConversion.cpp - Program/target type bridge ----===//
 
 #include "Wafer/CodeGen/ProgramElementTypeConversion.h"
+#include "Wafer/Target/PhysicalTensor/TargetTensorMaterialization.h"
+#include <limits>
 
 #include "llvm/Support/ErrorHandling.h"
 
 namespace wafer {
+
+llvm::Expected<RawLogicalValue>
+readProgramElement(ProgramElementType type, llvm::ArrayRef<uint8_t> bytes,
+                   uint64_t index) {
+  auto width = getProgramElementByteCount(type);
+  auto format = getTargetLogicalFormat(type);
+  if (!width || *width <= 0 || !format || index >= bytes.size() / *width ||
+      index > std::numeric_limits<uint64_t>::max() / (uint64_t(*width) * 8))
+    return llvm::createStringError(
+        "program element is outside its source byte span");
+  if (type == ProgramElementType::Bool) {
+    if (bytes[index] > 1)
+      return llvm::createStringError(
+          "program Boolean source must contain canonical 0/1 bytes");
+    return RawLogicalValue{LogicalFormat::Bool, bytes[index]};
+  }
+  return readRawLogicalValue(*format, bytes, index * *width * 8,
+                             getTargetTensorScalarCodecPolicy());
+}
 
 std::optional<LogicalFormat> getTargetLogicalFormat(ProgramElementType type) {
   switch (type) {

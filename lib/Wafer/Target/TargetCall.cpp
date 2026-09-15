@@ -35,7 +35,7 @@ getTargetCallCompletionBehavior(const TargetCallSemantic &semantic,
 
 static std::vector<TargetCallDescriptor> buildDescriptors() {
   std::vector<TargetCallDescriptor> result;
-  result.reserve(115);
+  result.reserve(117);
 
   auto add = [&](llvm::StringRef stem, Result callResult,
                  std::vector<Scalar> arguments, TargetCallSemantic semantic) {
@@ -148,7 +148,12 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addVoid("direct_dte_send_issue", {Scalar::I64},
           TargetCallBuiltin::DirectDTESendIssue);
 
-  assert(result.size() == 115 && "target-call registry must stay closed");
+  result.push_back({"get_ddr_memory_mapping_with_size", Result::Pointer,
+                    {Scalar::I64, Scalar::I32}, TargetCallBuiltin::DDRReadMapping,
+                    std::nullopt});
+  result.push_back({"get_spm_memory_mapping", Result::Pointer, {Scalar::I64},
+                    TargetCallBuiltin::SPMMapping, std::nullopt});
+  assert(result.size() == 117 && "target-call registry must stay closed");
   assert(
       llvm::all_of(result,
                    [&](const TargetCallDescriptor &descriptor) {
@@ -243,6 +248,8 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
     case TargetCallBuiltin::DDRPublish:
     case TargetCallBuiltin::DDRAcquire:
     case TargetCallBuiltin::NCCJoin:
+    case TargetCallBuiltin::DDRReadMapping:
+    case TargetCallBuiltin::SPMMapping:
     case TargetCallBuiltin::DirectDTEBegin:
     case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
     case TargetCallBuiltin::DirectDTESendPrepare:

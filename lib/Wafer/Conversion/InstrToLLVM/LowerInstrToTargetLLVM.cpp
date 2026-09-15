@@ -36,7 +36,8 @@ struct LowerInstrToTargetLLVMPass
 
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
-    if (mlir::failed(
+    if (mlir::failed(target_llvm_detail::verifyTargetScalarMemoryAccesses(moduleOp)) ||
+        mlir::failed(
             target_llvm_detail::verifyTargetSubviewAddresses(moduleOp)) ||
         mlir::failed(
             target_llvm_detail::verifyTargetInstructionFormats(moduleOp))) {

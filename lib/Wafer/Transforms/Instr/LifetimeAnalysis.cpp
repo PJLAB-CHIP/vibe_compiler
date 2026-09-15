@@ -5,10 +5,12 @@
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Target/TargetMemory.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -32,6 +34,12 @@ using analysis::getSingleExecutionRegionExitOperand;
 using analysis::getSingleExecutionRegionFlow;
 
 namespace {
+
+static bool isKcoreRelease(mlir::Operation *op) {
+  auto fence = mlir::dyn_cast<mlir::LLVM::FenceOp>(op);
+  return fence && fence.getSyncscope() == kTargetKcoreReleaseScope &&
+         fence.getOrdering() == mlir::LLVM::AtomicOrdering::release;
+}
 
 static void setTimelineFailure(TimelineFailure *failure,
                                TimelineFailureKind kind,
@@ -132,12 +140,98 @@ static bool isNestedIn(mlir::Operation *operation, mlir::Operation *ancestor) {
   return false;
 }
 
+// Conditions at a loop's re-entry use the next iteration of that loop and
+// the first iteration of each nested loop reached from its header. This reads
+// actual bounds; it does not insert a completion or predict a storage lifetime.
+static std::optional<std::pair<int64_t, int64_t>>
+getReentryIndexRange(mlir::Value value, mlir::scf::ForOp outer) {
+  if (auto constant = mlir::getConstantIntValue(value))
+    return std::make_pair(*constant, *constant);
+  auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+  auto loop =
+      argument
+          ? mlir::dyn_cast<mlir::scf::ForOp>(argument.getOwner()->getParentOp())
+          : mlir::scf::ForOp{};
+  if (!loop || loop.getInductionVar() != value)
+    return std::nullopt;
+  auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+  auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+  auto step = mlir::getConstantIntValue(loop.getStep());
+  if (!lower || !upper || !step || *step <= 0 || *lower < 0 || *upper <= *lower)
+    return std::nullopt;
+  int64_t last = *lower + ((*upper - *lower - 1) / *step) * *step;
+  if (loop == outer) {
+    if (static_cast<__int128>(*lower) + *step > last)
+      return std::nullopt;
+    return std::make_pair(*lower + *step, last);
+  }
+  if (outer->isAncestor(loop))
+    return std::make_pair(*lower, *lower);
+  if (loop->isAncestor(outer))
+    return std::make_pair(*lower, last);
+  return std::nullopt;
+}
+
+static std::optional<bool> getReentryCondition(mlir::Value value,
+                                               mlir::scf::ForOp outer,
+                                               unsigned depth = 0) {
+  if (depth > 32 || !value.getType().isInteger(1))
+    return std::nullopt;
+  if (auto constant = mlir::getConstantIntValue(value))
+    return *constant != 0;
+  auto boolean = [&](mlir::Value a, mlir::Value b,
+                     bool conjunction) -> std::optional<bool> {
+    auto lhs = getReentryCondition(a, outer, depth + 1);
+    auto rhs = getReentryCondition(b, outer, depth + 1);
+    if ((lhs && *lhs != conjunction) || (rhs && *rhs != conjunction))
+      return !conjunction;
+    if (lhs && rhs)
+      return conjunction;
+    return std::nullopt;
+  };
+  if (auto op = value.getDefiningOp<mlir::arith::AndIOp>())
+    return boolean(op.getLhs(), op.getRhs(), true);
+  if (auto op = value.getDefiningOp<mlir::arith::OrIOp>())
+    return boolean(op.getLhs(), op.getRhs(), false);
+  auto compare = value.getDefiningOp<mlir::arith::CmpIOp>();
+  if (!compare)
+    return std::nullopt;
+  auto a = getReentryIndexRange(compare.getLhs(), outer);
+  auto b = getReentryIndexRange(compare.getRhs(), outer);
+  if (!a || !b)
+    return std::nullopt;
+  using P = mlir::arith::CmpIPredicate;
+  switch (compare.getPredicate()) {
+  case P::eq:
+  case P::ne: {
+    std::optional<bool> equal;
+    if (a->first == a->second && b->first == b->second)
+      equal = a->first == b->first;
+    else if (a->second < b->first || b->second < a->first)
+      equal = false;
+    return equal ? std::optional<bool>(
+                       compare.getPredicate() == P::eq ? *equal : !*equal)
+                 : std::nullopt;
+  }
+  default:
+    return std::nullopt;
+  }
+}
+
 static bool isUnconditionallyNestedInStaticFor(mlir::Operation *operation,
                                                mlir::scf::ForOp outer) {
-  for (mlir::Operation *parent = operation ? operation->getParentOp() : nullptr;
-       parent; parent = parent->getParentOp()) {
+  for (auto *parent = operation ? operation->getParentOp() : nullptr; parent;
+       operation = parent, parent = parent->getParentOp()) {
     if (parent == outer)
       return true;
+    if (auto condition = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
+      auto value = getReentryCondition(condition.getCondition(), outer);
+      if (!value ||
+          operation->getParentRegion() != (*value ? &condition.getThenRegion()
+                                                  : &condition.getElseRegion()))
+        return false;
+      continue;
+    }
     auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(parent);
     if (!nestedFor || !isStaticallyNonEmpty(nestedFor))
       return false;
@@ -211,6 +305,8 @@ static bool hasOnlyWitnessedRootlessStorageEffects(
 }
 
 static bool hasOnlyWitnessedRootlessStorageEffects(mlir::Operation *op) {
+  if (isKcoreRelease(op))
+    return true;
   auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
   if (!effectInterface)
     return false;
@@ -2154,6 +2250,18 @@ LifetimeDataflow::run(mlir::Operation *scope,
                       LifetimeFailure *failure) {
   if (!scope || !isTrackedType || mlir::failed(initialize(failure)))
     return mlir::failure();
+  if (localCompletion) {
+    localCompletion->hasScalarStorageObservers = false;
+    scope->walk([&](mlir::Operation *operation) {
+      mlir::Value buffer;
+      if (auto load = mlir::dyn_cast<mlir::memref::LoadOp>(operation))
+        buffer = load.getMemref();
+      else if (auto store = mlir::dyn_cast<mlir::memref::StoreOp>(operation))
+        buffer = store.getMemref();
+      if (buffer && isTrackedType(buffer.getType()))
+        localCompletion->hasScalarStorageObservers = true;
+    });
+  }
   for (mlir::Region &region : scope->getRegions()) {
     for (mlir::Block &block : region) {
       for (mlir::BlockArgument argument : block.getArguments()) {
@@ -2183,6 +2291,10 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
                                         uint32_t workerMask,
                                         LifetimeDataflow &dataflow) const {
   AccessCollection collected;
+  // This device release orders Kcore writes. It neither accesses NCC storage
+  // nor completes an outstanding NCC command.
+  if (isKcoreRelease(op))
+    return collected;
   // Region bodies are visited at their own program points. Treating the
   // containing control-flow op's recursive effects as another observer would
   // reject a branch whose every path already completes the pending issue.
@@ -2677,7 +2789,8 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
       !current.hasTrackedEffect)
     return mlir::success();
 
-  if (current.allResolved && !current.accesses.empty()) {
+  if (current.allResolved && !current.accesses.empty() &&
+      !hasScalarStorageObservers) {
     wafer::support::ScopedCompileTimingSpan timing(
         "analysis-algorithm-phase", "local-completion",
         "process-ordered-successor");

@@ -3,6 +3,7 @@
 #include "Wafer/Simulator/Reference/TargetNumericBackend.h"
 
 #include "Wafer/Target/PhysicalTensor/PhysicalTensorCodec.h"
+#include "Wafer/Target/PhysicalTensor/TargetScalarConversion.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -20,7 +21,8 @@
 namespace wafer::model {
 namespace {
 
-constexpr llvm::StringLiteral kImplementation = "native-non-nan-f16-f32-tensor";
+constexpr llvm::StringLiteral kImplementation =
+    "native-non-nan-f16-bf16-f32-tensor";
 
 llvm::Error referenceError(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -138,11 +140,14 @@ llvm::Expected<float> decodeNonNaN(RawLogicalValue value) {
   case LogicalFormat::F16:
     decoded = halfFromBits(static_cast<uint16_t>(value.bits));
     break;
+  case LogicalFormat::BF16:
+    decoded = floatFromBits(static_cast<uint32_t>(value.bits) << 16);
+    break;
   case LogicalFormat::F32:
     decoded = floatFromBits(static_cast<uint32_t>(value.bits));
     break;
   default:
-    return referenceError("only F16 and F32 values are supported");
+    return referenceError("only F16, BF16 and F32 values are supported");
   }
   if (std::isnan(decoded))
     return referenceError("input value is outside the non-NaN domain");
@@ -161,7 +166,22 @@ llvm::Expected<RawLogicalValue> encodeNonNaN(float value,
       return referenceError("result cannot be encoded in the F16 domain");
     return RawLogicalValue{format, *bits};
   }
-  return referenceError("only F16 and F32 results are supported");
+  if (format == LogicalFormat::BF16) {
+    const auto *route = findTargetConvertRoute(LogicalFormat::F32, format);
+    if (!route)
+      return referenceError("target has no F32 to BF16 conversion route");
+    auto operation = TargetConvertOperation::create(route->opcode);
+    if (!operation)
+      return operation.takeError();
+    auto converted = convertTargetScalar(
+        *operation,
+        TargetConvertParameter::roundingMode(TargetRoundingMode::NearestEven),
+        {LogicalFormat::F32, floatToBits(value)});
+    if (!converted)
+      return converted.takeError();
+    return converted->value;
+  }
+  return referenceError("only F16, BF16 and F32 results are supported");
 }
 
 llvm::Expected<std::vector<RawLogicalValue>>
@@ -286,11 +306,12 @@ executeElementwise(const FormalElementwiseOperation &command,
         key.getLayout() != command.destination.getLayout() ||
         key.getFormat() != command.destination.getFormat())
       return referenceError(
-          "elementwise tensors do not have one same-shape F16/F32 domain");
+          "elementwise tensors do not have one same-shape F16/BF16/F32 domain");
   }
   const LogicalFormat format = command.destination.getFormat();
-  if (format != LogicalFormat::F16 && format != LogicalFormat::F32)
-    return referenceError("elementwise result is not F16 or F32");
+  if (format != LogicalFormat::F16 && format != LogicalFormat::BF16 &&
+      format != LogicalFormat::F32)
+    return referenceError("elementwise result is not F16, BF16 or F32");
 
   std::vector<RawLogicalValue> result;
   result.reserve(static_cast<size_t>(outputCount));
@@ -325,15 +346,17 @@ executeConvert(const FormalConvertOperation &command,
     return referenceError("convert is not nearest-even");
   const LogicalFormat sourceFormat = command.source.getFormat();
   const LogicalFormat destinationFormat = command.destination.getFormat();
-  if (!((sourceFormat == LogicalFormat::F16 &&
-         destinationFormat == LogicalFormat::F32) ||
-        (sourceFormat == LogicalFormat::F32 &&
-         destinationFormat == LogicalFormat::F16)) ||
+  auto supportedFloat = [](LogicalFormat format) {
+    return format == LogicalFormat::F16 || format == LogicalFormat::BF16 ||
+           format == LogicalFormat::F32;
+  };
+  if (!supportedFloat(sourceFormat) || !supportedFloat(destinationFormat) ||
       command.source.getShape() != command.destination.getShape() ||
       command.source.getLayout() != command.destination.getLayout() ||
       inputs.size() != 1 ||
       inputs.front().size() != command.destination.getElementCount())
-    return referenceError("convert is outside the F16/F32 same-shape domain");
+    return referenceError(
+        "convert is outside the F16/BF16/F32 same-shape domain");
 
   std::vector<RawLogicalValue> result;
   result.reserve(inputs.front().size());

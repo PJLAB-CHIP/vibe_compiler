@@ -176,6 +176,11 @@ collectProfileTargetCallSitesImpl(const llvm::Module &module,
           ++instructionOrdinal;
           continue;
         }
+        auto siteKind = runtime::getProfileTargetSiteKind(*descriptor);
+        if (!siteKind) {
+          ++instructionOrdinal;
+          continue;
+        }
         if (!llvm::isa<llvm::CallInst>(call))
           return llvm::createStringError(
               llvm::errc::invalid_argument,
@@ -205,7 +210,7 @@ collectProfileTargetCallSitesImpl(const llvm::Module &module,
         record.instructionOrdinal = instructionOrdinal;
         record.targetCallOrdinal = descriptorOrdinal;
         record.targetCallSymbol = descriptor->symbol;
-        record.siteKind = runtime::getProfileTargetSiteKind(*descriptor);
+        record.siteKind = *siteKind;
         record.engine = getTargetCallTSMEngine(*descriptor);
         record.correlationKey = std::move(correlationKey);
         sites.push_back({call, std::move(record)});

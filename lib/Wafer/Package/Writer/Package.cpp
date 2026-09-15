@@ -853,13 +853,11 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
                   "physical tensor codec (codec=" +
                       std::to_string(*storageBytes) +
                       " manifest=" + std::to_string(record.bytes) + ")");
-    if (sourceDescriptor->storageBits == 1 ||
-        sourceDescriptor->storageBits % 8 != 0)
+    auto programElementBytes = getProgramElementByteCount(range->getDType());
+    if (!programElementBytes || *programElementBytes <= 0)
       return fail(diagnostics,
-                  "bit-packed source program tensors are not admitted by "
-                  "the current program-data boundary");
-    const uint64_t sourceElementBytes =
-        static_cast<uint64_t>(sourceDescriptor->storageBits / 8);
+                  "source program tensor has no byte representation");
+    const uint64_t sourceElementBytes = *programElementBytes;
     if (range->getRegionLength() % sourceElementBytes != 0)
       return fail(diagnostics,
                   "package TargetTensor source region is not element-aligned");
@@ -869,7 +867,8 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
     const bool identityLayout =
         record.layout == runtime::PackageMemLayout::Tensor ||
         record.layout == runtime::PackageMemLayout::NTensor;
-    if (targetFormat == *sourceFormat && identityLayout &&
+    if (range->getDType() != ProgramElementType::Bool &&
+        targetFormat == *sourceFormat && identityLayout &&
         record.bytes == range->getRegionLength()) {
       // Identity representation: the target bytes are the source region
       // bytes; stream them with bounded windows and no host copy.
@@ -953,10 +952,8 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
         for (size_t current = orderIndex; current < runEnd; ++current) {
           const auto &element = window->elements[logicalOrder[current]];
           const uint64_t runIndex = element.logicalIndex - firstLogical;
-          llvm::Expected<RawLogicalValue> value = readRawLogicalValue(
-              *sourceFormat, sourceWindow,
-              runIndex * static_cast<uint64_t>(sourceDescriptor->storageBits),
-              codecPolicy);
+          llvm::Expected<RawLogicalValue> value =
+              readProgramElement(range->getDType(), sourceWindow, runIndex);
           if (!value)
             return fail(diagnostics,
                         "package TargetTensor source value read failed: " +

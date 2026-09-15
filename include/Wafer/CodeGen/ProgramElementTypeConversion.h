@@ -4,6 +4,7 @@
 #define WAFER_CODEGEN_PROGRAMELEMENTTYPECONVERSION_H
 
 #include "Wafer/Frontend/ProgramElementType.h"
+#include "Wafer/Target/PhysicalTensor/NumericCodec.h"
 #include "Wafer/Target/TargetFormat.h"
 
 #include <optional>
@@ -14,6 +15,12 @@ namespace wafer {
 /// schema at the code-generation boundary.
 std::optional<LogicalFormat> getTargetLogicalFormat(ProgramElementType type);
 ProgramElementType getProgramElementType(LogicalFormat format);
+
+/// Program tensors use whole bytes per logical element (including Bool).
+/// Target tensor packing is performed separately by the physical codec.
+llvm::Expected<RawLogicalValue>
+readProgramElement(ProgramElementType type, llvm::ArrayRef<uint8_t> bytes,
+                   uint64_t index);
 
 } // namespace wafer
 

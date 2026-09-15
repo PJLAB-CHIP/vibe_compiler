@@ -168,9 +168,9 @@ void writeProfileStaticCostModel(llvm::json::OStream &json,
                                  const ProfileStaticCostModel &model);
 
 /// Returns the profiler site semantic owned by one closed target-call
-/// descriptor. Every descriptor in the public target-call registry maps to
-/// exactly one site kind; this function never recovers semantics from symbols.
-ProfileTargetSiteKind
+/// descriptor. Address mapping helpers have no NCC/profile event site.
+/// This function never recovers semantics from symbols.
+std::optional<ProfileTargetSiteKind>
 getProfileTargetSiteKind(const TargetCallDescriptor &descriptor);
 
 } // namespace runtime

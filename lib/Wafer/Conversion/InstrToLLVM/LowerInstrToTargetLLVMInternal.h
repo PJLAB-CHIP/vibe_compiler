@@ -75,13 +75,15 @@ mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
                                              llvm::StringRef role);
 int64_t getIntegerAttrValue(mlir::IntegerAttr attr);
 int64_t getOptionalIntegerAttrValue(mlir::IntegerAttr attr, int64_t fallback);
-mlir::FailureOr<int64_t> getConstantScalarValue(mlir::Operation *op,
-                                                mlir::Value value);
+
 bool isTargetRelationElementwiseKind(InstrElementwiseKind kind);
 mlir::FailureOr<int64_t>
 getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
 mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp);
 mlir::LogicalResult verifyTargetSubviewAddresses(mlir::ModuleOp moduleOp);
+mlir::LogicalResult verifyTargetScalarMemoryAccesses(mlir::ModuleOp moduleOp);
+void populateTargetScalarMemoryConversionPatterns(
+    mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns);
 mlir::FailureOr<DirectDTEEndpointDomain>
 resolveDirectDTEEndpointDomain(const TargetTopology &topology,
                                mlir::ModuleOp diagnosticModule, CardId cardId,

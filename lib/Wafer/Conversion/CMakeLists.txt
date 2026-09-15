@@ -35,6 +35,7 @@ add_mlir_conversion_library(WaferInstrToLLVM
   InstrToLLVM/MovementTargetCallLowering.cpp
   InstrToLLVM/PeripheralTargetCallLowering.cpp
   InstrToLLVM/SyncTargetCallLowering.cpp
+  InstrToLLVM/ScalarMemoryLowering.cpp
   InstrToLLVM/TargetCallIRAdapter.cpp
   InstrToLLVM/TargetCallLoweringSupport.cpp
   InstrToLLVM/TargetLLVMConversion.cpp

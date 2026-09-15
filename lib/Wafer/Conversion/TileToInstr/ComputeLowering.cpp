@@ -424,6 +424,7 @@ public:
   struct MappedInputRewrite {
     mlir::Value source;
     mlir::MemRefType materializedType;
+    mlir::MemRefType predicateType;
     llvm::SmallVector<MovementDescriptorPair> descriptors;
     std::optional<DynamicSubviewDescriptor> dynamicSubview;
   };
@@ -573,11 +574,25 @@ public:
         }
       }
 
+      // Bit2Fp is exact for predicate values. Apply it before a requested
+      // broadcast/permutation so the existing byte-addressable movement path
+      // can implement that map without inventing a packed-bit gather.
+      if (op.getKind() == ComputeElementwiseKind::Select && index == 0) {
+        inputRewrite.predicateType = mlir::MemRefType::get(
+            sourceType.getShape(), resultType.getElementType(),
+            mlir::MemRefLayoutAttrInterface{}, sourceType.getMemorySpace());
+        if (mlir::failed(proveIdentityPhysicalTraversal(
+                rewriter, op, sourceType, inputRewrite.predicateType,
+                descriptorCache, "mapped predicate conversion")))
+          return mlir::failure();
+        sourceType = inputRewrite.predicateType;
+      }
       inputRewrite.materializedType = mlir::MemRefType::get(
           resultType.getShape(), sourceType.getElementType(),
           resultType.getLayout(), resultType.getMemorySpace());
-      inputRewrite.dynamicSubview =
-          getDynamicSubviewDescriptor(input, op.getOperation());
+      if (!inputRewrite.predicateType)
+        inputRewrite.dynamicSubview =
+            getDynamicSubviewDescriptor(input, op.getOperation());
       mlir::MemRefType descriptorSourceType =
           inputRewrite.dynamicSubview
               ? inputRewrite.dynamicSubview->relativeType
@@ -650,8 +665,21 @@ public:
     llvm::SmallVector<mlir::Value, 3> inputs;
     inputs.reserve(inputRewrites.size());
     for (const MappedInputRewrite &inputRewrite : inputRewrites) {
+      mlir::Value source = inputRewrite.source;
+      if (inputRewrite.predicateType) {
+        auto converted =
+            createDestAlloc(op.getLoc(), inputRewrite.predicateType, rewriter,
+                            op, bufferRecorder);
+        if (mlir::failed(converted))
+          return mlir::failure();
+        auto bit2fp =
+            rewriter.create<InstrBit2FpOp>(op.getLoc(), source, *converted);
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, bit2fp);
+        source = *converted;
+      }
       if (!inputRewrite.materializedType) {
-        inputs.push_back(inputRewrite.source);
+        inputs.push_back(source);
         continue;
       }
       mlir::FailureOr<mlir::Value> materialized =
@@ -671,7 +699,7 @@ public:
           return mlir::failure();
       } else {
         if (mlir::failed(emitGatherScatterDescriptorPlan(
-                rewriter, op.getLoc(), op, inputRewrite.source, *materialized,
+                rewriter, op.getLoc(), op, source, *materialized,
                 inputRewrite.descriptors, bufferRecorder)))
           return mlir::failure();
       }
@@ -687,18 +715,22 @@ public:
               rewriter, op.getLoc(), op, inputs[2], *dest,
               selectCopyDescriptors, bufferRecorder)))
         return mlir::failure();
-      mlir::FailureOr<mlir::Value> mask = createDestAlloc(
-          op.getLoc(), resultType, rewriter, op, bufferRecorder);
-      if (mlir::failed(mask))
-        return mlir::failure();
-      auto bit2fp =
-          rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], *mask);
-      auto maskMove = rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1],
-                                                       *mask, *dest);
-      if (bufferRecorder) {
-        bufferRecorder->recordLoweredOperation(op, bit2fp);
-        bufferRecorder->recordLoweredOperation(op, maskMove);
+      mlir::Value mask = inputs[0];
+      if (!inputRewrites[0].predicateType) {
+        auto allocated = createDestAlloc(op.getLoc(), resultType, rewriter, op,
+                                         bufferRecorder);
+        if (mlir::failed(allocated))
+          return mlir::failure();
+        auto bit2fp =
+            rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], *allocated);
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, bit2fp);
+        mask = *allocated;
       }
+      auto maskMove =
+          rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], mask, *dest);
+      if (bufferRecorder)
+        bufferRecorder->recordLoweredOperation(op, maskMove);
       rewriter.replaceOp(op, *dest);
       return mlir::success();
     }
@@ -2197,6 +2229,10 @@ getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
     return makeKind(InstrElementwiseKind::Ln);
   case ComputeElementwiseKind::Tanh:
     return makeKind(InstrElementwiseKind::Tanh);
+  case ComputeElementwiseKind::Sin:
+    return makeKind(InstrElementwiseKind::Sin);
+  case ComputeElementwiseKind::Cos:
+    return makeKind(InstrElementwiseKind::Cos);
   case ComputeElementwiseKind::Eq:
     return makeKind(InstrElementwiseKind::Eq);
   case ComputeElementwiseKind::Ne:

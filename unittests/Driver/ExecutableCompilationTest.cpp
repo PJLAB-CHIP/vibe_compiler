@@ -20,7 +20,10 @@
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -1057,6 +1060,112 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
+     LargeContractionKeepsWideStateInsideItsSelectedRegion) {
+  for (auto [extent, dtype] : {std::pair<int64_t, const char *>{4096, "f16"},
+                               {4097, "f16"},
+                               {4096, "bf16"}}) {
+    SCOPED_TRACE(extent);
+    SCOPED_TRACE(dtype);
+    auto parsed = wafer::compiler::testing::parseProgram();
+    ASSERT_TRUE(parsed.module);
+    std::string tensor = "tensor<1x" + std::to_string(extent) + "x" +
+                         std::to_string(extent) + "x" + dtype + ">";
+    std::string source =
+        "module { wafer.target.topology @default "
+        "{card_grid = array<i64: 1, 1>, card_interconnect = \"mesh\", "
+        "tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>} "
+        "wafer.execution.mesh @default_mesh "
+        "{axes = [\"card\"], shape = array<i64: 1>} "
+        "func.func @main(%a: " +
+        tensor + ", %b: " + tensor + ") -> " + tensor +
+        " { %zero = arith.constant 0.0 : " + dtype +
+        " %empty = tensor.empty() : " + tensor +
+        " %init = linalg.fill ins(%zero : " + dtype +
+        ") outs(%empty : " + tensor + ") -> " + tensor +
+        " %r = linalg.batch_matmul ins(%a, %b : " + tensor + ", " + tensor +
+        ") outs(%init : " + tensor + ") -> " + tensor +
+        " return %r : " + tensor + " } }";
+    parsed.module =
+        mlir::parseSourceString<mlir::ModuleOp>(source, parsed.context.get());
+    ASSERT_TRUE(parsed.module);
+    wafer::frontend::FrontendProgramVerificationResult program;
+    program.numPartitions = 1;
+    program.programUserInputCount = 2;
+    program.distributedInputs = {
+        wafer::compiler::testing::boundary(0, {1, extent, extent}),
+        wafer::compiler::testing::boundary(1, {1, extent, extent})};
+    program.distributedOutputs = {
+        wafer::compiler::testing::boundary(0, {1, extent, extent})};
+    for (auto &input : program.distributedInputs)
+      input.dtype = std::string(dtype) == "bf16"
+                        ? wafer::ProgramElementType::BF16
+                        : wafer::ProgramElementType::F16;
+    program.distributedOutputs[0].dtype = program.distributedInputs[0].dtype;
+    wafer::compiler::ProgramDataHandoff data;
+    std::string diagnosticText;
+    llvm::raw_string_ostream diagnostics(diagnosticText);
+    wafer::compiler::detail::SearchCurrentIROptions options;
+    options.termination =
+        wafer::compiler::detail::SearchTerminationPolicy::FirstAccepted;
+    wafer::compiler::detail::SearchCurrentIRStatistics search;
+    auto result = wafer::compiler::detail::compileSearchCurrentIR(
+        *parsed.module, program, wafer::compiler::testing::executionConfig(),
+        diagnostics, data, options, &search);
+    ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
+    ASSERT_EQ(result.executable->tiles.size(), 16u);
+    EXPECT_GT(search.actualCapacityRefinements, 0u);
+    // The original logical contraction still returns the original dtype.
+    unsigned sourceContractions = 0, sourceConversions = 0;
+    parsed.module->walk([&](mlir::linalg::LinalgOp op) {
+      if (mlir::linalg::isaContractionOpInterface(op)) {
+        ++sourceContractions;
+        EXPECT_FALSE(
+            mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType())
+                .getElementType()
+                .isF32());
+      }
+    });
+    parsed.module->walk([&](mlir::arith::TruncFOp) { ++sourceConversions; });
+    EXPECT_EQ(sourceContractions, 1u);
+    EXPECT_EQ(sourceConversions, 0u);
+    uint64_t multiplyAdds = 0;
+    unsigned widePartials = 0, narrowOutputs = 0, conversions = 0;
+    for (const auto &tile : result.executable->tiles) {
+      tile.getModule().walk([&](wafer::InstrConvertOp) { ++conversions; });
+      tile.getModule().walk([&](wafer::InstrGemmOp gemm) {
+        uint64_t work = gemm.getBatchCount().value_or(1) * gemm.getM() *
+                        gemm.getN() * gemm.getK();
+        for (auto *parent = gemm->getParentOp(); parent;
+             parent = parent->getParentOp()) {
+          auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+          if (!loop)
+            continue;
+          auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+          auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+          auto step = mlir::getConstantIntValue(loop.getStep());
+          ASSERT_TRUE(lower && upper && step && *step > 0);
+          work *= (*upper - *lower + *step - 1) / *step;
+        }
+        multiplyAdds += work;
+        if (gemm.getPsum()) {
+          ++widePartials;
+          EXPECT_TRUE(mlir::cast<mlir::MemRefType>(gemm.getPsum().getType())
+                          .getElementType()
+                          .isF32());
+        }
+        auto type = mlir::cast<mlir::MemRefType>(gemm.getDest().getType());
+        narrowOutputs += !type.getElementType().isF32();
+      });
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(tile.getModule())));
+    }
+    EXPECT_EQ(multiplyAdds, uint64_t(extent) * extent * extent);
+    EXPECT_GT(widePartials, 0u);
+    EXPECT_GT(narrowOutputs, 0u);
+    EXPECT_EQ(conversions, 0u);
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
      SearchRefinesTemporalChoiceOnlyAfterActualSPMCapacityRejection) {
   wafer::compiler::testing::ParsedProgram parsed =
       wafer::compiler::testing::parseLargeTemporalProgram();
@@ -1349,126 +1458,150 @@ TEST(ExecutableCompilationPolicyTest,
   using namespace wafer::compiler::detail;
   for (unsigned count : {2u, 4u, 16u})
     for (int64_t extent : {1024, 1025, 1031})
-      for (unsigned mode : {0u, 1u, 2u, 3u, 4u}) {
-        SCOPED_TRACE(::testing::Message()
-                     << count << '/' << extent << '/' << mode);
-        auto parsed = wafer::compiler::testing::parseProgram();
-        llvm::SmallVector<StandaloneTileModule, 16> owners;
-        llvm::SmallVector<mlir::ModuleOp> modules;
-        llvm::SmallVector<TileId> ids;
-        std::string type = std::string(mode >= 3 ? "memref<2x" : "memref<1x") +
-                           std::to_string(extent) +
-                           "x64xf16, #wafer.memory<spm, tensor>>";
-        const int64_t bytes = extent * 128;
-        for (unsigned tile = 0; tile < count; ++tile) {
-          unsigned previous = (tile + count - 1) % count;
-          unsigned next = (tile + 1) % count;
-          std::string text;
-          llvm::raw_string_ostream ir(text);
-          ir << "module { func.func @entry() { wafer.tile.region() -> () {\n"
-             << "%source = memref.alloc() : " << type << '\n'
-             << "%dest = memref.alloc() : " << type << '\n'
-             << "%other = memref.alloc() : " << type << '\n'
-             << "%one = arith.constant 1.0 : f16\n"
-             << "wafer.instr.fill %source, %one : " << type << ", f16\n";
-          auto send = [&](unsigned round) {
-            ir << "%s" << round << " = wafer.instr.dte_send %"
-               << (mode == 2 ? "dest" : "source") << " {peer = " << next
-               << " : i64, bytes = " << bytes
-               << " : i64, message = #wafer.dte_message<communication = "
-               << tile << ", round = " << round << ", slice = 0>} : " << type
-               << " -> !async.token\nwafer.instr.dte_wait %s" << round
-               << " : !async.token\n";
-          };
-          auto recv = [&](unsigned round) {
-            ir << "%r" << round << " = wafer.instr.dte_recv %"
-               << (mode >= 3 ? "source"
-                   : round   ? "other"
-                             : "dest")
-               << " {peer = " << previous
-               << " : i64, buffer_offset = " << (mode == 3 ? bytes : 0)
-               << " : i64, bytes = " << bytes
-               << " : i64, message = #wafer.dte_message<communication = "
-               << previous << ", round = " << round
-               << ", slice = 0>} : " << type
-               << " -> !async.token\nwafer.instr.dte_wait %r" << round
-               << " : !async.token\n";
-          };
-          if (mode >= 2) {
-            // Mode 3 uses the other half of an initialized allocation and
-            // must remain legal. Modes 2/4 forward the not-yet-received range
-            // and must not be admitted merely because a root was initialized.
-            recv(0);
-            send(0);
-          } else if (mode == 1 && tile % 2) {
-            send(1);
-            recv(1);
-            send(0);
-            recv(0);
-          } else {
-            send(0);
-            recv(0);
-            if (mode == 1) {
+      for (unsigned mode : {0u, 1u, 2u, 3u, 4u})
+        for (unsigned repeated : {0u, 1u, 2u}) {
+          SCOPED_TRACE(::testing::Message() << count << '/' << extent << '/'
+                                            << mode << '/' << repeated);
+          auto parsed = wafer::compiler::testing::parseProgram();
+          llvm::SmallVector<StandaloneTileModule, 16> owners;
+          llvm::SmallVector<mlir::ModuleOp> modules;
+          llvm::SmallVector<TileId> ids;
+          std::string type =
+              std::string(mode >= 3 ? "memref<2x" : "memref<1x") +
+              std::to_string(extent) + "x64xf16, #wafer.memory<spm, tensor>>";
+          const int64_t bytes = extent * 128;
+          for (unsigned tile = 0; tile < count; ++tile) {
+            unsigned previous = (tile + count - 1) % count;
+            unsigned next = (tile + 1) % count;
+            std::string text;
+            llvm::raw_string_ostream ir(text);
+            ir << "module { func.func @entry() { wafer.tile.region() -> () {\n"
+               << "%source = memref.alloc() : " << type << '\n'
+               << "%dest = memref.alloc() : " << type << '\n'
+               << "%other = memref.alloc() : " << type << '\n'
+               << "%one = arith.constant 1.0 : f16\n"
+               << "wafer.instr.fill %source, %one : " << type << ", f16\n";
+            auto send = [&](unsigned round) {
+              ir << "%s" << round << " = wafer.instr.dte_send %"
+                 << (mode == 2 ? "dest" : "source") << " {peer = " << next
+                 << " : i64, bytes = " << bytes
+                 << " : i64, message = #wafer.dte_message<communication = "
+                 << tile << ", round = " << round << ", slice = 0>} : " << type
+                 << " -> !async.token\nwafer.instr.dte_wait %s" << round
+                 << " : !async.token\n";
+            };
+            auto recv = [&](unsigned round) {
+              ir << "%r" << round << " = wafer.instr.dte_recv %"
+                 << (mode >= 3 ? "source"
+                     : round   ? "other"
+                               : "dest")
+                 << " {peer = " << previous
+                 << " : i64, buffer_offset = " << (mode == 3 ? bytes : 0)
+                 << " : i64, bytes = " << bytes
+                 << " : i64, message = #wafer.dte_message<communication = "
+                 << previous << ", round = " << round
+                 << ", slice = 0>} : " << type
+                 << " -> !async.token\nwafer.instr.dte_wait %r" << round
+                 << " : !async.token\n";
+            };
+            if (mode >= 2) {
+              // Mode 3 uses the other half of an initialized allocation and
+              // must remain legal. Modes 2/4 forward the not-yet-received range
+              // and must not be admitted merely because a root was initialized.
+              recv(0);
+              send(0);
+            } else if (mode == 1 && tile % 2) {
               send(1);
               recv(1);
+              send(0);
+              recv(0);
+            } else {
+              send(0);
+              recv(0);
+              if (mode == 1) {
+                send(1);
+                recv(1);
+              }
             }
+            ir << "wafer.tile.yield\n}\nreturn\n}\n}\n";
+            auto module = mlir::parseSourceString<mlir::ModuleOp>(
+                text, parsed.context.get());
+            ASSERT_TRUE(module) << text;
+            if (repeated) {
+              module->walk([&](TileRegionOp region) {
+                auto &body = region.getBody().front();
+                llvm::SmallVector<mlir::Operation *> original;
+                for (auto &operation : body.without_terminator())
+                  original.push_back(&operation);
+                mlir::OpBuilder builder(&body, body.begin());
+                auto lower = builder.create<mlir::arith::ConstantIndexOp>(
+                    region.getLoc(), 0);
+                auto upper = builder.create<mlir::arith::ConstantIndexOp>(
+                    region.getLoc(),
+                    repeated == 2 && tile == count - 1 ? 1024 : 1025);
+                auto step = builder.create<mlir::arith::ConstantIndexOp>(
+                    region.getLoc(), 1);
+                auto loop = builder.create<mlir::scf::ForOp>(
+                    region.getLoc(), lower, upper, step);
+                for (auto *operation : original)
+                  operation->moveBefore(loop.getBody()->getTerminator());
+              });
+            }
+            ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+            modules.push_back(*module);
+            ids.push_back(TileId(tile));
+            owners.push_back({CardId(0), TileId(tile), std::move(module), {}});
           }
-          ir << "wafer.tile.yield\n}\nreturn\n}\n}\n";
-          auto module = mlir::parseSourceString<mlir::ModuleOp>(
-              text, parsed.context.get());
-          ASSERT_TRUE(module) << text;
-          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-          modules.push_back(*module);
-          ids.push_back(TileId(tile));
-          owners.push_back({CardId(0), TileId(tile), std::move(module), {}});
-        }
-        auto printModules = [&]() {
-          std::string text;
-          llvm::raw_string_ostream out(text);
-          for (auto module : modules)
-            module.print(out);
-          return text;
-        };
-        std::string before = printModules();
-        auto limited = scheduleCurrentCommunication(modules, ids, 0);
-        EXPECT_EQ(limited.status, CommunicationSchedulingStatus::WorkLimit);
-        EXPECT_EQ(printModules(), before);
-        auto result = constructCommunication(modules, ids);
-        if (mode == 2 || mode == 4) {
-          EXPECT_EQ(result.outcome.failure,
-                    SharedDDRCompletionFailure::Unsupported);
+          auto printModules = [&]() {
+            std::string text;
+            llvm::raw_string_ostream out(text);
+            for (auto module : modules)
+              module.print(out);
+            return text;
+          };
+          std::string before = printModules();
+          auto limited = scheduleCurrentCommunication(modules, ids, 0);
+          EXPECT_EQ(limited.status,
+                    repeated == 2 ? CommunicationSchedulingStatus::Unsupported
+                                  : CommunicationSchedulingStatus::WorkLimit);
           EXPECT_EQ(printModules(), before);
-          continue;
+          auto result = constructCommunication(modules, ids);
+          if (repeated == 2 || mode == 2 || mode == 4) {
+            EXPECT_EQ(result.outcome.failure,
+                      SharedDDRCompletionFailure::Unsupported);
+            EXPECT_EQ(printModules(), before);
+            continue;
+          }
+          ASSERT_TRUE(result.outcome.succeeded()) << result.outcome.detail;
+          EXPECT_EQ(result.statistics.replacedMessages, 0u);
+          EXPECT_EQ(analyzeCurrentCommunicationOrder(modules, ids).status,
+                    CommunicationOrderStatus::Acyclic);
+          uint64_t sends = 0, receives = 0, waits = 0;
+          for (auto module : modules) {
+            module.walk([&](InstrDTESendOp send) {
+              ++sends;
+              EXPECT_EQ(send.getBytes(), static_cast<uint64_t>(bytes));
+            });
+            module.walk([&](InstrDTERecvOp recv) {
+              ++receives;
+              EXPECT_EQ(recv.getBytes(), static_cast<uint64_t>(bytes));
+            });
+            module.walk(
+                [&](InstrDTEWaitOp wait) { waits += wait.getTokens().size(); });
+          }
+          EXPECT_EQ(sends, count * (mode == 1 ? 2u : 1u));
+          EXPECT_EQ(receives, sends);
+          EXPECT_EQ(waits, 2 * sends);
+          for (auto &owner : owners) {
+            ASSERT_TRUE(
+                mlir::succeeded(rebuildRequiredNCCJoins(*owner.module)));
+            TileMemoryPlanningFailure failure;
+            auto planned = planTileMemory(std::move(owner.module), &failure);
+            ASSERT_TRUE(mlir::succeeded(planned));
+            owner.module = std::move(*planned);
+          }
+          ASSERT_TRUE(mlir::succeeded(bindDirectDTETransport(modules)));
         }
-        ASSERT_TRUE(result.outcome.succeeded()) << result.outcome.detail;
-        EXPECT_EQ(result.statistics.replacedMessages, 0u);
-        EXPECT_EQ(analyzeCurrentCommunicationOrder(modules, ids).status,
-                  CommunicationOrderStatus::Acyclic);
-        uint64_t sends = 0, receives = 0, waits = 0;
-        for (auto module : modules) {
-          module.walk([&](InstrDTESendOp send) {
-            ++sends;
-            EXPECT_EQ(send.getBytes(), static_cast<uint64_t>(bytes));
-          });
-          module.walk([&](InstrDTERecvOp recv) {
-            ++receives;
-            EXPECT_EQ(recv.getBytes(), static_cast<uint64_t>(bytes));
-          });
-          module.walk(
-              [&](InstrDTEWaitOp wait) { waits += wait.getTokens().size(); });
-        }
-        EXPECT_EQ(sends, count * (mode == 1 ? 2u : 1u));
-        EXPECT_EQ(receives, sends);
-        EXPECT_EQ(waits, 2 * sends);
-        for (auto &owner : owners) {
-          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*owner.module)));
-          TileMemoryPlanningFailure failure;
-          auto planned = planTileMemory(std::move(owner.module), &failure);
-          ASSERT_TRUE(mlir::succeeded(planned));
-          owner.module = std::move(*planned);
-        }
-        ASSERT_TRUE(mlir::succeeded(bindDirectDTETransport(modules)));
-      }
 }
 
 TEST(ExecutableCompilationPolicyTest,
@@ -1645,7 +1778,30 @@ TEST(ExecutableCompilationPolicyTest,
               transport();
               dma(false, "%b", "%o");
             }
-            ir << "wafer.tile.yield\n}\nreturn\n}\n}\n";
+            ir << "wafer.tile.yield\n}\n";
+            if (tile == 0 || sender) {
+              // An independent repeated exchange must not disable the static
+              // DDR representation repair required by this same transaction.
+              ir << "wafer.tile.region() -> () { "
+                 << "%lo = arith.constant 0 : index "
+                 << "%hi = arith.constant " << extent << " : index "
+                 << "%step = arith.constant 1 : index "
+                 << "%value = arith.constant 1.0 : f16 "
+                 << "scf.for %i = %lo to %hi step %step { "
+                 << "%panel = memref.alloc() : " << spm << " ";
+              if (sender)
+                ir << "wafer.instr.fill %panel, %value : " << spm << ", f16 ";
+              ir << "%event = wafer.instr.dte_" << (sender ? "send" : "recv")
+                 << " %panel {peer = " << (sender ? 0 : count - 1)
+                 << " : i64, bytes = 256 : i64, message = "
+                 << "#wafer.dte_message<communication = 99, round = 0, slice = "
+                    "0>} : "
+                 << spm
+                 << " -> !async.token wafer.instr.dte_wait %event : "
+                    "!async.token "
+                 << "} wafer.tile.yield }\n";
+            }
+            ir << "return\n}\n}\n";
           }
           auto module = mlir::parseSourceString<mlir::ModuleOp>(
               text, parsed.context.get());

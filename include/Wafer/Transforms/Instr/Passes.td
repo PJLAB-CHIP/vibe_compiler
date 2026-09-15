@@ -63,7 +63,7 @@ def PlaceRequiredNCCJoinsPass
     : Pass<"wafer-place-required-ncc-joins", "mlir::func::FuncOp"> {
   let summary =
       "Place joins required by outstanding NCC accesses in one function";
-  let dependentDialects = ["mlir::arith::ArithDialect",
+  let dependentDialects = ["mlir::LLVM::LLVMDialect", "mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::func::FuncDialect",
                            "mlir::memref::MemRefDialect",
@@ -79,7 +79,7 @@ def RebuildRequiredNCCJoinsPass
     : Pass<"wafer-rebuild-required-ncc-joins", "mlir::func::FuncOp"> {
   let summary =
       "Erase derived NCC joins and recompute required joins in one function";
-  let dependentDialects = ["mlir::arith::ArithDialect",
+  let dependentDialects = ["mlir::LLVM::LLVMDialect", "mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::func::FuncDialect",
                            "mlir::memref::MemRefDialect",

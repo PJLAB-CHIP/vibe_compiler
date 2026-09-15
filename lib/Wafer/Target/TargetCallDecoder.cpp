@@ -156,6 +156,16 @@ buildBuiltinCommand(const TargetCallDecodeConfig &config,
   case TargetCallBuiltin::DDRAcquire:
     return TargetCommandPayload{
         TargetDDRAcquireCommand{arguments[0], arguments[1], arguments[2]}};
+  case TargetCallBuiltin::DDRReadMapping: {
+    uint32_t size = argument32(arguments, 1);
+    if (size == 0 || size > uint32_t(std::numeric_limits<int32_t>::max()))
+      return llvm::createStringError("DDR read mapping requires a positive int32 byte range");
+    return TargetCommandPayload{TargetMemoryMappingCommand{
+        TargetScalarMemorySpace::DDR, arguments[0], size}};
+  }
+  case TargetCallBuiltin::SPMMapping:
+    return TargetCommandPayload{TargetMemoryMappingCommand{
+        TargetScalarMemorySpace::SPM, arguments[0], 1}};
   case TargetCallBuiltin::NCCJoin: {
     uint32_t participants = argument32(arguments, 0);
     if (participants == 0 || (participants & ~kAllTargetNCCWorkersMask) != 0)

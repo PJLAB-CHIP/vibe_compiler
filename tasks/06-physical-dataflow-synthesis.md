@@ -1072,13 +1072,21 @@ Actual leaf在fan-out完成后，Tile-to-Instr、局部transfer cleanup和NCC co
 memory/target leaf，但每次分别拥有自己的materializer invocation、candidate owner、controller、fallback和accepted result；不存在
 共享complete candidate schema或一条policy调用另一条policy的路径。
 
+### 非均匀常量的计算输入
+
+已选Region/temporal窗口内的非均匀tensor literal及其metadata view仍由One-Shot的arith接口生成只读DDR global。
+布局准备阶段须为实际Linalg操作数创建SPM `bufferization.alloc_tensor` copy，之后PBQP才能分析其布局和后续转换；
+常量来源及alias group固定为Tensor布局。Copy只覆盖current operand的实际窗口，同一block中的同一immutable值可复用一次copy，
+不把完整常量搬入SPM、不按bool或模型名特判。下游沿既有bufferization、StorageLoad、Instr和SPM路径消费。
+覆盖非矩形i1 mask与普通浮点常量、直接/切片/reshape来源及1024/1025/1031；检查compute输入在SPM、实际读取窗口和原始全输出。
+
 ### Contraction累加精度边界
 
 - Upstream IR / input：已完成attention识别与结构规范化的TensorProgram；普通FP16/BF16乘加contraction及原DPS init。
-- Current stage responsibility：在任何Spatial/Temporal K切分之前，把累加状态显式物化为F32，保留低精度乘法输入和原逻辑输出dtype。
-- Output IR / files：标准mixed-precision Linalg、F32 init/result，以及原contraction输出处的一次显式truncation；不新增数值op/profile。
-- Downstream consumer：同一Spatial/Region/Temporal domain及materializer；partial、merge、SPM allocation和DDR/DTE以actual F32 SSA为准。
-- User-level driver / named pipeline：普通none/search入口及`wafer-promote-contraction-accumulation`调用同一transform。
+- Current stage responsibility：在已选Spatial贡献及局部Region内物化F32累加，保留原TensorProgram的contraction及逻辑输入输出dtype；不在分区前创建独立累加/转换root。
+- Output IR / files：candidate内的标准mixed-precision Linalg、实际F32 partial/merge及局部最终窄输出；不新增IR schema。
+- Downstream consumer：Temporal domain/materializer及既有Structured→Tile、GEMM output-format融合、Instr/completion/SPM；所有partial和merge以actual F32 SSA为准。
+- User-level driver / named pipeline：普通none/search的selected spatial materializer调用同一累加实现；named `wafer-promote-contraction-accumulation`仅在显式指定的局部IR边界调用该实现。
 - Explicit non-goals：不删除K choice，不改变attention算法，不重排任意elementwise/reduction，不扩大外部张量dtype；不隐式开启psum alias。
 - Completion criteria：named/generic、置换、非零init及多use，F16/BF16×1024/1025/1031实际分块与tail，下游mixed-format target及原PyTorch容差通过。
 
@@ -1233,6 +1241,11 @@ Region body由同次`IRMapping`关联到未变的上层choice，body-preserving�
 - Explicit non-goals：不新增来源编号/搜索annotation IR，不按shape/名字恢复owner，不通过数据来源猜测数值重排、同步或SPM合法性。
 - Completion criteria：多scope与merged/pipelined外部输入具有实际DMA→参数的正例；内部或不完整来源保持不可归因，普通探索仍可续跑；
   独立输入、shared input、写入干扰和tail矩阵验证返回坐标及下一actual leaf。
+
+不可变参数还可由source tensor constant与actual只读`memref.global`的同一initializer attribute建立关联；
+共享注册表仅在本次查询内以attribute等价做查找，不依赖symbol拼写、shape或遍历序号恢复对应。
+Actual allocation仍须经RDMA/GS writer链追到该只读global；有写入、不同initializer或不完整来源时保持unknown。
+这种关联与runtime输入使用同一iterator/fusion坐标传播，不能因权重不是runtime参数而丢失全部容量修正。
 
 当前ABI已经规定每个Tile entry的`ProgramArgumentAttr`指向同一原始输入槽，因此跨clone、Region合并与pipeline后，
 这类关联不需要旧operation身份。对actual allocation的全部当前writer，沿typed RDMA/GS源及memref alias逐级查询；

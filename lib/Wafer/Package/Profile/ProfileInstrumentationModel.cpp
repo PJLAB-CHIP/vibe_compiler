@@ -158,7 +158,7 @@ void writeProfileStaticCostModel(llvm::json::OStream &json,
   emitStaticCostModel(json, model);
 }
 
-ProfileTargetSiteKind
+std::optional<ProfileTargetSiteKind>
 getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
   if (std::optional<TargetCallTSMEngine> engine =
           getTargetCallTSMEngine(descriptor)) {
@@ -179,6 +179,9 @@ getProfileTargetSiteKind(const TargetCallDescriptor &descriptor) {
     llvm_unreachable(
         "non-builtin target call without an NCC issue-domain engine");
   switch (*builtin) {
+  case TargetCallBuiltin::DDRReadMapping:
+  case TargetCallBuiltin::SPMMapping:
+    return std::nullopt;
   case TargetCallBuiltin::DDRPublish:
   case TargetCallBuiltin::DDRAcquire:
     return ProfileTargetSiteKind::DDRCompletion;
