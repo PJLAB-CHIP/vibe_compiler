@@ -1240,3 +1240,44 @@ LM本轮没有重新执行全输出TargetModel，原已签显式余弦/相对L2�
 对应日志为`build/access-reuse-policy-regressions.log`、`build/access-reuse-cli-tests.log`、
 `build/access-reuse-canonical-build.log`和`build/access-reuse-canonical-noop.log`。
 上述结果不代签真实板端性能或设备资格。
+
+### 访问复用闭环与通用累加状态布局修正
+
+用户指出之前把机制资格当成大GEMM目标闭合，随后要求同时检查attention等分块reduction/contraction状态。
+本轮确认并修复以下通用边界：
+
+- 可接受strided Tensor源视图的只读消费者直接使用驻留子视图，保留有布局/字节载荷限制的复制；不在lowering临时猜alias。
+- 读取复用排序沿当前pure producer及view链用IndexRelation合成，结果转换不再掩盖真正输入的invariance；
+  非矩形访问仍可提供已证明的invariance，但不能冒充精确共享窗口。容量修复只用actual conflict/owner证据；
+  多scope owner证据与输入证据合并，复用失败的直接后继优先评估；跨Tile协调须具有同card、同module、typed源身份和相同精确读窗口，
+  同shape的无关owner不能被联动缩小。原有单维/组合方向保留，全局width8/trials42不变。
+- Direct与基于实际participant/mesh距离的Prim树共同进入收益过滤；树接收后再转发，不强制Ring。
+  外层send与非空内层send共用sender slot的wait置于内层入口，外层token只消费一次；
+  NCC相位请求合并为精确布尔条件，解决多个条件分别成立但回边校验无法证明其覆盖的问题，未加入全局drain。
+- SCF初值是可转换的入口use，region argument/yield/result仍保持状态layout一致；布局转换成本按静态循环次数计价。
+  因而GEMM与attention状态依据其实际更新算子选择layout，不按模型名、buffer名或统一NCX硬编码。
+  GEMM实测IR的FP32 psum在K循环内保持NCX，Tensor→NCX移到初始化边界；没有隐式开启psum/output alias。
+
+当前实际证据：GEMM 4096³ FP16默认42次中已有64 MiB输入读取的驻留+树转发候选通过SPM和正式评分，
+SPM高水位2.5 MiB；该候选M/N/K=256/128/128，模型估时约10.26 ms，尚未成为最低评分候选。
+当前最低评分候选读取288 MiB，模型估时约2.69 ms；此前256 MiB方案约3.21 ms。
+这些是未校准成本模型比较，不能据此声称板端加速；输入一次读取可行性与性能最优分别记录。
+
+GEMM循环布局（包括外部初始化、FP16/BF16、1024/1025）和online attention的累加/max/sum三状态
+（FP16/BF16、1024/1025/1031的main/tail）通过实际layout/bufferization及直接lowering。
+24项独立SystemC完整输出比较通过；152项布局/复用/通信/lifetime定向回归通过。
+真实PyTorch attention-prefill-tail-1025 FP16默认search42、TargetModel完整输出比较及fresh no-card通过；
+FP16/BF16的attention-probability-rounding-1025源程序数值回归也通过。
+三组大GEMM（4096³ FP16/BF16、4097³ FP16）的本轮源程序/package/fresh no-card通过。
+本轮未重复整层LM资格，未执行设备。
+
+证据日志：`build/access-reuse-state-focused.log`、`build/access-reuse-layout-closure-tests.log`、
+`build/access-reuse-numeric-closure-tests.log`、`build/access-reuse-attention-state.log`、
+`build/access-reuse-source-closure-tests.log`及`build/access-reuse-stable-layout-gemm.log`。
+
+收尾补充：4096³ BF16也在默认42次中验证到67,108,864 bytes读取的驻留候选。
+4097³ FP16本轮最低驻留读取为100,712,454 bytes，未达到两个输入各读一次的67,141,636 bytes；
+该差距按搜索效果记录，不能把整除case的64 MiB结果外推到尾块。
+15项driver/temporal回归通过，其中正式GEMM测试明确检查实际accepted驻留候选的最小DDR读取，而非只检查搜索成功。
+最终三个GEMM产物的target module digest与本轮fresh no-card通过的对应包一致，未复用历史raw/reference。
+CLI/源码组织、完整canonical增量构建及Ninja no-op在本轮收尾重新检查。

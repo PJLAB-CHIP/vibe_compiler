@@ -458,22 +458,22 @@ TEST(TemporalProposalsTest,
 
         ASSERT_TRUE(proposals.observeCapacity(
             {initial}, {{0, 0, reusedAxis}, {0, 0, varyingAxis}}));
-        // The batched all-related point remains available. A queued ordinary
-        // seed may already own the first single-axis sibling.
+        // The reuse-preserving direction is already the consumed seed.
+        // Visit the other single-axis choice before the all-related point,
+        // while retaining both choices in the original numeric domain.
         auto repair = proposals.take(TemporalProposalKind::Repair);
         EXPECT_EQ(repair[0].scopes[0].iteratorTileSizes[reusedAxis],
                   extent / 2);
-        EXPECT_EQ(repair[0].scopes[0].iteratorTileSizes[varyingAxis], 515);
-        bool restored = false;
+        EXPECT_EQ(repair[0].scopes[0].iteratorTileSizes[varyingAxis], 1031);
+        std::optional<std::vector<TemporalChoice>> joint;
         while (proposals.prepareNext(TemporalProposalKind::Repair)) {
           auto point = proposals.take(TemporalProposalKind::Repair);
-          restored |=
-              point[0].scopes[0].iteratorTileSizes[reusedAxis] == extent / 2 &&
-              point[0].scopes[0].iteratorTileSizes[varyingAxis] == 1031;
+          if (point[0].scopes[0].iteratorTileSizes[reusedAxis] == extent / 2 &&
+              point[0].scopes[0].iteratorTileSizes[varyingAxis] == 515)
+            joint = std::move(point);
         }
-        EXPECT_TRUE(restored);
-
-        proposals.observeAccepted(repair, 100);
+        ASSERT_TRUE(joint);
+        proposals.observeAccepted(*joint, 100);
         auto growth = proposals.take(TemporalProposalKind::Improve);
         EXPECT_GT(growth[0].scopes[0].iteratorTileSizes[reusedAxis],
                   extent / 2);

@@ -16,6 +16,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -597,6 +598,51 @@ TEST_F(DirectDTETransportTest,
   EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(transport[1]));
   EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(transport[2]));
   EXPECT_TRUE(mlir::isa<wafer::InstrDTEWaitOp>(transport[3]));
+}
+
+TEST_F(DirectDTETransportTest,
+       CompletionRebuildClosesOuterSenderBeforeNestedSenderReuse) {
+  for (int64_t extent : {1024, 1025}) {
+    llvm::SmallVector<LinearTransportSite, 2> sites{{true, 1, 65536, 20},
+                                                    {true, 1, 1048576, 21}};
+    auto module = parse(makeLinearTransportTileModule(sites, false, extent));
+    ASSERT_TRUE(module);
+    llvm::SmallVector<wafer::InstrDTESendOp> sends;
+    llvm::SmallVector<wafer::InstrDTEWaitOp> waits;
+    module->walk([&](wafer::InstrDTESendOp op) { sends.push_back(op); });
+    module->walk([&](wafer::InstrDTEWaitOp op) { waits.push_back(op); });
+    ASSERT_EQ(sends.size(), 2u);
+    for (auto wait : waits)
+      wait.erase();
+    sends[1].getBufferMutable().assign(sends[0].getBuffer());
+    mlir::OpBuilder builder(sends[1]);
+    auto loc = sends[1].getLoc();
+    auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    auto upper = builder.create<mlir::arith::ConstantIndexOp>(loc, extent);
+    auto one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    auto loop = builder.create<mlir::scf::ForOp>(loc, zero, upper, one);
+    sends[1]->moveBefore(loop.getBody()->getTerminator());
+    builder.setInsertionPoint(loop.getBody()->getTerminator());
+    builder.create<wafer::InstrDTEWaitOp>(
+        loc, mlir::ValueRange{sends[1].getToken()});
+    builder.setInsertionPointAfter(loop);
+    builder.create<wafer::InstrDTEWaitOp>(
+        loc, mlir::ValueRange{sends[0].getToken()});
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    auto result =
+        wafer::compiler::detail::rebuildRequiredDirectDTEWaits({*module});
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    EXPECT_EQ(result.statistics.senderSlotReuseWaits, 1u);
+    unsigned outerWaits = 0;
+    module->walk([&](wafer::InstrDTEWaitOp wait) {
+      if (llvm::is_contained(wait.getTokens(), sends[0].getToken())) {
+        ++outerWaits;
+        EXPECT_EQ(wait->getBlock(), loop->getBlock());
+        EXPECT_TRUE(wait->isBeforeInBlock(loop));
+      }
+    });
+    EXPECT_EQ(outerWaits, 1u);
+  }
 }
 
 TEST_F(DirectDTETransportTest,

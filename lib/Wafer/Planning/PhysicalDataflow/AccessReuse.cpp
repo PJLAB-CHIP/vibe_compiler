@@ -119,10 +119,16 @@ estimateBenefit(const AccessReuseChoice &choice,
           static_cast<long double>(read->sourceType.getNumElements()) *
           read->sourceType.getElementType().getIntOrFloatBitWidth() / 8 *
           *count;
-      for (auto receiver : llvm::ArrayRef(action.reads).drop_front()) {
+      auto edges = buildPeerReuseEdges(action.reads, action.peerTopology);
+      if (mlir::failed(edges))
+        return std::nullopt;
+      for (auto edge : *edges) {
         traffic.savedDDRBytes += logicalBytes;
-        if (!addPeer(traffic, tile,
-                     receiver->getParentOfType<TileModuleOp>().getTileId(),
+        if (!addPeer(traffic,
+                     action.reads[edge.source]->getParentOfType<TileModuleOp>(),
+                     action.reads[edge.destination]
+                         ->getParentOfType<TileModuleOp>()
+                         .getTileId(),
                      payload, *count))
           return std::nullopt;
       }
@@ -134,7 +140,23 @@ estimateBenefit(const AccessReuseChoice &choice,
     const long double outerExecutions = window->scopeExecutions;
     traffic.savedDDRBytes +=
         (window->readBytes - window->windowBytes) * outerExecutions;
-    traffic.copies[tileKey] += window->payloadBytes * outerExecutions;
+    if (action.kind == AccessReuseKind::Sliding) {
+      traffic.copies[tileKey] += window->payloadBytes * outerExecutions;
+    } else {
+      for (auto load : action.reads) {
+        auto access = llvm::find_if(
+            facts.reads, [&](const auto &r) { return r.load == load; });
+        if (access == facts.reads.end())
+          return std::nullopt;
+        if (access->acceptsSourceView)
+          continue;
+        auto count = executions(*access);
+        if (!count)
+          return std::nullopt;
+        traffic.copies[tileKey] +=
+            static_cast<long double>(access->physicalBytes) * *count;
+      }
+    }
     if (action.kind == AccessReuseKind::Sliding) {
       auto slide = llvm::find_if(facts.sliding, [&](const auto &s) {
         return s.access.load == read->load;
@@ -227,6 +249,38 @@ estimateBenefit(const AccessReuseChoice &choice,
 
 } // namespace
 
+mlir::FailureOr<llvm::SmallVector<BroadcastTreeEdge, 16>>
+buildPeerReuseEdges(llvm::ArrayRef<StorageLoadOp> reads,
+                    PeerReuseTopology topology) {
+  if (reads.size() < 2)
+    return mlir::failure();
+  llvm::SmallVector<BroadcastTreeEdge, 16> edges;
+  if (topology == PeerReuseTopology::Direct) {
+    for (size_t i = 1; i < reads.size(); ++i)
+      edges.push_back({0, i});
+    return edges;
+  }
+  auto module = reads.front()->getParentOfType<mlir::ModuleOp>();
+  auto topologies = module.getOps<TargetTopologyOp>();
+  if (topologies.empty())
+    return mlir::failure();
+  auto grid = (*topologies.begin()).getTileGrid();
+  if (grid.size() != 2 || grid[0] <= 0 || grid[1] <= 0)
+    return mlir::failure();
+  llvm::SmallVector<uint64_t, 16> participants;
+  for (size_t i = 0; i < reads.size(); ++i)
+    participants.push_back(i);
+  return buildMinimumHopBroadcastTree(
+      participants, [&](uint64_t a, uint64_t b) -> std::optional<uint64_t> {
+        int64_t x = reads[a]->getParentOfType<TileModuleOp>().getTileId();
+        int64_t y = reads[b]->getParentOfType<TileModuleOp>().getTileId();
+        if (x < 0 || y < 0 || x / grid[1] >= grid[0] || y / grid[1] >= grid[0])
+          return std::nullopt;
+        return std::abs(x / grid[1] - y / grid[1]) +
+               std::abs(x % grid[1] - y % grid[1]);
+      });
+}
+
 AccessReuseChoice
 selectPeerAccessReuse(const analysis::AccessReuseAnalysis &facts) {
   AccessReuseChoice choice;
@@ -310,14 +364,25 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
       action.reads.push_back(read.load);
     choice.actions.push_back(std::move(action));
   }
-  for (auto &[source, choice] : peerSources)
+  for (auto &[source, choice] : peerSources) {
+    auto tree = choice;
+    for (auto &action : tree.actions)
+      action.peerTopology = PeerReuseTopology::SpanningTree;
     consider(source, std::move(choice), 0);
+    consider(source, std::move(tree), 0);
+  }
 
   // Keep the existing no-residency lifetime alternative alongside promotion.
   // A large aggregate gain from promotion must not starve plain peer reuse.
   AccessReuseChoice peerChoice;
-  for (const auto &entry : ranked)
-    llvm::append_range(peerChoice.actions, entry.choice.actions);
+  std::map<Source, const RankedChoice *> bestPeers;
+  for (const auto &entry : ranked) {
+    auto &best = bestPeers[entry.source];
+    if (!best || entry.benefit > best->benefit)
+      best = &entry;
+  }
+  for (const auto &[source, best] : bestPeers)
+    llvm::append_range(peerChoice.actions, best->choice.actions);
 
   using Domain = std::vector<std::tuple<int64_t, int64_t, int64_t>>;
   using ScopeKey = std::tuple<Source, Domain, AccessReuseKind>;
@@ -404,16 +469,33 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
       for (auto read : action.reads)
         combinedReads.insert(read);
   }
-  bool combinedPeerOnly =
-      llvm::all_of(combined.actions, [](const auto &action) {
-        return action.kind == AccessReuseKind::Peer;
-      });
-  if (!peerChoice.actions.empty() && !combinedPeerOnly) {
-    auto gain = estimateBenefit(peerChoice, facts, policy);
+  if (!peerChoice.actions.empty())
+    result.choices.push_back(peerChoice);
+  // A temporal choice must be evaluated together with independently useful
+  // peer supply for the other resources. This is linear in opportunities,
+  // not a power set, and does not require any single-input global win.
+  for (const auto &entry : ranked) {
+    if (llvm::all_of(entry.choice.actions, [](const auto &action) {
+          return action.kind == AccessReuseKind::Peer;
+        }))
+      continue;
+    auto joint = entry.choice;
+    for (const auto &action : peerChoice.actions) {
+      auto first = action.reads.front();
+      auto read = llvm::find_if(facts.reads,
+                                [&](const auto &r) { return r.load == first; });
+      auto tile = read->tile;
+      if (Source{tile.getCardId(), read->argument} != entry.source)
+        joint.actions.push_back(action);
+    }
+    auto gain = estimateBenefit(joint, facts, policy);
     if (gain && *gain > policy.instructionFixedPicosecondsEstimate)
-      result.choices.push_back(std::move(peerChoice));
+      result.choices.push_back(std::move(joint));
   }
-  if (sources.size() > 1) {
+  if (sources.size() > 1 &&
+      !llvm::all_of(combined.actions, [](const auto &action) {
+        return action.kind == AccessReuseKind::Peer;
+      })) {
     auto gain = estimateBenefit(combined, facts, policy);
     if (gain && *gain > policy.instructionFixedPicosecondsEstimate)
       result.choices.push_back(std::move(combined));
@@ -427,7 +509,8 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
                             return a.kind == b.kind && a.reads == b.reads &&
                                    a.scope == b.scope &&
                                    a.innerScope == b.innerScope &&
-                                   a.shareWindow == b.shareWindow;
+                                   a.shareWindow == b.shareWindow &&
+                                   a.peerTopology == b.peerTopology;
                           });
     });
     if (!duplicate)

@@ -4,9 +4,12 @@
 
 #include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Analysis/Tile/AccessReuseAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/CollectiveAlgorithms.h"
 #include "mlir/IR/IRMapping.h"
 
 namespace wafer::compiler::detail {
+
+enum class PeerReuseTopology : uint8_t { Direct, SpanningTree };
 
 enum class AccessReuseKind : uint8_t { Peer, Resident, Sliding, TwoLevel };
 
@@ -18,7 +21,14 @@ struct AccessReuseAction {
   mlir::scf::ForOp scope;
   mlir::scf::ForOp innerScope;
   bool shareWindow = false;
+  PeerReuseTopology peerTopology = PeerReuseTopology::Direct;
 };
+
+/// Edges use indices in the explicit current participant list, never IR
+/// traversal positions or a cross-clone correspondence.
+mlir::FailureOr<llvm::SmallVector<BroadcastTreeEdge, 16>>
+buildPeerReuseEdges(llvm::ArrayRef<StorageLoadOp> reads,
+                    PeerReuseTopology topology);
 
 struct AccessReuseChoice {
   llvm::SmallVector<AccessReuseAction, 4> actions;

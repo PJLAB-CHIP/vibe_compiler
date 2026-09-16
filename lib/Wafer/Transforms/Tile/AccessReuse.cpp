@@ -138,8 +138,15 @@ void replaceRead(mlir::IRRewriter &rewriter, const analysis::ReadAccess &read,
       subtractOffsets(rewriter, load.getLoc(), offsets, resident.offsets);
   auto source = slice(rewriter, load.getLoc(), resident.buffer, relative,
                       read.sourceType.getShape());
-  rewriter.create<MoveCopyIntoOp>(load.getLoc(), source, load.getDest());
-  rewriter.eraseOp(load);
+  auto dest = load.getDest();
+  if (read.acceptsSourceView) {
+    rewriter.eraseOp(load);
+    rewriter.replaceAllUsesWith(dest, source);
+    rewriter.eraseOp(dest.getDefiningOp());
+  } else {
+    rewriter.create<MoveCopyIntoOp>(load.getLoc(), source, dest);
+    rewriter.eraseOp(load);
+  }
 }
 
 void materializeSliding(mlir::IRRewriter &rewriter,
@@ -235,6 +242,7 @@ materializeAccessReuse(mlir::ModuleOp module,
     const AccessReuseAction *choice;
     std::optional<analysis::ScopedReadAccess> outer, inner;
     std::optional<analysis::SlidingReadAccess> sliding;
+    llvm::SmallVector<BroadcastTreeEdge, 16> edges;
   };
   llvm::SmallVector<PreparedAction, 4> prepared;
   llvm::DenseSet<mlir::Operation *> selected;
@@ -254,6 +262,16 @@ materializeAccessReuse(mlir::ModuleOp module,
       result.detail =
           "selected reads have no current exact peer reuse relation";
       return result;
+    }
+    if (action.kind == AccessReuseKind::Peer) {
+      auto edges = buildPeerReuseEdges(action.reads, action.peerTopology);
+      if (mlir::failed(edges)) {
+        result.failure = AccessReuseFailureKind::Unsupported;
+        result.detail =
+            "selected peer topology has no current participant tree";
+        return result;
+      }
+      current.edges = std::move(*edges);
     }
     if (action.kind != AccessReuseKind::Peer) {
       auto read = llvm::find_if(facts.reads, [&](const auto &read) {
@@ -372,25 +390,27 @@ materializeAccessReuse(mlir::ModuleOp module,
     auto physical = computeWaferPhysicalTensorInfo(
         mlir::cast<mlir::MemRefType>(donor.getDest().getType()));
     ++next;
-    mlir::Operation *lastSend = donor;
-    for (auto [index, endpoint] :
-         llvm::enumerate(llvm::ArrayRef(action.reads).drop_front())) {
-      StorageLoadOp receiver = endpoint;
+    llvm::SmallVector<mlir::Operation *, 16> ready(action.reads.size());
+    ready.front() = donor;
+    for (auto [index, edge] : llvm::enumerate(item.edges)) {
+      auto receiver = action.reads[edge.destination];
+      auto source = action.reads[edge.source];
       auto message = DTEMessageAttr::get(module.getContext(), next, 0, index);
-      rewriter.setInsertionPointAfter(lastSend);
-      lastSend = rewriter.create<CommPeerSendOp>(
-          donor.getLoc(), donor.getDest(),
+      rewriter.setInsertionPoint(receiver);
+      ready[edge.destination] = rewriter.create<CommPeerRecvOp>(
+          receiver.getLoc(), receiver.getDest(),
+          source->getParentOfType<TileModuleOp>().getTileId(),
+          physical->physicalBytes, message);
+      rewriter.setInsertionPointAfter(ready[edge.source]);
+      ready[edge.source] = rewriter.create<CommPeerSendOp>(
+          source.getLoc(), source.getDest(),
           receiver->getParentOfType<TileModuleOp>().getTileId(),
           physical->physicalBytes, message);
-      rewriter.setInsertionPoint(receiver);
-      rewriter.create<CommPeerRecvOp>(
-          receiver.getLoc(), receiver.getDest(),
-          donor->getParentOfType<TileModuleOp>().getTileId(),
-          physical->physicalBytes, message);
-      rewriter.eraseOp(receiver);
       ++result.movement.peerSends;
       ++result.movement.peerReceives;
     }
+    for (auto receiver : llvm::ArrayRef(action.reads).drop_front())
+      rewriter.eraseOp(receiver);
   }
   if (!residentLoads.empty()) {
     // The combined choice already requested peer supply for its resident

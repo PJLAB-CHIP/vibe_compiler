@@ -806,6 +806,9 @@ module {{
       EXPECT_GT(statistics.accessReuseCandidates, 0u);
       EXPECT_GT(statistics.accessReuseAccepted, 0u);
       EXPECT_GT(statistics.accessReuseCapacityRejected, 0u);
+      EXPECT_GT(statistics.residentReuseAccepted, 0u);
+      ASSERT_TRUE(statistics.minimumResidentDDRReadBytes);
+      EXPECT_EQ(*statistics.minimumResidentDDRReadBytes, 64u * 1024 * 1024);
     }
     EXPECT_GT(statistics.accessReuseQueries, 0u);
     EXPECT_GT(statistics.accessReuseEligible, 0u);

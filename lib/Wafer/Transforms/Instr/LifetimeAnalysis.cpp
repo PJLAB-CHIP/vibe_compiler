@@ -193,6 +193,17 @@ static std::optional<bool> getReentryCondition(mlir::Value value,
     return boolean(op.getLhs(), op.getRhs(), true);
   if (auto op = value.getDefiningOp<mlir::arith::OrIOp>())
     return boolean(op.getLhs(), op.getRhs(), false);
+  if (auto select = value.getDefiningOp<mlir::arith::SelectOp>()) {
+    auto condition =
+        getReentryCondition(select.getCondition(), outer, depth + 1);
+    if (condition)
+      return getReentryCondition(*condition ? select.getTrueValue()
+                                            : select.getFalseValue(),
+                                 outer, depth + 1);
+    auto a = getReentryCondition(select.getTrueValue(), outer, depth + 1);
+    auto b = getReentryCondition(select.getFalseValue(), outer, depth + 1);
+    return a && b && *a == *b ? a : std::nullopt;
+  }
   auto compare = value.getDefiningOp<mlir::arith::CmpIOp>();
   if (!compare)
     return std::nullopt;

@@ -1,8 +1,8 @@
 # 访问复用（AccessReuse）统一方案
 
 本方案归属`board-testing`，设计owner为06号，验证按16号，源码与API边界按18、19号。
-受限实现及主机验证已落实；实际大GEMM仍保留原256 MiB赢家，64 MiB读取目标没有达成，不能据机制完成宣称该性能问题已解决。
-当前计划保留这项性能差距及后续设备验收边界；结果见同一board工作计划。推进状态只记录在`tasks/progress.md`，实际检查点在同一board工作计划中。
+用户要求继续修复大GEMM复用闭环；原受限机制测试不能代替实际GEMM驻留候选的可行性和搜索验收。本轮依据失败候选的actual IR和冲突demand完成了缓冲、状态布局及反馈修复。
+默认预算中已验证64 MiB读取候选的SPM/target可行性与评分；该候选并非最低评分，性能差距及设备验收继续独立记录。结果见同一board工作计划。推进状态只记录在`tasks/progress.md`，实际检查点在同一board工作计划中。
 
 ## 1. 名称与职责
 
@@ -197,7 +197,7 @@ per-Tile/链路口径，不把全卡流量除以单Tile带宽。
 B在本Tile没有对应重复，仍逐块读取；同源B窗口跨16个Tile相同，可由同一分析提供peer复用机会。
 
 若该组合实际可行，FP16/BF16的A/B输入DDR读取目标为64 MiB，输出写入32 MiB。
-当前4×4赢家为256 MiB输入读取；在它上面只实现一侧跨循环复用可能得到160 MiB。这些是逻辑流量目标，
+修复前4×4基线为256 MiB输入读取；在它上面只实现一侧跨循环复用可能得到160 MiB。这些是逻辑流量目标，
 不证明SPM可行、搜索已到达或设备更快。额外copy、布局开销、通信压力与算子粒度都可能改变最终评分。
 
 必须分别确认：
@@ -252,3 +252,29 @@ B在本Tile没有对应重复，仍逐块读取；同源B窗口跨16个Tile相�
 - B的长链转发及跨Tile计算重叠属于后续通信拓扑/执行结构选择，本方案不强制它，也不把它当作输入一次读取的必要条件。
 - 若保持现有consumer buffer导致额外SPM copy抵消收益，先用实际IR定位；只有已有view/layout合同无法表达时才提出直接相关扩展，
   不预先重写layout体系。
+
+## 10. 大GEMM实际闭环修复
+
+输入仍是BoundaryMovement后的candidate current IR，输出仍是既有Tile/Instr，直接下游仍为唯一completion/SPM/cost。
+本次定位实际驻留窗口、原输入buffer/layout materialization与psum的同时存活关系。只有只读、布局与view语义均能证明时，
+才将原输入改接为驻留子视图；其余保留实际复制，不能以推算容量删buffer或把未知descriptor支持当成已支持。
+若actual capacity拒绝源自驻留选择，controller应在同一前缀尝试其它scope/非冲突组合，再消费有依据的计算分块修复；
+不能把尚未访问的组合计为失败。仍不扩大全局预算，不按GEMM名称/固定空间划分特化，也不改算术或数值门槛。
+完成条件：大GEMM的时间/空间复用实际候选通过完整下游并被正式search评估；给出actual读写/通信/内存与最终选择，
+原来的256 MiB赢家只作基线。覆盖FP16/BF16和非整除尾块、非GEMM读复用及多输入，不用机制单测代替源程序验收。
+
+实际捕获还需检查多Tile供给的端点瓶颈：仅有单源直发会把相同只读块的N-1次发送全压在一个Tile。
+保留direct，同时允许基于当前participant及拓扑距离的最短边生成树；借鉴[Open MPI tree broadcast](https://github.com/open-mpi/ompi/blob/main/ompi/mca/coll/base/coll_base_bcast.c)的接收后转发，
+以Prim逐次连接一个未加入participant，平权时按扇出、深度、语义ID稳定排序。与binomial tree比较，这里优先减少mesh链路与源端点压力，
+不要求participant为power-of-two。树边仅为本次调用的选择工作数据，马上生成实际peer SSA/effects，最终completion仍由下游决定。
+这不是GEMM专用传播，所有相同只读窗口使用同一候选和成本路径；不额外增加trial预算。
+
+## 11. 通用分块累加状态布局
+
+用户要求将GEMM与attention等因reduction/contraction分块产生的累加状态统一检查。输入仍为已选temporal的当前Tensor/SCF，
+布局查询负责状态循环的布局及入口转换，输出实际AllocTensor/SCF/布局操作，由One-Shot及StructuredToTile消费。
+初始化来源的布局不等于循环状态必须沿用的布局：init operand作为可转换的入口use，region argument、yield与result继续保持状态布局一致；
+更新算子的实际layout tuple约束及循环执行次数决定优先布局，禁止按网络名或一律NCX处理。scalar/max/sum按其实际算子合同选择。
+转换成本依据current static loop域加权；未知执行次数保留有限排序成本，不作为非法布局或容量结论。
+不隐式开启psum输出alias，不改算术顺序、dtype或数值门槛。验收检查K/KV循环内的状态布局往返与复制，初始化和最终观察边界独立计数，
+覆盖FP16/BF16、1024/1025、非零/外部初值、GEMM与attention的各类state，并推进到actual Instr/SPM及数值消费者。

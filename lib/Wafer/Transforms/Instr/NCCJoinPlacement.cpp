@@ -10,8 +10,8 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/CallInterfaces.h"
@@ -22,6 +22,9 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include <functional>
+#include <map>
+#include <vector>
 
 #include <cstdint>
 #include <iterator>
@@ -553,6 +556,71 @@ private:
     return true;
   }
 
+  // Build the exact disjunction of phase requests as a reduced decision DAG.
+  // Destructive pairwise cube merging alone can leave complementary outer
+  // phases split across joins, hiding guaranteed reentry completion.
+  mlir::Value buildGuard(mlir::OpBuilder &builder, mlir::Location location,
+                         llvm::ArrayRef<const JoinRequest *> group) {
+    llvm::SmallVector<mlir::scf::ForOp, 4> loops;
+    for (auto request : group)
+      for (auto phase : request->phases)
+        if (!llvm::is_contained(loops, phase.loop))
+          loops.push_back(phase.loop);
+    // All variables are ancestors of the same observer; order outer first.
+    llvm::sort(loops, [](auto a, auto b) { return a->isAncestor(b); });
+    using Cube = std::vector<int8_t>;
+    using Cover = std::vector<Cube>;
+    Cover initial;
+    for (auto request : group) {
+      Cube cube(loops.size(), -1);
+      for (auto phase : request->phases)
+        cube[llvm::find(loops, phase.loop) - loops.begin()] = phase.first;
+      initial.push_back(std::move(cube));
+    }
+    auto yes =
+        builder.create<mlir::arith::ConstantIntOp>(location, 1, 1).getResult();
+    auto no =
+        builder.create<mlir::arith::ConstantIntOp>(location, 0, 1).getResult();
+    std::map<Cover, mlir::Value> memo;
+    std::function<mlir::Value(Cover)> build = [&](Cover cover) -> mlir::Value {
+      if (cover.empty())
+        return no;
+      for (const auto &cube : cover)
+        if (llvm::all_of(cube, [](int8_t value) { return value < 0; }))
+          return yes;
+      llvm::sort(cover);
+      cover.erase(std::unique(cover.begin(), cover.end()), cover.end());
+      if (auto found = memo.find(cover); found != memo.end())
+        return found->second;
+      unsigned index = 0;
+      for (; index < loops.size(); ++index)
+        if (llvm::any_of(cover,
+                         [&](const auto &cube) { return cube[index] >= 0; }))
+          break;
+      Cover first, later;
+      for (auto cube : cover) {
+        auto value = cube[index];
+        cube[index] = -1;
+        if (value != 0)
+          first.push_back(cube);
+        if (value != 1)
+          later.push_back(std::move(cube));
+      }
+      auto a = build(std::move(first)), b = build(std::move(later));
+      mlir::Value result = a;
+      if (a != b) {
+        auto compare = builder.create<mlir::arith::CmpIOp>(
+            location, mlir::arith::CmpIPredicate::eq,
+            loops[index].getInductionVar(), loops[index].getLowerBound());
+        result = builder.createOrFold<mlir::arith::SelectOp>(location, compare,
+                                                             a, b);
+      }
+      memo.emplace(std::move(cover), result);
+      return result;
+    };
+    return build(std::move(initial));
+  }
+
   mlir::LogicalResult apply(mlir::Operation *root) {
     llvm::SmallVector<mlir::Operation *> points;
     root->walk([&](mlir::Operation *op) {
@@ -563,13 +631,27 @@ private:
       auto found = requests.find(point);
       if (found != requests.end()) {
         simplifyRequests(found->second);
+        llvm::SmallVector<std::pair<uint32_t, bool>, 8> emitted;
         for (const JoinRequest &request : found->second) {
           if (!request.mask && !request.kcoreRelease)
             continue;
+          auto key = std::make_pair(request.mask, request.kcoreRelease);
+          if (llvm::is_contained(emitted, key))
+            continue;
+          emitted.push_back(key);
+          llvm::SmallVector<const JoinRequest *, 4> group;
+          for (const auto &other : found->second)
+            if (other.mask == request.mask &&
+                other.kcoreRelease == request.kcoreRelease)
+              group.push_back(&other);
+          bool hoisted = group.size() == 1 && !request.phases.empty() &&
+                         llvm::all_of(request.phases,
+                                      [](const LoopPhase &phase) {
+                                        return phase.first;
+                                      }) &&
+                         canHoistEntryJoin(point, request.phases.front().loop,
+                                           request.mask, request.kcoreRelease);
           mlir::Operation *anchor = point;
-          bool hoisted = !request.phases.empty() &&
-              llvm::all_of(request.phases, [](const LoopPhase &phase) { return phase.first; }) &&
-              canHoistEntryJoin(point, request.phases.front().loop, request.mask, request.kcoreRelease);
           if (hoisted) {
             auto loop = request.phases.front().loop;
             anchor = loop.getOperation();
@@ -578,18 +660,12 @@ private:
           mlir::UnitAttr boundary;
           if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(point))
             boundary = join.getScheduleBoundaryAttr();
-          if (!hoisted && !request.phases.empty()) {
-            mlir::Value condition;
-            for (auto phase : request.phases) {
-              auto comparison = builder.create<mlir::arith::CmpIOp>(
-                  point->getLoc(), phase.first ? mlir::arith::CmpIPredicate::eq
-                                               : mlir::arith::CmpIPredicate::ne,
-                  phase.loop.getInductionVar(), phase.loop.getLowerBound());
-              condition = condition ? builder.create<mlir::arith::AndIOp>(
-                                          point->getLoc(), condition, comparison).getResult()
-                                    : comparison.getResult();
-            }
-            auto branch = builder.create<mlir::scf::IfOp>(point->getLoc(), condition, false);
+          if (!hoisted && !llvm::any_of(group, [](auto item) {
+                return item->phases.empty();
+              })) {
+            auto condition = buildGuard(builder, point->getLoc(), group);
+            auto branch = builder.create<mlir::scf::IfOp>(point->getLoc(),
+                                                          condition, false);
             builder.setInsertionPointToStart(&branch.getThenRegion().front());
           }
           if (request.mask)

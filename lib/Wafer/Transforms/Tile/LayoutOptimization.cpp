@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "LoopSubsetState.h"
 
+#include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Analysis/Tile/PhysicalLayoutRelation.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
@@ -90,6 +91,7 @@ struct UseBinding {
   unsigned operandNumber = 0;
   mlir::Value source;
   unsigned sourceGroup = 0;
+  std::optional<unsigned> destinationGroup;
   llvm::SmallVector<MemLayout, 4> layouts;
   uint32_t variable = 0;
 };
@@ -129,9 +131,10 @@ struct ConversionActivation {
 };
 
 static ExactPBQPCost addCost(ExactPBQPCost lhs, ExactPBQPCost rhs) {
-  if (lhs == kExactPBQPInfinity || rhs == kExactPBQPInfinity ||
-      rhs > kExactPBQPInfinity - lhs)
+  if (lhs == kExactPBQPInfinity || rhs == kExactPBQPInfinity)
     return kExactPBQPInfinity;
+  if (rhs >= kExactPBQPInfinity - lhs)
+    return kExactPBQPInfinity - 1;
   return lhs + rhs;
 }
 
@@ -282,7 +285,8 @@ static mlir::RankedTensorType getLayoutCostType(mlir::Value value) {
 }
 
 static ExactPBQPCost getLayoutMaterializationCost(mlir::RankedTensorType type,
-                                                  MemLayout layout) {
+                                                  MemLayout layout,
+                                                  mlir::Operation *occurrence) {
   // Unknown geometry still has a finite activation cost. It is not an
   // impossible layout state; actual bufferization and memory planning own
   // their legality checks independently of this ordering objective.
@@ -300,8 +304,15 @@ static ExactPBQPCost getLayoutMaterializationCost(mlir::RankedTensorType type,
   if (bytes == std::numeric_limits<uint64_t>::max())
     return kExactPBQPInfinity;
   ++bytes;
-  return bytes > kExactPBQPInfinity ? kExactPBQPInfinity
-                                    : static_cast<ExactPBQPCost>(bytes);
+  if (auto loops = analysis::getEnclosingStaticLoopDomains(occurrence))
+    for (const auto &loop : *loops) {
+      uint64_t trips = (loop.upper - loop.lower - 1) / loop.step + 1;
+      bytes = llvm::SaturatingMultiply(bytes, trips);
+    }
+  // Cost saturation is finite; it cannot turn a supported layout into an
+  // impossible state merely because a runtime loop executes many times.
+  return static_cast<ExactPBQPCost>(
+      std::min<uint64_t>(bytes, kExactPBQPInfinity - 1));
 }
 
 static bool proveReshapeLayoutAlias(mlir::RankedTensorType source,
@@ -1116,7 +1127,9 @@ buildBufferEquivalence(mlir::ModuleOp module,
       auto yield =
           mlir::dyn_cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
       for (unsigned index = 0; index < loop.getInitArgs().size(); ++index) {
-        unite(loop.getInitArgs()[index], loop.getRegionIterArgs()[index]);
+        // The init is an entry use, not a mandatory storage/layout alias.
+        // A local state may use the updater's layout even when its initializer
+        // is an external tensor or a differently laid-out fill result.
         unite(loop.getResult(index), loop.getRegionIterArgs()[index]);
         if (yield && index < yield.getNumOperands())
           unite(yield.getOperand(index), loop.getRegionIterArgs()[index]);
@@ -1267,6 +1280,32 @@ buildUseBindings(mlir::ModuleOp module,
                 : getComputeOperandLayout(operation, operand, tensor);
         use.layouts.assign({required});
       }
+      uses.push_back(std::move(use));
+    }
+  });
+  module.walk([&](mlir::scf::ForOp loop) {
+    if (!loop->getParentOfType<TileRegionOp>())
+      return;
+    for (auto [index, argument] : llvm::enumerate(loop.getRegionIterArgs())) {
+      auto init = loop.getInitArgs()[index];
+      if (!isTensorValue(init))
+        continue;
+      auto source = groupByValue.find(init),
+           target = groupByValue.find(argument);
+      if (source == groupByValue.end() || target == groupByValue.end()) {
+        detail = "loop init or recurrence has no current value group";
+        return;
+      }
+      if (source->second == target->second)
+        continue;
+      UseBinding use;
+      use.owner = loop;
+      use.operandNumber = loop.getNumControlOperands() + index;
+      use.source = init;
+      use.sourceGroup = source->second;
+      use.destinationGroup = target->second;
+      use.layouts = getLayoutDomain(
+          mlir::cast<mlir::RankedTensorType>(argument.getType()), false);
       uses.push_back(std::move(use));
     }
   });
@@ -1972,7 +2011,8 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
       for (auto [state, layout] : llvm::enumerate(group.layouts))
         if (layout != binding.computeLayout)
           costs[state] = addCost(
-              costs[state], getLayoutMaterializationCost(costType, layout));
+              costs[state], getLayoutMaterializationCost(
+                                costType, layout, binding.result.getOwner()));
     }
     problem.variables.push_back(ExactPBQPVariable{std::move(costs)});
   }
@@ -1983,6 +2023,17 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
   }
 
   FactorBuilder factors(problem);
+  for (const auto &use : uses) {
+    if (!use.destinationGroup)
+      continue;
+    const auto &destination = groups[*use.destinationGroup];
+    factors.add(destination.variable, use.variable,
+                [&](uint32_t state, uint32_t useState) {
+                  return destination.layouts[state] == use.layouts[useState]
+                             ? ExactPBQPCost{0}
+                             : kExactPBQPInfinity;
+                });
+  }
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<unsigned, 4>> usesByOp;
   for (auto [index, use] : llvm::enumerate(uses))
     usesByOp[use.owner].push_back(index);
@@ -2087,7 +2138,7 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
       activation.layout = layout;
       activation.variable = problem.variables.size();
       const ExactPBQPCost materializationCost =
-          getLayoutMaterializationCost(costType, layout);
+          getLayoutMaterializationCost(costType, layout, cohort.lastOwner);
       // The activation state remains an exact current-IR materialization
       // decision, but its finite objective includes physical bytes/padding so
       // a copy-count tie cannot prefer a much larger layout blindly.
@@ -2149,9 +2200,25 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
       selected = state;
     }
   }
-  for (const UseBinding &use : uses)
-    if (canonicalAssignment[use.variable] == unassigned)
-      canonicalAssignment[use.variable] = 0;
+  for (const UseBinding &use : uses) {
+    if (canonicalAssignment[use.variable] != unassigned)
+      continue;
+    uint32_t state = 0;
+    if (use.destinationGroup) {
+      auto layout =
+          groups[*use.destinationGroup].layouts
+              [canonicalAssignment[groups[*use.destinationGroup].variable]];
+      auto found = llvm::find(use.layouts, layout);
+      if (found == use.layouts.end()) {
+        result.detail =
+            "loop init use cannot match the current recurrence layout";
+        result.status = ExactPBQPStatus::BrokenContract;
+        return {std::move(result), nullptr};
+      }
+      state = found - use.layouts.begin();
+    }
+    canonicalAssignment[use.variable] = state;
+  }
   for (const ConversionActivation &activation : activations) {
     const UseCohort &cohort = cohorts[activation.cohort];
     const ValueGroup &sourceGroup = groups[cohort.sourceGroup];

@@ -2020,6 +2020,29 @@ completionFailure(DirectDTECompletionFailureKind kind, llvm::StringRef detail,
   return result;
 }
 
+// Sender capacity is shared across lexical blocks. A known nonempty loop or
+// transparent region containing a sender reuses the same physical slot even
+// when it reads an unrelated buffer. The outer token is consumed once before
+// entering that occurrence, never once per inner iteration.
+static bool issuesSenderOnEntry(mlir::Operation *operation) {
+  if (mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(
+          operation))
+    return true;
+  mlir::Block *body = nullptr;
+  if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+    auto bounds = getStaticLoopBounds(loop);
+    if (!bounds || bounds->lower >= bounds->upper)
+      return false;
+    body = loop.getBody();
+  } else if (auto flow = analysis::getSingleExecutionRegionFlow(operation)) {
+    body = &flow->region->front();
+  }
+  return body &&
+         llvm::any_of(body->without_terminator(), [](mlir::Operation &nested) {
+           return issuesSenderOnEntry(&nested);
+         });
+}
+
 static mlir::LogicalResult
 buildBlockWaitChoices(mlir::Block &block,
                       llvm::SmallVectorImpl<DirectDTEWaitChoice> &choices,
@@ -2088,8 +2111,7 @@ buildBlockWaitChoices(mlir::Block &block,
          llvm::drop_begin(operations, operationIndex + 1)) {
       if (mlir::isa<InstrDTEWaitOp>(candidate))
         continue;
-      if (mlir::isa<InstrDTESendOp, InstrDTEBroadcastOp, InstrDTEScatterOp>(
-              candidate)) {
+      if (issuesSenderOnEntry(candidate)) {
         choice.anchor = candidate;
         choice.senderSlotReuse = true;
         break;

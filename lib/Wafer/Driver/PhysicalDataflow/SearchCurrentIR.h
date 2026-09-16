@@ -52,6 +52,8 @@ struct SearchCurrentIRStatistics {
   uint64_t accessReuseEligible = 0;
   uint64_t accessReuseQueued = 0;
   uint64_t accessReuseAccepted = 0;
+  uint64_t residentReuseAccepted = 0;
+  std::optional<uint64_t> minimumResidentDDRReadBytes;
   uint64_t accessReuseCapacityRejected = 0;
   uint64_t layoutInvocations = 0;
   uint64_t layoutFeasibleFallbacks = 0;

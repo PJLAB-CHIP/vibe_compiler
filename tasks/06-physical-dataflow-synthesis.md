@@ -115,6 +115,11 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
 `DeviceExecutable`是已通过Instr、SPM/DDR、transport、resource、completion和ABI verification的唯一内存owner。
 `ExecutablePackage`只序列化accepted executable与runtime必需数据，不序列化search状态或调度副本。
 
+循环累加状态的layout由其实际更新/消费算子约束，初值作为可转换入口，不因初始化来源的存储格式把整个回边钉死。
+SCF region argument、yield及result使用一致的状态layout；转换选择须计入当前静态循环执行次数。
+该规则同时适用于分块contraction/reduction和attention状态，scalar状态按实际native tuple选择，不统一硬编码NCX。
+入口与最终观察边界的转换、buffer alias及SPM合法性分别由原有阶段验证，不能隐式合并psum/output存储。
+
 ### 3.5 访问复用统一分析边界
 
 统一概念为访问复用（`AccessReuse`）；第一版限定为可证明内容不变的读取。

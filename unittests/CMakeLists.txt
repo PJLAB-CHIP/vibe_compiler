@@ -524,7 +524,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   target_link_libraries(WaferSystemCSimulatorAccessReuseTest PRIVATE
     WaferSystemCSimulatorTestSupport GTest::gtest)
   # SystemC supports one elaboration/execution per process.
-  foreach(case RANGE 0 17)
+  foreach(case RANGE 0 23)
     add_test(NAME WaferSystemCSimulatorAccessReuseTest.${case}
       COMMAND WaferSystemCSimulatorAccessReuseTest
         --gtest_filter=Windows/SystemCTargetModelAccessReuseTest.CompleteReadWindowsMatchIndependentInputBytes/${case})

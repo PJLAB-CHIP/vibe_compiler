@@ -46,6 +46,18 @@ buildMinimumHopRing(
     llvm::function_ref<std::optional<uint64_t>(uint64_t, uint64_t)>
         distanceOracle);
 
+struct BroadcastTreeEdge {
+  uint64_t source, destination;
+};
+
+/// Prim tree over opaque participants and symmetric distances. Edges are
+/// emitted in construction order, so a node receives before forwarding.
+mlir::FailureOr<llvm::SmallVector<BroadcastTreeEdge, 16>>
+buildMinimumHopBroadcastTree(
+    llvm::ArrayRef<uint64_t> participants,
+    llvm::function_ref<std::optional<uint64_t>(uint64_t, uint64_t)>
+        distanceOracle);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_PLANNING_PHYSICALDATAFLOW_COLLECTIVEALGORITHMS_H

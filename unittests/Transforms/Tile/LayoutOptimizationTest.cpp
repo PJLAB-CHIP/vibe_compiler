@@ -880,8 +880,10 @@ TEST_F(LayoutOptimizationTest, SubsetPromotionPreservesUnprovedLoopState) {
     llvm::raw_string_ostream out(text);
     out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
         << "func.func @entry(%input: tensor<1x1031x64xf16>, %limit: index) {\n"
-        << "%result = wafer.tile.region(%input, %limit : tensor<1x1031x64xf16>, index) "
-        << "-> (tensor<1x1031x64xf16>) { ^bb0(%local: tensor<1x1031x64xf16>, %bound: index):\n"
+        << "%result = wafer.tile.region(%input, %limit : "
+           "tensor<1x1031x64xf16>, index) "
+        << "-> (tensor<1x1031x64xf16>) { ^bb0(%local: tensor<1x1031x64xf16>, "
+           "%bound: index):\n"
         << "%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : index\n"
         << "%end = arith.constant " << (boundary == "empty" ? 0 : 3)
         << " : index\n"
@@ -2358,6 +2360,66 @@ TEST_F(LayoutOptimizationTest, AssignmentRejectsAnUnmappedOwnerBeforeMutation) {
   EXPECT_EQ(result.status, ExactPBQPStatus::BrokenContract);
   EXPECT_EQ(result.statistics.bufferizationInvocations, 0u);
   EXPECT_EQ(countOps<mlir::linalg::BatchMatmulOp>(clone->getOperation()), 2u);
+}
+
+TEST_F(LayoutOptimizationTest,
+       RecurrenceLayoutIsIndependentOfInitializerLayout) {
+  for (llvm::StringRef dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025}) {
+      // A bounded recurrence over realistic tensors isolates layout and entry
+      // ownership. Product GEMM tests separately cover distinct K windows.
+      std::string lhs =
+          "tensor<2x" + std::to_string(extent) + "x64x" + dtype.str() + ">";
+      std::string rhs = "tensor<2x64x64x" + dtype.str() + ">";
+      std::string state = "tensor<2x" + std::to_string(extent) + "x64xf32>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { wafer.tile.module card_id = 0 tile_id = 0 { func.func "
+             "@entry(%lhs: "
+          << lhs << ", %rhs: " << rhs << ", %initial: " << state << ") -> "
+          << state << " { "
+          << "%result = wafer.tile.region(%lhs, %rhs, %initial : " << lhs
+          << ", " << rhs << ", " << state << ") -> (" << state
+          << ") { ^bb0(%a: " << lhs << ", %b: " << rhs << ", %init: " << state
+          << "): "
+          << "%c0 = arith.constant 0 : index %c64 = arith.constant 64 : index "
+             "%end = arith.constant "
+          << extent << " : index "
+          << "%loop = scf.for %k = %c0 to %end step %c64 iter_args(%acc = "
+             "%init) -> ("
+          << state << ") { "
+          << "%next = linalg.batch_matmul ins(%a, %b : " << lhs << ", " << rhs
+          << ") outs(%acc : " << state << ") -> " << state
+          << " scf.yield %next : " << state
+          << " } wafer.tile.yield %loop : " << state
+          << " } return %result : " << state << " } } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module) << text;
+      auto relations = outputRelation(*module);
+      auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(result.succeeded()) << result.detail;
+      unsigned states = 0, stateRoundtrips = 0;
+      module->walk([&](mlir::scf::ForOp loop) {
+        for (auto argument : loop.getRegionIterArgs()) {
+          auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
+          if (!type || !type.getElementType().isF32())
+            continue;
+          ++states;
+          EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), MemLayout::NCx);
+        }
+      });
+      module->walk([&](LayoutMaterializeOp copy) {
+        auto type = mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+        if (type.getElementType().isF32() &&
+            copy->getParentOfType<mlir::scf::ForOp>())
+          ++stateRoundtrips;
+      });
+      EXPECT_EQ(states, 1u);
+      EXPECT_EQ(stateRoundtrips, 0u);
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
 }
 
 } // namespace

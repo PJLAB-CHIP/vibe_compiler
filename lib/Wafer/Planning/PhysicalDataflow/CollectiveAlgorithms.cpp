@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <tuple>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -176,6 +177,52 @@ mlir::FailureOr<llvm::SmallVector<uint64_t, 16>> buildMinimumHopRing(
       ring = std::move(reversed);
   }
   return ring;
+}
+
+mlir::FailureOr<llvm::SmallVector<BroadcastTreeEdge, 16>>
+buildMinimumHopBroadcastTree(
+    llvm::ArrayRef<uint64_t> participants,
+    llvm::function_ref<std::optional<uint64_t>(uint64_t, uint64_t)>
+        distanceOracle) {
+  if (participants.size() < 2 || !distanceOracle)
+    return mlir::failure();
+  llvm::SmallVector<uint64_t, 16> ordered(participants);
+  std::sort(ordered.begin(), ordered.end());
+  if (std::adjacent_find(ordered.begin(), ordered.end()) != ordered.end())
+    return mlir::failure();
+  const size_t count = ordered.size();
+  std::vector<bool> reached(count, false);
+  std::vector<uint64_t> degree(count, 0), depth(count, 0);
+  reached[0] = true;
+  llvm::SmallVector<BroadcastTreeEdge, 16> result;
+  while (result.size() + 1 < count) {
+    std::optional<std::tuple<uint64_t, uint64_t, uint64_t, uint64_t, uint64_t>>
+        best;
+    size_t source = 0, dest = 0;
+    for (size_t a = 0; a < count; ++a)
+      if (reached[a])
+        for (size_t b = 0; b < count; ++b)
+          if (!reached[b]) {
+            auto forward = distanceOracle(ordered[a], ordered[b]);
+            auto backward = distanceOracle(ordered[b], ordered[a]);
+            if (!forward || !backward || *forward != *backward)
+              return mlir::failure();
+            auto score = std::make_tuple(*forward, degree[a], depth[a],
+                                         ordered[a], ordered[b]);
+            if (!best || score < *best) {
+              best = score;
+              source = a;
+              dest = b;
+            }
+          }
+    if (!best)
+      return mlir::failure();
+    result.push_back({ordered[source], ordered[dest]});
+    reached[dest] = true;
+    ++degree[source];
+    depth[dest] = depth[source] + 1;
+  }
+  return result;
 }
 
 } // namespace wafer::compiler::detail

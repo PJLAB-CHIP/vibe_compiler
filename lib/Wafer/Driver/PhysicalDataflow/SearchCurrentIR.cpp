@@ -401,7 +401,7 @@ public:
         stage = Stage::SelectTemporal;
         return yield();
       }
-      const MovementChoice choice =
+      MovementChoice choice =
           std::move(attempt.movements[attempt.nextMovement++]);
       std::string detail;
       mlir::IRMapping mapping;
@@ -502,6 +502,31 @@ public:
               return finish(fail(ExecutableCompilationStatus::CompilerFailure,
                                  "search-access-reuse-prefix", detail));
             support::addCompileCounter("access-reuse", "retained-prefixes", 1);
+            if (temporal.repairReuse) {
+              auto selected = std::find_if(
+                  attempt.movements.begin() + attempt.nextMovement,
+                  attempt.movements.end(), [&](const auto &movement) {
+                    return movement.input == prefix && movement.reuse &&
+                           llvm::any_of(
+                               movement.reuse->actions, [](const auto &action) {
+                                 return action.kind != AccessReuseKind::Peer;
+                               });
+                  });
+              if (selected != attempt.movements.end()) {
+                MovementChoice base = choice;
+                base.input = prefix;
+                choice = std::move(*selected);
+                *selected = std::move(base);
+                auto mapped = mapAccessReuseChoice(*choice.reuse, baseMapping);
+                if (mlir::failed(mapped))
+                  return finish(
+                      fail(ExecutableCompilationStatus::CompilerFailure,
+                           "search-reuse-repair",
+                           "clone omitted reuse repair anchors"));
+                mappedReuse = std::move(*mapped);
+                temporal.repairReuse = false;
+              }
+            }
           }
         }
         if (mappedReuse) {
@@ -549,82 +574,75 @@ public:
         llvm::SmallVector<const TemporalDomain *> currentDomains;
         for (const auto &axis : axes)
           currentDomains.push_back(&axis.domain);
-        auto observeCapacity =
-            [&](CardId card, TileId tile,
-                const SPMMemoryPlanningFailure &failure,
-                const StructuredMaterializationRelations &relations) {
-              if (options.downstream.capacityObserver)
-                options.downstream.capacityObserver(card, tile, failure,
-                                                    relations);
-              auto inputFeedback = deriveInputCapacityFeedback(
-                  card, tile, failure, currentDomains, temporal.choices);
-              support::addCompileCounter("capacity-feedback",
-                                         "input-coordinates",
-                                         inputFeedback.coordinates.size());
-              support::addCompileCounter("capacity-feedback",
-                                         "unavailable-input-demands",
-                                         inputFeedback.unavailableDemands);
-              support::addCompileCounter("capacity-feedback",
-                                         "ambiguous-inputs",
-                                         inputFeedback.ambiguousInputs);
-              support::addCompileCounter("capacity-feedback",
-                                         "shared-input-demands",
-                                         inputFeedback.sharedInputDemands);
-              StorageRootMemo roots;
-              std::set<size_t> localAxes;
-              auto observe =
-                  [&](const SPMMemoryPlanningFailure::DemandEvidence &demand) {
-                    const auto &allocationRoots =
-                        roots.getStorageRoots(demand.allocation);
-                    for (const auto &relation : relations.buffers) {
-                      const auto &ownerRoots =
-                          roots.getStorageRoots(relation.buffer);
-                      if (!llvm::any_of(allocationRoots, [&](mlir::Value root) {
-                            return ownerRoots.contains(root);
-                          }))
-                        continue;
-                      for (mlir::Operation *owner = relation.owner; owner;
-                           owner = owner->getParentOp())
-                        for (auto [body, axis] : temporalBodies)
-                          if (owner->getBlock() == body)
-                            localAxes.insert(axis);
-                    }
-                  };
-              // Input-map evidence in one domain must not hide independently
-              // proven owner/body evidence in other domains of this failure.
-              for (const auto &demand : failure.individuallyOversizedDemands)
-                observe(demand);
-              for (const auto &demand : failure.capacityConflictDemands)
-                observe(demand);
-              for (size_t axis : localAxes) {
-                if (llvm::any_of(inputFeedback.coordinates,
-                                 [&](TemporalCoordinate coordinate) {
-                                   return coordinate.domain == axis;
-                                 }))
-                  continue;
-                auto descriptors = axes[axis].domain.getScopeDescriptors(
-                    temporal.choices[axis].kind);
-                if (descriptors.size() != 1)
-                  continue;
-                for (auto [iterator, capability] :
-                     llvm::enumerate(descriptors.front().iteratorCapabilities))
-                  if (capability == IteratorTilingCapability::Tileable)
-                    inputFeedback.coordinates.insert({axis, 0, iterator});
-              }
-              std::lock_guard<std::mutex> lock(feedbackMutex);
-              capacityFeedback.coordinates.insert(
-                  inputFeedback.coordinates.begin(),
-                  inputFeedback.coordinates.end());
-              if (inputFeedback.status ==
-                      CapacityFeedbackStatus::BrokenContract &&
-                  (capacityFeedback.status !=
-                       CapacityFeedbackStatus::BrokenContract ||
-                   inputFeedback.detail < capacityFeedback.detail)) {
-                capacityFeedback.status =
-                    CapacityFeedbackStatus::BrokenContract;
-                capacityFeedback.detail = std::move(inputFeedback.detail);
-              }
-            };
+        auto observeCapacity = [&](CardId card, TileId tile,
+                                   const SPMMemoryPlanningFailure &failure,
+                                   const StructuredMaterializationRelations
+                                       &relations) {
+          if (options.downstream.capacityObserver)
+            options.downstream.capacityObserver(card, tile, failure, relations);
+          auto inputFeedback = deriveInputCapacityFeedback(
+              card, tile, failure, currentDomains, temporal.choices);
+          support::addCompileCounter("capacity-feedback", "input-coordinates",
+                                     inputFeedback.coordinates.size());
+          support::addCompileCounter("capacity-feedback",
+                                     "unavailable-input-demands",
+                                     inputFeedback.unavailableDemands);
+          support::addCompileCounter("capacity-feedback", "ambiguous-inputs",
+                                     inputFeedback.ambiguousInputs);
+          support::addCompileCounter("capacity-feedback",
+                                     "shared-input-demands",
+                                     inputFeedback.sharedInputDemands);
+          StorageRootMemo roots;
+          std::set<size_t> localAxes;
+          auto observe =
+              [&](const SPMMemoryPlanningFailure::DemandEvidence &demand) {
+                const auto &allocationRoots =
+                    roots.getStorageRoots(demand.allocation);
+                for (const auto &relation : relations.buffers) {
+                  const auto &ownerRoots =
+                      roots.getStorageRoots(relation.buffer);
+                  if (!llvm::any_of(allocationRoots, [&](mlir::Value root) {
+                        return ownerRoots.contains(root);
+                      }))
+                    continue;
+                  for (mlir::Operation *owner = relation.owner; owner;
+                       owner = owner->getParentOp())
+                    for (auto [body, axis] : temporalBodies)
+                      if (owner->getBlock() == body)
+                        localAxes.insert(axis);
+                }
+              };
+          // Input-map evidence in one domain must not hide independently
+          // proven owner/body evidence in other domains of this failure.
+          for (const auto &demand : failure.individuallyOversizedDemands)
+            observe(demand);
+          for (const auto &demand : failure.capacityConflictDemands)
+            observe(demand);
+          for (size_t axis : localAxes) {
+            // A witnessed owner in this actual Region is relevant even
+            // when input provenance supplied only a subset of axes.
+            // Fused producer/consumer scopes must be refined together;
+            // dropping this evidence for multi-scope domains strands
+            // output/psum conflicts behind the input-only feedback.
+            auto descriptors = axes[axis].domain.getScopeDescriptors(
+                temporal.choices[axis].kind);
+            for (auto [scope, descriptor] : llvm::enumerate(descriptors))
+              for (auto [iterator, capability] :
+                   llvm::enumerate(descriptor.iteratorCapabilities))
+                if (capability == IteratorTilingCapability::Tileable)
+                  inputFeedback.coordinates.insert({axis, scope, iterator});
+          }
+          std::lock_guard<std::mutex> lock(feedbackMutex);
+          capacityFeedback.coordinates.insert(inputFeedback.coordinates.begin(),
+                                              inputFeedback.coordinates.end());
+          if (inputFeedback.status == CapacityFeedbackStatus::BrokenContract &&
+              (capacityFeedback.status !=
+                   CapacityFeedbackStatus::BrokenContract ||
+               inputFeedback.detail < capacityFeedback.detail)) {
+            capacityFeedback.status = CapacityFeedbackStatus::BrokenContract;
+            capacityFeedback.detail = std::move(inputFeedback.detail);
+          }
+        };
         CurrentIRDownstreamOptions downstreamOptions = options.downstream;
         downstreamOptions.communication =
             CommunicationProposalPolicy::DependencyOrdered;
@@ -643,8 +661,22 @@ public:
                              capacityFeedback.detail));
         if (choice.pipeline && compiled.isAccepted())
           support::addCompileCounter("search", "pipeline-accepted", 1);
-        if (statistics && choice.reuse && compiled.isAccepted())
+        if (statistics && choice.reuse && compiled.isAccepted()) {
           ++statistics->accessReuseAccepted;
+          if (llvm::any_of(choice.reuse->actions, [](const auto &action) {
+                return action.kind != AccessReuseKind::Peer;
+              })) {
+            ++statistics->residentReuseAccepted;
+            const auto &reads =
+                compiled.executable->resourceCost.aggregateDDRReadBytes;
+            if (reads.isKnown())
+              statistics->minimumResidentDDRReadBytes =
+                  statistics->minimumResidentDDRReadBytes
+                      ? std::min(*statistics->minimumResidentDDRReadBytes,
+                                 reads.value)
+                      : reads.value;
+          }
+        }
         if (statistics) {
           ++statistics->movementCandidateActualizations;
           addDownstreamStatistics(statistics->downstream, downstream);
@@ -667,9 +699,19 @@ public:
         if (statistics && choice.reuse)
           ++statistics->accessReuseCapacityRejected;
         temporal.capacityObserved |= !capacityFeedback.coordinates.empty();
-        bool refined = proposals->observeCapacity(temporal.choices,
-                                                  capacityFeedback.coordinates);
+        bool temporalReuse =
+            choice.reuse &&
+            llvm::any_of(choice.reuse->actions, [](const auto &action) {
+              return action.kind != AccessReuseKind::Peer;
+            });
+        bool refined = proposals->observeCapacity(
+            temporal.choices, capacityFeedback.coordinates, temporalReuse);
         repairQueued = refined;
+        if (choice.reuse && refined &&
+            llvm::any_of(choice.reuse->actions, [](const auto &action) {
+              return action.kind != AccessReuseKind::Peer;
+            }))
+          repairReuse = true;
         if (statistics) {
           statistics->actualCapacityRefinements += refined;
           statistics->unavailableCapacityRefinements += !refined;
@@ -713,6 +755,21 @@ public:
         temporal.realizationOnly = true;
         realization.emplace(std::move(temporal));
         pending.pop_front();
+      } else if (temporal.realizationOnly && choice.reuse &&
+                 compiled.isAccepted() &&
+                 llvm::all_of(choice.reuse->actions,
+                              [](const auto &action) {
+                                return action.kind == AccessReuseKind::Peer;
+                              }) &&
+                 attempt.nextMovement < attempt.movements.size() &&
+                 attempt.movements[attempt.nextMovement].reuse &&
+                 llvm::any_of(
+                     attempt.movements[attempt.nextMovement].reuse->actions,
+                     [](const auto &action) {
+                       return action.kind != AccessReuseKind::Peer;
+                     })) {
+        // Keep this actual prefix for its first temporal/peer combination.
+        // A layout-placement sibling must not consume its turn first.
       } else if (temporal.realizationOnly) {
         if (temporal.bestDuration)
           proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
@@ -748,6 +805,9 @@ private:
     // Finish the current actualization before starting another Temporal IR.
     if (!pending.empty())
       return TemporalWork::Resume;
+    if (repairReuse && proposals &&
+        proposals->prepareNext(TemporalProposalKind::Repair))
+      return TemporalWork::Repair;
     if (!hasAcceptedCandidate && proposals &&
         proposals->prepareNext(TemporalProposalKind::Repair))
       return TemporalWork::Repair;
@@ -799,6 +859,7 @@ private:
     std::optional<uint64_t> bestDuration;
     bool realizationOnly = false;
     bool capacityObserved = false;
+    bool repairReuse = false;
   };
 
   std::optional<ExecutableCompilationResult> initialize() {
@@ -960,6 +1021,8 @@ private:
     const bool canMerge =
         *availability == CommunicationRegionClosureAvailability::Available;
     TemporalAttempt attempt;
+    attempt.repairReuse =
+        work == TemporalWork::Repair && std::exchange(repairReuse, false);
     attempt.choices = std::move(choices);
     attempt.tiled = std::move(*candidate);
     attempt.regions.emplace_back();
@@ -1283,6 +1346,7 @@ private:
   std::optional<TemporalAttempt> realization;
   const size_t explorationStratum;
   unsigned temporalPhase = 0;
+  bool repairReuse = false;
   Stage stage = Stage::SelectTemporal;
   CandidateContinuation currentContinuation = CandidateContinuation::Explore;
   bool exhausted = false;
@@ -1496,6 +1560,10 @@ ExecutableCompilationResult compileSearchCurrentIR(
     searchCounter("access-reuse-eligible", statistics->accessReuseEligible);
     searchCounter("access-reuse-queued", statistics->accessReuseQueued);
     searchCounter("access-reuse-accepted", statistics->accessReuseAccepted);
+    searchCounter("resident-reuse-accepted", statistics->residentReuseAccepted);
+    if (statistics->minimumResidentDDRReadBytes)
+      searchCounter("resident-minimum-ddr-read-bytes",
+                    *statistics->minimumResidentDDRReadBytes);
     searchCounter("access-reuse-capacity-rejected",
                   statistics->accessReuseCapacityRejected);
   }

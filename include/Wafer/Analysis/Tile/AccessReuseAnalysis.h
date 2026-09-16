@@ -28,6 +28,9 @@ struct ReadAccess {
   mlir::AffineExpr linearOffset;
   llvm::SmallVector<StaticLoopDomain, 4> loops;
   int64_t physicalBytes = 0;
+  // All current destination readers accept strided Tensor views and follow
+  // this load in the same block. No future allocation or alias is assumed.
+  bool acceptsSourceView = false;
   mlir::Value base;
   mlir::AffineMap coordinates;
 };

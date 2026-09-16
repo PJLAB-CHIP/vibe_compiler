@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <map>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -202,7 +203,10 @@ void TemporalProposals::rankGroups(const std::vector<TemporalChoice> &choices,
   for (auto &group : groups) {
     const auto first = group.front();
     const auto &scope = choices[first.domain].scopes[first.scope];
-    auto operands = getReadOperandProjections(scope.operation);
+    auto descriptors =
+        domains[first.domain]->getScopeDescriptors(choices[first.domain].kind);
+    auto operands = getReadOperandProjections(
+        scope.operation, descriptors[first.scope].iterationExtents);
     llvm::SmallVector<uint64_t> reuse(scope.iteratorTileSizes.size(), 0);
     if (operands)
       for (const auto &operand : *operands)
@@ -546,7 +550,7 @@ void TemporalProposals::appendLayoutBoundaries(size_t anchor,
 
 bool TemporalProposals::observeCapacity(
     const std::vector<TemporalChoice> &choices,
-    const std::set<TemporalCoordinate> &affectedCoordinates) {
+    const std::set<TemporalCoordinate> &affectedCoordinates, bool prioritize) {
   auto index = find(choices);
   if (!index)
     return false;
@@ -556,8 +560,14 @@ bool TemporalProposals::observeCapacity(
     if (affectedCoordinates.count(coordinate) &&
         entries[*index].capacityObserved.insert(coordinate).second)
       fresh = true;
-  if (!fresh)
-    return false;
+  if (!fresh) {
+    if (!prioritize || !llvm::any_of(capacityPolls, [&](const auto &poll) {
+          return poll.anchor == *index;
+        }))
+      return false;
+    priorityCapacityAnchor = *index;
+    return appendCapacityDirection();
+  }
   CapacityPoll poll{*index, {}, {}};
   std::optional<std::pair<size_t, size_t>> previousScope;
   for (Coordinate coordinate : entries[*index].capacityObserved) {
@@ -582,13 +592,26 @@ bool TemporalProposals::observeCapacity(
     poll.initialRound = true;
   }
   capacityPolls.push_back(std::move(poll));
+  if (prioritize) {
+    priorityCapacityAnchor = *index;
+    return appendCapacityDirection();
+  }
   return true;
 }
 
 bool TemporalProposals::appendCapacityDirection() {
   while (!capacityPolls.empty()) {
     auto selectedPoll = capacityPolls.begin();
-    if (preferFreshCapacity) {
+    if (priorityCapacityAnchor) {
+      auto found = llvm::find_if(capacityPolls, [&](const auto &poll) {
+        return poll.anchor == *priorityCapacityAnchor;
+      });
+      if (found != capacityPolls.end())
+        selectedPoll = found;
+      else
+        priorityCapacityAnchor.reset();
+    }
+    if (!priorityCapacityAnchor && preferFreshCapacity) {
       // Advance the deepest observed repair chain alongside older siblings.
       // Arrival order alone lets a later ordinary/shallow failure repeatedly
       // displace the next step of an already advancing capacity repair.
@@ -608,9 +631,51 @@ bool TemporalProposals::appendCapacityDirection() {
     std::vector<Coordinate> selected;
     const bool initialDirection =
         poll.initialRound && poll.batch <= maximumAxes;
-    if (poll.batch == 0) {
+    bool jointDirection = poll.batch == 0;
+    if (jointDirection) {
       // One proposal can repair all independently certified Tile scopes.
       selected = poll.coordinates;
+      // Keep a uniquely most valuable reuse axis while jointly shrinking
+      // the other certified dimensions. Uniformly halving every dimension
+      // repeats the largest invariant input and loses the reuse that the
+      // repaired physical candidate is meant to realize. This orders one
+      // explicit choice only; the ordinary single/pair directions remain.
+      for (const auto &group : poll.groups) {
+        if (group.size() < 2)
+          continue;
+        const auto first = group.front();
+        const auto &scope =
+            entries[poll.anchor].choices[first.domain].scopes[first.scope];
+        auto descriptors = domains[first.domain]->getScopeDescriptors(
+            entries[poll.anchor].choices[first.domain].kind);
+        auto operands = getReadOperandProjections(
+            scope.operation, descriptors[first.scope].iterationExtents);
+        if (!operands)
+          continue;
+        uint64_t maximum = 0;
+        std::optional<Coordinate> preferred;
+        bool tied = false;
+        for (auto coordinate : group) {
+          uint64_t bytes = 0;
+          for (const auto &operand : *operands)
+            if (coordinate.iterator < operand.iterators.size() &&
+                !operand.iterators.test(coordinate.iterator))
+              bytes = llvm::SaturatingAdd(bytes, operand.bytes);
+          if (bytes > maximum) {
+            maximum = bytes;
+            preferred = coordinate;
+            tied = false;
+          } else if (bytes == maximum)
+            tied = true;
+        }
+        if (preferred && !tied)
+          llvm::erase_if(selected, [&](auto coordinate) {
+            return !(coordinate < *preferred) && !(*preferred < coordinate);
+          });
+      }
+      // Keep the all-coordinate alternative after the original individual
+      // directions, so it cannot displace the progressing repair chain.
+      poll.remainingWholeDirection = selected.size() != poll.coordinates.size();
       ++poll.batch;
     } else if (poll.batch <= maximumAxes) {
       for (const auto &group : poll.groups)
@@ -623,6 +688,10 @@ bool TemporalProposals::appendCapacityDirection() {
       selected.push_back(poll.coordinates[poll.pairSecond]);
       if (++poll.pairSecond == poll.coordinates.size())
         poll.pairSecond = ++poll.pairFirst + 1;
+    } else if (poll.remainingWholeDirection) {
+      selected = poll.coordinates;
+      poll.remainingWholeDirection = false;
+      jointDirection = true;
     } else {
       continue;
     }
@@ -633,6 +702,95 @@ bool TemporalProposals::appendCapacityDirection() {
     auto next = entries[poll.anchor].choices;
     support::addCompileCounter("search", "temporal-neighbor-materializations",
                                1);
+    if (jointDirection) {
+      // One coupled choice preserves equal loop domains across equivalent
+      // current scopes. Refining only a donor destroys matching peer windows
+      // even when recipients did not themselves produce a capacity witness.
+      // This is a choice coupling, never a capacity claim for those scopes.
+      auto certified = selected;
+      auto available = coordinates(next);
+      using Projections =
+          std::optional<llvm::SmallVector<OperandProjection, 4>>;
+      std::map<mlir::Operation *, Projections> readCache;
+      auto readSources = [&](const auto &descriptor) -> const Projections & {
+        auto found = readCache.find(descriptor.operation);
+        if (found == readCache.end())
+          found = readCache
+                      .emplace(descriptor.operation,
+                               getReadOperandProjections(
+                                   descriptor.operation,
+                                   descriptor.iterationExtents))
+                      .first;
+        return found->second;
+      };
+      for (auto reference : certified) {
+        auto aDescriptors = domains[reference.domain]->getScopeDescriptors(
+            next[reference.domain].kind);
+        const auto &a = aDescriptors[reference.scope];
+        auto aOp = mlir::dyn_cast<mlir::linalg::LinalgOp>(a.operation);
+        if (!aOp)
+          continue;
+        for (auto other : available) {
+          if (other.iterator != reference.iterator)
+            continue;
+          auto bDescriptors = domains[other.domain]->getScopeDescriptors(
+              next[other.domain].kind);
+          const auto &b = bDescriptors[other.scope];
+          auto bOp = mlir::dyn_cast<mlir::linalg::LinalgOp>(b.operation);
+          auto aTile = a.operation->getParentOfType<TileModuleOp>();
+          auto bTile = b.operation->getParentOfType<TileModuleOp>();
+          if (!aTile || !bTile || aTile.getCardId() != bTile.getCardId() ||
+              a.operation->getParentOfType<mlir::ModuleOp>() !=
+                  b.operation->getParentOfType<mlir::ModuleOp>())
+            continue;
+          const auto &aReads = readSources(a);
+          const auto &bReads = readSources(b);
+          bool shared =
+              aReads && bReads && llvm::any_of(*aReads, [&](const auto &x) {
+                return x.programArgument &&
+                       llvm::any_of(*bReads, [&](const auto &y) {
+                         if (x.programArgument != y.programArgument ||
+                             x.offsets != y.offsets || x.sizes != y.sizes ||
+                             x.iterators != y.iterators ||
+                             a.iterationExtents.size() !=
+                                 b.iterationExtents.size())
+                           return false;
+                         const auto &aChoice =
+                             next[reference.domain].scopes[reference.scope];
+                         const auto &bChoice =
+                             next[other.domain].scopes[other.scope];
+                         for (unsigned axis = 0;
+                              axis < a.iterationExtents.size(); ++axis) {
+                           if (a.iterationExtents[axis] ==
+                               b.iterationExtents[axis])
+                             continue;
+                           // Uneven spatial pieces can still share this exact
+                           // read when the differing axis is invariant and
+                           // both choices consume their full local extent.
+                           if (x.iterators.test(axis) ||
+                               aChoice.iteratorTileSizes[axis] !=
+                                   a.iterationExtents[axis] ||
+                               bChoice.iteratorTileSizes[axis] !=
+                                   b.iterationExtents[axis])
+                             return false;
+                         }
+                         return true;
+                       });
+              });
+          if (!shared)
+            continue;
+          if (!bOp || a.iteratorCapabilities != b.iteratorCapabilities ||
+              aOp.getIndexingMapsArray() != bOp.getIndexingMapsArray() ||
+              aOp.getIteratorTypesArray() != bOp.getIteratorTypesArray() ||
+              value(next, reference) != value(next, other))
+            continue;
+          if (!llvm::any_of(selected, [&](auto point) {
+                return !(point < other) && !(other < point);
+              }))
+            selected.push_back(other);
+        }
+      }
+    }
     for (Coordinate coordinate : selected) {
       int64_t &size = value(next, coordinate);
       size = std::max(bounds(next, coordinate).lower, size / 2);
@@ -642,6 +800,9 @@ bool TemporalProposals::appendCapacityDirection() {
     const uint64_t depth =
         llvm::SaturatingAdd(entries[anchor].repairDepth, uint64_t(1));
     capacityPolls.push_back(std::move(poll));
+    auto &repairQueue =
+        queues[static_cast<unsigned>(TemporalProposalKind::Repair)];
+    const size_t queueStart = repairQueue.size();
     auto enqueue = [&](std::vector<TemporalChoice> point) {
       auto previous = find(point);
       const bool queued =
@@ -675,6 +836,12 @@ bool TemporalProposals::appendCapacityDirection() {
     }
     const bool originalQueued = enqueue(std::move(next));
     if (coupledQueued || originalQueued) {
+      if (priorityCapacityAnchor && *priorityCapacityAnchor == anchor) {
+        auto index = repairQueue[queueStart];
+        repairQueue.erase(repairQueue.begin() + queueStart);
+        repairQueue.push_front(index);
+        priorityCapacityAnchor.reset();
+      }
       preferFreshCapacity = !preferFreshCapacity;
       return true;
     }

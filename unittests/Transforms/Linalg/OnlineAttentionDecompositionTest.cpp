@@ -83,10 +83,18 @@ mlir::OwningOpRef<mlir::ModuleOp> parseOnlineModule(mlir::MLIRContext &context,
     stream << ", %mask_arg: " << maskType;
   stream << R"mlir():
         %scale = arith.constant 1.0 : f32
-        %accumulator = tensor.empty() : )mlir"
-         << accumulatorType << R"mlir(
-        %maximum = tensor.empty() : tensor<2x4x1025xf32>
-        %sum = tensor.empty() : tensor<2x4x1025xf32>
+        %empty_accumulator = tensor.empty() : )mlir"
+         << accumulatorType
+         << "\n%zero_accumulator = arith.constant 0.0 : " << elementType
+         << "\n%accumulator = linalg.fill ins(%zero_accumulator : "
+         << elementType << ") outs(%empty_accumulator : " << accumulatorType
+         << ") -> " << accumulatorType << R"mlir(
+        %empty_maximum = tensor.empty() : tensor<2x4x1025xf32>
+        %empty_sum = tensor.empty() : tensor<2x4x1025xf32>
+        %minus_inf = arith.constant 0xFF800000 : f32
+        %zero_sum = arith.constant 0.0 : f32
+        %maximum = linalg.fill ins(%minus_inf : f32) outs(%empty_maximum : tensor<2x4x1025xf32>) -> tensor<2x4x1025xf32>
+        %sum = linalg.fill ins(%zero_sum : f32) outs(%empty_sum : tensor<2x4x1025xf32>) -> tensor<2x4x1025xf32>
         %next_accumulator, %next_maximum, %next_sum =
             wafer.linalg_ext.online_attention
             ins(%query_arg, %key_arg, %value_arg, %scale)mlir";
@@ -221,105 +229,119 @@ unsigned countRowReductions(mlir::Operation *root) {
 
 TEST(OnlineAttentionDecompositionTest,
      MainAndTailBecomeActualQKStateAndPVWithoutNewLoops) {
-  for (int64_t extent : {1024, 1025, 1031}) {
-    SCOPED_TRACE(extent);
-    std::unique_ptr<mlir::MLIRContext> context = createContext();
-    auto module = parseOnlineModule(*context, extent, "f16",
-                                    /*withMask=*/false);
-    ASSERT_TRUE(module);
-    TileRegionOp region = findRegion(*module);
-    TemporalDomainResult domain = buildTemporalDomain(region);
-    ASSERT_TRUE(domain.succeeded());
-    TemporalChoice choice = selectK2Tile(*domain.domain, 128);
-    StructuredMaterializationRelations relations;
-    relations.structuralOutputs.push_back({0, region.getResult(0)});
-    TemporalTilingFailure tilingFailure;
-    auto tiled =
-        applyTemporalTiling({{*domain.domain, choice}}, relations, &tilingFailure);
-    ASSERT_TRUE(mlir::succeeded(tiled)) << tilingFailure.detail;
-    const unsigned onlineBefore =
-        countOps<LinalgExtOnlineAttentionOp>(module->getOperation());
-    const unsigned loopsBefore =
-        countOps<mlir::scf::ForOp>(module->getOperation());
-    ASSERT_EQ(onlineBefore, extent == 1024 ? 1u : 2u);
+  for (llvm::StringRef dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(extent);
+      std::unique_ptr<mlir::MLIRContext> context = createContext();
+      auto module = parseOnlineModule(*context, extent, dtype,
+                                      /*withMask=*/false);
+      ASSERT_TRUE(module);
+      TileRegionOp region = findRegion(*module);
+      TemporalDomainResult domain = buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded());
+      TemporalChoice choice = selectK2Tile(*domain.domain, 128);
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      TemporalTilingFailure tilingFailure;
+      auto tiled = applyTemporalTiling({{*domain.domain, choice}}, relations,
+                                       &tilingFailure);
+      ASSERT_TRUE(mlir::succeeded(tiled)) << tilingFailure.detail;
+      const unsigned onlineBefore =
+          countOps<LinalgExtOnlineAttentionOp>(module->getOperation());
+      const unsigned loopsBefore =
+          countOps<mlir::scf::ForOp>(module->getOperation());
+      ASSERT_EQ(onlineBefore, extent == 1024 ? 1u : 2u);
 
-    OnlineAttentionDecompositionFailure failure;
-    auto decomposed = decomposeOnlineAttention(*module, relations, &failure);
-    ASSERT_TRUE(mlir::succeeded(decomposed)) << failure.detail;
-    EXPECT_EQ(decomposed->decomposedOperations, onlineBefore);
-    EXPECT_EQ(decomposed->qkContractions, onlineBefore);
-    EXPECT_EQ(decomposed->pvContractions, onlineBefore);
-    EXPECT_EQ(decomposed->scoreApplications, onlineBefore);
-    EXPECT_EQ(decomposed->rowReductions, onlineBefore * 2);
-    EXPECT_EQ(decomposed->normalizationFactors, onlineBefore);
-    EXPECT_EQ(decomposed->probabilityUpdates, onlineBefore);
-    EXPECT_EQ(decomposed->stateScales, onlineBefore * 2);
-    EXPECT_EQ(decomposed->scoreScratchTensors, onlineBefore);
-    EXPECT_EQ(decomposed->maximumScoreElements, UINT64_C(2) * 4 * 1025 * 128);
-    EXPECT_EQ(countOps<LinalgExtAttentionOp>(module->getOperation()), 0u);
-    EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()), 0u);
-    EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), loopsBefore);
-    EXPECT_EQ(countContractions(module->getOperation()), onlineBefore * 2);
-    EXPECT_EQ(countRowReductions(module->getOperation()), onlineBefore * 2);
-    EXPECT_EQ(countOps<mlir::math::ExpOp>(module->getOperation()),
-              onlineBefore * 2);
-    module->walk([&](mlir::scf::ForOp loop) {
-      EXPECT_EQ(loop.getNumRegionIterArgs(), 3u);
-    });
-    unsigned scoreScratch = 0;
-    module->walk([&](mlir::tensor::EmptyOp empty) {
-      auto type = empty.getType();
-      if (type.getRank() != 4 || !type.getElementType().isF32())
-        return;
-      ++scoreScratch;
-      EXPECT_EQ(type.getShape()[0], 2);
-      EXPECT_EQ(type.getShape()[1], 4);
-      EXPECT_EQ(type.getShape()[2], 1025);
-      EXPECT_LE(type.getShape()[3], 128);
-    });
-    EXPECT_EQ(scoreScratch, onlineBefore);
-    EXPECT_TRUE(
-        mlir::succeeded(verifyOnlineAttentionDecompositionComplete(*module)));
-    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
-        module->getOperation(), relations)));
-    LayoutOptimizationResult layout =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
-    ASSERT_TRUE(layout.succeeded()) << layout.detail;
-    EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
-    EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
-    EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
-    ASSERT_EQ(relations.structuralOutputs.size(), 1u);
-    EXPECT_TRUE(isWaferDDRMemRefType(
-        relations.structuralOutputs.front().endpoint.getType()));
-    StructuredToTileResult tileLowering =
-        lowerStructuredComputeToTile(*module, relations);
-    ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
-    EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
-    // A one-element PV tail is an F32 outer product. Its original mul/add
-    // lowers to elementwise instructions because F32 is not a GEMM input
-    // format.
-    EXPECT_EQ(tileLowering.statistics.contractions,
-              onlineBefore * 2 - (extent % 128 == 1 ? 1 : 0));
-    module->walk([&](ComputeGemmOp op) {
-      auto lhs = mlir::cast<mlir::MemRefType>(op.getLhs().getType());
-      if (lhs.getElementType().isF32()) {
-        EXPECT_NE(lhs.getShape().back(), 1);
-      }
-    });
-    EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
-    EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
-    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
-        module->getOperation(), relations)));
-    BoundaryMovementResult movement =
-        materializeTileBoundaryMovement(*module, relations);
-    ASSERT_TRUE(movement.succeeded()) << movement.detail;
-    EXPECT_GT(movement.statistics.ddrLoads, 0u);
-    EXPECT_EQ(movement.statistics.ddrStores, 1u);
-    EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
-    EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
-    EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
-    EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
-  }
+      OnlineAttentionDecompositionFailure failure;
+      auto decomposed = decomposeOnlineAttention(*module, relations, &failure);
+      ASSERT_TRUE(mlir::succeeded(decomposed)) << failure.detail;
+      EXPECT_EQ(decomposed->decomposedOperations, onlineBefore);
+      EXPECT_EQ(decomposed->qkContractions, onlineBefore);
+      EXPECT_EQ(decomposed->pvContractions, onlineBefore);
+      EXPECT_EQ(decomposed->scoreApplications, onlineBefore);
+      EXPECT_EQ(decomposed->rowReductions, onlineBefore * 2);
+      EXPECT_EQ(decomposed->normalizationFactors, onlineBefore);
+      EXPECT_EQ(decomposed->probabilityUpdates, onlineBefore);
+      EXPECT_EQ(decomposed->stateScales, onlineBefore * 2);
+      EXPECT_EQ(decomposed->scoreScratchTensors, onlineBefore);
+      EXPECT_EQ(decomposed->maximumScoreElements, UINT64_C(2) * 4 * 1025 * 128);
+      EXPECT_EQ(countOps<LinalgExtAttentionOp>(module->getOperation()), 0u);
+      EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()),
+                0u);
+      EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()),
+                loopsBefore);
+      EXPECT_EQ(countContractions(module->getOperation()), onlineBefore * 2);
+      EXPECT_EQ(countRowReductions(module->getOperation()), onlineBefore * 2);
+      EXPECT_EQ(countOps<mlir::math::ExpOp>(module->getOperation()),
+                onlineBefore * 2);
+      module->walk([&](mlir::scf::ForOp loop) {
+        EXPECT_EQ(loop.getNumRegionIterArgs(), 3u);
+      });
+      unsigned scoreScratch = 0;
+      module->walk([&](mlir::tensor::EmptyOp empty) {
+        auto type = empty.getType();
+        if (type.getRank() != 4 || !type.getElementType().isF32())
+          return;
+        ++scoreScratch;
+        EXPECT_EQ(type.getShape()[0], 2);
+        EXPECT_EQ(type.getShape()[1], 4);
+        EXPECT_EQ(type.getShape()[2], 1025);
+        EXPECT_LE(type.getShape()[3], 128);
+      });
+      EXPECT_EQ(scoreScratch, onlineBefore);
+      EXPECT_TRUE(
+          mlir::succeeded(verifyOnlineAttentionDecompositionComplete(*module)));
+      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+      LayoutOptimizationResult layout =
+          resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
+      unsigned carriedStates = 0;
+      module->walk([&](mlir::scf::ForOp loop) {
+        if (loop.getNumRegionIterArgs() != 3)
+          return;
+        for (auto argument : loop.getRegionIterArgs()) {
+          auto type = mlir::cast<mlir::MemRefType>(argument.getType());
+          EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), MemLayout::NCx);
+          ++carriedStates;
+        }
+      });
+      EXPECT_EQ(carriedStates, 3u);
+      EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
+      EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+      ASSERT_EQ(relations.structuralOutputs.size(), 1u);
+      EXPECT_TRUE(isWaferDDRMemRefType(
+          relations.structuralOutputs.front().endpoint.getType()));
+      StructuredToTileResult tileLowering =
+          lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
+      EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+      // A one-element PV tail is an F32 outer product. Its original mul/add
+      // lowers to elementwise instructions because F32 is not a GEMM input
+      // format.
+      EXPECT_EQ(tileLowering.statistics.contractions,
+                onlineBefore * 2 - (extent % 128 == 1 ? 1 : 0));
+      module->walk([&](ComputeGemmOp op) {
+        auto lhs = mlir::cast<mlir::MemRefType>(op.getLhs().getType());
+        if (lhs.getElementType().isF32()) {
+          EXPECT_NE(lhs.getShape().back(), 1);
+        }
+      });
+      EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
+      EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+      BoundaryMovementResult movement =
+          materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_GT(movement.statistics.ddrLoads, 0u);
+      EXPECT_EQ(movement.statistics.ddrStores, 1u);
+      EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+      EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+      EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
+      EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
+    }
 }
 
 TEST(OnlineAttentionDecompositionTest, ScoreRoundingSurvivesMainAndTail) {

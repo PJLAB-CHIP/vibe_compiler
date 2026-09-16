@@ -533,3 +533,7 @@ Selected movement construction必须接入同一token-only边界，schedule owne
 物化前逐层用标准MemRef type inference证明剩余subview/collapse/expand可重建，物化后通过同一IRMapping克隆view并传播新type；
 不只替换source SSA而保留旧view type。不支持的metadata view在mutation前拒绝。该规则同时用于DDR和DTE，不改变payload逻辑覆盖。
 覆盖真实rank4 attention普通图、1024/1025/1031与F16/BF16，要求搜索候选和后续Instr/数值执行均通过，旧offset不得传播至compact receiver。
+
+同一Tile的sender slot跨结构化block共享。外层send的token在非空内层循环/透明region首次重用sender之前消费一次，
+不能因字节源不同或词法block不同而忽略此资源依赖，也不能把外层token的wait放进内层每次迭代。
+嵌套循环的NCC相位请求以精确布尔条件合并；回边证明可解释该条件的select，不用无条件join覆盖未知路径。

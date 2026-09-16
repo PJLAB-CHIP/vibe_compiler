@@ -54,7 +54,11 @@ TEST_P(SystemCTargetModelAccessReuseTest,
   ASSERT_TRUE(module);
   auto facts = analysis::analyzeAccessReuse(*module);
   AccessReuseChoice choice;
-  if (sliding) {
+  if (kind == AccessReuseKind::Peer) {
+    choice = selectPeerAccessReuse(facts);
+    for (auto &action : choice.actions)
+      action.peerTopology = PeerReuseTopology::SpanningTree;
+  } else if (sliding) {
     for (const auto &window : facts.sliding)
       choice.actions.push_back({kind, {window.access.load}, window.scope, {}});
   } else {
@@ -73,12 +77,17 @@ TEST_P(SystemCTargetModelAccessReuseTest,
       choice.actions.push_back(std::move(action));
     }
   }
-  ASSERT_EQ(choice.actions.size(), 16u);
+  if (kind == AccessReuseKind::Peer)
+    ASSERT_FALSE(choice.actions.empty());
+  else
+    ASSERT_EQ(choice.actions.size(), 16u);
   StructuredMaterializationRelations relations;
   rebuildCurrentBufferOwnerRelations(*module, relations);
   auto reused = materializeAccessReuse(*module, relations, choice);
   ASSERT_TRUE(reused.succeeded()) << reused.detail;
-  if (!sliding) {
+  if (kind == AccessReuseKind::Peer) {
+    EXPECT_GE(reused.movement.peerReceives, 15u);
+  } else if (!sliding) {
     EXPECT_EQ(reused.movement.peerReceives, 15u);
   }
 
@@ -153,7 +162,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values("f16", "bf16"),
         ::testing::Values(int64_t(1024), int64_t(1025), int64_t(1031)),
         ::testing::Values(AccessReuseKind::Resident, AccessReuseKind::Sliding,
-                          AccessReuseKind::TwoLevel)));
+                          AccessReuseKind::TwoLevel, AccessReuseKind::Peer)));
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {

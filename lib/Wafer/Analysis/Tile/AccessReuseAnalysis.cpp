@@ -275,6 +275,20 @@ std::optional<ReadAccess> getReadAccess(StorageLoadOp load) {
   access.linearOffset = expression;
   access.loops = *domains;
   access.physicalBytes = physical->physicalBytes;
+  access.acceptsSourceView =
+      getWaferMemoryAttr(payload).getLayout() == MemLayout::Tensor &&
+      llvm::all_of(load.getDest().getUses(), [&](mlir::OpOperand &use) {
+        auto *user = use.getOwner();
+        if (user == load)
+          return true;
+        if (user->getBlock() != load->getBlock() ||
+            !load->isBeforeInBlock(user) || use.getOperandNumber() != 0)
+          return false;
+        // These movement contracts consume logical strided source views;
+        // byte-oriented peer payloads and dense compute operands do not.
+        return mlir::isa<LayoutMaterializeOp, MoveCopyIntoOp, StorageStoreOp,
+                         mlir::memref::CopyOp>(user);
+      });
   if (auto coordinates = offsets.coordinates(load.getSource(), access.base))
     access.coordinates = mlir::AffineMap::get(access.loops.size(), 0,
                                               *coordinates, load.getContext());

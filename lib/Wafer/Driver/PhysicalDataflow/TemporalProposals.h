@@ -45,7 +45,8 @@ public:
   void observeAccepted(const std::vector<TemporalChoice> &choices,
                        uint64_t duration);
   bool observeCapacity(const std::vector<TemporalChoice> &choices,
-                       const std::set<TemporalCoordinate> &affectedCoordinates);
+                       const std::set<TemporalCoordinate> &affectedCoordinates,
+                       bool prioritize = false);
   bool hasCapacityRoundInProgress() const {
     return firstCapacityAnchor &&
            (!firstCapacityRoundComplete || !firstCapacityPending.empty());
@@ -104,6 +105,7 @@ private:
     size_t pairFirst = 0;
     size_t pairSecond = 1;
     bool initialRound = false;
+    bool remainingWholeDirection = false;
   };
 
   std::optional<size_t> find(const std::vector<TemporalChoice> &choices) const;
@@ -135,6 +137,7 @@ private:
   std::array<std::deque<Probe>, 3> probeQueues;
   std::deque<CapacityPoll> capacityPolls;
   bool preferFreshCapacity = true;
+  std::optional<size_t> priorityCapacityAnchor;
   std::deque<ImprovementPoll> improvementPolls;
   std::vector<SeedFamily> seedFamilies;
   std::deque<SeedPoint> seedPoints;
