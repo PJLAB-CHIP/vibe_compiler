@@ -1898,3 +1898,32 @@ Decode数值资格通过但性能尚不接纳：首步此前同runtime样本为5
 无skip；canonical完整增量构建及后续Ninja no-op通过。最初一次CTest因调用环境PATH缺clang++在编译前失败，
 补齐既有pinned工具路径后六项实际执行通过。逐次包身份、source、数值、对照和检查日志见
 [融合验证证据](data/board-performance/attention-fusion-20260917.json)。
+
+## 2026-09-17：最新组合版本完整单层LM重测
+
+使用`52a8fd7a`代码对应的current compiler、同一5.7 runtime和CRT，原始HF完整单层LM S16分别重新生成
+FP16/BF16 source、整数IDs、全部512000 logits的独立reference，默认search 8/42构包及fresh no-card均通过。
+两种dtype的新reference均与前轮正确版本逐byte一致。编译器、runner、CRT与runtime的digest见
+[本轮证据](data/board-performance/full-lm-retest-20260917.json)。
+
+| 配置 | 设备耗时（ms） | 全输出cosine | relative L2 | 本轮结果 |
+| --- | ---: | ---: | ---: | --- |
+| 完整LM S16 FP16 | 74.417999 | 0.999999370087 | 0.001122423 | 512000 logits通过；逐点超差277仅作诊断，正常completion/readback/cleanup |
+| 完整LM S16 BF16 | 无有效计时 | 无回读 | 无回读 | 提交后超过60000 ms completion deadline；`context=poisoned`并隔离 |
+
+FP16前轮125.475998 ms是另一compiler版本的历史单样本；本次也只有单样本，尚不形成匹配重复性能结论。
+BF16前轮124.264 ms及数值通过不代签本次结果。超时后没有继续provider调用、重试、reset或power；设备批次停止。
+runtime的deadline从提交阶段开始，不包含source导出和权重上传；现有错误信息无法区分stream completion与计时event等待，
+因此不能仅凭此日志断定某条kernel指令挂起。
+
+主机侧比较了两种dtype全部16 Tile的actual IR：dataflow在统一dtype后相同，Instr在统一dtype及conversion枚举后相同；
+launch/entry/resource结构一致。LLVM target call只存在相应format和conversion入口差别。
+已通过的BF16 block本身包含转置GEMM及FP32 psum，因此不作“BF16或转置/psum不支持”的推断；
+完整LM另有不同GEMM geometry，静态相同也不能排除时序问题。当前根因仍未确定。
+
+定位继续使用原HF模块的embedding、embedding至final norm、LM head三个独立诊断边界。
+本轮新建的三组参数均与完整LM相应参数逐byte一致，head的CPU完整logits也与完整LM reference逐byte一致。
+三组均通过默认8/42构包与完整16 Tile no-card，准备总wall分别为53.285、547.825、69.007秒；未执行设备数值。
+embedding至final norm的CPU输出与head输入逐byte一致，恢复后embedding按exact、两个计算边界按原相似度合同检查。
+这些拆分会改变编译选择：独立head选择`M16/K1024/N500`，完整LM head为`M16/K512/N250`；
+故局部通过不能代签完整candidate。设备恢复前只准备主机产物，当前第一项未完成，后续项按既定顺序等待。

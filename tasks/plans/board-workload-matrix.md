@@ -38,6 +38,21 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 发现设备timeout或异常立即停止设备批次，保留故障事实；不重试、reset或降低验收合同。
 模型快速后端转置/psum接入排在上述五项之后，不在当前顺序内提前施工。
 
+第1项当前检查点：最新组合版本的完整LM S16 FP16重新构包/no-card后实卡通过，全部512000 logits，
+设备74.417999 ms。BF16同样完成新source、完整package及no-card，但真实执行触发60000 ms completion deadline，
+runtime报告`context=poisoned`并隔离；设备批次停止，没有重试/reset/power。第1项未完成，第2—5项尚未开始。
+两种dtype的16 Tile dataflow/Instr在显式统一dtype及conversion枚举后完全相同，launch/entry/resource描述一致；
+LLVM target call差异仅为对应format与conversion入口，不能据此推定BF16不支持或同步根因。
+当前只做主机侧故障定位，并等待板卡恢复后才能建立新的设备会话。
+
+本次超时定位采用原HF模块的三个独立边界：embedding、embedding至final norm、LM head。
+各边界使用本轮新建原模型/输入/reference，保留dtype和完整输出，通过唯一runner完成source→package/no-card，
+恢复后的设备验证分别检查实际输出与终止：embedding要求exact，含算术的两个边界沿用原相似度合同。
+LM head输入来自本轮CPU原模型的新hidden states，不读旧raw。
+这些诊断仅定位完整模型中的故障范围；它们改变了编译图边界，不能代签完整失败candidate或当作其根因证明。
+三个诊断边界现已完成本轮默认search构包、完整16 Tile no-card及新reference准备；参数与完整LM一致，
+CPU hidden→head的边界逐byte闭合。真实设备诊断仍等待恢复会话，结果和身份见统一性能记录。
+
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
 source→默认8/42 search→verified package→fresh no-card→串行设备执行及完整输出比较。

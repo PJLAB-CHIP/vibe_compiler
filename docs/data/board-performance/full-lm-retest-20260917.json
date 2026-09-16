@@ -1,0 +1,1258 @@
+{
+  "date": "2026-09-17",
+  "scope": "Ordered task 1: original HF complete single-layer LM S16, full vocabulary, FP16/BF16",
+  "environment": {
+    "compiler": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+    "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+    "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "commit": "52a8fd7a648b5bcf22ea509c758cc8d11a6bcc93",
+    "boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+    "parallelism": 80,
+    "canonical_build": "passed; subsequent Ninja no-op",
+    "resnet_extent": 224,
+    "source_revision": "clean committed source",
+    "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+    "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile"
+  },
+  "software_changed": false,
+  "cases": [
+    {
+      "dtype": "float16",
+      "prepare": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "float16",
+        "mode": "prepare",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "float16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--no-card",
+          "--dump-compiler-ir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare/compiler-ir"
+        ],
+        "started_utc": "2026-09-16T19:10:32Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 602.1826943980122,
+        "audits": [],
+        "record": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare.json",
+          "sha256": "fc635583ced994a8342a9c3e507407fa0da3a90127ecda58013347fcc543f0a4"
+        },
+        "log": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare.log",
+          "sha256": "7ee4511d106e2d4fe9956477373bd60f6202a871ab48e2d672ec1df452e26841"
+        }
+      },
+      "board": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "float16",
+        "mode": "board",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "float16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-board",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "started_utc": "2026-09-16T19:21:17Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 51.35112250299426,
+        "audits": [
+          {
+            "case": "llama-2-7b-single-layer-lm-16",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "11057f6ce131f9b20ccd2346c8c12a425c8ae20c6207d08f558205b140be004e",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "torch.float16",
+                "elements": 512000,
+                "max_abs_error": 0.0078125,
+                "cosine_similarity": 0.9999993700873144,
+                "relative_l2_error": 0.0011224230004539396,
+                "elementwise_mismatches": 277,
+                "mean_abs_error": 0.0010353457215242089
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=74417999"
+            ]
+          }
+        ],
+        "record": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-board.json",
+          "sha256": "76a713cc46e73cc94cdde6b6437dd67600ed522e8123ca136e8d7f953a9c89db"
+        },
+        "log": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-board.log",
+          "sha256": "f72d85af5e2e88b96e09fd7a30ad19b62f70dbb1a4559bcfe2e0e5cfbd272442"
+        }
+      },
+      "manifest": {
+        "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare/package/manifest.json",
+        "sha256": "11057f6ce131f9b20ccd2346c8c12a425c8ae20c6207d08f558205b140be004e"
+      },
+      "module": {
+        "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare/package/modules/module_00000.so",
+        "sha256": "ed4f15cbff7035982692df2c43315079a304856487dfac256a1498462b35b274"
+      },
+      "source_metadata": {
+        "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare/source-program/functions/forward.meta",
+        "sha256": "aad972e0a923dd4a32f68f01298677f4fa0873f945b9b6cf7c9c2d7c3bcc8d58"
+      },
+      "reference": [
+        {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare/raw/card_00_output_0.expected.f16.raw",
+          "sha256": "26840afc3c4c88303ee8b9286fe049979f690ce995e9c7e6b0798107a2a6d4a6"
+        }
+      ],
+      "captures": [
+        {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-board/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "7ab42a6fd45b42d0b49ab2fd9fbad78e99a2e75410cbe78eec854155bbd7d2d9"
+        }
+      ],
+      "host_compile_statistics": [
+        "wafer-compile: compile-stats stage=output-rename wall_ms=11013 peak_rss_kib=3677844",
+        "wafer-compile: compile-stats stage=compile-transaction wall_ms=566447 peak_rss_kib=3677844",
+        "wafer-compile: compile-work tile_memory_planning_invocations=640 tile_to_instr_lowerings=36784 relation_descriptor_plannings=322395 spm_planning_invocations=640 ddr_planning_invocations=32 target_abi_module_clones=16 target_lowering_invocations=16 target_translation_invocations=16",
+        "wafer-compile: compile-counter category=search name=accepted-candidates value=2 overflow=false"
+      ]
+    },
+    {
+      "dtype": "bfloat16",
+      "prepare": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "bfloat16",
+        "mode": "prepare",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--no-card",
+          "--dump-compiler-ir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare/compiler-ir"
+        ],
+        "started_utc": "2026-09-16T19:10:32Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 596.7604270089942,
+        "audits": [],
+        "record": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare.json",
+          "sha256": "98534b0c3cd8cb53525f4768019058d812eb92b597f305f37e580f4df20deae4"
+        },
+        "log": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare.log",
+          "sha256": "22e188f9f68d8b32fb0e41c6c8319def39f9094e31e4e3a459e6758609bf6be8"
+        }
+      },
+      "board": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "bfloat16",
+        "mode": "board",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-board",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "started_utc": "2026-09-16T19:22:19Z",
+        "status": "needs-review",
+        "exit_code": 1,
+        "wall_seconds": 128.11701045400696,
+        "audits": [],
+        "record": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-board.json",
+          "sha256": "9a49f9cbd6f5ac8d425ba76e98371c8ee046cb1983bf6a37d6f016c85768f0c9"
+        },
+        "log": {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-board.log",
+          "sha256": "93213112526083fae64783a98f0bb0de2442852bb82b8bdbef3e3bc7e4dcd0dd"
+        }
+      },
+      "manifest": {
+        "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare/package/manifest.json",
+        "sha256": "cd9fb97fc3cf350813a783b7f9796ae6a7f08fdfbbab7a0179fc66ee4b05e30f"
+      },
+      "module": {
+        "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare/package/modules/module_00000.so",
+        "sha256": "059e3d01605d9a860ccfba917fd89e63c81358fa076bf1f22798daac7278d12d"
+      },
+      "source_metadata": {
+        "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare/source-program/functions/forward.meta",
+        "sha256": "8202ff3b9edccd7eff6993bece709120b77d7d3711a8d21ce2af27020929569d"
+      },
+      "reference": [
+        {
+          "path": "build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb"
+        }
+      ],
+      "captures": [],
+      "host_compile_statistics": [
+        "wafer-compile: compile-stats stage=output-rename wall_ms=10823 peak_rss_kib=3688836",
+        "wafer-compile: compile-stats stage=compile-transaction wall_ms=567838 peak_rss_kib=3688836",
+        "wafer-compile: compile-work tile_memory_planning_invocations=640 tile_to_instr_lowerings=36784 relation_descriptor_plannings=322395 spm_planning_invocations=640 ddr_planning_invocations=32 target_abi_module_clones=16 target_lowering_invocations=16 target_translation_invocations=16",
+        "wafer-compile: compile-counter category=search name=accepted-candidates value=2 overflow=false"
+      ]
+    }
+  ],
+  "device_batch_stopped": true,
+  "failure_kind": "device-completion-deadline-context-poisoned",
+  "root_cause": "unknown",
+  "subsequent_work": "Three original-HF boundary packages and fresh references prepared and no-card passed; board diagnosis requires a recovered device session. Ordered task 1 remains incomplete; tasks 2-5 not started.",
+  "structural_comparison": {
+    "tile-dataflow": {
+      "equal_after_dtype_and_conversion_normalization": [
+        "tile_00000.mlir",
+        "tile_00001.mlir",
+        "tile_00002.mlir",
+        "tile_00003.mlir",
+        "tile_00004.mlir",
+        "tile_00005.mlir",
+        "tile_00006.mlir",
+        "tile_00007.mlir",
+        "tile_00008.mlir",
+        "tile_00009.mlir",
+        "tile_00010.mlir",
+        "tile_00011.mlir",
+        "tile_00012.mlir",
+        "tile_00013.mlir",
+        "tile_00014.mlir",
+        "tile_00015.mlir"
+      ],
+      "different": []
+    },
+    "instruction": {
+      "equal_after_dtype_and_conversion_normalization": [
+        "tile_00000.mlir",
+        "tile_00001.mlir",
+        "tile_00002.mlir",
+        "tile_00003.mlir",
+        "tile_00004.mlir",
+        "tile_00005.mlir",
+        "tile_00006.mlir",
+        "tile_00007.mlir",
+        "tile_00008.mlir",
+        "tile_00009.mlir",
+        "tile_00010.mlir",
+        "tile_00011.mlir",
+        "tile_00012.mlir",
+        "tile_00013.mlir",
+        "tile_00014.mlir",
+        "tile_00015.mlir"
+      ],
+      "different": []
+    },
+    "manifest_target": true,
+    "manifest_launch": true,
+    "manifest_card_count": true,
+    "manifest_tile_count": true,
+    "manifest_inputs": true,
+    "manifest_outputs": true,
+    "manifest_entries": true
+  },
+  "target_call_differences": {
+    "path": "build/test/board-general-regression-20260917/target-call-dtype-differences.json",
+    "sha256": "8c01e3d7087cedef23f2509510f0323ace12ad496bfa13661600cf2ec391df52"
+  },
+  "previous_results": [
+    {
+      "case": "llama-2-7b-single-layer-lm",
+      "dtype": "float16",
+      "compiler_sha256": "db522b7f0adf59c7e5862d7d019ee71b24b49ba5dc5ee5624a77acf9700006c7",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+      "record": {
+        "path": "build/test/board-regression-20260917-dma/llama-2-7b-single-layer-lm-float16-board.json",
+        "sha256": "083cde040a88b12dee95cb150a7fae7e9ac41a53567d0232fbb81b1cf8214d11"
+      },
+      "packages": [
+        {
+          "path": "build/test/board-regression-20260917-dma/llama-2-7b-single-layer-lm-float16-board/package/manifest.json",
+          "sha256": "6a7c02fcca5f639a0830f3980580bb5986324d9567b572d9e414344b833727f5"
+        }
+      ],
+      "audits": [
+        {
+          "case": "llama-2-7b-single-layer-lm-16",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6a7c02fcca5f639a0830f3980580bb5986324d9567b572d9e414344b833727f5",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                32000
+              ],
+              "dtype": "torch.float16",
+              "elements": 512000,
+              "max_abs_error": 0.005859375,
+              "cosine_similarity": 0.9999995797254856,
+              "relative_l2_error": 0.0009168237835332848,
+              "elementwise_mismatches": 30,
+              "mean_abs_error": 0.0008254016649443656
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=125475998"
+          ]
+        }
+      ],
+      "expected_outputs": [
+        {
+          "path": "build/test/board-regression-20260917-dma/llama-2-7b-single-layer-lm-float16-board/raw/card_00_output_0.expected.f16.raw",
+          "sha256": "26840afc3c4c88303ee8b9286fe049979f690ce995e9c7e6b0798107a2a6d4a6"
+        }
+      ]
+    },
+    {
+      "case": "llama-2-7b-single-layer-lm",
+      "dtype": "bfloat16",
+      "compiler_sha256": "db522b7f0adf59c7e5862d7d019ee71b24b49ba5dc5ee5624a77acf9700006c7",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+      "record": {
+        "path": "build/test/board-regression-20260917-dma-checked/llama-2-7b-single-layer-lm-bfloat16-board.json",
+        "sha256": "6a3611af0be22b48f70d8fb86e35f8f3cb813d053016af0ffac194ebeda88bbd"
+      },
+      "packages": [],
+      "audits": [
+        {
+          "case": "llama-2-7b-single-layer-lm-16",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "25374e28bb6cd99ec7ea18554ba383c95f951dcf59f34903cb027c8d6e1e9a48",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                32000
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 512000,
+              "max_abs_error": 0.046875,
+              "cosine_similarity": 0.999984242620487,
+              "relative_l2_error": 0.005613941252442704,
+              "elementwise_mismatches": 206478,
+              "mean_abs_error": 0.0047306957533292
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=124264000"
+          ]
+        }
+      ],
+      "expected_outputs": [
+        {
+          "path": "build/test/board-regression-20260917-dma-checked/llama-2-7b-single-layer-lm-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb"
+        }
+      ]
+    }
+  ],
+  "diagnostic_preparation": {
+    "purpose": "Host-only fault isolation at original HF module boundaries; split graphs do not reproduce the whole-model candidate schedule.",
+    "runner": "test/Board/PyTorch/wafer_board_pytorch_test.py",
+    "local_factory_script": {
+      "path": "build/test/board-general-regression-20260917/run_lm_diagnostic.py",
+      "sha256": "cb11f1587809d915c0694eb0522e8501ee9490541a10050784b31133db70205f"
+    },
+    "source_correspondence": {
+      "embedding": {
+        "parameter_count": 1,
+        "all_parameters_match_full_source": true,
+        "parameters": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/source-program/data/weight",
+            "sha256": "e264a2d1f34e798759e932183b535f05b9b03df64ce446f2b6f8e3a31906e4b4",
+            "matches_full_parameter": "model.model.embed_tokens.weight"
+          }
+        ]
+      },
+      "model": {
+        "parameter_count": 12,
+        "all_parameters_match_full_source": true,
+        "parameters": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.self_attn.q_proj.weight",
+            "sha256": "3fc0807b1c57b9114a32341e683d664edda7b88895a19b2140993e67b7215ee7",
+            "matches_full_parameter": "model.model.layers.0.self_attn.q_proj.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.norm.weight",
+            "sha256": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+            "matches_full_parameter": "model.model.norm.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.mlp.gate_proj.weight",
+            "sha256": "5b172652a3a6808854fc2e54338e272add7ef2de43f4ae7f07d9f17e0b118a89",
+            "matches_full_parameter": "model.model.layers.0.mlp.gate_proj.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.self_attn.o_proj.weight",
+            "sha256": "8459f3c30ad8fcadc116bae2f9264bc6e1187e6f4509e6e306c997470e2c2f4a",
+            "matches_full_parameter": "model.model.layers.0.self_attn.o_proj.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.input_layernorm.weight",
+            "sha256": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+            "matches_full_parameter": "model.model.norm.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.embed_tokens.weight",
+            "sha256": "e264a2d1f34e798759e932183b535f05b9b03df64ce446f2b6f8e3a31906e4b4",
+            "matches_full_parameter": "model.model.embed_tokens.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.post_attention_layernorm.weight",
+            "sha256": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+            "matches_full_parameter": "model.model.norm.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.mlp.up_proj.weight",
+            "sha256": "97eae1c75b9f1b3fc2f644f49326595e6e871c367ba70febde71bceb37d15560",
+            "matches_full_parameter": "model.model.layers.0.mlp.up_proj.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.mlp.down_proj.weight",
+            "sha256": "36649060a7d77caff9ed726fc9e960271b754e110f54ece06d879303c451554b",
+            "matches_full_parameter": "model.model.layers.0.mlp.down_proj.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.rotary_emb.inv_freq",
+            "sha256": "13bdf4e5b96aba223d284857dac5ddcea23039b3eeb223676c9f94d7b55d08c6",
+            "matches_full_parameter": "model.model.rotary_emb.inv_freq"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.self_attn.k_proj.weight",
+            "sha256": "24b4ac58cd0df1ecb5f18b3a0349f2dc1334c4278a32b768745b6bcd675a629e",
+            "matches_full_parameter": "model.model.layers.0.self_attn.k_proj.weight"
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/source-program/data/model.layers.0.self_attn.v_proj.weight",
+            "sha256": "b263d72e4c7009c4ec02f0b81860b0c7c7f0aa217d519824a4031543a223678c",
+            "matches_full_parameter": "model.model.layers.0.self_attn.v_proj.weight"
+          }
+        ],
+        "cpu_reference_exactly_matches_head_input": true,
+        "reference_sha256": "456ee85649a2595c6e84683215a0742473bc4a67ab8b8b014f619bf1a76c7d37"
+      },
+      "head": {
+        "parameter_count": 1,
+        "all_parameters_match_full_source": true,
+        "parameters": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/source-program/data/weight",
+            "sha256": "2d1a2a6a8f061ac5caefae311b91aeb7796700d39c9f17b8f7a986fcb1a2fb7d",
+            "matches_full_parameter": "model.lm_head.weight"
+          }
+        ],
+        "cpu_logits_exactly_match_full_reference": true,
+        "reference_sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb"
+      }
+    },
+    "cases": [
+      {
+        "boundary": "embedding",
+        "record": {
+          "boundary": "embedding",
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+            "--case",
+            "llama-single-layer-embedding-diagnostic",
+            "--dtype",
+            "bfloat16",
+            "--seed",
+            "20260803",
+            "--wafer-compile",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+            "--wafer-run",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--work-dir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare",
+            "--optimization-policy",
+            "search",
+            "--search-width",
+            "8",
+            "--search-trials",
+            "42",
+            "--compile-timing",
+            "--compile-timeout-seconds",
+            "1800",
+            "--no-card",
+            "--dump-compiler-ir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir"
+          ],
+          "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+          "mode": "host-only",
+          "started_utc": "2026-09-16T19:39:18Z",
+          "status": "passed",
+          "exit_code": 0,
+          "wall_seconds": 53.28497116500512
+        },
+        "manifest": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/package/manifest.json",
+          "sha256": "cc58de5fb33fb48d35c72a4f8355283027303750a7947f259e5937cc7d71343b",
+          "bytes": 8268
+        },
+        "inputs": [
+          {
+            "id": 0,
+            "role_index": 0,
+            "logical_dtype": "i64",
+            "logical_shape": [
+              1,
+              16
+            ],
+            "dtype": "i64",
+            "layout": "tensor",
+            "shape": [
+              1,
+              16
+            ],
+            "bytes": 128,
+            "alignment": 256
+          }
+        ],
+        "outputs": [
+          {
+            "id": 0,
+            "role_index": 0,
+            "logical_dtype": "bf16",
+            "logical_shape": [
+              1,
+              16,
+              4096
+            ],
+            "dtype": "bf16",
+            "layout": "tensor",
+            "shape": [
+              1,
+              16,
+              4096
+            ],
+            "bytes": 131072,
+            "alignment": 256
+          }
+        ],
+        "invocation_tiles": 16,
+        "payloads": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/raw/card_00_output_0.expected.bf16.raw",
+            "sha256": "15bc86ed849dad99710b1b04f6927180d41114f0a25f81ff8f9c2def80204cfc",
+            "bytes": 131072
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/raw/card_00_user_input_0.i64.raw",
+            "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+            "bytes": 128
+          }
+        ],
+        "no_card_log": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare.log",
+          "sha256": "1b9c7f688ed4d8c973106010f81a2567967c104758806e26840306d4f42fc7a1",
+          "bytes": 836998
+        },
+        "record_file": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare.json",
+          "sha256": "91c60c504ee2e2f880a94eddd9aaa0f21c33223b80e03cc7ebbc94498725aa27",
+          "bytes": 1203
+        },
+        "numeric_execution": false,
+        "board_execution": false,
+        "required_board_comparison": "exact",
+        "target_modules": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00000.ll",
+            "sha256": "2f9fc7b043a167dd8cf50290cffdf5667fb0194b767b9204a66394e7923c4317",
+            "bytes": 8477
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00001.ll",
+            "sha256": "b12cc8ff6f2b10324676061141664e54872ff0da90c4700a8a27ea5b112a27ea",
+            "bytes": 8546
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00002.ll",
+            "sha256": "aa849345645e5fb0f27857173db12d513a96d8f1423cb381c87a53984af9a9b2",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00003.ll",
+            "sha256": "a91851ad1e01ab6477e58baf7d4a6e2d2d2c7282127ed14c029efe80afdbc46d",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00004.ll",
+            "sha256": "42178a29a33dbe4f6c4905cf7b820a94a7b1c931c9f131372e1f121b5ec9800e",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00005.ll",
+            "sha256": "e765bcae9f557ab4522118f38f31fcfb3581aa05e646ddc1bb699d9655d1c8c2",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00006.ll",
+            "sha256": "c509555a23d745dbe4f2f5ea6f7919c353e4b4163e7f28f9c8174b7ff838f222",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00007.ll",
+            "sha256": "aeba9731bbf9674409b57f6a982fe87ef20060b3bce4bb3b372ea0829151b4d4",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00008.ll",
+            "sha256": "001fe4d575960668670ebcde559336822fd5dfec71d78f8a627e84feb163a165",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00009.ll",
+            "sha256": "335924e34ed299f7df39f977978724bba9c2ef662777097b4b818605b3ddbce0",
+            "bytes": 8548
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00010.ll",
+            "sha256": "36810ec7ea7ac7905e99a51b696f4c7af87c79023aa1bf2ff4ea5c66030b2c1f",
+            "bytes": 8549
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00011.ll",
+            "sha256": "a5222ea66ab105e395116829035ed77b298efb9851dfb78dbc387f4084a7d123",
+            "bytes": 8549
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00012.ll",
+            "sha256": "7b21b2b6eb9174cd3fc38702f49ec32e72ebd5be7c47b4e80130b1f7e7971f41",
+            "bytes": 8549
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00013.ll",
+            "sha256": "2a29fbf2d8ac23952118a91135e2a8e7526db3ec79c7dd3a8b0d347fe2cded54",
+            "bytes": 8551
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00014.ll",
+            "sha256": "4f37259297c374905632228a2f1c0681fe52a6283cc6e174d3a91dd902d90bb0",
+            "bytes": 8551
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00015.ll",
+            "sha256": "4c3553c99fafc3fa5c605bff6aea45d247a2d809b6411c5517864f9a6c1e079e",
+            "bytes": 8551
+          }
+        ],
+        "linked_modules": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare/package/modules/module_00000.so",
+            "sha256": "4eb830303b4f2a0f2c96be5d3e7e46ed7f3c12975c1221c21fd9e63a55f0f527",
+            "bytes": 22696
+          }
+        ]
+      },
+      {
+        "boundary": "model",
+        "record": {
+          "boundary": "model",
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+            "--case",
+            "llama-single-layer-model-diagnostic",
+            "--dtype",
+            "bfloat16",
+            "--seed",
+            "20260803",
+            "--wafer-compile",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+            "--wafer-run",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--work-dir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare",
+            "--optimization-policy",
+            "search",
+            "--search-width",
+            "8",
+            "--search-trials",
+            "42",
+            "--compile-timing",
+            "--compile-timeout-seconds",
+            "1800",
+            "--no-card",
+            "--dump-compiler-ir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir"
+          ],
+          "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+          "mode": "host-only",
+          "started_utc": "2026-09-16T19:39:18Z",
+          "status": "passed",
+          "exit_code": 0,
+          "wall_seconds": 547.8245493650029
+        },
+        "record_file": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare.json",
+          "sha256": "5856d3d879cf791cda0df6c31b773196c1bbf9333117155c1c7323595318d3a2",
+          "bytes": 1187
+        },
+        "manifest": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/package/manifest.json",
+          "sha256": "6cdddb81deb31caf7853ce08d1ad561a9b28054322bbb41c7da70490ffce1b0e",
+          "bytes": 1124531
+        },
+        "inputs": [
+          {
+            "id": 0,
+            "role_index": 0,
+            "logical_dtype": "i64",
+            "logical_shape": [
+              1,
+              16
+            ],
+            "dtype": "i64",
+            "layout": "tensor",
+            "shape": [
+              1,
+              16
+            ],
+            "bytes": 128,
+            "alignment": 256
+          }
+        ],
+        "outputs": [
+          {
+            "id": 0,
+            "role_index": 0,
+            "logical_dtype": "bf16",
+            "logical_shape": [
+              1,
+              16,
+              4096
+            ],
+            "dtype": "bf16",
+            "layout": "tensor",
+            "shape": [
+              1,
+              16,
+              4096
+            ],
+            "bytes": 131072,
+            "alignment": 256
+          }
+        ],
+        "invocation_tiles": 16,
+        "payloads": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/raw/card_00_output_0.expected.bf16.raw",
+            "sha256": "456ee85649a2595c6e84683215a0742473bc4a67ab8b8b014f619bf1a76c7d37",
+            "bytes": 131072
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/raw/card_00_user_input_0.i64.raw",
+            "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+            "bytes": 128
+          }
+        ],
+        "no_card_log": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare.log",
+          "sha256": "9549909bde075c37fd090a3d9183b3af4ec1c9c2771af820f7de4a2eeb29fb58",
+          "bytes": 10855155
+        },
+        "numeric_execution": false,
+        "board_execution": false,
+        "required_board_comparison": "cosine >= 0.9999 and relative L2 <= 0.01",
+        "target_modules": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00000.ll",
+            "sha256": "ef73332b378969660c7853d1c38a58c1d00ed4ee4bd66d492c5d5395409a4730",
+            "bytes": 301114
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00001.ll",
+            "sha256": "8c109623499dc767f3996b6d5c7a86f9cade86d6d517319e6c972ac52552732d",
+            "bytes": 304638
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00002.ll",
+            "sha256": "54f76bbe6ceca5f2be05aec3502f5ce4133c261595b375ce001a77634375f726",
+            "bytes": 302585
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00003.ll",
+            "sha256": "31a12ae57c13edcd725544ee2646518c817e7caa450349d0b692b23c293857df",
+            "bytes": 304666
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00004.ll",
+            "sha256": "a4d4ac31795c4a1a96fa4e27e5306bf7f33037b49e1c5c711e6c253dcd8d3513",
+            "bytes": 302600
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00005.ll",
+            "sha256": "d4c8d2665162a7eb7952fb16b2f106748fa5e259dba3ae4af94c563e351c1294",
+            "bytes": 304680
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00006.ll",
+            "sha256": "b372a021ab9fa0c0394d10ceb62ed3e27d12d55440872ac9c58dcdb6e65dfbc9",
+            "bytes": 302605
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00007.ll",
+            "sha256": "453fdbe42197e423ae3cb5df6c5a2f818dc50537b90af41d1569baec3ec1f8cc",
+            "bytes": 304686
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00008.ll",
+            "sha256": "8fbbe6cc31476c74596e9481c5b07fbb8b48de7efbbfff75d0f15d961d8b298c",
+            "bytes": 304602
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00009.ll",
+            "sha256": "81483cea79a76cc880e494edab0b94bfe87e55c7cd393ddef3c89ded2bf4654b",
+            "bytes": 302655
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00010.ll",
+            "sha256": "29cefcadfd7d7f822984a32eab2ec47f0aef91a4b8559d1b53e242ee15014b77",
+            "bytes": 304635
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00011.ll",
+            "sha256": "3bec4509f94b930c5693914bdf9043a4e4bfb1ed2a45d1ab5d408fcab678bf51",
+            "bytes": 302814
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00012.ll",
+            "sha256": "a71e11d0e153b2533f52e465d004eec510da9ad880b7a5a546a3d124a32f1af1",
+            "bytes": 304767
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00013.ll",
+            "sha256": "9ceffd9d3f74e4f4223268cd85ba4f33ff9bc26d9d68e2d43e03272f46d9a17b",
+            "bytes": 302834
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00014.ll",
+            "sha256": "187c8f8fb9e3e6860945e363d21f1f42c4e41de1dbd18b8901057993aa7601ab",
+            "bytes": 304785
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00015.ll",
+            "sha256": "2b3599ad18b883bd3f1f50359d8081ac259054aae5dd0d3196314855ff3e15be",
+            "bytes": 301299
+          }
+        ],
+        "linked_modules": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare/package/modules/module_00000.so",
+            "sha256": "096eb40b70e37d176ee01001d9f9ebbaf76540c70f09600e7d0bfab8da482049",
+            "bytes": 988920
+          }
+        ]
+      },
+      {
+        "boundary": "head",
+        "record": {
+          "boundary": "head",
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+            "--case",
+            "llama-single-layer-head-diagnostic",
+            "--dtype",
+            "bfloat16",
+            "--seed",
+            "20260803",
+            "--wafer-compile",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+            "--wafer-run",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--work-dir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare",
+            "--optimization-policy",
+            "search",
+            "--search-width",
+            "8",
+            "--search-trials",
+            "42",
+            "--compile-timing",
+            "--compile-timeout-seconds",
+            "1800",
+            "--no-card",
+            "--dump-compiler-ir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir"
+          ],
+          "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+          "mode": "host-only",
+          "started_utc": "2026-09-16T19:39:19Z",
+          "status": "passed",
+          "exit_code": 0,
+          "wall_seconds": 69.00706848301343
+        },
+        "manifest": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/package/manifest.json",
+          "sha256": "5e110a1806e87353037039083d4b5263de74fdd95660f91ba4c1077821d3d2db",
+          "bytes": 11568
+        },
+        "inputs": [
+          {
+            "id": 0,
+            "role_index": 0,
+            "logical_dtype": "bf16",
+            "logical_shape": [
+              1,
+              16,
+              4096
+            ],
+            "dtype": "bf16",
+            "layout": "tensor",
+            "shape": [
+              1,
+              16,
+              4096
+            ],
+            "bytes": 131072,
+            "alignment": 256
+          }
+        ],
+        "outputs": [
+          {
+            "id": 0,
+            "role_index": 0,
+            "logical_dtype": "bf16",
+            "logical_shape": [
+              1,
+              16,
+              32000
+            ],
+            "dtype": "bf16",
+            "layout": "tensor",
+            "shape": [
+              1,
+              16,
+              32000
+            ],
+            "bytes": 1024000,
+            "alignment": 256
+          }
+        ],
+        "invocation_tiles": 16,
+        "payloads": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/raw/card_00_output_0.expected.bf16.raw",
+            "sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb",
+            "bytes": 1024000
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/raw/card_00_user_input_0.bf16.raw",
+            "sha256": "456ee85649a2595c6e84683215a0742473bc4a67ab8b8b014f619bf1a76c7d37",
+            "bytes": 131072
+          }
+        ],
+        "no_card_log": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare.log",
+          "sha256": "c0888bbadb3df3c942df024193e3f29d24411bd0487e6a888a4b9732a27b48d0",
+          "bytes": 702041
+        },
+        "record_file": {
+          "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare.json",
+          "sha256": "ab7620b59fff817d5b74cfd0cc909d6f70a19b1066df3790d75757267db79a3c",
+          "bytes": 1183
+        },
+        "numeric_execution": false,
+        "board_execution": false,
+        "required_board_comparison": "cosine >= 0.9999 and relative L2 <= 0.01",
+        "target_modules": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00000.ll",
+            "sha256": "3cd097f842b426ab1f644d1447328bc28dffd3db424cec2b63630c26de001f6e",
+            "bytes": 9384
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00001.ll",
+            "sha256": "313c1b211953b65f77318ded10fb193ebc91f2951dc14bf26435b93d167f80b3",
+            "bytes": 9590
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00002.ll",
+            "sha256": "bae86f589e19759748837353b1f3cd66b9fbdb8c2cf2e0f685f79c3873fc1ea7",
+            "bytes": 9590
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00003.ll",
+            "sha256": "ea709e0a8e3cc2eca03f7ae89be92cdc678f4b43364c9f7ae071c2498b002038",
+            "bytes": 9591
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00004.ll",
+            "sha256": "aa124c5d549d5f4f2897c516e21209d12e9145606312b98cf1cbd954192a74f6",
+            "bytes": 9591
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00005.ll",
+            "sha256": "e1bda347def9f5f6ff84f1a4464874f45cbbc7765de6ab9286e554799d882d9d",
+            "bytes": 9593
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00006.ll",
+            "sha256": "57c32a498a3e3b0bac10d010ec0d29b018b303b0624c52b6d117147da53b4725",
+            "bytes": 9593
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00007.ll",
+            "sha256": "8be3fad9bb8f8cfa37e23642913a6c256e67e3f2aa14f6b769a64d61cca9053a",
+            "bytes": 9593
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00008.ll",
+            "sha256": "d864f549fca5ef286de873fdf7136ee3b051da2b9eb7a9277855c452f71efec5",
+            "bytes": 9593
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00009.ll",
+            "sha256": "d0828655156bbffc01baba2a676fb7cb14819f7996eba3c7ceefdeff2ae90b4a",
+            "bytes": 9595
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00010.ll",
+            "sha256": "e941a57787d65e5d3d4aa6c70a3fc46d5c8c8b211da950182cc63ba20dff2b22",
+            "bytes": 9600
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00011.ll",
+            "sha256": "4028891883fd1cf9b82237fdc0e3adaef2131a997297c52caae6041c3491c660",
+            "bytes": 9602
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00012.ll",
+            "sha256": "f97653c1a2aef9d6c146db6507e8bd1cff965d7604e0dfcc93bdd5a8d760bff9",
+            "bytes": 8937
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00013.ll",
+            "sha256": "598bf55d9c6e5800ea457e0e4fd1ae443aad5087bc59fd43aabe94566385cc93",
+            "bytes": 9602
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00014.ll",
+            "sha256": "12b185212870df53121c2b177abae1a9c310c518e7b1fca71d8dc56980ad133b",
+            "bytes": 9602
+          },
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/compiler-ir/target-llvm/tile_00015.ll",
+            "sha256": "18d57ef530a017a7d2e7aec48635298fa83b9c51e9388542bd82c0a4af4d7d6a",
+            "bytes": 9602
+          }
+        ],
+        "linked_modules": [
+          {
+            "path": "build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare/package/modules/module_00000.so",
+            "sha256": "52b9f4b8f7493be3aac4b27fd0c2e4dc9ff40e85893d99f0cfa521c9c878c376",
+            "bytes": 56312
+          }
+        ]
+      }
+    ],
+    "all_three_no_card_passed": true,
+    "graph_boundary_limitation": {
+      "full_lm_head_gemm": {
+        "M": 16,
+        "K": 512,
+        "N": 250
+      },
+      "independent_head_gemm": {
+        "M": 16,
+        "K": 1024,
+        "N": 500
+      },
+      "failure_reproduction_claimed": false
+    }
+  },
+  "completion_timeout_interpretation": {
+    "deadline_origin": "First runtime submission window, after allocation and H2D initialization",
+    "deadline_milliseconds": 60000,
+    "failed_observation_domain": "unknown: current message does not distinguish stream query completion from timing-end-event completion",
+    "no_provider_calls_after_timeout": true
+  },
+  "references_unchanged_from_previous_pass": {
+    "float16": true,
+    "bfloat16": true
+  },
+  "next_device_execution_requires_recovery": true
+}
