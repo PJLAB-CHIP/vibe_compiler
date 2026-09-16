@@ -124,7 +124,8 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
 - Upstream IR / input：已选spatial/temporal/layout的candidate current Tile IR，显式load/subview/SCF、
   typed source/resource identity、effect/alias及现有buffer owner关系。
 - Current stage responsibility：`AccessReuseAnalysis`统一解释同源读取的Tile位置、循环域、精确IndexRelation与内容不变性；
-  search消费这些current事实选择复用方式，`materializeAccessReuse`在独占候选中落实。分析不选择cache或peer owner，
+  search先用这些current事实与同cohort成本参数做轻量净收益筛选，只为预期净收益明显的机会生成复用候选，
+  `materializeAccessReuse`在独占候选中落实。分析不选择cache或peer owner，
   不记录未来buffer、offset、lifetime或completion。
 - Output IR / files：可失效的只读分析结果，以及实际物化的现有allocation/view/copy、Tile load/peer与SCF；
   新buffer全部具备current owner，无缓存专用IR和跨stage旁路协议。
@@ -135,10 +136,13 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
 - Explicit non-goals：缓存替换、任意层级、动态/间接访问、多轴滑动、近似窗口、GEMM模板、强制空间划分或Ring、
   新layout/同步算法及预测SPM准入；保持原算术与dtype。
 - Completion criteria：保留原peer能力；基础驻留、单轴固定步长滑动、相邻scope最多两级及时间/空间组合进入同一候选链；
-  方案覆盖矩阵逐项有actual下游witness，并分别证明GEMM组合可表达、可行、可搜索及实际收益。
+  低收益机会不产生额外clone/物化/完整评分或trial；联合只包含通过收益门槛的机会。方案覆盖矩阵逐项有actual下游witness，
+  并分别证明通过门槛的GEMM组合可表达、可行、可搜索及实际收益。
 
 缓存范围从选定scope的当前读集合精确推导，不另设自由尺寸搜索。scope选择是物化参数，不是SPM合法性结论。
-静态窗口/bytes可用于排序，实际容量仍只能由完整候选的allocation、layout、alias、effects、completion与lifetime规划结果判断。
+访问窗口、重复流量及同cohort参数用于性能收益筛选与排序；扣除新增DTE传输/启动及SPM复制，不仅比较单块大小。
+筛选是search的启发式取舍，不能用缓存footprint或预测lifetime过滤SPM合法性，也不能猜测join/wait或伪造actual inventory。
+实际容量仍只能由完整候选的allocation、layout、alias、effects、completion与lifetime规划结果判断；收益门槛见方案5.1。
 实现阶段须一次更新旧InputSharing的producer、consumer、测试和CMake，不保留兼容wrapper；当前代码名称到新owner的映射见方案。
 
 ## 4. Search 输入、选择与candidate ownership

@@ -7,11 +7,13 @@
 
 统一概念叫**访问复用（AccessReuse）**，第一版仅处理能证明内容不变的读取。
 跨Tile相同输入共享、跨循环驻留和相邻迭代窗口复用使用同一组访问事实，不各自实现源识别、只读检查和窗口计算。
+发现重复只是优化机会。Search先做轻量净收益筛选：明显无收益、收益很小或无法明确估计的机会不生成可执行候选，
+不为了命中复用而增加通信；只有预期净收益明显的选择才进入实际物化和完整评分。
 
 | 边界 | 拟用名称 | 职责 |
 | --- | --- | --- |
 | Analysis/Tile | `AccessReuseAnalysis` | 只读current IR，查询源身份、作用域内内容不变性、精确访问关系和相同/重叠窗口 |
-| search内typed选择 | `AccessReuseChoice` | 选择实际read集合、已有循环scope、供给Tile及有界物化方式；不描述未来buffer或同步 |
+| search内typed选择 | `AccessReuseChoice` | 用同cohort参数筛选潜在净收益后，选择实际read集合、已有循环scope、供给Tile及有界物化方式；不描述未来buffer或同步 |
 | Transforms/Tile | `materializeAccessReuse` | 在独占候选中生成现有allocation、copy/subview、peer及SCF IR，报告实际新增对象 |
 
 不另建一个独立的时间复用pass与旧输入共享pass串行决策。分析是查询API，不负责搜索；同一物化入口可分步骤生成IR，
@@ -22,7 +24,7 @@
 
 - Upstream IR / input：candidate-owned、已选spatial/temporal/layout的TileModule集合，StructuredToTile及既有
   PhysicalMovementPlacement后的显式load、subview、SCF、typed资源身份与effects；只解释当前已存在的读取。
-- Current stage responsibility：按共同源归集当前读取，求scope内精确访问集合，提供有界reuse选择；选中后在候选上实际物化，
+- Current stage responsibility：按共同源归集当前读取，求scope内精确访问集合，search过滤低净收益机会后提供少量reuse选择；选中后在候选上实际物化，
   并重新验证IR、owner、alias与读集合。不重选算术或layout，不解释未来lowering产物。
 - Output IR / files：分析返回当前IR的可重算事实；变换输出现有memref allocation/view/copy、Tile load/peer和SCF控制流。
   分析结果不是输出协议，不进入后续IR或package。
@@ -33,7 +35,8 @@
 - Explicit non-goals：缓存替换、任意层级、多轴滑动、动态/间接索引、近似访问集合、GEMM模板、强制Tile划分或Ring、
   PBQP重写、同步重写、数值重排，以及对尚未物化buffer的容量判断。
 - Completion criteria：同一分析支持原peer共享与新增时间复用；统一入口覆盖单级、固定步长窗口和最多两级驻留；
-  同一实际候选通过verifier→Instr/completion→SPM/DDR→cost，且有非GEMM数值witness、大GEMM生产搜索与fresh no-card。
+  低收益过滤不创建候选IR、不消耗trial；通过筛选的同一实际候选通过verifier→Instr/completion→SPM/DDR→cost，
+  且有非GEMM数值witness、大GEMM生产搜索与fresh no-card。
 
 ## 3. 一份分析究竟保存什么
 
@@ -102,7 +105,9 @@ image和typed失败能力；当前producer融合也已使用`invariantDimensions
 ```text
 spatial / Region / temporal / loop order
   -> layout / bufferization / StructuredToTile / physical movement placement
-  -> AccessReuseAnalysis（当前前缀，供search生成typed选项）
+  -> AccessReuseAnalysis（当前前缀，只读访问事实）
+  -> search轻量净收益筛选（低收益/不明确的机会到此结束，不占trial）
+  -> 通过门槛的单项及局部联合选择
   -> 现有candidate clone，IRMapping改接选中的current source/scope
   -> 原BoundaryMovement
   -> 同一AccessReuseAnalysis按新epoch复核选中读集合
@@ -123,17 +128,63 @@ spatial / Region / temporal / loop order
 capacity由外层controller处理；改变temporal分块后重新从当前IR推导窗口。不要求不复用分支先通过SPM，才允许尝试复用。
 失败分支销毁，winner继续持有实际验证过的同一IR；不新增“缓存试跑clone”和按plan重建winner。
 
-### 5.1 限制搜索开销
+### 5.1 轻量净收益筛选
+
+筛选由search的提案策略负责，AccessReuseAnalysis只提供访问事实。先用已有窗口大小、静态执行次数和跨Tile
+同源读取情况作便宜排序；对前面的机会按需求精确scope窗口。收益筛选在候选clone、materialization和完整lowering之前执行。
+
+对于一个明确的复用选择，按当前分块/物理前缀比较原读取与所选复用方式，使用同一SearchCostPolicy/cohort的已有带宽和启动成本：
+
+```text
+预期净收益 = 预计减少的DDR读取成本
+           - 预计新增的DTE传输、端点与启动成本
+           - 预计新增的SPM复制成本
+```
+
+读取关系与静态循环计数给出可消除重复访问量；相同字节不能同时算作时间复用和空间共享的两份收益。
+数据块大小本身不是门槛：大块只读一次没有复用收益，小块高频重复仍可能值得；Sliding要扣除搬移重叠区域的SPM成本，
+两级驻留要扣除层间复制，Peer必须计入额外通信启动开销。DDR采用card aggregate、DTE/SPM采用现有cohort的
+per-Tile/链路口径，不把全卡流量除以单Tile带宽。
+
+首版以同cohort的`instructionFixedPicosecondsEstimate`作为最小净收益尺度，只有预期净收益**严格大于**该尺度才提案。
+该值是复用已有cost参数的启发式门槛，不是硬件测量或性能保证，不增加模型专用阈值；过滤后再按净收益从高到低分配原trial预算。
+非正收益、未超过门槛均记为低收益过滤；关键成本或访问事实不足则记为收益不明确，本轮维持原路径。
+不同scope/复用方式独立判断，一个scope低收益不等于该源的其它方式都无收益。
+
+这是用户授权的**性能提案过滤**，不是capacity、unsupported或正确性拒绝。过滤时不为该机会新建候选IR，
+不增加实际候选数、不运行完整评分；分析本身的work/time仍独立记录。显式机制资格测试可验证合法物化，
+不能将该测试成功解释为自动search必须采用低收益选择。
+
+粗估仅比较由显式选择和当前访问关系导出的预期搬运，不能生成或冒充实际instruction/buffer/schedule inventory。
+不猜wait位置或数量，不假定未来copy会被消除、传输会重叠；相关事实无法确定且会影响收益判断时，不强行发出提案。
+缓存footprint、预测lifetime、剩余SPM公式均不得用于这个过滤、容量准入或retile。通过筛选也不代表装得下或最终更快，
+仍须从实际IR取得completion、SPM结果及完整cost；不修改最终winner评分规则。
+
+### 5.2 筛选后的候选组织
+
+不再对每个输入机械地生成单项、整组及其加减组合。首先得到通过上述门槛的读取组/方式，再生成以下少量选择：
+这里的单项是一个读取组的完整选择，本身可以同时包含时间与空间复用；多输入联合才是把不同读取组的选择组合起来。
+
+1. 原始不复用分支始终保留。
+2. 按净收益顺序、按需生成通过门槛的单项选择；同组不同scope是替代选项，不同时重复缓存同一批数据。
+3. 同一实际作用域/相关消费者中，仅组合已经通过门槛且无选择冲突的机会。联合选择的新增搬运重新粗估，
+   防止重复计收益；联合净收益也必须超过门槛。不为凑组合加入低收益项，不枚举任意输入子集。
+4. 联合选择可以直接提出，不要求其中某个单项先打败全局winner。门槛比较的是相对**同一当前前缀**的预期净收益，
+   不同于跨空间/分块方案的最终winner比较；输入数量不限于GEMM的两个输入。
+
+### 5.3 限制分析与搜索开销
 
 - 按typed源先分组，比较组内访问，避免全程序read两两扫描；时间复用与peer复用共用该索引。
 - 跨Tile只使用关系证明得到的完整相同窗口类，不枚举任意participant子集；供给者先沿用当前确定性规则，
   不额外展开所有供给Tile。对于某个驻留scope，只有其窗口与循环域确实能跨Tile对应时才产生组合变体。
 - 每个读取组只考察其现有祖先循环边界；缓存范围由关系推导。某层没有重复不阻止继续检查外层。
-- 两级仅配相邻有效边界；多源选择按局部邻域逐步扩展，不先生成所有source/scope组合。
+- 两级仅配相邻有效边界；多源联合只使用通过收益筛选的局部机会，不构造全量source/scope组合。
 - 匹配main/tail及窗口类，不逐动态迭代枚举；查询work有界，超限产生indeterminate，不改变原程序合法性。
-- 流量/重复次数只作排序依据，不预测SPM合法性，也不以预测库存替代actual cost。
-- 不复用分支继续可选；所有实际物化计入原trial。固定预算会改变访问到的候选集合，不能承诺全局最优或零额外编译时间。
-  记录查询work/time、实际物化数、accepted/capacity、best score、wall/RSS后判断开销与收益。
+- 访问流量用于上述性能收益过滤与排序；不预测SPM合法性，也不以预期库存替代actual cost。
+- 沿用原全局width/trials（当前默认8/42），不按输入、scope或复用方式各开一份预算，也不新建缓存专用beam。
+  只有实际物化计入trial。固定预算及启发式过滤会改变访问到的候选集合，不承诺全局最优或零额外编译时间。
+  分开记录发现机会数、低收益/收益不明确过滤数、通过门槛但未访问数、实际物化数、accepted/capacity、查询work/time、
+  best score及wall/RSS；不得把收益过滤伪装成容量拒绝或已尝试候选。
 
 ## 6. 如何覆盖讨论中的GEMM
 
@@ -150,10 +201,13 @@ B在本Tile没有对应重复，仍逐块读取；同源B窗口跨16个Tile相�
 
 1. **可表达**：通用关系查询得到该窗口；受控typed选择能实际物化对应IR。
 2. **可行**：同一IR经过Instr、completion和actual SPM/DDR，取得合法offset。
-3. **可搜索**：正式固定预算中该类组合确实被生成、验证并评分；记录未访问/不可用/容量拒绝，而不是仅展示手选IR。
+3. **可搜索**：通过净收益门槛的组合在正式固定预算中确实被生成、验证并评分；低收益过滤、收益不明确、
+   预算未访问、不可用和实际容量拒绝分开记录，而不是仅展示手选IR。
 4. **有收益**：actual bytes、copy、同步及cost改善；真实设备性能另行验收。
 
 缺任何一项不能宣称这个GEMM问题已经解决。若固定预算未到达，定位通用候选访问顺序，不增加GEMM专用种子或强制winner。
+64 MiB是输入流量目标，不是必须选中的winner；若新增通信抵消节省，应按净收益规则过滤或由actual cost淘汰，
+不能为了达到读取字节数目标强行引入DTE。
 
 ## 7. 迁移与实施顺序
 
@@ -163,11 +217,11 @@ B在本Tile没有对应重复，仍逐块读取；同源B窗口跨16个Tile相�
 | --- | --- | --- |
 | `ReadOnlyInputSharing.cpp`中的源识别、hasOnlyReads、WindowOffsets、collectGroups | `Analysis/Tile/AccessReuseAnalysis`；现有IndexRelation与静态循环查询 | 原源身份、readonly、窗口/域不匹配负例 |
 | `materializeReadOnlyInputSharing` | `Transforms/Tile/AccessReuse`中的peer方式，扩展resident/sliding/two-level及组合 | 原4/16 Tile、1024/1025/1031的peer、completion、SPM测试 |
-| SearchCurrentIR的shareInput标志及统计 | 同一AccessReuseChoice与实际分支统计 | 原正式search共享候选通过、winner可追溯、预算计数 |
+| SearchCurrentIR的shareInput标志及统计 | 同一AccessReuseChoice、轻量净收益筛选与实际分支统计 | 有收益的正式search共享候选通过、低收益不占trial、winner可追溯 |
 | BaselineCurrentIR中的显式SharedInput资格入口 | 同一物化函数的peer方式，默认none行为保持 | 原controlled DDR/DTE资格入口及source数值 |
 | 原头文件、CMake source、测试及当前设计引用 | 在同一实现迁移中更新producer/consumer；无旧名alias或第二套分析 | source organization、定向回归及canonical构建 |
 
-步骤：先迁移原peer能力到统一分析并保持行为；补单级驻留并闭合GEMM/非GEMM实际下游；再加入受限滑动与两级；
+步骤：先迁移原peer物化能力到统一分析，接入轻量净收益筛选；补单级驻留并闭合GEMM/非GEMM实际下游；再加入受限滑动与两级；
 最后做同预算整体验证。每步使用同一个owner和同一套分析，不新增临时实现路径。对搜索收益的完成判定必须覆盖第6节四项，
 不能用已完成的重命名或局部测试代替。
 
@@ -180,15 +234,18 @@ B在本Tile没有对应重复，仍逐块读取；同源B窗口跨16个Tile相�
 | 同Tile跨循环复用；跨循环与跨Tile组合 | 实际一次填充及所有子窗口覆盖；组合只有一个选择，没有第二轮独立策略 | actual Instr动态读取数、owner/lifetime及完整输出 |
 | 固定窗口/正向步长/重叠、首次/末次及尾部 | initial全量+每步新增；overlap copy不自覆盖，所有点先定义后读取 | 非GEMM窗口case全量SystemC与动态DDR/SPM计数 |
 | 同源两级相邻嵌套scope | 外层/内层实际buffer及复制，读集合包含关系正确，无第三层或跨Region alias | actual Instr/SPM与数值 |
+| 相同窗口分别低频/高频重复、大块无重复、小块高频；临界门槛 | 按净收益而非单块大小筛选；等于门槛不提案，超过才入队；预期成本不冒充实际计数 | 只读筛选测试、无额外候选clone/trial witness |
+| 新增DTE启动/复制抵消DDR节省；成本信息不足 | 低收益/收益不明确分别记录；无peer物化、无完整评分、无trial消耗 | 正式search过滤计数及原路径输出 |
+| 多输入中混合高低收益、局部联合；单项未胜过全局winner | 低收益项不被联合提案带入，不重复计节省；高收益机会可直接组合，共用全局预算 | 多输入driver集成及联合候选实际验证 |
 | 本地/其它Tile写入、alias写、未知call、间接索引、动态域、非矩形、查询超限 | 区分unsupported/indeterminate/contract failure，原路径保留；不猜只读或容量 | 负例、输入IR不被失败查询修改 |
 | 源/Region/循环在clone及BoundaryMovement中改变 | IRMapping及新epoch复核；失效anchor不按名称/序号补回 | driver集成与typed不可用分支 |
-| 真实SPM冲突、scope扩大、受控删除排序估算 | actual冲突demand/owner完整；估算不改变SPM合法集合 | 原controller反馈与下一实际候选 |
+| 真实SPM冲突、scope扩大、受控开关收益筛选 | 对同一显式物化IR，actual冲突demand/owner和SPM合法性不变；筛选只改变自动尝试集合 | 原controller反馈与下一实际候选 |
 | 4096³ F16/BF16、4097³ F16、非GEMM广播/窗口复用 | 第6节可表达/可行/可搜索/收益逐项记录，原数值合同保持 | 正式source/search/package/fresh no-card及机制数值 |
 | LLaMA2单层原输入/dtype/比较策略 | 既有整层资格按实现影响复验，不能用新方案推算结果代签 | 原统一PyTorch runner与完整输出 |
 
 ## 9. 待讨论问题
 
-- 相同scope的多源复用是否需要后续扩大组合邻域，由固定预算的实际覆盖记录决定；第一版不承诺所有联合最优组合。
+- 若粗估与实际收益系统性不符，依据同cohort配对数据核对搬运与启动成本、门槛尺度；不为单个case放宽门槛或保留大量低收益组合。
 - B的长链转发及跨Tile计算重叠属于后续通信拓扑/执行结构选择，本方案不强制它，也不把它当作输入一次读取的必要条件。
 - 若保持现有consumer buffer导致额外SPM copy抵消收益，先用实际IR定位；只有已有view/layout合同无法表达时才提出直接相关扩展，
   不预先重写layout体系。
