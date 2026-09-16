@@ -119,8 +119,8 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 | 两步state chain | 第二步输入使用本次实际回读，原dtype、shape与全输出比较不变 | 共用continuation及数值校验 |
 | 缺生命周期、输出错误、设备timeout | 本case失败且不重试；设备timeout或异常停止批次 | 共用`verify_board`、runtime watchdog与`run` |
 | Ordinary/profile执行期限 | 两者均传设备watchdog；profile报告不受设备派生总期限约束 | runner到runtime调用边界测试与实际profile |
-| 大GEMM与batch广播 | 原始 `torch.matmul` 接收两份runtime输入，RHS保持单batch；4096³ FP16/BF16、4097³三轴尾部及batch4的1024/1025×1031配对保持完整输出和默认dtype容差 | 已注册source→search→package→strict no-card；另以实卡全量PyTorch签数值资格，自动winner不代签DDR/DTE受控比较 |
-| 原始视觉模型 | managed torchvision的ResNet-18保留整网及全部1000 logits，224/1024/1025输入；ViT EncoderBlock保留12 heads、768 hidden、3072 MLP及1024/1025全部tokens；eval、固定参数、FP16/default容差 | 同一原始module产生source及CPU eager reference，正式search/no-card与实卡分别登记；缺失算子不能删去或替换计算 |
+| 大GEMM与batch广播 | 原始 `torch.matmul` 接收两份runtime输入，RHS保持单batch；4096³ FP16/BF16、4097³三轴尾部及batch4的1024/1025×1031配对保持完整输出，按下述显式相似度策略验收 | 已注册source→search→package→strict no-card；另以实卡全量PyTorch签数值资格，自动winner不代签DDR/DTE受控比较 |
+| 原始视觉模型 | managed torchvision的ResNet-18保留整网及全部1000 logits，224/1024/1025输入；ViT EncoderBlock保留12 heads、768 hidden、3072 MLP及1024/1025全部tokens；eval、固定参数、FP16及显式相似度策略 | 同一原始module产生source及CPU eager reference，正式search/no-card与实卡分别登记；缺失算子不能删去或替换计算 |
 | DTE贡献组装、完整view/紧凑buffer、layout materialization、copy_into | 从actual SSA追踪16个来源及全局/局部窗口；缺来源、重复来源、错窗口均拒绝 | 正式通信资格入口、1024/1025/1031及注入负例 |
 
 #### 混合dtype端口与完整单层LM
@@ -174,8 +174,16 @@ tensor identity 绑定，参数及 CPU reference 不变。导出/source 校验�
 选择依据：PyTorch `assert_close`提供逐点策略；成熟的
 [TensorRT Polygraphy distance_metrics](https://docs.nvidia.com/deeplearning/tensorrt/latest/_static/polygraphy/_modules/polygraphy/comparator/compare.html)
 把L2与cosine作为必须同时通过的输出比较。本仓采用相对L2以归一化输出尺度；阈值由case合同决定，不引用其默认值。
-完整单层LM显式采用cosine>=0.9999且relative_l2<=0.01；原atol=0.004、rtol=0.002仅作逐点诊断。
-原decoder block、attention、GEMM和其它case策略保持。
+按用户确认的浮点计算验收范围，普通随机GEMM（含batch/尾块）、随机biased Conv与Conv混合DAG、
+heterogeneous计算DAG、AvgPool、ResNet18、ViT、LLaMA decoder block/完整单层LM及attention（含GQA和decode）
+统一显式采用cosine>=0.9999且relative_l2<=0.01，两个指标按每个完整输出端口分别计算，不拼接不同输出。
+Python由共同policy工厂提供唯一阈值；同一case策略原样传递到TargetModel CLI和board回读。
+原dtype默认或case指定的atol/rtol仅作逐点诊断；LLaMA保留0.004/0.002，attention保留0.008/0.006。
+相似度门限不修改source、dtype、psum、归约顺序或独立PyTorch reference。
+
+专门的通信/launch、bounded二进制输入、outer product、mask/embedding、MaxPool和primitive数值校准
+不自动选择相似度；原exact或逐元素合同继续。整数端口和decode已有cache前缀仍exact，
+即使同一case的浮点计算输出选择相似度也不能放宽这些检查。此范围不改变低层指令/guard/布局校准的oracle。
 
 | 输入等价类/分支 | exact输出、typed失败与下游witness |
 | --- | --- |
@@ -184,6 +192,7 @@ tensor identity 绑定，参数及 CPU reference 不变。导出/source 校验�
 | 全零/单侧零/空、非有限值、非法或不成对阈值 | 按上述约定返回确定结果或typed错误，Python与C++一致 |
 | 整数、大值及错误shape/dtype/字节数 | 不受相似度门限影响，原严格检查继续失败 |
 | 正式模型入口与PyTorch runner | 显式策略穿过CLI/case，成功也输出指标；未选策略的入口保持逐点行为 |
+| 普通计算case与专项oracle，FP16/BF16/F32、1024/1025/1031 | 小幅舍入误差可通过相似度且保留逐点超差；尺度错误、符号翻转、缺整行/列/归约贡献仍拒绝；专项oracle与整数单元素错误不被相似度掩盖 |
 | 完整单层LM S16 FP16/BF16 | 本轮原始source、全512000 logits与eager reference，经实际TargetModel计算指标并验收；设备资格独立 |
 
 ### 3.2 Canonical build gate

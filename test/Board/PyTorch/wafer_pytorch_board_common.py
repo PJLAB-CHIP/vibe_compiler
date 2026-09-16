@@ -51,6 +51,21 @@ PYTORCH_DEFAULT = ComparisonPolicy()
 EXACT = ComparisonPolicy(rtol=0.0, atol=0.0)
 
 
+def make_similarity_policy(
+    dtype: torch.dtype, *, rtol: float | None = None, atol: float | None = None,
+) -> ComparisonPolicy:
+    """Select ordinary floating computation acceptance, retaining point diagnostics."""
+    if dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError("similarity policy requires F16, BF16 or F32")
+    if rtol is None and atol is None:
+        from torch.testing._comparison import default_tolerances
+
+        rtol, atol = default_tolerances(dtype)
+    return ComparisonPolicy(
+        rtol=rtol, atol=atol, min_cosine=0.9999, max_relative_l2=0.01,
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class TensorSimilarityStatistics:
     cosine_similarity: float

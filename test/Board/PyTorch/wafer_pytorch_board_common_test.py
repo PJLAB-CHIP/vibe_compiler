@@ -34,13 +34,40 @@ class CompilerIRDumpTest(unittest.TestCase):
 
 
 class PyTorchBoardCommonTest(unittest.TestCase):
+    def test_ordinary_similarity_preserves_dtype_diagnostics(self) -> None:
+        for dtype, rtol in ((torch.float16, 0.001), (torch.bfloat16, 0.016),
+                            (torch.float32, 1.3e-6)):
+            policy = common.make_similarity_policy(dtype)
+            self.assertEqual((policy.rtol, policy.atol), (rtol, 1e-5))
+            for extent in (1024, 1025, 1031):
+                with self.subTest(dtype=dtype, extent=extent):
+                    expected = torch.ones((1, 4, extent), dtype=dtype)
+                    actual = expected.clone()
+                    actual[0, -1, -1] += 0.125
+                    with self.assertRaises(AssertionError):
+                        common.assert_tensor_matches(actual, expected, context="pointwise")
+                    common.assert_tensor_matches(actual, expected, policy=policy, context="ordinary")
+                    stats = common.compute_tensor_similarity(actual, expected, policy=policy)
+                    self.assertEqual(stats.elementwise_mismatches, 1)
+                    self.assertLess(stats.relative_l2_error, policy.max_relative_l2)
+                    # Cosine alone cannot detect an incorrect output scale.
+                    with self.assertRaises(AssertionError):
+                        common.assert_tensor_matches(expected * 1.02, expected,
+                            policy=policy, context="wrong scale")
+        for dtype in (torch.int64, torch.bool, torch.float64):
+            with self.assertRaises(ValueError):
+                common.make_similarity_policy(dtype)
+        for options in ({"rtol": 0.001}, {"atol": 1e-5}):
+            with self.assertRaises(ValueError):
+                common.make_similarity_policy(torch.float16, **options)
+
     def test_similarity_policy_and_model_arguments(self) -> None:
-        policy = cases.LM_LOGITS_COMPARISON
+        policy = cases.HF_LLAMA2_7B_COMPARISON
         self.assertEqual(common.model_comparison_arguments(policy), [
             "--model-atol", "0.004", "--model-rtol", "0.002",
             "--model-min-cosine", "0.9999", "--model-max-relative-l2", "0.01",
         ])
-        self.assertIsNone(cases.HF_LLAMA2_7B_COMPARISON.min_cosine)
+        self.assertIsNone(common.PYTORCH_DEFAULT.min_cosine)
         self.assertEqual(common.model_comparison_arguments(common.PYTORCH_DEFAULT), [])
         for extent in (1024, 1025, 1031):
             for dtype in (torch.float16, torch.bfloat16, torch.float32):
@@ -50,7 +77,7 @@ class PyTorchBoardCommonTest(unittest.TestCase):
                     actual[-1, -1, -1] += 0.125
                     with self.assertRaises(AssertionError):
                         common.assert_tensor_matches(actual, expected,
-                            policy=cases.HF_LLAMA2_7B_COMPARISON, context="elementwise")
+                            policy=common.ComparisonPolicy(rtol=0.002, atol=0.004), context="elementwise")
                     common.assert_tensor_matches(actual, expected, policy=policy, context="similarity")
                     stats = common.compute_tensor_similarity(actual, expected, policy=policy)
                     n = actual.numel()
@@ -69,7 +96,7 @@ class PyTorchBoardCommonTest(unittest.TestCase):
 
     def test_similarity_zero_nonfinite_and_invalid_contracts(self) -> None:
         # Tiny shapes isolate zero norms and invalid inputs; real-size positives above.
-        policy = cases.LM_LOGITS_COMPARISON
+        policy = cases.HF_LLAMA2_7B_COMPARISON
         zero = torch.zeros(1, dtype=torch.float16)
         one = torch.ones_like(zero)
         ordered = torch.tensor([1, 2], dtype=torch.float16)
@@ -123,7 +150,7 @@ class PyTorchBoardCommonTest(unittest.TestCase):
                         common.write_tensor_raw(path, actual)
                         for policy in (common.PYTORCH_DEFAULT,
                                        common.ComparisonPolicy(rtol=0.002, atol=0.004),
-                                       cases.LM_LOGITS_COMPARISON):
+                                       cases.HF_LLAMA2_7B_COMPARISON):
                             with self.assertRaisesRegex(AssertionError, "1/.* elements"):
                                 common.assert_raw_capture_matches(
                                     path, expected, context="integer tail", policy=policy,

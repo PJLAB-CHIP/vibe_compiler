@@ -25,11 +25,12 @@ HF_LLAMA2_7B_CONFIG = (
     TOOLS_INPUTS / "hf" / "llama-2-7b-block-config.json"
 )
 HF_LLAMA2_7B_SEQUENCE_LENGTH = 16
-HF_LLAMA2_7B_COMPARISON = common.ComparisonPolicy(rtol=0.002, atol=0.004)
-LM_LOGITS_COMPARISON = common.ComparisonPolicy(
-    rtol=0.002, atol=0.004, min_cosine=0.9999, max_relative_l2=0.01,
+HF_LLAMA2_7B_COMPARISON = common.make_similarity_policy(
+    torch.float16, rtol=0.002, atol=0.004,
 )
-ATTENTION_COMPARISON = common.ComparisonPolicy(rtol=0.006, atol=0.008)
+ATTENTION_COMPARISON = common.make_similarity_policy(
+    torch.float16, rtol=0.006, atol=0.008,
+)
 ATTENTION_HEAD_DIM = 64
 OPTIMIZATION_POLICIES = ("search", "none")
 SOURCE_NO_CARD_OPTIMIZATION_POLICIES = OPTIMIZATION_POLICIES
@@ -327,7 +328,7 @@ def make_biased_conv(dtype: torch.dtype, seed: int, *, extent: int = 1024):
         ordered_convolution=dtype == torch.float16,
         expected_outputs_factory=lambda: (module(*inputs),),
         export_program=lambda out: _save_exported_program(out, module, inputs),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=common.make_similarity_policy(dtype),
     )
 
 
@@ -635,7 +636,8 @@ def _single_card_gemm(
         export_program=lambda output: _save_exported_program(
             output, module, (lhs, rhs)
         ),
-        comparison_policy=common.EXACT if exact_inputs else common.PYTORCH_DEFAULT,
+        comparison_policy=(common.EXACT if exact_inputs
+                           else common.make_similarity_policy(dtype)),
         # The row-sharded none-policy witness describes a single batch only.
         gemm_dimensions=(m, k, n) if batch == 1 else None,
     )
@@ -655,7 +657,8 @@ def _pooling(dtype: torch.dtype, seed: int, *, kind: str, extent: int) -> PyTorc
         name=f"pool-{kind}-{extent}", num_partitions=1, dtype=dtype,
         inputs=inputs, expected_outputs_factory=expected_outputs_factory,
         export_program=lambda output: _save_exported_program(output, module, inputs),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=(common.PYTORCH_DEFAULT if kind == "max"
+                           else common.make_similarity_policy(dtype)),
     )
 
 
@@ -678,7 +681,7 @@ def _resnet18(
         name=f"resnet18-{extent}", num_partitions=1, dtype=dtype,
         inputs=inputs, expected_outputs_factory=expected_outputs_factory,
         export_program=lambda output: _save_exported_program(output, module, inputs),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=common.make_similarity_policy(dtype),
     )
 
 
@@ -704,7 +707,7 @@ def _vit_encoder_block(
         name=f"vit-encoder-block-{extent}", num_partitions=1, dtype=dtype,
         inputs=inputs, expected_outputs_factory=expected_outputs_factory,
         export_program=lambda output: _save_exported_program(output, module, inputs),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=common.make_similarity_policy(dtype),
     )
 
 
@@ -751,7 +754,7 @@ def _heterogeneous_tiling_dataflow(
         export_program=lambda output: _save_exported_program(
             output, module, inputs
         ),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=common.make_similarity_policy(dtype),
     )
 
 
@@ -804,7 +807,7 @@ def _conv_mixed_dag(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         export_program=lambda output: _save_exported_program(
             output, module, inputs
         ),
-        comparison_policy=common.PYTORCH_DEFAULT,
+        comparison_policy=common.make_similarity_policy(dtype),
     )
 
 
@@ -924,7 +927,7 @@ def _llama_2_7b_single_layer_lm(
         name=f"llama-2-7b-single-layer-lm-{sequence_length}",
         num_partitions=1, dtype=dtype, inputs=inputs,
         expected_outputs_factory=expected_outputs_factory,
-        export_program=export_program, comparison_policy=LM_LOGITS_COMPARISON,
+        export_program=export_program, comparison_policy=HF_LLAMA2_7B_COMPARISON,
     )
 
 

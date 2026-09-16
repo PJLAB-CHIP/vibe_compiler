@@ -8,6 +8,41 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
 
+## 普通浮点case统一相似度验收（2026-09-17）
+
+用户接受本轮GEMM整体精度后要求其它同类case同步调整。本次实现16号既有相似度合同的case接入，
+复用完整LM已经采用的cosine>=0.9999与relative L2<=0.01，不修改被测数值计算。
+
+- Upstream input：当前PyTorch case、完整actual/reference端口及既有比较器。
+- Current responsibility：为16号列出的普通浮点计算选择共同相似度policy；保留各case逐点诊断门限。
+- Output：携带同一policy的case、TargetModel CLI参数、逐输出指标及明确的通过/失败。
+- Downstream consumer：原board runner、TargetModel gate、执行记录与板测验收。
+- User-level driver：原`wafer_board_pytorch_test.py`及`wafer-compile-test --target-model`。
+- Non-goals：不改算法/IR/runtime、不合并多个输出、不放宽整数/通信/特殊值校准，不重判旧实卡记录或运行其它设备批次。
+- Completion criteria：case选择与比较器回归、fresh source→TargetModel witness、canonical完整增量构建和no-op、文本检查通过；
+  历史GEMM结果仅说明用户决策背景，不用旧raw重新签发本轮通过。
+
+| 输入/分支 | exact要求或失败 | 直接witness |
+| --- | --- | --- |
+| 普通随机GEMM/Conv/DAG/AvgPool/模型/attention | 每个完整浮点输出同时通过cosine与relative L2；原atol/rtol作为诊断 | case factory→共同比较器/CLI；FP16/BF16/F32与1024/1025/1031主机回归 |
+| 小幅舍入、尺度错误、符号翻转、缺失行/列/K贡献 | 小误差可接受且报告逐点超差；明显结构/尺度错误仍失败 | fresh reference、故障注入与raw回读 |
+| 专项exact/逐点oracle、非有限值与整数 | 不被普通浮点policy覆盖；NaN/Inf在相似度下拒绝；整数一元素错误仍失败 | 既有校准、比较边界及case回归 |
+| decode多输出和continuation | 各输出单独验收，旧cache前缀不变仍exact，下一步继续消费实际回读 | 原decode故障注入及continuation回归 |
+| 真实PyTorch source到TargetModel | 同一case策略通过正式CLI；完整输出统计实际执行 | 本轮新输入、reference及package的主机witness |
+
+本轮检查点：共同policy工厂已接入上述普通计算case，完整LM和decoder block共用同一LLaMA policy；
+原dtype默认及attention/LLaMA专用逐点门限保留。两组Python suite共50个测试通过，无skip，覆盖原始source导出、
+整数/精确KV前缀、continuation、舍入误差接受、尺度/缺K/缺行列/缺head及head置换拒绝。
+GQA的单点超差可在整体门限内通过，回归明确检查其超差数量和最大误差仍保留；不再声称相似度能拒绝任意单元素错误。
+
+本轮从相同GEMM factory新生成FP16 `M=1024,K=N=16`及BF16 `M=1025,K=N=16`，
+限制K/N用于有界formal oracle，保持rank3、真实M尺度、16 Tile及尾块。
+两项经原`prepare_case_step`和正式`wafer-compile-test --target-model`生成verified package，完整16384/16400输出均通过，
+并分别通过原16 Tile no-card。日志明确为`comparison=similarity`且携带共同阈值；cosine分别为
+0.99999999995961353/1，relative L2分别为8.987949540606866e-6/2.4785497408097247e-10。
+证据在`build/test/pytorch-comparison-policy/`；canonical完整增量构建及后续Ninja no-op、源码组织检查通过。
+本项未运行设备case、未复用历史raw，也未重判下文历史检查点里的旧容差结果。
+
 ## TX runtime 5.7接口适配与Add/GEMM验证（2026-09-17）
 
 本项属于`board-testing`，按15号runtime合同修复设备资格检查；用户本轮授权Add及4096³ FP16 GEMM实卡，
@@ -269,12 +304,12 @@ DDR/DTE两包先各做一次正确性执行，随后按下节统一的平衡A/B�
 
 | 顺序 | 实际工作 | 退出条件 |
 | --- | --- | --- |
-| 1 | 修复现有 `llama-2-7b-block` BF16；固定原 `[1,16,4096]`、参数和reference，沿source算术、current IR、GEMM/activation format及回读定位首个数值分歧 | 原65,536个输出全部通过原容差；FP16同配置回归；实际缺陷机制有直接下游及dtype/尾部覆盖 |
+| 1 | 核对现有 `llama-2-7b-block` BF16；固定原 `[1,16,4096]`、参数和reference，按current比较合同判断是否存在待修复数值问题 | 完整65,536个输出按16号相似度策略验收；FP16同配置回归；实际缺陷机制有直接下游及dtype/尾部覆盖 |
 | 2 | 接入七类新主配置及表内补充。依次推进GEMM及DDR/DTE配对、ResNet、ViT、整数端口/Embedding及单层完整LM、长cache/GQA/batch GEMM | 各case的原始PyTorch前向、typed输入/全部输出、正式source→package和strict no-card齐全；主机接入不依赖第1项板端窗口 |
 | 3 | 每个达到board-ready的case串行执行并检查全部输出、guard、completion和cleanup；新机制先经过真实规模及tail主机门禁 | 失败按下表修复后，用新产物重签受影响case；数值失败不能只有计时记录 |
 | 4 | 在修复后的同一版本完成原42项、七类新增主配置及必要补充的正确性收口；冻结source/config/seed/dtype、预算、compiler/runtime/SDK和package身份 | 全部规定分支通过才建立性能基线B0；未执行、unsupported、失败和外部阻塞逐项列出，不缩矩阵签通过 |
 
-已知BF16错误来自[全部42项实测记录](../../docs/board-performance-results.md#2026-09-14全部42个默认search配置的实卡计时)：
+历史BF16逐点超差来自[全部42项实测记录](../../docs/board-performance-results.md#2026-09-14全部42个默认search配置的实卡计时)：
 51/65,536项超 `rtol=0.002, atol=0.004`，最大绝对误差0.0078125，设备正常执行且无NaN/Inf；根因尚未确定。
 14.236 ms仅是失败程序时间，不能用作正确BF16程序的性能基线，也不预判它与早期K partial错误同源。
 FP16 LLaMA的14.113 ms、decode的6.545/6.937 ms及4K prefill的278.981 ms保留为历史调查参照，正式比较使用匹配样本。
@@ -292,14 +327,15 @@ FP16 LLaMA的14.113 ms、decode的6.545/6.937 ms及4K prefill的278.981 ms保留
 | 导出/输入/输出合同 | 检查原始framework计算、导出分解、逐端口dtype及动态payload；在实际producer修复 | 源模型完整前向→正式导出与下游；整数ID不得在主机预计算成embedding |
 | 无可行候选/编译慢 | 分开记录搜索未访问、actual capacity、unsupported、contract error与host timeout；追首个失败IR、工作量及scope | 默认预算可生成合法package；实际allocator反馈、确定搜索及编译wall/RSS有证据，不能只提高超时/预算或改用none |
 | Lowering/package/runtime准备失败 | 定位首次丢失的SSA、owner、alias、layout、descriptor或ABI事实 | 精确机制正反例→actual Instr/completion/SPM→完整package/no-card |
-| 正常执行后数值失败 | 保留原算术/dtype/容差，以中间结果或定向原始子图找到首个分歧，诊断产物不替代整网 | 同一原case全输出PyTorch通过，相关dtype/尾部及共享机制回归 |
+| 正常执行后数值失败 | 保留原算术/dtype及执行前固定的current比较策略，以中间结果或定向原始子图定位，诊断产物不替代整网 | 同一原case全输出按16号策略通过，相关dtype/尾部及共享机制回归 |
 | 真正device timeout/异常 | 当次立即停止设备批次，不自动retry/reset；从已有实际IR、token/lifetime、ABI和设备证据定位 | 修复和主机/no-card先闭合；设备由用户恢复后再确认会话，风险执行放在普通批次之后 |
 | CPU reference/profile报告慢或失败 | 单独记录主机阶段及资源，修报告/准备问题，不套用device completion期限 | 主机产物完整、已完成设备结果可审计；不据此声称卡死或停止无关正常设备任务 |
 
-所有浮点输出均做全量PyTorch比较，输入ID、原样copy、KV旧prefix用exact检查。GEMM/ResNet/ViT及batch GEMM
-首版采用仓内PyTorch默认dtype容差；LLaMA完整LM沿用block的 `rtol=0.002, atol=0.004`，attention/GQA/decode沿用
-`rtol=0.006, atol=0.008`，`equal_nan=false`。容差在设备执行前固定；失败时定位算术/舍入来源，不以分类top-1相同、
-平均误差小、抽样通过或放宽阈值代替完整数值验收。dtype保留framework语义，若内部有F32计算则在导出图中明确体现。
+所有浮点输出均做全量PyTorch比较，输入ID、原样copy、KV旧prefix用exact检查。
+普通计算/模型按16号显式相似度范围验收；原dtype默认或case指定的atol/rtol只用于逐点诊断，
+专项oracle保留exact或逐点策略。阈值在设备执行前固定，cosine与relative L2必须同时通过；
+不以分类top-1相同、平均误差小或抽样代替全输出比较，也不重判历史记录。
+dtype保留framework语义，若内部有F32计算则在导出图中明确体现。
 
 ## Profile范围与根因判定
 

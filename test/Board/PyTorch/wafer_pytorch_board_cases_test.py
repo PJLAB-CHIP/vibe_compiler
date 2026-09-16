@@ -391,18 +391,31 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     invocation, invocation / "source-program", package, case, expected
                 )
 
-    def test_precision_cases_keep_eager_operator_rounding_and_default_tolerance(self):
+    def test_conv_similarity_keeps_point_diagnostics_and_primitive_oracle(self):
         for extent in (1024, 1025, 1031):
             conv = cases.make_biased_conv(torch.float16, 20260803, extent=extent)
             value, weight, bias = conv.inputs
             expected, = conv.materialize_expected_outputs()
             separately_rounded = torch.nn.functional.conv2d(value, weight, padding=1)
             separately_rounded = separately_rounded + bias[None, :, None, None]
-            self.assertEqual(conv.comparison_policy, cases.common.PYTORCH_DEFAULT)
+            self.assertEqual(conv.comparison_policy, cases.common.make_similarity_policy(torch.float16))
             with self.assertRaises(AssertionError):
                 cases.common.assert_tensor_matches(
-                    separately_rounded, expected, policy=conv.comparison_policy,
+                    separately_rounded, expected,
                     context="bias rounded after the entire convolution",
+                )
+            cases.common.assert_tensor_matches(
+                separately_rounded, expected, policy=conv.comparison_policy,
+                context="small rounding difference with unchanged eager reference",
+            )
+            stats = cases.common.compute_tensor_similarity(
+                separately_rounded, expected, policy=conv.comparison_policy,
+            )
+            self.assertGreater(stats.elementwise_mismatches, 0)
+            with self.assertRaises(AssertionError):
+                cases.common.assert_tensor_matches(
+                    expected * 2, expected, policy=conv.comparison_policy,
+                    context="wrong convolution scale",
                 )
             sigmoid = cases.make_sigmoid(torch.float16, 20260803, extent=extent)
             expected, = sigmoid.materialize_expected_outputs()
@@ -521,6 +534,17 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             self.assertEqual(case.inputs[1].shape, (1, k, n))
             expected, = case.materialize_expected_outputs()
             self.assertEqual(expected.shape, (1, m, n))
+            self.assertEqual(case.comparison_policy, cases.common.make_similarity_policy(torch.float16))
+            rounded = expected.clone()
+            rounded[0, 0, 0] += 0.125
+            cases.common.assert_tensor_matches(
+                rounded, expected, policy=case.comparison_policy,
+                context=f"{name} small rounding difference",
+            )
+            stats = cases.common.compute_tensor_similarity(
+                rounded, expected, policy=case.comparison_policy,
+            )
+            self.assertGreater(stats.elementwise_mismatches, 0)
             for fault in ("missing-k", "last-row", "last-column"):
                 if fault == "missing-k":
                     actual = torch.matmul(
@@ -1243,11 +1267,26 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     )
                 corrupted = expected.clone()
                 corrupted[0, -1, -1, -1] += 1
-                with self.assertRaises(AssertionError):
-                    cases.common.assert_tensor_matches(
-                        corrupted, expected, policy=case.comparison_policy,
-                        context=f"GQA S={extent} final head/token",
-                    )
+                # Full-tensor similarity may accept an isolated outlier. It
+                # must remain visible in point diagnostics; head permutation
+                # and missing computation are separate structural witnesses.
+                statistics = cases.common.compute_tensor_similarity(
+                    corrupted, expected, policy=case.comparison_policy,
+                )
+                self.assertEqual(statistics.elementwise_mismatches, 1)
+                self.assertGreater(statistics.max_abs_error, 0.99)
+                cases.common.assert_tensor_matches(
+                    corrupted, expected, policy=case.comparison_policy,
+                    context=f"GQA S={extent} isolated outlier diagnostic",
+                )
+                missing_head = expected.clone()
+                missing_head[:, -1] = 0
+                for wrong in (missing_head, expected.roll(4, dims=1)):
+                    with self.assertRaises(AssertionError):
+                        cases.common.assert_tensor_matches(
+                            wrong, expected, policy=case.comparison_policy,
+                            context=f"GQA S={extent} missing or permuted head",
+                        )
                 with tempfile.TemporaryDirectory() as directory:
                     program = pathlib.Path(directory) / "gqa-program"
                     case.export_program(program)
