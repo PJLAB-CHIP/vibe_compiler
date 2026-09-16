@@ -125,8 +125,11 @@ private:
   std::optional<RegionPlan>
   buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
             llvm::ArrayRef<uint8_t> choices) const;
-  bool advanceChoices(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
-                      llvm::ArrayRef<const LocalFragment *> fragments,
+  using FragmentChoices = llvm::SmallVector<uint8_t, 3>;
+  llvm::SmallVector<FragmentChoices, 16> getAllowedChoices(
+      llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
+      llvm::ArrayRef<const LocalFragment *> fragments) const;
+  bool advanceChoices(llvm::ArrayRef<FragmentChoices> allowedChoices,
                       llvm::SmallVectorImpl<uint8_t> &choices) const;
   RegionSuccessor findPlan(RegionCursor cursor, bool advanceCurrent) const;
   std::optional<RegionCursor> getCursor(const RegionPlan &plan) const;

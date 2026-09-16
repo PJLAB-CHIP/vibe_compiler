@@ -1875,6 +1875,8 @@ private:
           relations.lookup(inputRelationIds[index]);
       if (!oldRelation)
         return WAFER_EGRAPH_CALLBACK_UNSUPPORTED;
+      // Interning below can grow the relation store and invalidate pointers.
+      const uint32_t oldOperandTypeId = oldRelation->sourceTypeId;
       mlir::RankedTensorType oldOperandType = reparameterized[index].oldType;
       mlir::RankedTensorType newOperandType = reparameterized[index].newType;
       uint32_t newOperandTypeId = types.intern(newOperandType);
@@ -1895,7 +1897,7 @@ private:
       }
       std::optional<uint32_t> operandAccess =
           internReshape(newOperandTypeId, newOperandType,
-                        oldRelation->sourceTypeId, oldOperandType);
+                        oldOperandTypeId, oldOperandType);
       if (!operandAccess)
         return relations.hasWorkLimitReached()
                    ? WAFER_EGRAPH_CALLBACK_WORK_LIMIT

@@ -5,6 +5,7 @@
 #include "TestSupport/CodeGen/ExecutableTestSupport.h"
 #include "TestSupport/Planning/SpatialPlanReference.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Planning/PhysicalDataflow/OperandReuse.h"
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 
@@ -1085,6 +1086,53 @@ module {
 }
 
 TEST_F(SpatialDomainTest,
+       OperandReuseFollowsCollapsedBatchWithoutUnboundedRectangleQueries) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const std::string input =
+        "tensor<4x" + std::to_string(extent) + "x128xf16>";
+    const std::string flat =
+        "tensor<" + std::to_string(4 * extent) + "x128xf16>";
+    const std::string output =
+        "tensor<" + std::to_string(4 * extent) + "x64xf16>";
+    // This is the actual rank-three shared-RHS source boundary: flatten
+    // batch/M for matmul, then restore the rank-three result downstream.
+    std::string source;
+    llvm::raw_string_ostream out(source);
+    out << "module { func.func @main(%lhs: " << input
+        << ", %rhs: tensor<1x128x64xf16>, %init: " << output << ") -> "
+        << output << " {\n"
+        << "%left = tensor.collapse_shape %lhs [[0, 1], [2]] : "
+        << input << " into " << flat << "\n"
+        << "%right = tensor.collapse_shape %rhs [[0, 1], [2]] : "
+           "tensor<1x128x64xf16> into tensor<128x64xf16>\n"
+        << "%result = linalg.matmul ins(%left, %right : " << flat
+        << ", tensor<128x64xf16>) outs(%init : " << output << ") -> "
+        << output << "\nreturn %result : " << output << "\n}}";
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    mlir::linalg::MatmulOp matmul;
+    module->walk([&](mlir::linalg::MatmulOp op) { matmul = op; });
+    ASSERT_TRUE(matmul);
+    const auto before = print(module->getOperation());
+    auto projections = getReadOperandProjections(matmul);
+    ASSERT_TRUE(projections);
+    ASSERT_EQ(projections->size(), 2u);
+    const auto &lhs = projections->front();
+    const auto &rhs = projections->back();
+    EXPECT_EQ(lhs.sizes, (llvm::SmallVector<int64_t, 4>{4, extent, 128}));
+    EXPECT_EQ(lhs.offsets, (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+    EXPECT_EQ(lhs.bytes, uint64_t(4 * extent * 128 * 2));
+    EXPECT_FALSE(lhs.iterators.test(1));
+    EXPECT_EQ(rhs.sizes, (llvm::SmallVector<int64_t, 4>{1, 128, 64}));
+    EXPECT_EQ(rhs.offsets, (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+    EXPECT_EQ(rhs.bytes, uint64_t(128 * 64 * 2));
+    EXPECT_FALSE(rhs.iterators.test(0));
+    EXPECT_EQ(print(module->getOperation()), before);
+  }
+}
+
+TEST_F(SpatialDomainTest,
        OperandReuseProposalsFollowMapsAndKeepOriginalPartitions) {
   for (int64_t extent : {1024, 1025, 1031}) {
     for (int64_t tiles : {4, 16}) {
@@ -1237,6 +1285,8 @@ TEST_F(SpatialDomainTest,
                        ":" + std::to_string(sharedInit) + ":" +
                        std::to_string(inner));
           const bool rectangular = inner == 1 || extent % tiles == 0;
+          // A final short shard also admits an exact uniform-extent scheme.
+          const bool coordinated = rectangular || extent % tiles == tiles - 1;
           std::string source;
           llvm::raw_string_ostream out(source);
           const std::string tensor =
@@ -1309,28 +1359,38 @@ TEST_F(SpatialDomainTest,
                 mlir::cast<mlir::RankedTensorType>(
                     node.operation->getResult(0).getType())
                         .getRank() == 4) {
-              EXPECT_EQ(partition->axes[1].parameter, rectangular ? 1 : tiles);
-              EXPECT_EQ(partition->axes[2].parameter, rectangular ? tiles : 1);
+              // A ragged flatten does not coordinate balanced boundaries.
+              // Keep the seed axes; exact demand below must expose the peer
+              // edges, rather than assuming an unproven row retile.
+              EXPECT_EQ(partition->axes[1].parameter, 1);
+              EXPECT_EQ(partition->axes[2].parameter, tiles);
             }
             if (mlir::isa<mlir::linalg::FillOp>(node.operation)) {
-              // When the N split cannot cross a ragged reshape, backward
-              // demand now coordinates GEMM and its init along consumer rows.
-              const bool rows = sharedInit || !rectangular;
+              const bool rows = sharedInit;
               EXPECT_EQ(partition->axes[1].parameter, rows ? tiles : 1);
-              EXPECT_EQ(partition->axes[2].parameter, rows ? 1 : tiles);
+              const int64_t columns = !rectangular && coordinated
+                                          ? ((extent + tiles - 1) / tiles) * inner
+                                          : tiles;
+              EXPECT_EQ(partition->axes[2].parameter, rows ? 1 : columns);
             }
           }
           auto evaluation = built->domain.evaluate(built->dag, *propagated);
           ASSERT_TRUE(evaluation.isSatisfied());
           const auto *proof = analysis::getExactDemandProof(*evaluation.demand);
           ASSERT_NE(proof, nullptr);
+          bool hasPeerDemand = false;
           for (const auto &dependency : proof->dependencyDemands)
             for (const auto &destination : dependency.perDestination)
               for (const auto &sourceDemand : destination.sources)
-                if (!sharedInit) {
-                  for (const auto &owner : sourceDemand.eligibleFinalOwners)
+                for (const auto &owner : sourceDemand.eligibleFinalOwners) {
+                  hasPeerDemand |= owner.tile != destination.destinationTile;
+                  if (!sharedInit && coordinated) {
                     EXPECT_EQ(owner.tile, destination.destinationTile);
+                  }
                 }
+          if (!coordinated && !sharedInit) {
+            EXPECT_TRUE(hasPeerDemand);
+          }
           for (const auto &node : evaluation.assignment->nodes) {
             const auto *facts = built->domain.getProblem().findRoot(node.root);
             ASSERT_NE(facts, nullptr);

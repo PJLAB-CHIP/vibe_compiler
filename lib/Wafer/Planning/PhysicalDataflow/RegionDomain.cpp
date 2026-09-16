@@ -640,12 +640,10 @@ RegionDomain::getChoiceFragments(
   return result;
 }
 
-bool RegionDomain::advanceChoices(
+llvm::SmallVector<RegionDomain::FragmentChoices, 16>
+RegionDomain::getAllowedChoices(
     llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
-    llvm::ArrayRef<const LocalFragment *> fragments,
-    llvm::SmallVectorImpl<uint8_t> &choices) const {
-  if (choices.size() != fragments.size())
-    return false;
+    llvm::ArrayRef<const LocalFragment *> fragments) const {
   std::map<analysis::RootRegionWorkId, std::pair<size_t, uint32_t>> groups;
   for (auto [componentIndex, values] :
        llvm::enumerate(llvm::zip_equal(components, labels))) {
@@ -653,19 +651,36 @@ bool RegionDomain::advanceChoices(
     for (auto [work, label] : llvm::zip_equal(component.works, componentLabels))
       groups[work] = {componentIndex, label};
   }
-  for (size_t reverse = 0; reverse < choices.size(); ++reverse) {
-    const size_t index = choices.size() - reverse - 1;
-    const LocalFragment &fragment = *fragments[index];
+  llvm::SmallVector<FragmentChoices, 16> result;
+  for (const LocalFragment *entry : fragments) {
+    const LocalFragment &fragment = *entry;
     auto producer = groups.find(fragment.producerWork);
     auto consumer = groups.find(fragment.consumerWork);
     const bool sameGroup = producer != groups.end() &&
                            consumer != groups.end() &&
                            producer->second == consumer->second;
-    llvm::SmallVector<uint8_t, 3> allowed{0};
+    // buildPlan rejects external bindings to a producer inside the same
+    // group. Do not enumerate their exponentially many invalid combinations.
+    FragmentChoices allowed;
+    if (!sameGroup)
+      allowed.push_back(0);
     if (sameGroup && fragment.allowsRequiredLocal)
       allowed.push_back(1);
     if (fragment.allowsReplica)
       allowed.push_back(2);
+    result.push_back(std::move(allowed));
+  }
+  return result;
+}
+
+bool RegionDomain::advanceChoices(
+    llvm::ArrayRef<FragmentChoices> allowedChoices,
+    llvm::SmallVectorImpl<uint8_t> &choices) const {
+  if (choices.size() != allowedChoices.size())
+    return false;
+  for (size_t reverse = 0; reverse < choices.size(); ++reverse) {
+    const size_t index = choices.size() - reverse - 1;
+    const auto &allowed = allowedChoices[index];
     auto current = llvm::find(allowed, choices[index]);
     if (current == allowed.end())
       return false;
@@ -673,7 +688,7 @@ bool RegionDomain::advanceChoices(
       choices[index] = *current;
       return true;
     }
-    choices[index] = 0;
+    choices[index] = allowed.front();
   }
   return false;
 }
@@ -897,19 +912,32 @@ RegionDomain::buildPlan(llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
 
 RegionSuccessor RegionDomain::findPlan(RegionCursor cursor,
                                        bool advanceCurrent) const {
+  uint64_t attempts = 0;
+  auto report = llvm::make_scope_exit([&] {
+    wafer::support::addCompileCounter("region-successors", "build-attempts",
+                                      attempts);
+  });
   while (true) {
     std::vector<const LocalFragment *> fragments =
         getChoiceFragments(cursor.labels);
+    auto allowed = getAllowedChoices(cursor.labels, fragments);
+    auto initialize = [&] {
+      cursor.fragmentChoices.clear();
+      for (const auto &choices : allowed)
+        cursor.fragmentChoices.push_back(choices.front());
+    };
     if (cursor.fragmentChoices.size() != fragments.size())
-      cursor.fragmentChoices.assign(fragments.size(), 0);
+      initialize();
     if (advanceCurrent) {
-      if (!advanceChoices(cursor.labels, fragments, cursor.fragmentChoices)) {
+      if (!advanceChoices(allowed, cursor.fragmentChoices)) {
         if (!advanceLabels(cursor.labels))
           return {RegionSuccessorKind::End};
         fragments = getChoiceFragments(cursor.labels);
-        cursor.fragmentChoices.assign(fragments.size(), 0);
+        allowed = getAllowedChoices(cursor.labels, fragments);
+        initialize();
       }
     }
+    ++attempts;
     if (std::optional<RegionPlan> plan =
             buildPlan(cursor.labels, cursor.fragmentChoices))
       return {RegionSuccessorKind::Plan, std::move(plan), std::move(cursor)};
@@ -920,7 +948,6 @@ RegionSuccessor RegionDomain::findPlan(RegionCursor cursor,
 RegionSuccessor RegionDomain::getFirstPlan() const {
   RegionCursor cursor;
   cursor.labels = getFirstLabels();
-  cursor.fragmentChoices.assign(getChoiceFragments(cursor.labels).size(), 0);
   return findPlan(std::move(cursor), /*advanceCurrent=*/false);
 }
 

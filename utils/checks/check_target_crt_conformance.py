@@ -661,6 +661,22 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
 
 
 def check_dma(source_text: str) -> None:
+    packet_format = function_body(source_text, "wafer_dma_packet_format")
+    require_exact_set(
+        set(re.findall(r"case (Fmt_\w+):", packet_format)),
+        {"Fmt_UINT8", "Fmt_UINT16", "Fmt_UINT32", "Fmt_INT64", "Fmt_UINT64"},
+        "DMA formats requiring byte packets",
+    )
+    require_contains(packet_format, "return Fmt_INT8;", "DMA byte packet")
+    require_contains(packet_format, "return format;", "DMA native packet")
+    for name in ("wafer_tx81_rdma", "wafer_tx81_wdma"):
+        require_in_order(
+            function_body(source_text, name),
+            ["format = wafer_dma_packet_format(format);",
+             "wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements)",
+             "AddSrcDst(&instr, src, dst, wafer_format(format))"],
+            name + " uses one packet format for count, strides and SDK",
+        )
     conversion = function_body(source_text, "wafer_elem_count_from_bytes")
     for needle in [
         "Fmt_BOOL",

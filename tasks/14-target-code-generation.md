@@ -116,6 +116,18 @@ SPM不执行dcache维护。现阶段DDR scalar store没有publication合同，�
 次数为一次，重复输入更换内容仍正确；越界/错误空间/位宽负例；实际索引驱动gather的target、host和fresh no-card。
 设备资格和发令开销单独验收，不以减少静态call数量宣称性能改善。
 
+### DMA逻辑格式与寄存器格式
+
+输入为verified RDMA/WDMA TargetCall的逻辑format、byte count及三层byte stride/iteration；CRT负责将其转换为
+SDK packet，直接消费者是`TsmRdma/TsmWdma`。SDK的`Data_Format`枚举不等于DMA寄存器支持集合：
+`get_dma_reg_dtype`只原样保留0到7，较大值变为INT8。因此U8/U16/U32/I64/U64的原样搬运统一使用INT8 packet，
+inner count与每层stride均按同一packet format从字节换算；不能保留逻辑元素数却更换寄存器格式。
+其它格式沿既有路径，BOOL仍按bitpacked换算。Tensor dtype、布局、数值位模式、地址、completion及TargetCall ABI均不改变。
+
+本边界不承担数值转换或新增DMA算法。完成条件为两种DMA方向的所有逻辑格式、连续/三层stride、
+1024/1025/1031长度保持exact byte geometry，原浮点/BOOL合同不变；实际embedding经完整产品路径上板
+逐元素相等，再回到完整LM验证全部logits。板端记录与主机descriptor检查分别登记，不以枚举存在证明硬件支持。
+
 ## 2. 稳定对象与身份
 
 CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。

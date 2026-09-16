@@ -1590,8 +1590,13 @@ SpatialPlanDomain::getGraphCoherentProposals(
   if (mlir::failed(canonical))
     return mlir::failure();
   append(std::move(canonical->plan));
+  // These demand proofs only propose optional placement variants. Unknown
+  // bounded images retain the raw seed; they must not block proposal creation
+  // in an unbounded integer-set equality query.
+  auto proposalLimits = limits;
+  proposalLimits.rectangleProof = analysis::RectangleProofMode::Construction;
   for (const SpatialPlan &raw : proposals) {
-    SpatialDomainEvaluation evaluation = evaluate(dag, raw, limits);
+    SpatialDomainEvaluation evaluation = evaluate(dag, raw, proposalLimits);
     if (evaluation.failure)
       return mlir::failure();
     const analysis::ExactDemandProof *proof =

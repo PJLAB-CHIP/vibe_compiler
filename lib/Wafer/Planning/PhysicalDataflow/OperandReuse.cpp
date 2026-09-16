@@ -23,6 +23,10 @@ getReadOperandProjections(mlir::Operation *operation,
   if (llvm::any_of(domain, [](int64_t extent) { return extent <= 0; }))
     return std::nullopt;
   llvm::SmallVector<int64_t> zero(domain.size(), 0);
+  // Proposal ranking must not enter an unbounded Presburger equality proof
+  // after composing broadcasts, reshapes, or reduction fibers.
+  analysis::IndexRelationLimits limits;
+  limits.rectangleProof = analysis::RectangleProofMode::Construction;
   llvm::SmallVector<OperandProjection, 4> projections;
   unsigned work = 0;
   std::function<bool(mlir::Value, const analysis::IndexRelation &, unsigned)>
@@ -56,22 +60,23 @@ getReadOperandProjections(mlir::Operation *operation,
           if (mlir::failed(operandMap))
             return false;
           auto edge = analysis::IndexRelation::fromCommonIterationDomain(
-              *resultMap, type.getShape(), *operandMap, shape, producerShape);
+              *resultMap, type.getShape(), *operandMap, shape, producerShape,
+              limits);
           if (!edge.isExact())
             return false;
-          auto composed = relation.compose(*edge.get());
+          auto composed = relation.compose(*edge.get(), limits);
           if (!composed.isExact() ||
               !visit(input->get(), *composed.get(), depth + 1))
             return false;
         }
         return true;
       }
-      if (auto support = analysis::deriveTensorResultIndexing(result);
+      if (auto support = analysis::deriveTensorResultIndexing(result, limits);
           support.isExact() && support.indexing->operands.size() == 1 &&
           support.indexing->operands.front().role ==
               TensorIndexingOperandRole::Source) {
         for (const auto &operand : support.indexing->operands) {
-          auto composed = relation.compose(operand.resultToOperand);
+          auto composed = relation.compose(operand.resultToOperand, limits);
           if (!composed.isExact() ||
               !visit(result.getOwner()->getOperand(operand.operand),
                      *composed.get(), depth + 1))
@@ -83,7 +88,7 @@ getReadOperandProjections(mlir::Operation *operation,
     auto element = type ? type.getElementType() : value.getType();
     if (!element.isIntOrFloat())
       return false;
-    auto image = relation.getExactStaticRectangularImage(zero, domain);
+    auto image = relation.getExactStaticRectangularImage(zero, domain, limits);
     OperandProjection projection;
     if (image.isExact()) {
       projection.offsets = image.domain->offsets;
@@ -109,7 +114,7 @@ getReadOperandProjections(mlir::Operation *operation,
           llvm::SaturatingMultiply(projection.bytes, uint64_t(size));
     projection.iterators.resize(domain.size(), true);
     for (unsigned axis = 0; axis < domain.size(); ++axis)
-      if (relation.isInvariantOnDestinationDimension(domain, axis)
+      if (relation.isInvariantOnDestinationDimension(domain, axis, limits)
               .isProvenTrue())
         projection.iterators.reset(axis);
     projections.push_back(std::move(projection));
@@ -126,7 +131,7 @@ getReadOperandProjections(mlir::Operation *operation,
     if (mlir::failed(map))
       return std::nullopt;
     auto relation = analysis::IndexRelation::fromAffineMap(
-        *map, domain, type ? type.getShape() : llvm::ArrayRef<int64_t>{});
+        *map, domain, type ? type.getShape() : llvm::ArrayRef<int64_t>{}, limits);
     if (!relation.isExact() || !visit(input->get(), *relation.get(), 0))
       return std::nullopt;
   }

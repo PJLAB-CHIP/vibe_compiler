@@ -30,7 +30,7 @@
 
 ### 热点与根因
 
-优化前Primary为11.272 ms。虽然各Tile NE只有约0.043 ms、RDMA为0.607–1.172 ms、TDMA为0.798–0.801 ms，
+优化前Primary为11.272 ms。虽然各Tile NE只有约0.043 ms、RDMA为0.612–1.172 ms、TDMA为0.798–0.801 ms，
 这些engine指标没有解释总耗时。进一步检查Trace：Tile14约44.4%的本地entry周期处于Direct DTE completion wait，
 最长一段约734万周期。
 
@@ -241,7 +241,7 @@ Tile层仍是`wafer.tile.reduce`，旧Instr lowering却将每块变成512次4B G
 | aggregate逻辑DDR read / write | 474,011,200 / 196,317,888 bytes | 相同 |
 
 普通Primary单样本加速约**2.135倍**，耗时下降**53.17%**；profile Primary同口径约2.118倍。
-Tile14的site-control从59,308,779降到14,607,084个Trace周期，其中GS从27,575,332降到5,725,752，
+Tile14的site-control从59,308,779降到14,612,084个Trace周期，其中GS从27,575,332降到5,725,752，
 add从22,415,683降到524,129。NE仍为每Tile0.120656 ms；RDMA为3.342002–4.741794 ms，
 TDMA为0.642129–0.642506 ms。DDR请求量不变、join次数不变，配合消失的逐项循环，支持收益主要来自减少细碎归约指令及控制/提交开销。
 PMU累计ns、Trace本地周期与Primary属于不同测量口径，不能互相相减或直接相加。
@@ -1779,3 +1779,45 @@ GEMM原PyTorch FP16默认`rtol=0.001, atol=1e-5`下29605/16777216项失败（约
 当前实际Instr、LLVM调用及CRT映射均为8个K=512块，中间output/psum的format为FP32，末次output为FP16；
 未发现psum格式传错证据。离线抽取514个位置（含259个F64逐元素门限失败位置）检查F64点积与分块F32累加，
 未精确复现设备误差；窄化每块partial的假设也与观测不符。这只是有限诊断，不能证明硬件内部数值合同或给根因定论。
+
+## 2026-09-17：算子回归与完整LM索引搬运修复
+
+本轮从`cfc4bdd7`开始，使用5.7.0.0524.01 SDK、runtime 1400、单卡16 Tile、seed 20260803及默认search 8/42。
+每项重新生成source、输入及独立PyTorch reference，launch前通过fresh no-card，设备单进程逐case执行。
+每步只有一个普通TX stream event样本。编译器修复分批落地，逐attempt的compiler、CRT、runner、manifest、module、
+输入和回读身份见[完整证据](data/board-performance/catalog-regression-20260917.json)，不能把早期包说成全部由最终版本重编。
+
+原42项中41项实卡通过，4K prefill在编译阶段暴露relation store指针失效；修复后该source已完成package/no-card。
+新增4096³ BF16、4097³ FP16及ResNet18原生224输入均完成实卡全输出比较。ResNet不扩展整网大图。
+
+| Case | Device elapsed，单样本 | Cosine | Relative L2 |
+| --- | ---: | ---: | ---: |
+| 原decoder block S16 FP16 | 50.597 ms | 0.9999998866 | 0.0004763424 |
+| 原decoder block S16 BF16 | 49.595001 ms | 0.9999953054 | 0.0030641871 |
+| GEMM4096³ BF16 | 6.919 ms | 0.9999999874 | 0.0001588446 |
+| GEMM4097³ FP16 | 8.577 ms | 0.9999999981 | 0.0000625625 |
+| ResNet18 224 FP16，1000 logits | 31.122999 ms | 0.9999998978 | 0.0004523348 |
+| 完整单层LM S16 FP16，512000 logits，DMA修复后 | 125.475998 ms | 0.9999995797 | 0.0009168238 |
+| 完整单层LM S16 BF16，512000 logits，DMA修复后 | 124.264 ms | 0.9999842426 | 0.0056139413 |
+
+完整LM首次实卡正常完成，但cosine仅0.2009719074、relative L2为1.283423459；这不属于可接受舍入误差。
+独立embedding `[2,1024]` i64 IDs→`[2,1024,64]` FP16复现98235/131072项错误，每128行前32行正确，
+之后多数命中词表首尾行。实际LLVM的中间i64 WDMA按8字节计算count，但pinned SDK的`get_dma_reg_dtype(11)`返回INT8；
+硬件搬运格式与逻辑元素数不一致。该SDK静态事实在升级前的材料中已存在，本轮证据不支持将其归因于5.7新接口变化。
+
+CRT对U8/U16/U32/I64/U64原样DMA统一使用INT8 packet，同时按字节换算inner count和三层stride；逻辑dtype、算术及completion不变。
+同compiler、相同source/input/reference的embedding修复前后对照已经闭合，修复后所有输出exact，最大绝对误差0，设备0.894 ms。
+长度1025 FP16与1031 BF16分别131200/131968个输出也全部exact，设备0.906/0.901 ms。
+完整LM FP16修复后通过原相似度合同，保留30/512000项逐点超差诊断；最大绝对误差0.005859375。
+其整次准备、编译和验证wall为667.734秒，CPU reference为8.210秒，均不属于125.475998 ms设备区间。
+BF16完整LM也通过同一合同，最大绝对误差0.046875，保留206478/512000项逐点超差诊断；没有进一步放宽门限。
+
+CRT host检查执行真实packet构造，覆盖13种format、RDMA/WDMA、连续/三层stride和1024/1025/1031共156种组合；
+独立寄存器格式解释确认exact byte geometry，旧实现触发断言。612项受影响component单测与CRT/reshape定向lit通过。
+扩大检查的115项lit有6个既有失败，具体边界记录在current plan与证据中，未作为通过。
+
+本轮正确性通过不代表性能恢复。同配置block的FP16历史14.113→50.597 ms、BF16历史14.236→49.595001 ms；
+小prefill约慢2.2至2.3倍，FP16 decode第二步6.937→59.056001 ms，FP16 conv-mixed为12.281→15.480 ms。
+其余35/43个可比旧配置执行步未出现超过10%的单样本增长。历史与当前的compiler/runtime均变化，不能由这些比值归因，
+也不能把普通单样本说成稳定均值。完整LM数值错误已修复；用户随后要求继续性能攻关，逐case保留同环境的最好可复现成绩，
+不能以其它case收益抵消退化。下一步先用相同5.7 runtime复验旧快包和当前包，再以实际profile定位block及完整LM热点。

@@ -889,6 +889,8 @@ Scalar/combiner region保持不变，contraction仍须恢复为当前支持的ge
 non-identity result map；direct Tile lowering以其inverse把全部operand maps同步改写到result coordinates，并把Tile result map规范为
 identity。不能只改result map或把任意projected map当成可逆。Reduction和contraction继续使用各自standard projected result map合同。
 Callback只返回type/relation ID和typed status，不创建或修改MLIR。
+Relation store的intern可移动已有记录；callback跨intern只保留稳定ID或值，不保留lookup返回的指针。
+回归覆盖同一component内连续reshape重参数化使relation store增长的情形，检查完整输出shape、原算术与init保留。
 
 #### Concat normalization
 

@@ -85,6 +85,9 @@ supported(Engine engine, Format format,
 // This is intentionally an explicit 65-row closed matrix. Adding a logical
 // format or engine must add each new row and keep the completeness
 // assertion below true; absence is never interpreted as unsupported.
+// DMA support describes the byte-counted TargetCall. The CRT encodes unsigned
+// and 64-bit integer transfers as raw INT8 packets, since the DMA register
+// cannot represent their logical Data_Format codes.
 constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     supported(Engine::RDMA, Format::I8),
     supported(Engine::RDMA, Format::I16),

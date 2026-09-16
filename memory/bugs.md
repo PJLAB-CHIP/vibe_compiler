@@ -2090,3 +2090,23 @@
 - 根因：逻辑extent为1不保证删除该轴后NCx的bank/stride/axis解释保持不变；直接rank-reduced subview会将不同physical layout当成alias。
 - 修复边界：先查询current source/result的physical metadata-view等价性；不等价时显式materialize同shape Tensor布局，再建立单位轴view。
 - 防复发：Tensor/NCx、named/generic及置换map成对覆盖，沿实际Tile→Instr及全输出数值检查，不能只在逻辑shape相等时认定零拷贝。
+
+## Relation store增长会使lookup指针失效
+
+- 根因：reshape重参数化callback取得relation指针后继续intern其它relation；vector扩容使旧指针失效，再读取source type ID触发崩溃。
+- 修复边界：跨intern只保存稳定ID或所需字段值；不依赖当前容量或某个小输入的地址稳定性。
+- 防复发：真实4K prefill的连续reshape、混合精度算术及两次contraction共同触发store增长，覆盖整除/非整除，并检查完整结果shape及算术保留。
+
+## Region successor不能指数枚举必拒绝的external binding
+
+- 根因：同一Region内的producer/consumer每个use仍枚举external取值，而`buildPlan`最终必拒绝；几十个view use足以让下一候选查询停滞。
+- 修复边界：由当前partition和既有local-use合同构造有限取值域，同组保留required-local/replica，异组保留external/replica；最终验证不变。
+- 防复发：有界穷举oracle核对合法集合与顺序；真实规模32个use、多Tile及尾部检查exact coverage、绑定和实际构造尝试数。
+
+## DMA枚举存在不代表寄存器支持该格式
+
+- 根因：SDK的`get_dma_reg_dtype`把大于7的枚举值变为INT8；CRT却按I64/U64或其它unsigned逻辑位宽换算count/stride，造成实际搬运不足。
+  中间索引buffer被截短后，gather的clamp把残留数据压到首尾行，看似模型数值误差。
+- 修复边界：U8/U16/U32/I64/U64原样DMA在CRT使用INT8 packet，count和每层stride同时按字节计算；保留Tensor dtype及所有位模式。
+- 防复发：执行真实CRT的packet构造，用独立寄存器格式解释检查两种方向、全部格式及多层stride的字节数；原实现必须失败。
+  embedding还须经fresh source/package/no-card及实卡逐元素比较，host模型的逻辑copy不能代签SDK packet正确性。

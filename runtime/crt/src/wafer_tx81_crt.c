@@ -680,6 +680,23 @@ static bool wafer_elem_count_from_bytes(uint32_t bytes, uint32_t format,
   return true;
 }
 
+/* DMA register formats only encode Data_Format values 0..7. The SDK maps
+ * larger values to INT8, so their counts and strides must also be in bytes.
+ * These transfers preserve raw storage; they do not convert tensor values.
+ */
+static uint32_t wafer_dma_packet_format(uint32_t format) {
+  switch ((Data_Format)format) {
+  case Fmt_UINT8:
+  case Fmt_UINT16:
+  case Fmt_UINT32:
+  case Fmt_INT64:
+  case Fmt_UINT64:
+    return Fmt_INT8;
+  default:
+    return format;
+  }
+}
+
 static bool wafer_memset_span_bytes(uint32_t elem_count, uint32_t format,
                                     uint32_t *span_bytes) {
   if (elem_count == 0)
@@ -828,6 +845,7 @@ void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                         uint32_t stride1, uint32_t stride2, uint32_t iteration0,
                         uint32_t iteration1, uint32_t iteration2,
                         uint32_t format, uint32_t worker) {
+  format = wafer_dma_packet_format(format);
   uint32_t inner_elements = 0;
   uint32_t stride0_elements = 0;
   uint32_t stride1_elements = 0;
@@ -853,6 +871,7 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                         uint32_t stride1, uint32_t stride2, uint32_t iteration0,
                         uint32_t iteration1, uint32_t iteration2,
                         uint32_t format, uint32_t worker) {
+  format = wafer_dma_packet_format(format);
   uint32_t inner_elements = 0;
   uint32_t stride0_elements = 0;
   uint32_t stride1_elements = 0;

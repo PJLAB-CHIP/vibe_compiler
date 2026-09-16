@@ -1110,6 +1110,8 @@ instr-lowering verifier checks only instruction legality:
   I8/I16/F16/BF16/I32/F32/TF32/BOOL/U8/U16/U32/I64/U64在RDMA、WDMA、TDMA、CT和NE的format-bearing
   command上都有current encoding row；TF32、UINT和64-bit不因format缺通用encoder而target-illegal。未列format、
   `Fmt_UNUSED`、F64和unknown code拒绝；唯一额外dtype特例是GEMM拒绝F32，这不关闭整个NE×F32 row。
+  这里的format是TargetCall逻辑格式，不保证SDK寄存器可以原样编码；RDMA/WDMA的UINT及64-bit整数由14号CRT合同
+  用INT8 packet保留原始bytes，count/stride与packet格式一起换算，Instr的logical element与geometry检查仍保留。
 - ABI format可编码不等于任意数学op自动合法。elementwise/reduce/convert仍须证明source semantic、opcode/kind、
   operand/result relation、shape/layout、parameter fields、rounding/zero-point policy和typed convert route；失败必须归因到
   对应op-specific fact，不能由model registry把某个current dtype整体改成target-illegal。target-model尚未实现

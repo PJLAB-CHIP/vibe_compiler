@@ -291,6 +291,7 @@ uint32_t v = *p;
 | --- | --- |
 | 公开样例覆盖 | 历史backend主要出现`f32/f16/bf16/i8`；其他整数、bool、MXFP多出现在特定helper或workaround，不能据此推断production集合 |
 | dtype关系 | CT non-convert样例使用同dtype输入输出；convert opcode名称编码src/dst pair；NE/Reduce/Pool另有各自wrapper字段 |
+| DMA寄存器格式 | `supported`静态证据：pinned `libcommon_util.a`的`get_dma_reg_dtype`只保留0..7，UINT及64-bit枚举被映射为INT8；因此原样搬运须同时按实际packet格式换算count/stride。不能只凭`Data_Format`枚举存在便直接下发，CRT映射由14号设计拥有 |
 | bool | 历史路径使用bitpacked storage；tail/padding/masked访问仍缺统一静态证明 |
 | MXFP | FP8/FP4 decode和E8M0 scale样例表现为helper/Kcore loop + CGRA计算，不证明普通单条convert能力 |
 

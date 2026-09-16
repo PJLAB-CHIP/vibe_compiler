@@ -334,6 +334,91 @@ TEST_F(RegionDomainTest, TwoNodeChainEnumeratesEveryCurrentUseForm) {
 }
 
 TEST_F(RegionDomainTest,
+       SameRegionViewUsesDoNotEnumerateExternalBindingCombinations) {
+  constexpr unsigned uses = 32;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t tileCount : {4, 16}) {
+      SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(tileCount));
+      const std::string tensor =
+          "tensor<16x" + std::to_string(extent) + "x128xf16>";
+      const std::string view =
+          "tensor<16x" + std::to_string(extent) + "x1x128xf16>";
+      std::string source;
+      llvm::raw_string_ostream ir(source);
+      ir << "module { func.func @main(%input: " << tensor << ") -> "
+         << view << " {\n%e = tensor.empty() : " << tensor
+         << "\n%producer = linalg.map ins(%input : " << tensor
+         << ") outs(%e : " << tensor
+         << ") (%v: f16) { linalg.yield %v : f16 }\n"
+         << "%view = tensor.expand_shape %producer [[0], [1], [2, 3]] "
+            "output_shape [16, " << extent << ", 1, 128] : "
+         << tensor << " into " << view << "\n%init = tensor.empty() : "
+         << view << "\n%consumer = linalg.generic {indexing_maps = [";
+      for (unsigned index = 0; index <= uses; ++index)
+        ir << (index ? ", " : "")
+           << "affine_map<(b, m, u, n) -> (b, m, u, n)>";
+      ir << "], iterator_types = [\"parallel\", \"parallel\", \"parallel\", "
+            "\"parallel\"]} ins(";
+      for (unsigned index = 0; index < uses; ++index)
+        ir << (index ? ", " : "") << "%view";
+      ir << " : ";
+      for (unsigned index = 0; index < uses; ++index)
+        ir << (index ? ", " : "") << view;
+      ir << ") outs(%init : " << view << ") { ^bb0(";
+      for (unsigned index = 0; index < uses; ++index)
+        ir << (index ? ", " : "") << "%a" << index << ": f16";
+      ir << ", %old: f16):\n";
+      for (unsigned index = 1; index < uses; ++index)
+        ir << "%s" << index << " = arith.addf "
+           << (index == 1 ? "%a0" : "%s" + std::to_string(index - 1))
+           << ", %a" << index << " : f16\n";
+      ir << "linalg.yield %s" << uses - 1 << " : f16 } -> " << view
+         << "\nreturn %consumer : " << view << "\n}}";
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      std::string detail;
+      auto dag = StructuredDAGAnalysis::create(function(*module), &detail);
+      ASSERT_TRUE(mlir::succeeded(dag)) << detail;
+      llvm::SmallVector<TileId, 16> tiles;
+      for (int64_t tile = 0; tile < tileCount; ++tile)
+        tiles.push_back(TileId(tile));
+      auto works = buildWorksOnTiles(*dag, tiles, &detail);
+      ASSERT_TRUE(mlir::succeeded(works)) << detail;
+      auto domain = RegionDomain::create(*works, &detail);
+      ASSERT_TRUE(mlir::succeeded(domain)) << detail;
+      std::string report;
+      llvm::raw_string_ostream diagnostics(report);
+      auto timing =
+          std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+      {
+        wafer::support::ScopedCompileTimingActivation activation(timing);
+        auto first = domain->getFirstPlan();
+        ASSERT_EQ(first.getKind(), RegionSuccessorKind::Plan);
+        ASSERT_EQ(first.getPlan()->groups.size(), 2u * tileCount);
+        auto next = domain->getNextPlan(*first.getCursor());
+        ASSERT_EQ(next.getKind(), RegionSuccessorKind::Plan);
+        EXPECT_TRUE(domain->contains(*next.getPlan()));
+        EXPECT_EQ(next.getPlan()->groups.size(), 2u * tileCount - 1);
+        std::set<analysis::RootRegionWorkId> covered;
+        unsigned local = 0;
+        for (const auto &group : next.getPlan()->groups) {
+          EXPECT_TRUE(group.replicas.empty());
+          local += group.localBindings.size();
+          for (const auto &work : group.mandatoryRoots)
+            EXPECT_TRUE(covered.insert(work).second);
+        }
+        EXPECT_EQ(local, uses);
+        EXPECT_EQ(covered.size(), works->size());
+      }
+      timing->finishAndPrintSummary();
+      EXPECT_NE(report.find("category=region-successors name=build-attempts "
+                            "value=2 overflow=false"), std::string::npos)
+          << report;
+    }
+  }
+}
+
+TEST_F(RegionDomainTest,
        CrossTileFragmentKeepsBoundaryAndBothExplicitReplicaSiblings) {
   auto module = parse(kTwoNodeChain);
   ASSERT_TRUE(module);

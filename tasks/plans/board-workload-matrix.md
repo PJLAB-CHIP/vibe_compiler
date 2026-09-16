@@ -3,10 +3,50 @@
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
-按用户最新要求移除DLRM和YOLOv5s；原42个配置及尚未修复的BF16 LLaMA一起进入本轮验证。
+按用户最新要求移除DLRM和YOLOv5s；原42个配置及待按当前策略复验的BF16 LLaMA一起进入本轮验证。
 先完成正确性压测，再进行三轮“profile→根因→通用修改→正确性/性能回归”，正确性准备不占用三轮调优名额。
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
+
+## 算子回归与重点模型板测（2026-09-17）
+
+用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
+输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
+source→默认8/42 search→verified package→fresh no-card→串行设备执行及完整输出比较。
+输出为逐case的数值、普通设备耗时、执行身份和失败边界，由本板测任务验收与后续性能基线消费。
+本轮不扩展新的GQA/长cache配置；原42项中已有attention/decode仍在回归范围内。
+用户随后要求完整LM错误收尾后继续性能攻关，并争取每个case达到各自最好耗时。执行顺序调整为：
+先闭合当前数值错误及已准备case，再对已通过的block/LM开展匹配性能诊断；剩余模型编译失败继续登记，不能代签53项完成。
+后续三轮优化及最终矩阵收口沿用下文合同，热点顺序由实际profile决定。
+
+每个case分别保存历史最好记录和相同环境下已复现的最好基线，固定shape、dtype、seed、search预算及完整数值合同。
+历史环境不同的最快样本先作为对照目标，不能直接归因于编译器。更新基线须有普通执行的匹配重复样本，
+不选择一次偶然最小值；同时保留最初快版本和上一接受版本，不能以当前慢版本重置目标。
+每次共用修改按影响边界检查其它case，收益逐项对账；可确认退化必须修复，不能靠平均值或总加速掩盖。
+
+| 范围 | 本次配置 | 完成证据 |
+| --- | --- | --- |
+| 原算子、通信与模型 | 原42项，先BF16/FP16 LLaMA block；division保留原F32特殊值合同 | 每项完整输出、正常completion/readback/cleanup及设备计时；decode两步消费本轮actual KV |
+| 大GEMM与batch共享RHS | 4096³ BF16、4097³ FP16、batch共享RHS整除/尾部FP16 | 各shape/dtype分别执行，不能外推此前4096³ FP16实卡结果 |
+| 视觉模型 | ResNet18 224 FP16；ViT EncoderBlock S1024/1025 FP16 | 原始整网/整块全输出；缺失package先定位并修复当前编译边界 |
+| 完整单层LM | S16 FP16/BF16、S1024/1025 FP16 | embedding至LM head全部logits，每个完整输出按16号相似度合同验收 |
+
+上述共53个配置。普通浮点计算沿用cosine≥0.9999且relative L2≤0.01；整数、原样搬运、旧KV前缀及专项oracle保持原严格策略。
+失败保留实际停点和版本，数值误差按执行前固定的合同判断，不把历史逐点超差预判为当前缺陷。
+
+本轮失败修复的覆盖边界：
+
+| 首次失败与owner | 通用修复及exact要求 | 本轮直接witness |
+| --- | --- | --- |
+| 4K prefill在05号reshape callback崩溃 | relation store的intern可使lookup指针失效；跨intern只保存type ID，算术与dtype不变 | 原binary对真实source fixture崩溃，修复后4096/4097两次contraction、softmax、mask与完整结果shape保留；4K实际source→package/no-card通过 |
+| 06号输入复用与可选placement提案查询停滞 | optional ranking/coherent placement只用有界构造证明；未知保留raw seed，正式demand与SPM验证不变 | rank3共享RHS的1024/1025/1031 exact image/invariance；既有spatial覆盖及batch主/尾部source→package/no-card |
+| 06号Region successor遍历必拒绝组合 | 同组use只枚举required-local/replica，异组仍external/replica；保持合法集合及顺序 | 有界全枚举oracle；32个view use、4/16 Tile与1024/1025/1031的exact work/binding coverage；两次successor共两次build尝试 |
+| 完整LM索引错误，14号CRT DMA | SDK将INT64 format映射为INT8，而旧CRT仍按8字节计算元素数；UINT及64-bit改用raw INT8 packet并同步换算count/stride | 独立embedding同输入从98235/131072项错误变为完整exact；真实CRT的156种方向/format/stride/长度组合检查字节数，旧实现会触发断言 |
+
+四组受影响component共612个主机单测通过，CRT/reshape定向lit通过，canonical完整增量构建及后续Ninja no-op通过。
+扩大到Pipelines/Conversion/Tools的115项lit有109通过、6失败，不能记录为全绿：四项IR/pipeline检查在基线与当前
+输出完全相同；multihead-mask基线触发同一relation失效崩溃，当前不再崩溃但其旧attention形成断言仍失败；
+另一个未改动的Torch XLA workload corpus存在export digest不一致。它们的具体日志及身份与板测记录一起保留。
 
 ## 普通浮点case统一相似度验收（2026-09-17）
 
@@ -240,7 +280,7 @@ baseline构包通过不代签实卡完成。
 
 | 索引 | 主配置与完整输入→输出 | 关键结构及性能问题 | 必要补充覆盖 |
 | --- | --- | --- | --- |
-| 1 | ResNet-18整网：图像`[1,3,224,224]`→全部分类logits`[1,1000]` | 多层Conv、BN、ReLU、池化、残差、FC；二维空间切分、halo、跨层中间buffer复用 | 整网大图`[1,3,1024,1024]`及`[1,3,1025,1025]`，全输出仍为`[1,1000]`；两轴均经过切分与尾部 |
+| 1 | ResNet-18整网：图像`[1,3,224,224]`→全部分类logits`[1,1000]` | 多层Conv、BN、ReLU、池化、残差、FC；二维空间切分、halo、跨层中间buffer复用 | 按用户2026-09-17要求只验原始224输入，不补整网大图；通用机制仍独立覆盖真实规模及尾部 |
 | 3 | ViT-B单EncoderBlock：tokens`[1,1024,768]`，12 heads、head dim64、MLP3072→`[1,1024,768]` | 非causal attention、LayerNorm、GELU和残差；识别、融合、布局和归约复用 | S=1025，同一参数；输入已是embedding/位置编码之后的tokens，此行不宣称完整ViT或分类头资格 |
 | 4 | LLaMA2单层完整LM：i64 token IDs`[1,16]`→embedding→1个原始decoder block→final RMSNorm→LM head→logits`[1,16,32000]` | token lookup、现有block、新增词表投影及完整输出；embedding与LM head权重访问、GEMM复用、输出写回 | S=1024/1025→`[1,S,32000]`；S16另补BF16；词表大小/hidden保持不变，包含重复ID及首末有效ID |
 | 5 | GEMM4096³：A/B均为运行时输入`[1,4096,4096]`→C`[1,4096,4096]` | 大矩阵spatial/temporal切分、FP32 K partial、只读输入共享；重点比较DDR/DTE | 同shape BF16；FP16 `M=N=K=4097`的三轴尾部；自动search及下节控制其它选择的DDR/DTE配对 |
@@ -256,7 +296,7 @@ LLaMA的完成边界是全部位置、全部32000个词表logits；设置 `logit
 
 224是整网原生规模样本，不用来代替编译器大shape机制验收。每个新增或修改的IR/analysis/lowering机制仍须具备
 rank≥3、至少一个主要迭代维度≥1024的正例及1025/1031非整除配对，实际经过多Tile、多block/wave、尾部与直接下游。
-ResNet另有1024整网输入；整数索引的源rank不得为了测试规则伪造。
+ResNet整网限定224输入，较大shape及尾部由通用机制用例覆盖；整数索引的源rank不得为了测试规则伪造。
 
 | 输入等价类/结构分支 | exact要求与typed failure | 直接下游witness |
 | --- | --- | --- |
@@ -317,7 +357,7 @@ FP16 LLaMA的14.113 ms、decode的6.545/6.937 ms及4K prefill的278.981 ms保留
 不能把准备阶段引入的退化藏进重新定义的B0。新case和原失败BF16 case在完整数值通过后才有正确性能基线。
 
 基础清单为原42个配置加七个新增FP16主配置，共49个配置；原两种dtype的decode和新长cache均为两步，
-因此完整普通执行基数为52次。新矩阵另有10个明确的shape/dtype补充配置，以及GEMM受控DDR/DTE配对；
+因此完整普通执行基数为52次。移除ResNet大图后，新矩阵另有8个明确的shape/dtype补充配置，以及GEMM受控DDR/DTE配对；
 不把复测或一次profile的内部launch算成新case，不做shape×dtype×policy×预算的全笛卡尔积。
 分项开发过程中已取得且实现/身份未变的本轮资格可以保留；实现改变后按受影响范围重建和复验，冻结版本的清单必须完整对账。
 上述数量是一次完整覆盖的账目，不是每次修改或每轮调优的运行次数；开发中按下面的分层策略执行。
@@ -436,7 +476,7 @@ compiler发生变化时，尚未重编的旧包只能作已冻结的A/B控制和
 | 通信 | allgather-add-tail-1025、alltoall-transpose-tail-1025、reduce-scatter-sum-tail-1031、all-reduce-sum-tail-1031 |
 
 原conv-mixed-dag的FP16/BF16实际shape不同，必须各自与同shape旧产物比较；不能把两者时间差算成dtype收益。
-ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化回归输入，不参与针对配置的手工参数拟合。
+ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化回归输入，不参与针对配置的手工参数拟合。
 
 ### LLaMA强制回归
 
@@ -444,7 +484,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 也不改变其它关键case的无退化要求。新增带Embedding/LM head的case不能替换原block对照。
 
 - **固定配置**：FP16，输入/输出 `[1,16,4096]`、MLP11008、原固定参数和seed20260803，生产search width8/trials42；
-  65,536个输出全部按原 `rtol=0.002, atol=0.004` 比较。数值正确、编译成功和性能分别验收。
+  65,536个输出全部按16号相似度合同比较，原 `rtol=0.002, atol=0.004`保留为逐点诊断。数值正确、编译成功和性能分别验收。
 - **固定快版本**：保留当前完整正确、历史普通实测约14.1 ms的程序及其source/config/package身份作为初始对照，
   同时保留上一接受版本。实际判断使用同环境匹配A/B，不以历史单次14.113 ms充当无噪声硬阈值，
   也不能因仍低于早期17 ms目标就接受14 ms逐步退到16 ms。准备阶段和三轮中都不向慢版本移动初始对照；
@@ -458,8 +498,8 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 - **拒绝退化**：同时对比初始快版本和上一接受版本；匹配重复中出现超出波动的稳定变慢，就暂停叠加优化，定位本项变化并修正或撤下。
   其它case加速不能抵消LLaMA退化，疑似退化未判清不能接纳。编译超时、无可行解或数值失败同样阻止通过。
   记录DDR读写、动态搬运/指令、首次可行与编译wall/RSS作定位线索；计数不变不能代替设备性能检查。
-- **BF16**：当前51项超差仍先修复，失败程序14.236 ms不作正确性能基线；修复本身必须保护上述FP16。
-  BF16完整通过后建立自己的正确基线，加入相同的稳定修改及轮末检查，不能把FP16结果外推给BF16。
+- **BF16**：历史51项逐点超差不代替当前相似度判定；先用当前版本重新验证完整输出，实际缺陷修复须保护上述FP16。
+  BF16完整通过后建立自己的正确基线，历史14.236 ms不重判为新基线；加入相同的稳定修改及轮末检查，不能把FP16结果外推给BF16。
 
 ### 全部关键case的共同判定
 

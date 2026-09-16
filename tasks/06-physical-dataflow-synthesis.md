@@ -229,6 +229,11 @@ Search的constructive parallel proposal还应覆盖输入复用方向。对curre
 参考[MLIR整数投影合同](https://mlir.llvm.org/doxygen/classmlir_1_1presburger_1_1IntegerRelation.html)及pinned实现；
 直接调用通用投影不提供本查询所需的工作上限与整数精确保证。不能证明时保留seed，不进入集合差或整数极值求解。
 该证明保留domain bounds、reshape约束及producer reduction fiber，不依赖translated rectangular tile map；未知结果不能清除seed轴。
+同一有界矩形证明也用于spatial/temporal输入复用排序：沿当前SSA组合broadcast、reshape和归约producer后，
+不得回到通用集合差或整数极值求解。未证明exact image时只保留已有静态逻辑访问量作为排序权重，不发布共享source window，
+不删除原候选。覆盖共享RHS的broadcast→reshape→contraction、归约→view→consumer及1024/1025/1031尾块；
+检查原候选域、exact demand和直接materialization消费者，并以实际batch GEMM及ViT source→package/no-card闭合。
+可选graph-coherent placement提案所用的demand查询同样限定为构造证明；未知时保留raw seed，正式候选的完整demand验证不变。
 覆盖rank3+、1024/1025/1031、归约producer到contraction、reshape、受限domain、优先级冲突及强制归约；检查分片覆盖、merge/raw域和actual下游，不扩张搜索预算。
 与Shardy的固定点求解不同，此处只生成有界候选：从首个完整seed分别执行前向优先和反向优先的两次遍历，原seed、其余proposal及raw域保留。
 
@@ -1208,6 +1213,13 @@ Region proposal的目标是在有界actualization内提供不同Region数量且b
 prefix。每个Tile component继续直接使用current `RootRegionWork`和`allowsRequiredLocal` relation；cannot-link、group connectivity、use-binding
 totality和contracted dependency DAG只由`RegionDomain`现有合法性检查。不得增加持久Graph/Hypergraph、MergeForest、PartitionPlan或其它
 RegionPlan平行表示。
+
+Raw successor枚举在构造choice的有限取值域时消费同一local-use合同：producer和consumer已经在同一Region时，
+external binding不合法，只枚举已有required-local/replica形式；不同Region保留external与显式replica。
+这只是提前排除`buildPlan`必拒绝的取值组合，完整合法集合、semantic遍历顺序和最终verifier不变，不按性能或SPM估算剪枝。
+输入为current root works及当前partition，输出为原`RegionPlan`/cursor，直接交给RegionState和structural materializer。
+覆盖有界穷举oracle的全部use形式、1024/1025/1031的多Tile链和尾块，检查exact work coverage、local/external绑定与
+successor查询的实际build尝试数；batch共享RHS实际source→package为下游witness。
 
 商图的边必须包含current `RootRegionWork.contributions`中每个partial shard到其typed merge owner的必需依赖，
 以及selected external/replica输入边。Contribution不是普通operand binding，不能因其不在local-use choice中而漏掉；
