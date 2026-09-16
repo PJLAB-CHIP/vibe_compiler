@@ -276,6 +276,14 @@ plan语义。
 - input bindings与aggregate memory size/address-width；
 - configured deadline和provider known limitations。
 
+TX provider的设备拓扑只消费`txGetDeviceProperty().tileProp`：`tileNum`界定
+`tilesPhyInfo`的有效前缀，每项`index`是launch slot，`phyTilex/phyTiley`按当前TX81
+X-major合同形成physical Tile identity，不使用数组位置恢复identity。有效前缀是该设备的可用Tile集合，
+缺失项不能补成可用。读取前检查`tileNum`非零且不超过SDK数组容量；当前完整卡入口要求`logicIdStart=0`，
+不把分区设备的非零起点平移成完整卡。随后由同一个device qualification检查恰好16个唯一Tile、
+完整launch-slot域、唯一坐标和package binding。5.7 runtime已经废弃`txGetDeviceAllTileInfo`；
+provider不再解析或调用它，也不保留按runtime版本切换的查询路径。外部runtime版本及库digest仍显式匹配。
+
 ### 6.2 Allocation与初始化
 
 current kernel执行：

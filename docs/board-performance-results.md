@@ -1742,3 +1742,40 @@ compiler binary未变化，本次未重编LLaMA或运行设备，最近一次LLa
 没有证据将其归因到历史QKV超时，不能报告设备加速或退化数字。具体输入、实际输出和继续边界见
 [交接证据](data/board-performance/scalar-host-execution-20260914.json)及矩阵计划最新交接节。
 用户要求交出机器，当前收尾提交远程；完整矩阵正确性、三轮调优与最终实卡验收仍未完成。
+
+## 2026-09-17：TX runtime 5.7接口适配、Add与4096³ GEMM
+
+本轮使用5.7.0.0524.01安装产物，runtime API版本1400，完整16 Tile设备。
+旧provider在launch之前失败：`txGetDeviceAllTileInfo`仍有声明和动态符号，却只报告不支持并返回success，
+零初始化输出没有被填写，随后被共同qualification以重复Tile ID拒绝。
+
+新provider只消费`txGetDeviceProperty().tileProp`的有效可用项，保留index与physical identity的独立映射，
+检查SDK数组范围和zero logical start；缺失、重复或不完整的inventory仍在allocation前拒绝。
+CMake移除旧查询依赖并补齐既有Cluster launch入口检查，与runtime loader使用同一22符号集合。
+其余当前API的签名、相关结构及旧错误码未变，直接实现检查未发现另一个空桩；新增API不进入本轮支持范围。
+完整分组审计及证据边界见[runtime接口事实](tx8-deps-reverse-engineering/tx8-interface-contract.md#130-tx-runtime-57的current-provider接口)。
+
+| Case | 本轮构建、执行与数值 | 设备计时 |
+| --- | --- | --- |
+| complete-Tile Add，FP16，16×458752元素 | fresh PyTorch source、两输入和reference；verified package/no-card通过；一次Grid launch，7340032输出逐bit相同，最大绝对误差0，16 Tile completion及正常cleanup通过 | event计时1.059 ms；runtime进程wall约265.26 ms |
+| GEMM，两输入`[1,4096,4096]` FP16，seed=20260803 | fresh source/inputs/reference/package、search 8/42及no-card；一次Cluster invocation含prepare/main两个phase，16 Tile completion/cleanup通过；原逐元素比较失败，用户接受下述全输出精度 | event计时6.874 ms；编译事务12.430451秒 |
+
+同次Add启用`--device-timing`，实际经过event create/record/query/elapsed/destroy；没有额外launch、retry或reset/power。
+该单样本只证明此包的设备执行，不签性能改善；普通runner没有独立allocation canary，不把完整输出比较称为guard资格。
+GEMM另外执行Cluster与package内的Direct-DTE共享路径，不外推独立通信case资格。主机Runtime、BoardIO、Package共168项通过，无skip；
+另有实际SDK类型下production provider的6个host注入场景通过，canonical完整增量构建及Ninja no-op通过。
+可复核身份、参数、日志digest和结果见[本轮证据](data/board-performance/runtime-570-20260917.json)。
+
+本轮基于远程同步后的`f4cdda59`，compiler完整增量构建、board runner按当前源码及5.7 SDK重新编译。
+GEMM整体runner耗时409.272秒，其中CPU PyTorch reference占390.077秒；这些主机时间不属于6.874 ms设备event区间。
+
+GEMM原PyTorch FP16默认`rtol=0.001, atol=1e-5`下29605/16777216项失败（约0.1765%），runner退出1；
+失败项最大绝对差0.0009765625。全体输出最大绝对差为0.25，不能与失败项最大差混写。
+全输出以F64计算cosine=0.9999999980983814、relative L2=0.00006189285460966915（约0.00619%），
+平均绝对差0.00030439076586930014。用户看过这两个整体指标后明确接受本次数值精度；
+原自动逐元素失败仍保留，没有修改通用容差，也没有为未来输入推定新的阈值。
+
+本次核对同步前后随机GEMM的比较策略相同；历史4096³未签实卡数值通过，不能称为runtime升级造成的精度回退。
+当前实际Instr、LLVM调用及CRT映射均为8个K=512块，中间output/psum的format为FP32，末次output为FP16；
+未发现psum格式传错证据。离线抽取514个位置（含259个F64逐元素门限失败位置）检查F64点积与分块F32累加，
+未精确复现设备误差；窄化每块partial的假设也与观测不符。这只是有限诊断，不能证明硬件内部数值合同或给根因定论。

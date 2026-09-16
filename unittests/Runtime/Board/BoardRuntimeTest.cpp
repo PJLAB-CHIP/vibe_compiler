@@ -148,6 +148,8 @@ public:
            tileId != unavailableTileId, static_cast<uint32_t>(tileId % 4),
            static_cast<uint32_t>(tileId / 4)});
     }
+    if (inventoryOverride)
+      info.tiles = *inventoryOverride;
     return info;
   }
 
@@ -397,6 +399,8 @@ public:
           wafer::runtime::BoardCompletionObservationPolicy::Normal;
   uint32_t selectedDevice = std::numeric_limits<uint32_t>::max();
   int64_t unavailableTileId = -1;
+  std::optional<std::vector<wafer::runtime::BoardDeviceInfo::Tile>>
+      inventoryOverride;
   uint64_t freeMemoryBytes = 128ULL * 1024 * 1024;
   uint64_t totalMemoryBytes = 256ULL * 1024 * 1024;
   std::chrono::milliseconds submitDelay{0};
@@ -2152,6 +2156,53 @@ TEST_F(BoardRuntimeTest, Tile16RequiresCompleteUniqueTileInventory) {
   EXPECT_TRUE(sawDeviceSelection);
   EXPECT_EQ(std::find(driver.calls.begin(), driver.calls.end(), "allocate"),
             driver.calls.end());
+}
+
+TEST_F(BoardRuntimeTest, RejectsMalformedInventoryBeforeAllocation) {
+  auto package = verifyTile16();
+  ASSERT_TRUE(static_cast<bool>(package)) << llvm::toString(package.takeError());
+  FakeBoardDriver baseline;
+  auto device = baseline.getDeviceInfo(0);
+  ASSERT_TRUE(static_cast<bool>(device)) << llvm::toString(device.takeError());
+  using Tile = wafer::runtime::BoardDeviceInfo::Tile;
+  std::vector<std::vector<Tile>> inventories;
+  inventories.emplace_back();
+  // The retired TX getter returned success without writing its output.
+  // Neither that zero-filled report nor marking its entries available may
+  // turn a missing inventory into a valid full-card launch.
+  inventories.emplace_back(
+      16, Tile{wafer::TileId(0), wafer::runtime::LaunchSlotId(0), false, 0, 0});
+  inventories.emplace_back(
+      16, Tile{wafer::TileId(0), wafer::runtime::LaunchSlotId(0), true, 0, 0});
+  inventories.push_back(device->tiles);
+  inventories.back().pop_back();
+  inventories.push_back(device->tiles);
+  inventories.back().back().tileId = inventories.back().front().tileId;
+  inventories.push_back(device->tiles);
+  inventories.back().back().launchSlot = inventories.back().front().launchSlot;
+  inventories.push_back(device->tiles);
+  inventories.back().back().physicalX = inventories.back().front().physicalX;
+  inventories.back().back().physicalY = inventories.back().front().physicalY;
+  inventories.push_back(device->tiles);
+  inventories.back().back().launchSlot = wafer::runtime::LaunchSlotId(16);
+
+  for (auto [index, inventory] : llvm::enumerate(inventories)) {
+    SCOPED_TRACE(index);
+    FakeBoardDriver driver;
+    driver.inventoryOverride = inventory;
+    auto result = wafer::runtime::executeBoardInvocation(
+        *package, makeTile16Request(package->getManifest()), driver);
+    ASSERT_FALSE(static_cast<bool>(result));
+    llvm::handleAllErrors(
+        result.takeError(), [&](const wafer::runtime::BoardRuntimeError &error) {
+          EXPECT_EQ(error.getStage(),
+                    wafer::runtime::BoardRuntimeStage::DeviceSelection);
+        });
+    EXPECT_EQ(driver.calls,
+              (std::vector<std::string>{"get-device-count", "select-device",
+                                        "device-info"}));
+    EXPECT_TRUE(driver.submittedLaunches.empty());
+  }
 }
 
 TEST_F(BoardRuntimeTest,

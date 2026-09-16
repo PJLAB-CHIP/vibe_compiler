@@ -44,7 +44,6 @@ struct TxApi {
   decltype(&txGetDeviceCount) getDeviceCount = nullptr;
   decltype(&txSetDevice) setDevice = nullptr;
   decltype(&txGetDeviceProperty) getDeviceProperty = nullptr;
-  decltype(&txGetDeviceAllTileInfo) getDeviceAllTileInfo = nullptr;
   decltype(&txMemGetInfo) memGetInfo = nullptr;
   decltype(&txRuntimeGetVersion) runtimeGetVersion = nullptr;
   decltype(&txGetDevicePCIBusId) getDevicePCIBusId = nullptr;
@@ -203,6 +202,15 @@ public:
     txError_t status = api.getDeviceProperty(deviceId, &property);
     if (status != TX_SUCCESS)
       return txError("txGetDeviceProperty", status);
+    const tileProp &tiles = property.tileProp;
+    if (tiles.tileNum == 0 || tiles.tileNum > NPU_TILE_COUNT_MAX)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX device property contains an invalid Tile count");
+    if (tiles.logicIdStart != 0)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "TX full-card execution requires a zero logical Tile start");
     uint64_t freeBytes = 0;
     uint64_t totalBytes = 0;
     status = api.memGetInfo(&freeBytes, &totalBytes);
@@ -216,25 +224,24 @@ public:
     status = api.getDevicePCIBusId(pciBusId, sizeof(pciBusId), deviceId);
     if (status != TX_SUCCESS)
       return txError("txGetDevicePCIBusId", status);
-    tileTotalInfo tileInfo{};
-    status = api.getDeviceAllTileInfo(deviceId, &tileInfo);
-    if (status != TX_SUCCESS)
-      return txError("txGetDeviceAllTileInfo", status);
-
     BoardDeviceInfo info;
     info.deviceId = deviceId;
     info.runtimeVersion = runtimeVersion;
     info.freeMemoryBytes = freeBytes;
     info.totalMemoryBytes = totalBytes;
-    info.tileCount = property.tileProp.tileNum;
+    info.tileCount = tiles.tileNum;
     info.name.assign(property.devProp.devName,
                      strnlen(property.devProp.devName, NPU_NAME_LENGTH));
     info.pciBusId.assign(pciBusId, strnlen(pciBusId, sizeof(pciBusId)));
     info.runtimeLibraryDigest = runtimeLibraryDigest;
-    info.tiles.reserve(NPU_TILE_COUNT_MAX);
-    for (const tileFullInfo &tile : tileInfo.tilesFullInfo) {
+    info.tiles.reserve(tiles.tileNum);
+    // Device properties report the selected device's usable Tile prefix.
+    // Do not read unused slots or synthesize missing Tiles. Qualification
+    // below the provider requires the complete, unique package Tile domain.
+    for (uint32_t index = 0; index < tiles.tileNum; ++index) {
+      const tilePhyInfo &tile = tiles.tilesPhyInfo[index];
       auto decoded = decodeTxTileInventory(
-          tile.index, tile.isAvailable == 1, tile.phyTilex, tile.phyTiley);
+          tile.index, /*available=*/true, tile.phyTilex, tile.phyTiley);
       if (!decoded)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
@@ -903,7 +910,6 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest) {
   WAFER_RESOLVE_TX_API(getDeviceCount, txGetDeviceCount);
   WAFER_RESOLVE_TX_API(setDevice, txSetDevice);
   WAFER_RESOLVE_TX_API(getDeviceProperty, txGetDeviceProperty);
-  WAFER_RESOLVE_TX_API(getDeviceAllTileInfo, txGetDeviceAllTileInfo);
   WAFER_RESOLVE_TX_API(memGetInfo, txMemGetInfo);
   WAFER_RESOLVE_TX_API(runtimeGetVersion, txRuntimeGetVersion);
   WAFER_RESOLVE_TX_API(getDevicePCIBusId, txGetDevicePCIBusId);

@@ -8,6 +8,50 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
 
+## TX runtime 5.7接口适配与Add/GEMM验证（2026-09-17）
+
+本项属于`board-testing`，按15号runtime合同修复设备资格检查；用户本轮授权Add及4096³ FP16 GEMM实卡，
+相关接口检查覆盖当前provider的全部`tx*`调用，不扩展模型或通信设备批次。
+
+- Upstream input：显式指定的TX runtime库、当前SDK设备属性及verified `ExecutablePackage`。
+- Current responsibility：核对当前provider调用的签名、结构、错误码、符号及直接实现；以有效设备属性构造真实Tile inventory。
+- Output：`BoardDeviceInfo`及完整device qualification，或allocation/launch之前的typed拒绝。
+- Downstream consumer：原`executeBoardInvocation`、完整FP16 Add/GEMM的输出校验和正常cleanup。
+- User-level driver：`wafer-run --board`、现有complete-Tile Add及PyTorch GEMM runner；canonical host build保持board SDK关闭。
+- Non-goals：不改compiler IR、package/launch ABI、completion policy；不补猜测Tile、不绕过资格检查、不维护旧查询fallback，
+  不运行其它实卡case或reset/power。
+- Completion criteria：相关host回归、canonical完整增量构建及no-op通过；本轮新source/payload/package先通过no-card，
+  两个case分别单次invocation并校验完整输出和lifecycle；其它接口的静态检查与实卡结论分开记录。
+
+| 输入/结构分支 | exact要求或typed失败 | 直接witness |
+| --- | --- | --- |
+| 完整16 Tile、属性数组顺序与launch slot不同 | 按字段保留physical identity和launch slot，不按ordinal恢复 | inventory decoder及non-identity binding回归 |
+| SDK计数为0/超数组容量、非零logicIdStart | provider读取数组前拒绝，不补全或重编号 | 本轮实际SDK类型和production provider的host注入；真实5.7属性回读 |
+| 空/全零inventory、缺Tile、重复Tile/slot/坐标 | device-selection typed失败，allocation及launch为0 | BoardRuntime故障注入 |
+| 23个旧provider入口及22个保留入口 | 签名、相关结构/错误码、导出及实现逐项核对；废弃getter从生产依赖移除 | 本轮header/binary审计与新SDK编译 |
+| FP16 Add，16 Tile，各458752元素 | 新source、两份输入及完整7340032元素reference；fresh no-card，单次设备执行、完整比较、正常cleanup | 现有complete-Tile Add runner；本项为runtime迁移，复用其已登记rank1 launch用例 |
+| FP16 GEMM，`[1,4096,4096]`的两份runtime输入 | 默认search 8/42、新source/reference、verified package及no-card；单次invocation的event计时与全部16777216输出比较 | 原`single-card-gemm-4096` PyTorch runner；本轮用户指定整除case，不外推尾块及其它dtype |
+
+接口修复与Add检查点：provider及CMake同时移除废弃查询，CMake补查既有Cluster入口；
+runtime/BoardIO/package共168项host测试通过，无skip。实际5.7 SDK类型直接调用production provider的6个
+host边界场景通过，覆盖非法count、非零start、置换映射、有效前缀及越界坐标，未调用真实SDK函数。
+Canonical完整增量构建及随后Ninja no-op、源码组织和文本检查通过。
+新Add包通过no-card，实卡一次Grid launch，7340032个FP16输出逐bit相同，最大绝对误差0；
+全部16个completion及正常cleanup通过，event设备计时1.059 ms。此单样本不签性能改善。
+
+GEMM实卡检查点：使用同步后的`f4cdda59`及上述provider修改，compiler完整增量构建和runner重编译后的
+二进制digest已记录；source、输入、reference和package均为本轮生成。默认search 8/42编译事务12.430451秒，
+no-card通过；一次Cluster invocation执行prepare/main两个phase，完整输出回读及16 Tile completion/cleanup通过，
+event计时6.874 ms。整个runner为409.272秒，其中CPU PyTorch reference为390.077秒，不能混作设备时间。
+
+原默认FP16 `rtol=0.001, atol=1e-5`检查有29605/16777216项失败，runner退出1。
+全输出F64统计的cosine为0.9999999980983814、relative L2为0.00006189285460966915，用户据此明确接受本次数值精度。
+保留原逐元素失败，未修改通用容差或将此次人工接受推广为其它输入/dtype的自动资格。
+当前Instr、target LLVM及CRT参数核对确认K分为8个512块，中间output与所有psum均F32、最后output为F16；
+未发现格式传错的证据，不能据此声称硬件内部累加顺序与CPU相同。
+对本轮失败位置的有限F64及分块F32重算没有精确复现设备误差，根因仍unknown；不将其直接归因于runtime升级或psum错误。
+同步前随机GEMM也使用相同的PyTorch默认比较，历史4096³只有主机编译/no-card资格，不存在可用于证明本次精度退化的实卡通过基线。
+
 ## 主机验证汇总（2026-09-16）
 
 用户确认本轮先收尾记录并推送，不继续扩展输入布局转换复用或分块优化。下表汇总已经实际执行的资格；

@@ -1,0 +1,479 @@
+{
+  "date": "2026-09-17",
+  "baseCommit": "f4cdda5977e2d5fcef39d2270249e7eef91efad0",
+  "environment": {
+    "smiVersion": "5.7.0.0524.01",
+    "runtimeVersion": 1400,
+    "deviceName": "/dev/accel/dev-0",
+    "pciBusId": "0000:3b:00.0",
+    "tileCount": 16,
+    "logicIdStart": 0,
+    "bootId": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+    "runtimeLibrarySha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "runtimeHeaderSha256": "61a385daf628a38cfb6bf49333b8abe2488e2cdf39f83e86803e339948a47ff8",
+    "previousHeaderSha256": "0a6fba1fdf961c56fee32de3d2358e4d4eb8a9380a7523c6ec57416abcdc7920"
+  },
+  "apiAudit": {
+    "scope": "current TX board provider and related SDK declarations; static evidence is not device qualification",
+    "previousApiCount": 23,
+    "currentApiCount": 22,
+    "entries": [
+      {
+        "name": "txGetDeviceCount",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txSetDevice",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txGetDeviceProperty",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txGetDeviceAllTileInfo",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": false
+      },
+      {
+        "name": "txMemGetInfo",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txRuntimeGetVersion",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txGetDevicePCIBusId",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txMalloc",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txFree",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txMemcpy",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txModuleLoad",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txModuleUnload",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txModuleGetFunction",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txLaunchKernel",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txLaunchClusterKernel",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txStreamCreate",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txStreamDestroy",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txStreamQuery",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txEventCreate",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txEventDestroy",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txEventRecord",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txEventQuery",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      },
+      {
+        "name": "txEventElapsedTime",
+        "signatureUnchanged": true,
+        "exported": true,
+        "retained": true
+      }
+    ],
+    "newDeclarations": [
+      "txFreePriv",
+      "txGraphDebugDotPrint",
+      "txGraphDestroy",
+      "txGraphExecDestroy",
+      "txGraphGetNodes",
+      "txGraphInstantiate",
+      "txGraphLaunch",
+      "txGraphNodeGetType",
+      "txIpcCloseMemHandle",
+      "txIpcGetMemHandle",
+      "txIpcOpenMemHandle",
+      "txMallocExtended",
+      "txMallocPriv",
+      "txMemGetAddressRange",
+      "txMemGetHandleForAddressRange",
+      "txMemMapHost",
+      "txMemUnmapHost",
+      "txMemset",
+      "txMemsetAsync",
+      "txPointerGetAttribute",
+      "txPointerSetAttribute",
+      "txRecvAsync",
+      "txSendAsync",
+      "txStreamBeginCapture",
+      "txStreamEndCapture",
+      "txStreamGetCaptureInfo",
+      "txStreamIsCapturing",
+      "txThreadExchangeStreamCaptureMode"
+    ],
+    "removedDeclarations": [],
+    "existingErrorValuesUnchanged": true,
+    "success": 0,
+    "notReady": 1174405125,
+    "retiredNoOpSuccess": [
+      "txGetDeviceAllTileInfo",
+      "txSetDeviceSelectedTileInfo"
+    ],
+    "cmakeAndLoaderSymbolSetsEqual": true,
+    "sdkSymbolCompileLinkPassed": true,
+    "callAuditLog": "build/test/runtime-570-adaptation/provider-call-audit.json",
+    "callAuditSha256": "c2efa9e5a93eb276cf39f9fd25815d1c7dfed0ebd9f81974adbfb9513b8c6cb3"
+  },
+  "hostValidation": {
+    "ctestSuites": {
+      "WaferRuntimeUnitTests": 92,
+      "WaferRunBoardIOUnitTests": 43,
+      "WaferPackageUnitTests": 33
+    },
+    "skipped": 0,
+    "sdkProviderInjectionScenarios": 6,
+    "sdkInjectionInvokesRealLibrary": false,
+    "fullCanonicalBuildPassed": true,
+    "secondBuildNinjaNoOp": true,
+    "sourceOrganizationPassed": true
+  },
+  "sourceIdentity": {
+    "providerSha256": "7a59b0bf236b2331e4dfa1b7060a1e37054ba26f24bb4159ab18b591a3ad0ce9",
+    "compilerSha256": "d8f84079bd7c481e634f9ccb30a75d999c312bdbf4f9b8b070b99062c5a6e1c1",
+    "runnerSha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+    "remoteSyncBase": "40985174",
+    "postSyncCommit": "f4cdda5977e2d5fcef39d2270249e7eef91efad0",
+    "gemmUsedCurrentCompilerAndRebuiltSdkRunner": true
+  },
+  "add": {
+    "case": "complete-tile-add",
+    "dtype": "float16",
+    "elements": 7340032,
+    "localElements": 458752,
+    "freshSourceInputsReferencePackage": true,
+    "noCardPassed": true,
+    "launches": 1,
+    "launchForm": "grid",
+    "deviceTimingEnabled": true,
+    "deviceElapsedNs": 1059000,
+    "runnerWallSeconds": 0.2652585069881752,
+    "pytorchComparisonPassed": true,
+    "rtol": 0.001,
+    "atol": 1e-05,
+    "bitwiseEqual": true,
+    "maximumAbsoluteError": 0.0,
+    "completionTiles": 16,
+    "normalCleanup": true,
+    "separateAllocationCanary": "not provided by the existing ordinary Add runner",
+    "boardLog": "build/test/runtime-570-adaptation/board.log",
+    "boardLogSha256": "c5b44ddb857c1ccb932b9e3ac3d209ff78bbc393468158c8811197b9b6764ede",
+    "manifestSha256": "0d471c999d873f8c278bba6eba971cebda7f7bb6af95d918db37fbe09ae98501",
+    "outputSha256": "f0281c0a42ff1933d3089b31c3a94981833319fd19038e43094609123dc06b81"
+  },
+  "limits": {
+    "clusterLaunchExecuted": true,
+    "timeoutInjectionExecuted": false,
+    "modelBoardQualification": false,
+    "resetOrPowerRequestedByRunner": false,
+    "performanceImprovementClaim": false
+  },
+  "gemm": {
+    "case": "single-card-gemm-4096",
+    "dtype": "float16",
+    "seed": 20260803,
+    "shape": [
+      1,
+      4096,
+      4096
+    ],
+    "optimizationPolicy": "search",
+    "searchWidth": 8,
+    "searchTrials": 42,
+    "freshSourceInputsReferencePackage": true,
+    "noCardPassed": true,
+    "invocations": 1,
+    "launchForm": "cluster",
+    "kernelPhases": [
+      "prepare",
+      "main"
+    ],
+    "deviceTimingEnabled": true,
+    "deviceElapsedNs": 6874000,
+    "compileTransactionWallMs": 12430.451,
+    "torchReferenceWallMs": 390077,
+    "runnerWallSeconds": 409.2715675360232,
+    "runnerExitCode": 1,
+    "pytorchComparisonPassed": false,
+    "rtol": 0.001,
+    "atol": 1e-05,
+    "pytorchMismatchedElements": 29605,
+    "elements": 16777216,
+    "maximumAbsoluteErrorOnPytorchFailedElements": 0.0009765625,
+    "fullOutputStatistics": {
+      "elements": 16777216,
+      "cosineSimilarity": 0.9999999980983814,
+      "relativeL2Error": 6.189285460966915e-05,
+      "meanAbsoluteError": 0.00030439076586930014,
+      "maximumAbsoluteError": 0.25,
+      "boardNorm": 261672.12508632874,
+      "referenceNorm": 261673.49751165553
+    },
+    "userAcceptedObservedAccuracy": true,
+    "acceptanceScope": "this measured output after reviewing full-output cosine and relative L2; no automatic tolerance change",
+    "completionTiles": 16,
+    "normalCleanup": true,
+    "separateAllocationCanary": "not provided by the existing ordinary PyTorch runner",
+    "boardLog": "build/test/runtime-570-adaptation/gemm-4096-fp16/board-01.log",
+    "boardLogSha256": "bc10a4d17aaf8a73fd72bb8777809ba218b6924441b7943e6fcbfae81a220f3f",
+    "runnerLog": "build/test/runtime-570-adaptation/gemm.log",
+    "runnerLogSha256": "ee1267e0db1fec2b1b05fb7c934a71fd451be82355cf3f74a4a94cef5aa0611a",
+    "artifactSha256": {
+      "board-01.log": "bc10a4d17aaf8a73fd72bb8777809ba218b6924441b7943e6fcbfae81a220f3f",
+      "command.json": "1ba8eaf0dadb38e8dee4511e1687a6f2c6b303fd5dafcc65a8dad7cf2d743b1f",
+      "package/data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "package/manifest.json": "e6e396ac8f82a4cbdde6cc42ae9b4720150b0685499b640c571f390eeeb1dddc",
+      "package/modules/module_00000.so": "93af6d3ab5d1b6ab4c03d4f400fc82dc55441e3c000a36cff17a7ee0e223ad8d",
+      "raw/card_00_output_0.capture.f16.raw": "05db20354bae20976623b92d6dea8c9916b617324e9d1fcc6a1dad1e0993c55f",
+      "raw/card_00_output_0.expected.f16.raw": "c3c34fe11189049c4a0d3939d17a8d82980b939dd1e89050927f924ebe6161f3",
+      "raw/card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+      "raw/card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469",
+      "source-program/functions/forward.meta": "902aa6d51ba7e700d15451474a86bf66659ae3f300aa806bebafe4078cef874c",
+      "source-program/functions/forward.stablehlo.bc": "9458e730d6db3067f8570743725503ee3e512099e46debde21ab69e1bebe485d"
+    },
+    "diagnostic": {
+      "irAndTargetAbiKBlocks": 8,
+      "kBlock": 512,
+      "inputFormat": 2,
+      "intermediateOutputFormat": 5,
+      "psumFormat": 5,
+      "finalOutputFormat": 2,
+      "f16Format": 2,
+      "f32Format": 5,
+      "precisionRootCause": "unknown",
+      "finiteSampleOnly": true,
+      "offlineNumericalAudit": {
+        "elements": 16777216,
+        "finite": true,
+        "mismatchedFloat64Tolerance": 29626,
+        "bitwiseDifferent": 346633,
+        "maxAbs": 0.25,
+        "maxAbsOnFailed": 0.0009765625,
+        "meanAbs": 0.00030439076586930014,
+        "badByTile": [
+          1917,
+          1882,
+          1848,
+          1891,
+          1776,
+          1899,
+          1944,
+          1843,
+          1846,
+          1833,
+          1829,
+          1802,
+          1845,
+          1883,
+          1829,
+          1759
+        ],
+        "maxExpectedAbsFailed": 0.96435546875,
+        "inputSubnormals": [
+          43,
+          56
+        ],
+        "float64Dot": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 252,
+          "referenceBitwiseEqual": 393,
+          "boardMaxAbs": 0.05526125840697205,
+          "referenceMaxAbs": 0.05526125840697205
+        },
+        "sequentialFloat32Dot": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 253,
+          "referenceBitwiseEqual": 348,
+          "boardMaxAbs": 0.0550994873046875,
+          "referenceMaxAbs": 0.0550994873046875
+        },
+        "flushedFloat64Dot": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 252,
+          "referenceBitwiseEqual": 391,
+          "boardMaxAbs": 0.05526125840697205,
+          "referenceMaxAbs": 0.05526125840697205
+        },
+        "blockFloat32": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 252,
+          "referenceBitwiseEqual": 393,
+          "maxAbsVsBoardOnFailed": 0.0007324516773223877,
+          "maxAbsVsReferenceOnFailed": 0.0002790689468383789
+        },
+        "blockFloat16": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 117,
+          "referenceBitwiseEqual": 118,
+          "maxAbsVsBoardOnFailed": 0.08056640625,
+          "maxAbsVsReferenceOnFailed": 0.0810546875
+        },
+        "blockFloat32Sequential": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 253,
+          "referenceBitwiseEqual": 348,
+          "maxAbsVsBoardOnFailed": 0.0008413791656494141,
+          "maxAbsVsReferenceOnFailed": 0.00035509467124938965
+        },
+        "blockSeparateFloat32": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 252,
+          "referenceBitwiseEqual": 388,
+          "maxAbsVsBoardOnFailed": 0.000728607177734375,
+          "maxAbsVsReferenceOnFailed": 0.00028514862060546875
+        },
+        "lanes8Float32": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 252,
+          "referenceBitwiseEqual": 385,
+          "maxAbsVsBoardOnFailed": 0.0007152557373046875,
+          "maxAbsVsReferenceOnFailed": 0.0002880096435546875
+        },
+        "lanes16Float32": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 253,
+          "referenceBitwiseEqual": 380,
+          "maxAbsVsBoardOnFailed": 0.000720977783203125,
+          "maxAbsVsReferenceOnFailed": 0.0002803802490234375
+        },
+        "lanes32Float32": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 252,
+          "referenceBitwiseEqual": 383,
+          "maxAbsVsBoardOnFailed": 0.00072479248046875,
+          "maxAbsVsReferenceOnFailed": 0.00026702880859375
+        },
+        "lanes64Float32": {
+          "sampleSize": 514,
+          "boardBitwiseEqual": 253,
+          "referenceBitwiseEqual": 392,
+          "maxAbsVsBoardOnFailed": 0.0007343292236328125,
+          "maxAbsVsReferenceOnFailed": 0.0002574920654296875
+        },
+        "changedTowardZero": 236932,
+        "changedAwayFromZero": 109701,
+        "meanSignedError": -4.7580479645148444e-07,
+        "sampleFailedCount": 259,
+        "worstFailedExamples": [
+          {
+            "row": 80,
+            "col": 3295,
+            "board": 0.60791015625,
+            "torchReference": 0.60888671875,
+            "float64Dot": 0.6086131753399968
+          },
+          {
+            "row": 4011,
+            "col": 2794,
+            "board": 0.00036907196044921875,
+            "torchReference": 3.814697265625e-06,
+            "float64Dot": -3.376440145075321e-05
+          },
+          {
+            "row": 4034,
+            "col": 1088,
+            "board": 0.0830078125,
+            "torchReference": 0.082763671875,
+            "float64Dot": 0.08276321420999011
+          },
+          {
+            "row": 4051,
+            "col": 3631,
+            "board": 0.09326171875,
+            "torchReference": 0.09307861328125,
+            "float64Dot": 0.09309888625284657
+          }
+        ]
+      },
+      "float64ToleranceCountIsSeparateFromPytorchHalfArithmetic": true,
+      "runtimeRegressionEstablished": false,
+      "preSyncDefaultComparisonUnchanged": true,
+      "historical4096BoardPassBaselineExists": false
+    }
+  }
+}

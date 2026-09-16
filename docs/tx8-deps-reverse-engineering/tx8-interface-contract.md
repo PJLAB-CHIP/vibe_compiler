@@ -967,6 +967,39 @@ After the `firmware_kuiper` pass, the host/runtime split is:
 | KMD UAPI | Exposes `/dev/accel/dev-N` BO/job/NPU/DTE/C2C/log/info/topology ioctl families, BAR/ATU windows, BO pools, PG tile maps, and firmware loading. The observed compute-job fence is directly signaled after MHU doorbell kick and does not prove device-side compute completion. |
 | VS/old `Tsm*` | Compatibility-layer and DTE-TLV evidence. Several launch/sync/discovery paths are stub/no-op in the recovered build. |
 
+### 13.0 TX runtime 5.7的current provider接口
+
+本节输入是5.7.0.0524.01安装产物的`tx_runtime.h`、`libhpgr.so`及同次设备属性回读，
+与5.6安装快照作声明/布局比较。接口审计和限定实卡结果见
+[本轮证据](../data/board-performance/runtime-570-20260917.json)。此节只限定该digest的事实，
+不把下文旧V5.6逆向结果自动推广到新固件或全部新API。
+
+- **supported（静态）**：原provider使用的23个C API声明均未改变，动态符号全部存在；相关handle、`dim3`、
+  `txDeviceProperty`、`tileProp`、`tilePhyInfo`、`tileFullInfo`和copy方向枚举布局保持。
+  旧错误码数值保持，`TX_SUCCESS=0`、`TX_ERROR_NOT_READY=0x46000005`；新增memory、not-supported及graph-capture错误码。
+- **excluded（已废弃查询）**：`txGetDeviceAllTileInfo`与`txSetDeviceSelectedTileInfo`保留声明/符号，
+  5.7实际只写“不再支持”日志并返回`TX_SUCCESS`，不填充输出。不能用symbol存在或success证明查询完成。
+- **supported（拓扑）**：`TxDevice::init`从`tsmGetDevNpuInfo`筛选可用项形成软件设备Tile表，
+  `itxGetDeviceProperty`从该表复制`tileNum`、有效前缀的index/X/Y和`logicIdStart`。
+  `tileNum`以外不是有效inventory；缺失Tile不能补齐。当前provider只接受完整卡、zero logical start，
+  继续以显式index作为launch slot、X-major坐标作为Tile identity，由15号的共同qualification检查精确域。
+- **board-observed（只读）**：本轮版本API返回1400，设备属性返回16项、`logicIdStart=0`，
+  index为0..15且坐标完整覆盖4×4。本结论不意味着其它分区设备也满足完整卡合同。
+
+| Current provider调用族 | 5.7静态核对 | 证据边界 |
+| --- | --- | --- |
+| `txGetDeviceCount`、`txSetDevice`、`txGetDeviceProperty`、`txGetDevicePCIBusId`、`txRuntimeGetVersion` | 声明和有效实现均存在；属性查询按上述有效Tile表读取 | 本轮完整卡device qualification；未新增多设备/分区资格 |
+| `txMemGetInfo`、`txMalloc`、`txFree`、`txMemcpy` | 仍进入device memory manager和H2D/D2H实现；copy方向及uint64字节数保持 | Add实际allocation、两输入H2D、完整输出D2H和free；不外推IPC、P2P或host mapping |
+| `txModuleLoad`、`txModuleGetFunction`、`txModuleUnload` | 仍进入code/module manager，ELF长度uint32和function handle合同保持 | Add当前ELF load/resolve/unload |
+| `txLaunchKernel`、`txLaunchClusterKernel` | 同一内部launch模板仍分别构造Grid/Cluster command，参数顺序、dim3及uint32参数字节数保持 | Add执行Grid；4096³ FP16 GEMM执行Cluster的prepare/main，16 Tile完成及正常回读；GEMM数值接受边界见本轮证据 |
+| `txStreamCreate`、`txStreamDestroy`、`txStreamQuery` | query读取队列event状态，未完成仍返回NOT_READY；不是无条件success桩 | Add单次submit、poll、release；未做异常设备注入 |
+| `txEventCreate`、`txEventDestroy`、`txEventRecord`、`txEventQuery`、`txEventElapsedTime` | record加入marker；query检查event状态，NOT_READY保持；elapsed输出float毫秒 | 同次Add启用event计时；单样本不签性能改善或时钟精度 |
+
+5.7另外新增graph capture/graph execution、IPC、host memory mapping、private/extended allocation和异步send/recv等声明。
+Current provider未调用它们，本轮不新增支持资格。部分原入口增加capture状态处理；当前provider未开启capture，
+仍使用显式stream及既有绝对deadline，没有改为device synchronize或全局drain。
+CMake与runtime loader现在消费同一22符号集合：移除废弃getter，并补齐原configure漏查的`txLaunchClusterKernel`。
+
 ### 13.1 Incomplete Host CModel Seams
 
 Two different CModel interface levels are visible and must not be merged merely
