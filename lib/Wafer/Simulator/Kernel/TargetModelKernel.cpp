@@ -52,6 +52,9 @@ executeTargetModelCommand(const compiler::TargetCommand &command,
   if (const auto *value =
           std::get_if<target::TargetGemmCommand>(&command.payload))
     return kernel_detail::executeGemm(command, *value, memory, budget, policy);
+  if (const auto *value =
+          std::get_if<target::TargetPoolCommand>(&command.payload))
+    return kernel_detail::executePool(command, *value, memory, budget);
 
   if (std::holds_alternative<target::TargetKcoreReleaseCommand>(command.payload))
     return TargetModelCommandEffect{};

@@ -34,6 +34,17 @@ fromRelationFailure(const IndexRelationResult &result) {
 
 mlir::FailureOr<mlir::AffineMap>
 getStructuredOperandMap(mlir::OpOperand &operand) {
+  if (auto gather = mlir::dyn_cast<mlir::tensor::GatherOp>(operand.getOwner())) {
+    if (operand.getOperandNumber() != 1 || gather.getGatherDims().size() != 1)
+      return mlir::failure();
+    unsigned batchRank = gather.getIndicesType().getRank() - 1;
+    llvm::SmallVector<mlir::AffineExpr> coordinates;
+    for (unsigned dimension = 0; dimension < batchRank; ++dimension)
+      coordinates.push_back(mlir::getAffineDimExpr(dimension, gather.getContext()));
+    coordinates.push_back(mlir::getAffineConstantExpr(0, gather.getContext()));
+    return mlir::AffineMap::get(gather.getResultType().getRank(), 0,
+                                coordinates, gather.getContext());
+  }
   if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operand.getOwner()))
     return linalg.getMatchingIndexingMap(&operand);
   if (auto attention =
@@ -54,6 +65,9 @@ getStructuredOperandMap(mlir::OpOperand &operand) {
 mlir::FailureOr<mlir::AffineMap> getStructuredResultMap(mlir::OpResult result) {
   if (!result)
     return mlir::failure();
+  if (auto gather = mlir::dyn_cast<mlir::tensor::GatherOp>(result.getOwner()))
+    return mlir::AffineMap::getMultiDimIdentityMap(
+        gather.getResultType().getRank(), gather.getContext());
   auto dps =
       mlir::dyn_cast<mlir::DestinationStyleOpInterface>(result.getOwner());
   if (!dps || result.getResultNumber() >= dps.getNumDpsInits())

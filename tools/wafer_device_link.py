@@ -25,6 +25,7 @@ BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     {
         "get_log_level",
         "get_spm_memory_mapping",
+        "get_ddr_memory_mapping_with_size",
         "get_tile_spm_addr_base",
         "direct_dte_attach",
         "direct_dte_release",

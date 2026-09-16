@@ -106,6 +106,32 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 
 ## 4. Compute Contracts
 
+### 2-D Pooling
+
+- 输入：已bufferize的current Linalg pooling/generic，scalar body为浮点maximum/minimum/add，indexing maps明确表达两个
+  `output*stride + window*dilation`维度及零至两个独立保留维度。窗口shape operand只提供循环范围，不读取其内容。
+- 职责：从maps、iterator、payload与actual shape证明pooling，按实际坐标转换为NHWC，保持DPS初值的原combine语义；
+  原padding继续由显式pad/fill/slice表达，不猜测边界值。
+  缺失的N/C轴显式补单位维；按原reduction loop顺序确定H/W，输出通过逆置换恢复。layout变化使用既有显式materialization。
+- 输出：`wafer.tile.pool`以kind区分max/min/sum/avg，保留NHWC输入/结果、H/W kernel、stride和dilation；它是当前实际计算，直接交Tile→Instr。
+  `tile.reduce`只表达按轴归约，不能表达滑动窗口；Linalg在该边界已完成移除，因此需要这一独立的typed compute op。
+- 下游：复用既有`wafer.instr.pool`和SDK Pool ABI；native没有dilation字段，非unit dilation明确拒绝。
+  唯一completion和SPM规划仍消费物化后的实际IR，不在池化lowering中加等待或重新分块。
+- 入口：生产compiler与原structured-to-Tile/Tile-to-Instr实现相同，不设置ResNet名字或shape分支。
+- AvgPool若在current IR中为sum加显式除法/乘法，就保留sum pool和原归一化计算；不能从shape猜除数、忽略count_include_pad，
+  或把原舍入边界不等价地换成native avg。显式avg kind表示完整窗口的算术平均，并有同一Instr消费者。
+- 非目标：本轮不做indexed/unpool、3-D pool、模型替换或数值容差调整。新增geometry的主机验证不扩展历史板端资格。
+- 完成条件：原始Torch XLA MaxPool/AvgPool与ResNet-18进入既有Pool后端，完整输出和package/no-card分别验证；
+  实卡数值待设备恢复。机制覆盖如下。
+
+| 输入 | 分支/拒绝 | exact结果与直接下游 |
+| --- | --- | --- |
+| rank4，1024/1025/1031，FP16/BF16；NHWC/NCHW | 2x2/3x3、stride1/2，显式padding与tail | maps导出的窗口、输出覆盖、NCx geometry、Instr Pool字段 |
+| named pooling与等价generic | shape-only窗口输入、max/min非identity初值、sum零初值 | 不读fake窗口内容；max/min保留初值合并，标准verifier及实际SPM规划 |
+| AvgPool | count_include_pad有/无、自定义divisor、全局/局部adaptive，FP16/BF16 | 原F32 opmath与归一化、结果dtype不变，sum Pool后的实际算术保留 |
+| 未支持payload、sum非零初值、无精确窗口map、非unit dilation | typed unsupported | 不重排sum初值，不误走普通reduce，不生成猜测geometry |
+| 原始ResNet-18，224输入 | 不删MaxPool、BN、残差或FC | 直接XLA source→正式搜索→verified package/no-card；全部1000个logits |
+
 ### Attention structured decomposition
 
 `wafer.linalg_ext.attention`只存在于normalized TensorProgram。Spatial/Region materialization把它破坏性转换为per-Tile三结果

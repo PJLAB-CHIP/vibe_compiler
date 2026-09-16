@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 import numpy
 
@@ -211,18 +212,22 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             program_dir = pathlib.Path(tmp) / "program"
 
-            self.tool.emit_reference_stablehlo_program(
-                program_dir=program_dir,
-                torch_module=self.fake_torch,
-                stablehlo_module=self.fake_stablehlo,
-                reference_module_factory=FakeReferenceModule,
-            )
+            def save(module, inputs, destination):
+                self.assertIsInstance(module, FakeReferenceModule)
+                self.assertTrue(module.was_eval)
+                self.assertEqual(inputs[0].dtype, self.fake_torch.float16)
+                self.tool._save_program(FakeStableHLOProgram(), destination)
 
-            self.assertEqual(self.fake_stablehlo.calls, [self.fake_torch.exported_program])
-            self.assertTrue(self.fake_stablehlo.last_options.export_weights)
-            self.assertTrue(self.fake_stablehlo.last_options.save_weights)
-            self.assertTrue(self.fake_stablehlo.last_options.include_human_readable_text)
-            self.assertTrue(self.fake_torch.no_grad_entered)
+            with mock.patch("wafer.frontend.export_pytorch_program", side_effect=save) as exporter:
+                self.tool.emit_reference_stablehlo_program(
+                    program_dir=program_dir,
+                    torch_module=self.fake_torch,
+                    stablehlo_module=self.fake_stablehlo,
+                    reference_module_factory=FakeReferenceModule,
+                )
+            exporter.assert_called_once()
+            self.assertEqual(self.fake_torch.export_calls, [])
+            self.assertEqual(self.fake_stablehlo.calls, [])
             self.assertTrue(
                 (program_dir / "functions" / "forward.stablehlo.bc").is_file()
             )

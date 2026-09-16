@@ -78,6 +78,7 @@ target_include_directories(WaferInstrToLLVM PRIVATE
   ${PROJECT_SOURCE_DIR}/lib)
 
 add_mlir_conversion_library(WaferStableHLOToLinalg
+  StableHLOToLinalg/ConvertStablehloGatherToTensor.cpp
   StableHLOToLinalg/FoldConvolutionInputCasts.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp
@@ -100,6 +101,7 @@ add_mlir_conversion_library(WaferStableHLOToLinalg
   MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
+  MLIRTransforms
 )
 
 if(WAFER_ENABLE_IMPORTER_DEPS)

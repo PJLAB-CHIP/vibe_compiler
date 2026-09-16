@@ -260,6 +260,8 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       break;
     case TargetCallBuiltin::DDRPublish:
     case TargetCallBuiltin::DDRAcquire:
+    case TargetCallBuiltin::DDRReadMapping:
+    case TargetCallBuiltin::SPMMapping:
     case TargetCallBuiltin::NCCJoin:
     case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTERecvPrepare:
@@ -348,7 +350,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
   }
-  EXPECT_EQ(validated, 115u);
+  EXPECT_EQ(validated, 117u);
 }
 
 TEST(TargetModelTileCommandTrackerTest,
@@ -1347,6 +1349,70 @@ TEST(TargetModelKernelTest, ControlCommandsValidateTypedEndpoints) {
   sendPayload.highPerformance = true;
   error = expectError(executeTargetModelCommand(send, memory, makeBudget()));
   EXPECT_NE(error.find("unsupported-command"), std::string::npos);
+}
+
+// F32 isolates window geometry and the F32 sum used by source AvgPool opmath.
+// Product tests separately cover original FP16/BF16 max and average pooling.
+TEST(TargetModelKernelTest, PoolWindowsPreserveSpatialAxesAndTail) {
+  for (uint32_t width : {1024, 1025})
+    for (auto kind :
+         {TargetPoolingOperation::Maximum, TargetPoolingOperation::Minimum,
+          TargetPoolingOperation::Sum}) {
+      SCOPED_TRACE(width);
+      SCOPED_TRACE(static_cast<unsigned>(kind));
+      auto memory = makeRegistry();
+      const uint64_t base = memory.getAddressPlan().getSPMBase();
+      auto input = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
+                              {1, 5, width + 2, 2});
+      auto output = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
+                               {1, 2, width, 2});
+      std::vector<RawLogicalValue> values;
+      for (unsigned h = 0; h != 5; ++h)
+        for (unsigned w = 0; w != width + 2; ++w)
+          for (unsigned c = 0; c != 2; ++c) {
+            float value = static_cast<float>(h * 8 + w + c);
+            values.push_back(
+                {LogicalFormat::F32, llvm::bit_cast<uint32_t>(value)});
+          }
+      writeTensor(memory, 0, base, input, values);
+      TargetCommand command{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                            TargetPoolCommand{kind,
+                                              base,
+                                              base + 0x100000,
+                                              std::nullopt,
+                                              {1, 5, width + 2, 2},
+                                              {1, 2, width, 2},
+                                              {0, 0, 0, 0},
+                                              {3, 2, 1, 2},
+                                              LogicalFormat::F32}};
+      auto budget = TargetModelKernelBudget::create(
+          FormalNumericWorkBudget::create(100000, 0), 1000000, 256);
+      auto effect =
+          llvm::cantFail(executeTargetModelCommand(command, memory, budget));
+      ASSERT_EQ(effect.pendingReads.size(), 1u);
+      ASSERT_EQ(effect.pendingWrites.size(), 1u);
+      FormalNumericExecutionContext config;
+      llvm::cantFail(
+          applyTargetModelCommandEffect(memory, config, std::move(effect)));
+      auto result = readTensor(memory, 0, base + 0x100000, output);
+      ASSERT_EQ(result.size(), 4u * width);
+      for (unsigned h = 0; h != 2; ++h)
+        for (unsigned w = 0; w != width; ++w)
+          for (unsigned c = 0; c != 2; ++c) {
+            float first = static_cast<float>(h * 16 + w + c);
+            float expected =
+                kind == TargetPoolingOperation::Maximum   ? first + 10
+                : kind == TargetPoolingOperation::Minimum ? first
+                                                          : first * 6 + 30;
+            EXPECT_EQ(result[(h * width + w) * 2 + c].bits,
+                      llvm::bit_cast<uint32_t>(expected));
+          }
+      auto &pool = std::get<TargetPoolCommand>(command.payload);
+      ++pool.destinationShape[2];
+      auto error =
+          expectError(executeTargetModelCommand(command, memory, budget));
+      EXPECT_NE(error.find("window geometry"), std::string::npos);
+    }
 }
 
 TEST(TargetModelKernelTest, UnsupportedFamilyIsNotSilentlyApproximated) {

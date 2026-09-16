@@ -143,6 +143,7 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   set_tests_properties(wafer-pytorch-board-cases-python PROPERTIES
     LABELS "runtime;no-card;pytorch;source;huggingface;card-local"
     ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python:${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:wafer-verify-program>"
     # Includes full GQA references and FP16/BF16 single-layer LM logits.
     # The latter owns the original 32000x4096 embedding and head weights.
     TIMEOUT 180
@@ -236,7 +237,30 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
         gemm-long-k-${_wafer_gemm_extent} bfloat16 bf16 search target-model
         --target-model-max-fused-multiply-adds 100000000)
     endforeach()
+    foreach(_wafer_pool_kind IN ITEMS max avg)
+      foreach(_wafer_pool_extent IN ITEMS 1024 1025)
+        wafer_add_pytorch_source_no_card_test(
+          pool-${_wafer_pool_kind}-${_wafer_pool_extent}
+          float16 fp16 none target-model)
+        wafer_add_pytorch_source_no_card_test(
+          pool-${_wafer_pool_kind}-${_wafer_pool_extent}
+          bfloat16 bf16 none target-model)
+      endforeach()
+    endforeach()
   endif()
+
+  foreach(_wafer_embedding_length IN ITEMS 1024 1025 1031)
+    foreach(_wafer_embedding_width IN ITEMS 64 4096)
+      foreach(_wafer_embedding_policy IN ITEMS none search)
+        wafer_add_pytorch_source_no_card_test(
+          embedding-${_wafer_embedding_length}-width-${_wafer_embedding_width}
+          float16 fp16 ${_wafer_embedding_policy} target-model)
+        wafer_add_pytorch_source_no_card_test(
+          embedding-${_wafer_embedding_length}-width-${_wafer_embedding_width}
+          bfloat16 bf16 ${_wafer_embedding_policy} target-model)
+      endforeach()
+    endforeach()
+  endforeach()
 
   function(wafer_add_pytorch_communication_no_card_test case_name qualification)
     set(_wafer_test_name

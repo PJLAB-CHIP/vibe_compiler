@@ -1,6 +1,7 @@
 //===- LayoutOptimization.cpp - Current layout/bufferization -----------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "GatherLowering.h"
 #include "LoopSubsetState.h"
 
 #include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
@@ -471,19 +472,21 @@ struct BoundarySourcePlan {
   llvm::SmallVector<unsigned, 2> relationIndices;
 };
 
-struct SameTileBoundaryUsePlan {
+struct BoundaryWindowUsePlan {
   TileRegionOp consumer;
   unsigned inputIndex = 0;
   llvm::SmallVector<mlir::tensor::ExtractSliceOp, 2> extracts;
+  llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 2> relativeOffsets;
+  bool remote = false;
 };
 
-struct SameTileBoundaryPiecePlan {
+struct BoundaryWindowPlan {
   TileRegionOp producer;
   unsigned resultIndex = 0;
   mlir::Value piece;
   mlir::tensor::InsertSliceOp insert;
   mlir::tensor::EmptyOp empty;
-  llvm::SmallVector<SameTileBoundaryUsePlan, 2> uses;
+  llvm::SmallVector<BoundaryWindowUsePlan, 2> uses;
 };
 
 static std::optional<llvm::SmallVector<int64_t, 4>>
@@ -693,10 +696,10 @@ static mlir::LogicalResult elideBoundarySourceViews(
   return mlir::success();
 }
 
-static mlir::FailureOr<llvm::SmallVector<SameTileBoundaryPiecePlan, 8>>
-preflightSameTileBoundaryPieces(mlir::ModuleOp module,
-                                StructuredMaterializationRelations &relations) {
-  llvm::SmallVector<SameTileBoundaryPiecePlan, 8> plans;
+static mlir::FailureOr<llvm::SmallVector<BoundaryWindowPlan, 8>>
+preflightBoundaryWindows(mlir::ModuleOp module,
+                         StructuredMaterializationRelations &relations) {
+  llvm::SmallVector<BoundaryWindowPlan, 8> plans;
   module.walk([&](TileRegionOp producer) {
     if (!producer.getBody().hasOneBlock())
       return;
@@ -706,8 +709,7 @@ preflightSameTileBoundaryPieces(mlir::ModuleOp module,
       return;
     auto producerTile = producer->getParentOfType<TileModuleOp>();
     for (auto [resultIndex, result] : llvm::enumerate(producer.getResults())) {
-      if (result.use_empty() || relationContainsEndpoint(relations, result) ||
-          llvm::any_of(relations.structuralOutputs,
+      if (llvm::any_of(relations.structuralOutputs,
                        [&](const StructuredOutputRelation &output) {
                          return output.endpoint == result;
                        }))
@@ -735,26 +737,32 @@ preflightSameTileBoundaryPieces(mlir::ModuleOp module,
           llvm::any_of(*strides, [](int64_t stride) { return stride != 1; }))
         continue;
 
-      SameTileBoundaryPiecePlan plan{producer,
-                                     static_cast<unsigned>(resultIndex),
-                                     insert.getSource(),
-                                     insert,
-                                     empty,
-                                     {}};
+      BoundaryWindowPlan plan{producer,
+                              static_cast<unsigned>(resultIndex),
+                              insert.getSource(),
+                              insert,
+                              empty,
+                              {}};
       bool exact = static_cast<bool>(producerTile);
-      for (mlir::OpOperand &use : result.getUses()) {
-        auto consumer = mlir::dyn_cast<TileRegionOp>(use.getOwner());
-        unsigned inputIndex = use.getOperandNumber();
+      auto addUse = [&](TileRegionOp consumer, unsigned inputIndex,
+                        bool remote) {
         if (!consumer ||
-            consumer->getParentOfType<TileModuleOp>() != producerTile ||
+            (!remote &&
+             consumer->getParentOfType<TileModuleOp>() != producerTile) ||
             !consumer.getBody().hasOneBlock() ||
             inputIndex >= consumer.getBody().front().getNumArguments()) {
-          exact = false;
-          break;
+          return false;
         }
+        if (llvm::any_of(plan.uses, [&](const BoundaryWindowUsePlan &use) {
+              return use.consumer == consumer && use.inputIndex == inputIndex;
+            }))
+          return true;
         mlir::BlockArgument argument =
             consumer.getBody().front().getArgument(inputIndex);
-        SameTileBoundaryUsePlan consumerPlan{consumer, inputIndex, {}};
+        if (argument.getType() != result.getType())
+          return false;
+        BoundaryWindowUsePlan consumerPlan{consumer, inputIndex, {}};
+        consumerPlan.remote = remote;
         for (mlir::Operation *user : argument.getUsers()) {
           auto extract = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(user);
           auto consumerOffsets =
@@ -767,19 +775,47 @@ preflightSameTileBoundaryPieces(mlir::ModuleOp module,
                       : std::nullopt;
           if (!extract || extract.getSource() != argument || !consumerOffsets ||
               !consumerSizes || !consumerStrides ||
-              *consumerOffsets != *offsets || *consumerSizes != *sizes ||
-              *consumerStrides != *strides ||
-              extract.getResult().getType() != pieceType) {
-            exact = false;
-            break;
+              consumerOffsets->size() != offsets->size() ||
+              *consumerStrides != *strides)
+            return false;
+          llvm::SmallVector<int64_t, 4> relative;
+          for (auto [offset, size, base, extent] : llvm::zip_equal(
+                   *consumerOffsets, *consumerSizes, *offsets, *sizes)) {
+            if (offset < base || size <= 0 || size > extent ||
+                offset - base > extent - size)
+              return false;
+            relative.push_back(offset - base);
           }
           consumerPlan.extracts.push_back(extract);
+          consumerPlan.relativeOffsets.push_back(std::move(relative));
         }
-        if (!exact || consumerPlan.extracts.empty()) {
+        if (consumerPlan.extracts.empty())
+          return false;
+        plan.uses.push_back(std::move(consumerPlan));
+        return true;
+      };
+      for (mlir::OpOperand &use : result.getUses()) {
+        if (!addUse(mlir::dyn_cast<TileRegionOp>(use.getOwner()),
+                    use.getOperandNumber(), false)) {
           exact = false;
           break;
         }
-        plan.uses.push_back(std::move(consumerPlan));
+      }
+      for (const auto &relation : relations.boundaryRelations) {
+        if (!exact || relation.sourceEndpoint != result)
+          continue;
+        auto argument =
+            mlir::dyn_cast<mlir::BlockArgument>(relation.destinationEndpoint);
+        if (!argument ||
+            llvm::any_of(relations.boundaryRelations,
+                         [&](const StructuredBoundaryRelation &other) {
+                           return other.destinationEndpoint == argument &&
+                                  other.sourceEndpoint != result;
+                         }) ||
+            !addUse(mlir::dyn_cast_or_null<TileRegionOp>(
+                        argument.getOwner()->getParentOp()),
+                    argument.getArgNumber(), true))
+          exact = false;
       }
       if (exact && !plan.uses.empty())
         plans.push_back(std::move(plan));
@@ -788,14 +824,14 @@ preflightSameTileBoundaryPieces(mlir::ModuleOp module,
   return plans;
 }
 
-static mlir::LogicalResult elideSameTileBoundaryPieces(
+static mlir::LogicalResult compactBoundaryWindows(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     LayoutOptimizationStatistics &statistics, std::string &detail) {
-  auto plans = preflightSameTileBoundaryPieces(module, relations);
+  auto plans = preflightBoundaryWindows(module, relations);
   if (mlir::failed(plans))
     return mlir::failure();
   mlir::IRRewriter rewriter(module.getContext());
-  for (SameTileBoundaryPiecePlan &plan : *plans) {
+  for (BoundaryWindowPlan &plan : *plans) {
     mlir::OpResult result =
         mlir::cast<mlir::OpResult>(plan.producer.getResult(plan.resultIndex));
     auto yield = mlir::cast<TileYieldOp>(
@@ -804,20 +840,46 @@ static mlir::LogicalResult elideSameTileBoundaryPieces(
       result.setType(plan.piece.getType());
       yield->setOperand(plan.resultIndex, plan.piece);
     });
-    for (SameTileBoundaryUsePlan &use : plan.uses) {
+    for (BoundaryWindowUsePlan &use : plan.uses) {
       mlir::BlockArgument argument =
           use.consumer.getBody().front().getArgument(use.inputIndex);
+      mlir::Value input = result;
+      mlir::Value oldInput = use.consumer.getInputs()[use.inputIndex];
+      if (use.remote) {
+        rewriter.setInsertionPoint(use.consumer);
+        if (oldInput.getDefiningOp<mlir::tensor::EmptyOp>())
+          input = rewriter.create<mlir::tensor::EmptyOp>(
+              use.consumer.getLoc(),
+              mlir::cast<mlir::RankedTensorType>(plan.piece.getType()),
+              mlir::ValueRange{});
+        else
+          input = rewriter.create<mlir::tensor::ExtractSliceOp>(
+              use.consumer.getLoc(),
+              mlir::cast<mlir::RankedTensorType>(plan.piece.getType()),
+              oldInput, plan.insert.getMixedOffsets(),
+              plan.insert.getMixedSizes(), plan.insert.getMixedStrides());
+      }
       rewriter.modifyOpInPlace(use.consumer, [&] {
-        use.consumer->setOperand(use.inputIndex, result);
+        use.consumer->setOperand(use.inputIndex, input);
         argument.setType(plan.piece.getType());
       });
-      for (mlir::tensor::ExtractSliceOp extract : use.extracts) {
-        rewriter.replaceAllUsesWith(extract.getResult(), argument);
-        rewriter.eraseOp(extract);
+      for (auto [extract, relative] :
+           llvm::zip_equal(use.extracts, use.relativeOffsets)) {
+        llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+        for (int64_t offset : relative)
+          offsets.push_back(rewriter.getIndexAttr(offset));
+        rewriter.setInsertionPoint(extract);
+        auto replacement = rewriter.create<mlir::tensor::ExtractSliceOp>(
+            extract.getLoc(), extract.getType(), argument, offsets,
+            extract.getMixedSizes(), extract.getMixedStrides());
+        rewriter.replaceOp(extract, replacement.getResult());
       }
+      if (use.remote && oldInput.use_empty())
+        if (auto empty = oldInput.getDefiningOp<mlir::tensor::EmptyOp>())
+          rewriter.eraseOp(empty);
     }
     if (!plan.insert->use_empty()) {
-      detail = "same-Tile compact boundary left a live insert wrapper";
+      detail = "compact boundary left a live insert wrapper";
       return mlir::failure();
     }
     rewriter.eraseOp(plan.insert);
@@ -1860,6 +1922,10 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     }
   }
 
+  if (mlir::failed(lowerTensorGathers(module, relations))) {
+    result.detail = "selected gather row materialization failed";
+    return result;
+  }
   if (mlir::failed(normalizeLoopSubsetState(module, relations))) {
     result.detail = "loop subset state normalization failed";
     return result;
@@ -1879,8 +1945,8 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     result.detail = std::move(detail);
     return result;
   }
-  if (mlir::failed(elideSameTileBoundaryPieces(module, relations,
-                                               result.statistics, detail))) {
+  if (mlir::failed(compactBoundaryWindows(module, relations, result.statistics,
+                                          detail))) {
     result.detail = std::move(detail);
     return result;
   }
@@ -1893,6 +1959,29 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
   if (mlir::failed(materializeOutputDestinations(
           module, relations, *outputPlans, result.statistics, detail))) {
     result.detail = std::move(detail);
+    return result;
+  }
+
+  // Remove dead tensor shells before they turn into allocation/copy effects.
+  // Keep compute occurrences and published TileRegion endpoints unchanged.
+  mlir::IRRewriter rewriter(module.getContext());
+  module.walk([&](TileRegionOp region) {
+    llvm::SmallVector<mlir::Operation *, 16> shells;
+    region.walk([&](mlir::Operation *operation) {
+      if (mlir::isa<mlir::tensor::EmptyOp, mlir::tensor::InsertSliceOp,
+                    mlir::tensor::ExtractSliceOp, mlir::tensor::ExpandShapeOp,
+                    mlir::tensor::CollapseShapeOp, mlir::tensor::CastOp>(
+              operation))
+        shells.push_back(operation);
+    });
+    for (auto *shell : llvm::reverse(shells))
+      if (shell->use_empty())
+        rewriter.eraseOp(shell);
+  });
+  retainCurrentStructuredBufferRelations(module, relations);
+  if (mlir::failed(mlir::verify(module)) ||
+      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations))) {
+    result.detail = "compact boundary cleanup produced invalid current IR";
     return result;
   }
 

@@ -118,8 +118,9 @@ device residency或compute-time weight streaming。
   复合算子的既有 opmath 合同通过同一 pinned ATen decomposition 保持，不按模型或 shape 选择算术。
 - Output IR / files：原 `forward.stablehlo.bc`、同一 metadata schema 和逐 bit 保留 dtype 的 NPY；只发布完整目录。
 - Downstream consumer：原 program-directory ingestion、SPMD 与 compiler；原模型 CPU eager 仍独立产生 reference。
-- User-level driver / named pipeline：原 `wafer.frontend.export_pytorch_program`；板测完整 LM 使用此产品入口。
-  已显式提供 ExportedProgram 的测试 corpus 保留其外部输入适配，不作为 module capture 的异常 fallback。
+- User-level driver / named pipeline：`wafer.frontend.export_pytorch_program`是原始module的唯一抓图入口；
+  板测全部模型以及reference/GEMM/MLP工具调用同一入口，不先生成ExportedProgram，也不在失败后改走Dynamo。
+  显式SPMD工具保留其XLA sharding设置和输出根导出，不引入第二条Python字节码抓图路径。
 - Explicit non-goals：不改模型、参数、依赖版本、runtime、搜索与板端执行；不把 runtime tensor 移到 CPU 计算，
   不接受数据依赖 Python 分支或状态修改，不扩展输入端口 schema。
 - Completion criteria：原 module 不受 capture 影响；混合端口、共享参数、buffer、多输出与尾部通过真实导出和 ingestion；
@@ -137,12 +138,20 @@ device residency或compute-time weight streaming。
 | 仅由静态 shape 构造的标量表达式 | actual scalar 子图无外部 leaf 才可读取；原结果和 runtime 输入仍保留 | 原始完整 LM 的 mask 构造及 S16/1024/1025 source |
 | runtime-dependent item/CPU transfer、unused/重复端口、状态 mutation、非 tensor 输出 | 明确失败且不发布目录；失败后下一合法导出可用 | 产品 API 负例与后续合法 export |
 | Conv+bias、inference BN、GELU/LayerNorm | 保持既有 opmath、approximate 选择和 dtype；无模块名分支 | 既有精度测试与 source→Linalg |
+| MaxPool/AvgPool，rank4、1024/1025、FP16/BF16 | AvgPool保持F32累加和原结果dtype；count_include_pad、自定义divisor及adaptive窗口按原调用保留 | 原始module→直接XLA→全部输出，禁止Dynamo下实际执行 |
 | 完整单层 LM、i64 ID→全部词表 logits | 原 embedding、decoder、final norm、LM head 均进入图；新输入改变完整输出 | 原始 HF eager、source ingestion；package/no-card/board 分别登记 |
+| 共享板测helper、reference/GEMM/MLP工具 | 在禁止`torch.export.export`的环境中调用同一产品入口；参数、buffer及端口仍逐bit正确 | 原始ResNet-18 source与正式compiler；既有helper合同 |
 
 唯一backend输入仍是本节定义的一种program directory。framework adapter是directory的producer，而不是把Python/framework
 object直连C++ compiler的第二入口。产品adapter只负责capture/export、拒绝graph break/eager fallback/unsupported side
 effect、写入metadata与外部数据引用并调用共享verifier；workload corpus、seed、CPU oracle、模型名分支、target topology和
 optimization policy都留在adapter之外。
+
+AvgPool的低精度输入在原始typed调用边界显式保留F32 opmath，再转回原输出dtype。
+`adaptive_avg_pool2d`还需在公开调用边界处理：pinned PyTorch的1×1结果先走`mean`，不会经过
+`_adaptive_avg_pool2d` dispatch。依据为[PyTorch 2.5 adaptive入口](https://github.com/pytorch/pytorch/blob/v2.5.0/aten/src/ATen/native/AdaptiveAveragePooling.cpp)
+及[CPU累加实现](https://github.com/pytorch/pytorch/blob/v2.5.0/aten/src/ATen/native/cpu/AdaptiveAvgPoolKernel.cpp)。
+这不授权修改普通`mean`、convolution或GEMM的原始算术，也不消除source中显式sum与归一化的舍入边界。
 
 PyTorch eval BatchNorm在导出前通过pinned `torch._decomp`的inference分解显式保留opmath：
 FP16/BF16输入和参数在F32计算，输出回到原dtype；F32/F64保持自身精度。只处理typed ATen inference调用，
@@ -184,8 +193,8 @@ transaction中重新打开、拥有并验证全部输入。参数内容的`Progr
 未知扩展仍被拒绝；名字在此处是外部协议显式的`call_target_name`字段，不用于恢复其它operation或workload语义。
 无该扩展的source不运行分解pipeline，保持原IR。
 
-PyTorch的typed `aten.gelu`与`aten.native_layer_norm`另在export前复用pinned `torch._decomp`官方分解，显式保留算子opmath和
-完整结果dtype。它们输入是仍保有原算子边界的ExportedProgram，输出直接交同一PyTorch/XLA exporter；已有primitive计算不重排。
+PyTorch的typed `aten.gelu`与`aten.native_layer_norm`在直接XLA forward期间复用pinned `torch._decomp`官方分解，显式保留算子opmath和
+完整结果dtype。输入是原始module中的ATen调用，输出直接进入同一XLA lazy图；不再经ExportedProgram，已有primitive计算不重排。
 GELU的none/tanh选择、LayerNorm的normalized axes、affine参数及mean/rstd端口按原调用保存，不依据module名称或shape分派。
 
 覆盖矩阵：rank3+、1024/1025/1031、F16/BF16/F32，GELU none/tanh、正负/近零/饱和与非有限值；

@@ -152,8 +152,9 @@ std::vector<TemporalProposals::Coordinate> TemporalProposals::coordinates(
 TemporalSizeInterval
 TemporalProposals::bounds(const std::vector<TemporalChoice> &choices,
                           Coordinate coordinate) const {
-  const auto &descriptor = domains[coordinate.domain]->getScopeDescriptors(
-      choices[coordinate.domain].kind)[coordinate.scope];
+  auto descriptors = domains[coordinate.domain]->getScopeDescriptors(
+      choices[coordinate.domain].kind);
+  const auto &descriptor = descriptors[coordinate.scope];
   int64_t extent = descriptor.iterationExtents[coordinate.iterator];
   // This is the existing exact reshape domain, not a memory estimate.
   int64_t lower =

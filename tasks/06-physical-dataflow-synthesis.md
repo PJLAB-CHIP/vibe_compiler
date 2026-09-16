@@ -454,15 +454,17 @@ offset grid、静态size及步长满足生成合同。重叠window或其它无�
 | reshape后的多Tile fragment assembly，1024/1025/1031 | 每个actual来源独立合并、精确offset/size/coverage；insert数随片段而非行数增长 | spatial materializer→verifier、layout/bufferization及既有actual Instr/SPM门禁 |
 | 原模型source、固定预算与dtype | ViT编译work/timing及剩余typed结果；LLaMA无卡产物/actual结构回归 | 完整模型package仍须独立验收，主机改善不代签实卡性能 |
 
-#### 已选局部需求中的均匀常量
+#### 已选局部需求中的规则常量
 
-- Upstream IR / input：spatial choice已物化的TileRegion，含均匀dense tensor constant及实际extract_slice、reshape或cast。
+- Upstream IR / input：spatial choice已物化的TileRegion，含dense tensor constant及实际extract_slice、reshape或cast。
 - Current stage responsibility：在把splat literal变成`tensor.empty`与`linalg.fill`之前，使用现有Tensor fold解释当前view链，
   将能精确折叠的结果物化在原view位置；只为仍被使用的常量生成fill。
+  非均匀literal只在逐元素位型证明它由背景值和单个均匀矩形组成时，物化背景fill、矩形fill及标准insert_slice。
+  两个scalar原样保留；矩形来自内容的exact bounding box和元素计数，不能从算子、模型、名称或期望padding推导。
 - Output IR / files：保持原scalar attribute、dtype和结果type的局部constant/fill；无use的完整常量不生成allocation。
 - Downstream consumer：原temporal域及其initializer切片、layout/bufferization、Instr/completion和唯一SPM规划。
 - User-level driver / named pipeline：正式search的`materializeSpatialRegions`；测试调用同一实现。
-- Explicit non-goals：不折叠非均匀dense内容，不改算术或dtype，不按模型/数值/容量选择切片，不改变layout/transport，
+- Explicit non-goals：不处理一般非规则literal，不改算术或dtype，不按模型/容量选择切片，不改变layout/transport，
   不引入全图canonicalizer或e-graph旁路，不推测任何尚未生成的buffer。
 - Completion criteria：多Tile、1024/1025/1031及temporal主块/尾块保留精确coverage与scalar位模式，
   selected局部常量经过实际Instr/SPM成功；完整值仍有消费者时保留其语义。整网可行性另行验证。
@@ -477,7 +479,14 @@ reshape fold：splat的切片可直接重塑同一scalar attribute，不必枚�
 | rank3、1024/1025/1031、FP16/BF16及F32 opmath、多个spatial轴 | 每个consumer的fill尺寸与实际slice一致；scalar attribute逐bit保持；完整范围无重叠无遗漏 | spatial verifier、layout及actual Instr/SPM |
 | 非unit reshape、expand/collapse链、多use、不同窗口 | 各结果type和原view值完全一致；不串用窗口，死完整常量不物化 | 直接消费者与buffer relation verifier |
 | temporal主块/尾块、动态offset且静态result | 沿用实际slice和原initializer tiling，不为完整常量生成SPM buffer | 多block/tail后actual allocator成功 |
-| 非splat、未折叠view、完整值仍被使用 | 不误改数值或擅自缩小真实需求；现有pow指数处理保持 | 负向保留与正式consumer回归 |
+| 单矩形双值literal；rank3/4、1024/1025、FP16/BF16及F32 | 背景、矩形及完整结果逐位一致；零个global读取，实际fill与insert_slice进入bufferization | source AvgPool边界计数、actual Instr/SPM及完整输出 |
+| 多值、非矩形、超过扫描预算、未折叠view、完整值仍被使用 | 不误改数值或擅自缩小真实需求；现有pow指数处理保持 | 负向保留与正式consumer回归 |
+
+规则literal的物化是selected storage阶段对实际常量字节的确定表示，不是ordinary graph等价搜索。
+比较标准memref.global的常量地址方案与已有fill/insert_slice路径：当前target ABI没有隐式global地址通道，
+后者直接复用已支持的内存和movement语义，避免给边界计数另设ABI。每个literal最多扫描1,048,576个元素，
+只控制这次只读压缩工作，不作为SPM admission或候选合法性；不能压缩时保留原literal及原typed下游结果。
+测试必须同时检查不规则literal未被错误物化和真实AvgPool的直接消费者，不能由“没有global”单独签正确性。
 | 原ViT及固定FP16 LLaMA | 默认预算、原始source/dtype；记录实际候选与包，无卡不代签板端 | 完整模型编译/no-card及原包/IR对账 |
 
 ### 5.3 Temporal tiling
@@ -1019,6 +1028,35 @@ Event/dependence graph只能作为从current Instr的operation、SSA、effect、
 一个order choice应用后，actual block order、worker attr和token relation成为new current IR，旧graph失效。Completion owner随后从
 该IR和已证hardware/runtime/ABI合同fresh构造minimum-strength、latest-unavoidable join/wait。不从TileRegion boundary、
 loop backedge、movement类别或“保守”经验猜测completion。
+
+### 6.5.1 运行时索引gather的需求与物化边界
+
+输入为05号保留的标准`tensor.gather`及其实际source/indices SSA，输出为selected candidate中的局部gather结果、
+索引读取、动态source view和连续行/片段搬运，直接交给既有layout/bufferization、Instr/completion及memory/target leaf。
+生产与named入口使用相同op interface和变换；不新增独立embedding driver或runtime分块器。
+
+输出迭代域和indices需求是静态可精确分块的；表的具体行由运行时indices决定，不能伪造affine行集合，也不能把整个source
+类型当成SPM物化需求。表必须有实际SSA依赖、可访问的DDR binding及完整生命周期。只读外部表的可访问性和局部输出空间
+分别验证；没有来源/完成证明的输入返回typed unsupported，不按名称或“唯一root”恢复owner。
+
+每个Tile的输出块是一个连续allocation，各行是它的真实subview；allocation不得放入逐token循环。索引块只搬运一次并在
+连续维上复用，表保留DDR。单/双slot是显式execution choice，选择后先创建真实buffer、SSA和循环；只有唯一SPM planner成功
+生成并验证offset才接纳，不能按`块大小×buffer数`估算筛掉候选。块大小由通用输出域、下游布局和actual反馈选择，不写模型参数。
+
+循环中的行/片段发令可保留，禁止逐元素DMA和没有typed crossing的逐行join。NCC→Kcore索引读取、cross-worker及实际复用
+仍由最终completion owner从current IR生成所需等待；必须分别覆盖循环入口、回边和零次执行，不能在分析迭代中删除首次执行所需join。
+输出块优先由直接下游消费；是否需要跨Region写回或额外layout物化，以actual依赖为准。
+
+效率收口仍在同一current-IR边界完成：已有region/temporal融合必须能消费gather的标准接口；peel后的source、indices与result
+类型从实际operand重新推导，不能将已知尾块误作动态输入。整数cast/clamp保留原scalar operation顺序，优先由已选融合中的局部
+producer供给索引读取；SDK mapping只在对应可读区间取得可见性后复用，不能跨越实际DDR写入或completion/acquire。
+连续reshape的分片协调及局部assembly由既有relation与实际切片处理，不通过扩大全局carrier或估算SPM筛选代替。
+直接消费者仍是bufferization、boundary movement及唯一memory/target leaf；验证同时检查正式search产物、mapping动态执行次数、
+局部allocation大小、通信payload和全部输出，避免仅用单独gather lowering的内存结果作结论。
+
+本轮不实现索引排序/去重、热点表cache或推测的硬件indexed DMA。构包/heap、issue、DMA和等待开销分开测量；
+现有SDK只给出基址和stride，不能把批量循环写成已存在的descriptor-list能力。完成条件及1024/1025/1031、dtype、重复索引、
+4/16 Tile、tail和source到直接下游覆盖矩阵由05号3.5及当前板测矩阵共同约束。
 
 ### 6.6 SPM、DDR 与 target acceptance
 

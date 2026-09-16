@@ -2123,6 +2123,60 @@ static mlir::LogicalResult lowerConvolutionWithOrderedAccumulation(
   return mlir::success();
 }
 
+class PoolLowering : public mlir::OpRewritePattern<ComputePoolOp>,
+                     private ScratchRecorderHolder {
+public:
+  PoolLowering(mlir::MLIRContext *context,
+               TileRegionToInstrBufferRecorder *recorder)
+      : mlir::OpRewritePattern<ComputePoolOp>(context),
+        ScratchRecorderHolder(recorder) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(ComputePoolOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    if (llvm::any_of(op.getDilations(),
+                     [](int64_t dilation) { return dilation != 1; }))
+      return failPattern(rewriter, op,
+                         "native Pool requires unit window dilation");
+    auto input = mlir::cast<mlir::MemRefType>(op.getInput().getType());
+    auto output = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+    InstrPoolKind kind;
+    switch (op.getKind()) {
+    case ComputeReduceKind::Sum:
+      kind = InstrPoolKind::Sum;
+      break;
+    case ComputeReduceKind::Max:
+      kind = InstrPoolKind::Max;
+      break;
+    case ComputeReduceKind::Min:
+      kind = InstrPoolKind::Min;
+      break;
+    case ComputeReduceKind::Avg:
+      kind = InstrPoolKind::Avg;
+      break;
+    default:
+      llvm_unreachable("verified pooling kind is outside the closed enum");
+    }
+    auto destination =
+        createDestAlloc(op.getLoc(), output, rewriter, op, bufferRecorder);
+    if (mlir::failed(destination))
+      return mlir::failure();
+    auto instruction = rewriter.create<InstrPoolOp>(
+        op.getLoc(), InstrPoolKindAttr::get(rewriter.getContext(), kind),
+        op.getInput(), mlir::ValueRange{*destination},
+        rewriter.getDenseI64ArrayAttr(input.getShape()),
+        rewriter.getDenseI64ArrayAttr(output.getShape()),
+        rewriter.getDenseI64ArrayAttr({0, 0, 0, 0}),
+        rewriter.getDenseI64ArrayAttr({op.getKernel()[1], op.getKernel()[0],
+                                       op.getStrides()[1], op.getStrides()[0]}),
+        getDefaultNCCWorkerAttr(rewriter));
+    if (bufferRecorder)
+      bufferRecorder->recordLoweredOperation(op, instruction);
+    rewriter.replaceOp(op, *destination);
+    return mlir::success();
+  }
+};
+
 class ConvLowering : public mlir::OpRewritePattern<ComputeConvOp>,
                      private ScratchRecorderHolder {
 public:
@@ -2290,6 +2344,7 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
   mlir::MLIRContext *context = patterns.getContext();
   patterns.add<ElementwiseIntoLowering>(context, bufferRecorder);
   patterns.add<GemmLowering>(context, bufferRecorder);
+  patterns.add<PoolLowering>(context, bufferRecorder);
   patterns.add<ConvLowering, ConvertLowering, ElementwiseLowering>(
       context, bufferRecorder, descriptorCache);
   patterns.add<ReduceLowering>(context, bufferRecorder, descriptorCache);

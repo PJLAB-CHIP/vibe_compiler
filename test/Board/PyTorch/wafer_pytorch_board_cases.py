@@ -118,6 +118,31 @@ class Gemm(torch.nn.Module):
         return torch.matmul(lhs, rhs)
 
 
+def make_embedding(
+    dtype: torch.dtype, seed: int, *, extent: int = 1024, width: int = 64
+) -> PyTorchBoardCase:
+    """Runtime integer IDs select complete rows from a framework parameter."""
+    torch.manual_seed(seed)
+    module = torch.nn.Embedding(2048, width, dtype=dtype).eval()
+    ids = (torch.arange(2 * extent, dtype=torch.int64).reshape(2, extent) * 37) % 2048
+    ids[0, :3] = torch.tensor([0, 2047, 2047], dtype=torch.int64)
+    inputs = (ids,)
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(ids),)
+
+    return PyTorchBoardCase(
+        name=f"embedding-{extent}-width-{width}",
+        num_partitions=1,
+        dtype=dtype,
+        inputs=inputs,
+        expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.ComparisonPolicy(rtol=0, atol=0),
+    )
+
+
 class CompleteTileAdd(torch.nn.Module):
     def forward(self, lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
         return lhs + rhs
@@ -613,6 +638,24 @@ def _single_card_gemm(
         comparison_policy=common.EXACT if exact_inputs else common.PYTORCH_DEFAULT,
         # The row-sharded none-policy witness describes a single batch only.
         gemm_dimensions=(m, k, n) if batch == 1 else None,
+    )
+
+
+def _pooling(dtype: torch.dtype, seed: int, *, kind: str, extent: int) -> PyTorchBoardCase:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    inputs = (_random_tensor((1, 8, 33, extent), dtype=dtype, generator=generator),)
+    module = (torch.nn.MaxPool2d(3, 2, 1) if kind == "max"
+              else torch.nn.AvgPool2d(3, 2, 1, count_include_pad=False)).eval()
+
+    def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
+        with torch.no_grad():
+            return (module(*inputs),)
+
+    return PyTorchBoardCase(
+        name=f"pool-{kind}-{extent}", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=expected_outputs_factory,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=common.PYTORCH_DEFAULT,
     )
 
 
@@ -1330,6 +1373,10 @@ CASE_FACTORIES: dict[
         _single_card_gemm(dtype, seed, m=4, k=16384, n=extent, exact_inputs=True))
        for extent in (1024, 1025, 1031)},
     "resnet18": _resnet18,
+    **{f"pool-{kind}-{extent}":
+       (lambda dtype, seed, kind=kind, extent=extent:
+        _pooling(dtype, seed, kind=kind, extent=extent))
+       for kind in ("max", "avg") for extent in (1024, 1025)},
     "resnet18-large-1024": lambda dtype, seed: _resnet18(dtype, seed, extent=1024),
     "resnet18-tail-1025": lambda dtype, seed: _resnet18(dtype, seed, extent=1025),
     "vit-encoder-block": _vit_encoder_block,
@@ -1424,6 +1471,14 @@ CASE_FACTORIES: dict[
     "llama-2-7b-single-layer-lm-tail-1025": lambda dtype, seed: _llama_2_7b_single_layer_lm(
         dtype, seed, sequence_length=1025
     ),
+    **{
+        f"embedding-{extent}-width-{width}": (
+            lambda dtype, seed, extent=extent, width=width:
+                make_embedding(dtype, seed, extent=extent, width=width)
+        )
+        for extent in (1024, 1025, 1031)
+        for width in (64, 4096)
+    },
 }
 
 

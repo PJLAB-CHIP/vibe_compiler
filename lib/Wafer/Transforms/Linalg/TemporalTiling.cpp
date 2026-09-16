@@ -1954,6 +1954,45 @@ mlir::LogicalResult refineReshapeStaticTypes(mlir::IRRewriter &rewriter,
   return mlir::success();
 }
 
+mlir::LogicalResult refineGatherStaticTypes(mlir::IRRewriter &rewriter,
+                                            TileRegionOp region) {
+  llvm::SmallVector<mlir::tensor::GatherOp, 8> gathers;
+  region.walk(
+      [&](mlir::tensor::GatherOp gather) { gathers.push_back(gather); });
+  for (auto gather : gathers) {
+    auto refineOperand = [](mlir::Value value) {
+      while (auto cast = value.getDefiningOp<mlir::tensor::CastOp>()) {
+        auto type =
+            mlir::cast<mlir::RankedTensorType>(cast.getSource().getType());
+        if (!type.hasStaticShape())
+          break;
+        value = cast.getSource();
+      }
+      return value;
+    };
+    mlir::Value source = refineOperand(gather.getSource());
+    mlir::Value indices = refineOperand(gather.getIndices());
+    auto sourceType = mlir::cast<mlir::RankedTensorType>(source.getType());
+    auto indicesType = mlir::cast<mlir::RankedTensorType>(indices.getType());
+    bool rankReduced = gather.getResultType().getRank() ==
+                       indicesType.getRank() - 1 + sourceType.getRank() -
+                           static_cast<int64_t>(gather.getGatherDims().size());
+    auto resultType = mlir::tensor::GatherOp::inferResultType(
+        sourceType, indicesType, gather.getGatherDims(), rankReduced);
+    if (source == gather.getSource() && indices == gather.getIndices() &&
+        resultType == gather.getResultType())
+      continue;
+    if (!mlir::tensor::CastOp::areCastCompatible(gather.getResultType(),
+                                                 resultType))
+      return mlir::failure();
+    rewriter.setInsertionPoint(gather);
+    rewriter.replaceOpWithNewOp<mlir::tensor::GatherOp>(
+        gather, resultType, source, indices, gather.getGatherDims(),
+        gather.getUnique());
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult refineLinalgStaticTypes(mlir::IRRewriter &rewriter,
                                             TileRegionOp region) {
   llvm::SmallVector<mlir::linalg::LinalgOp, 16> operations;
@@ -1991,7 +2030,9 @@ mlir::LogicalResult refineLinalgStaticTypes(mlir::IRRewriter &rewriter,
         mlir::clone(rewriter, operation.getOperation(), resultTypes, operands);
     rewriter.replaceOp(operation, replacement->getResults());
   }
-  return refineReshapeStaticTypes(rewriter, region);
+  if (mlir::failed(refineReshapeStaticTypes(rewriter, region)))
+    return mlir::failure();
+  return refineGatherStaticTypes(rewriter, region);
 }
 
 mlir::FailureOr<mlir::TilingResult>

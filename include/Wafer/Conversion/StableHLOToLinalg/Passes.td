@@ -3,6 +3,14 @@
 #ifndef WAFER_CONVERSION_STABLEHLOTOLINALG_PASSES_TD
 #define WAFER_CONVERSION_STABLEHLOTOLINALG_PASSES_TD
 
+def ConvertStablehloGatherToTensorPass
+    : Pass<"wafer-convert-stablehlo-gather-to-tensor", "mlir::func::FuncOp"> {
+  let summary = "Preserve full-slice StableHLO gathers as explicit tensor gathers";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::tensor::TensorDialect"];
+}
+
 def PromoteStablehloLogisticPass
     : Pass<"wafer-promote-stablehlo-logistic", "mlir::func::FuncOp"> {
   let summary = "Compute low-precision StableHLO logistic in F32 before rounding its result";

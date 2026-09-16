@@ -1040,20 +1040,24 @@ TEST(SpatialRegionMaterializationTest,
     ASSERT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
     // The producer splits rows; each consumer selects a different 32-column
     // slab through expand_shape. Four independent owners supply each slab.
-    // Count only source-coordinate assemblies, excluding result publication.
+    // Each slab is assembled in compact coordinates while its four source
+    // fragments retain their global owner windows.
     unsigned copies = 0;
     std::vector<unsigned> coverage(4 * extent);
     actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
       auto slice =
           insert.getSource().getDefiningOp<mlir::tensor::ExtractSliceOp>();
-      if (!slice || slice.getSource().getType() != insert.getDest().getType() ||
+      if (!slice ||
+          slice.getSourceType().getShape() !=
+              (llvm::ArrayRef<int64_t>{2, extent, 128}) ||
           insert.getDestType().getShape() !=
-              (llvm::ArrayRef<int64_t>{2, extent, 128}))
+              (llvm::ArrayRef<int64_t>{2, extent, 32}))
         return;
       ++copies;
       auto offsets = slice.getStaticOffsets();
       auto sizes = slice.getStaticSizes();
-      EXPECT_EQ(offsets, insert.getStaticOffsets());
+      EXPECT_EQ(insert.getStaticOffsets(),
+                llvm::ArrayRef<int64_t>({0, offsets[1], 0}));
       EXPECT_EQ(sizes, insert.getStaticSizes());
       EXPECT_EQ(offsets[0], 0);
       EXPECT_EQ(sizes[0], 2);
@@ -3371,6 +3375,106 @@ module {
       EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
           actual->module->getOperation(), actual->relations)));
     }
+}
+
+TEST(SpatialRegionMaterializationTest,
+     RectangularConstantsPreserveAllElementBits) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025})
+    for (llvm::StringRef dtype : {"f16", "bf16"})
+      for (bool hole : {false, true}) {
+        auto context = createContext();
+        std::string typeText =
+            "tensor<1x" + std::to_string(extent) + "x8x" + dtype.str() + ">";
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        os << R"mlir(module {
+  wafer.target.topology @target {card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+      unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: )mlir"
+           << typeText << ") -> " << typeText << " {\n"
+           << "%c = arith.constant dense<0.0> : " << typeText << "\n"
+           << "%empty = tensor.empty() : " << typeText << "\n"
+           << "%result = linalg.add ins(%input, %c : " << typeText << ", "
+           << typeText << ") outs(%empty : " << typeText << ") -> " << typeText
+           << "\n"
+           << "return %result : " << typeText << "\n}}\n";
+        auto source =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(source);
+        auto function = *source->getOps<mlir::func::FuncOp>().begin();
+        auto constant = *function.getOps<mlir::arith::ConstantOp>().begin();
+        auto type = mlir::cast<mlir::RankedTensorType>(constant.getType());
+        auto background = mlir::FloatAttr::get(type.getElementType(), -0.0);
+        auto interior = mlir::FloatAttr::get(type.getElementType(), 0.5);
+        llvm::SmallVector<llvm::APFloat> values;
+        for (int64_t row = 0; row != extent; ++row)
+          for (int64_t col = 0; col != 8; ++col)
+            values.push_back((row > 0 && row < extent - 1 && col >= 2 &&
+                                      col < 6 && !(hole && row == 2 && col == 3)
+                                  ? interior
+                                  : background)
+                                 .getValue());
+        auto original = mlir::DenseElementsAttr::get(type, values);
+        constant.setValueAttr(original);
+        std::string detail;
+        auto actual = materializeWithSpatialPlan(
+            *source,
+            [](SpatialPlan &plan) {
+              for (auto &node : plan.nodes) {
+                for (auto &axis : node.axes) {
+                  axis.scheme = IteratorPartitionScheme::BalancedParts;
+                  axis.parameter = 1;
+                }
+                node.embedding = {TileId(0)};
+              }
+            },
+            detail);
+        ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+        unsigned rectangles = 0, preserved = 0;
+        actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
+          auto sourceFill =
+              insert.getSource().getDefiningOp<mlir::linalg::FillOp>();
+          auto destFill =
+              insert.getDest().getDefiningOp<mlir::linalg::FillOp>();
+          if (!sourceFill || !destFill)
+            return;
+          ++rectangles;
+          auto foreground = sourceFill.getInputs()[0]
+                                .getDefiningOp<mlir::arith::ConstantOp>();
+          auto outer =
+              destFill.getInputs()[0].getDefiningOp<mlir::arith::ConstantOp>();
+          ASSERT_TRUE(foreground && outer);
+          EXPECT_EQ(foreground.getValue(), interior);
+          EXPECT_EQ(outer.getValue(), background);
+          EXPECT_EQ(insert.getStaticOffsets(),
+                    (llvm::ArrayRef<int64_t>{0, 1, 2}));
+          EXPECT_EQ(insert.getStaticSizes(),
+                    (llvm::ArrayRef<int64_t>{1, extent - 2, 4}));
+          EXPECT_EQ(insert.getStaticStrides(),
+                    (llvm::ArrayRef<int64_t>{1, 1, 1}));
+          EXPECT_EQ(insert.getType(), type);
+          for (int64_t row = 0; row != extent; ++row)
+            for (int64_t col = 0; col != 8; ++col) {
+              auto reconstructed =
+                  row > 0 && row < extent - 1 && col >= 2 && col < 6
+                      ? interior
+                      : background;
+              EXPECT_TRUE(reconstructed.getValue().bitwiseIsEqual(
+                  values[row * 8 + col]));
+            }
+        });
+        actual->module->walk([&](mlir::arith::ConstantOp literal) {
+          if (literal.getValue() == original)
+            ++preserved;
+        });
+        EXPECT_EQ(rectangles, hole ? 0u : 1u);
+        EXPECT_EQ(preserved, hole ? 1u : 0u);
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+      }
 }
 
 TEST(SpatialRegionMaterializationTest, SameTileOutputPiecesMustBeDisjoint) {

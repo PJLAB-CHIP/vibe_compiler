@@ -406,7 +406,9 @@ private:
   }
 
   bool addInvariantBoundary(const BoundaryDescription &described,
-                            const RootUseId &use) {
+                            const RootUseId &use,
+                            analysis::RootBoundaryAccessKind access =
+                                analysis::RootBoundaryAccessKind::Scalar) {
     auto [position, inserted] = boundaries.try_emplace(described.id);
     RootBoundaryWork &boundary = position->second;
     if (inserted) {
@@ -421,7 +423,7 @@ private:
                       [&](const analysis::RootBoundaryUseWork &candidate) {
                         return candidate.id == use;
                       }))
-      boundary.consumerUses.push_back({use, std::nullopt, {}});
+      boundary.consumerUses.push_back({use, std::nullopt, {}, access});
     boundaryIdsByValue[described.value] = described.id;
     return true;
   }
@@ -663,7 +665,9 @@ private:
          llvm::enumerate(work.rootOperation->getOperands())) {
       if (demandedOperands.contains(operandIndex))
         continue;
-      if (mlir::isa<mlir::ShapedType>(operand.getType()))
+      auto gather = mlir::dyn_cast<mlir::tensor::GatherOp>(work.rootOperation);
+      bool indexedSource = gather && operandIndex == 0;
+      if (mlir::isa<mlir::ShapedType>(operand.getType()) && !indexedSource)
         continue;
       std::optional<BoundaryDescription> boundary =
           describeInvariantBoundary(operand, view);
@@ -673,10 +677,20 @@ private:
             "invariant root operand has no stable boundary identity"));
         return;
       }
+      if (indexedSource &&
+          boundary->id.kind != RootBoundaryKind::ProgramInput &&
+          boundary->id.kind != RootBoundaryKind::Constant) {
+        setFailure(unsupported(
+            site, UnsupportedRootRegionWorkReason::UnsupportedSupportSemantics,
+            "indexed table requires an external immutable tensor binding"));
+        return;
+      }
       for (const RootExecutionWork &execution : work.execution)
         if (!addInvariantBoundary(
                 *boundary,
-                {static_cast<uint32_t>(operandIndex), execution.shard}))
+                {static_cast<uint32_t>(operandIndex), execution.shard},
+                indexedSource ? analysis::RootBoundaryAccessKind::IndexedTensor
+                              : analysis::RootBoundaryAccessKind::Scalar))
           return;
       work.invariantInputs.push_back({RootInvariantUseKind::Operand,
                                       static_cast<uint32_t>(operandIndex),

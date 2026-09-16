@@ -436,6 +436,128 @@ executeConvert(const compiler::TargetCommand &command,
 }
 
 llvm::Expected<TargetModelCommandEffect>
+executePool(const compiler::TargetCommand &command,
+            const target::TargetPoolCommand &value,
+            const InvocationMemoryRegistry &memory,
+            TargetModelKernelBudget budget) {
+  if (value.indexDestination ||
+      llvm::any_of(value.pads, [](uint32_t pad) { return pad != 0; }))
+    return kernelError(
+        TargetModelKernelErrorCode::UnsupportedCommand,
+        "plain pooling requires explicit input padding and no index output");
+  if (value.sourceShape[0] != value.destinationShape[0] ||
+      value.sourceShape[3] != value.destinationShape[3])
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                       "pooling must preserve batch and channel extents");
+  for (unsigned axis = 0; axis != 2; ++axis) {
+    uint64_t source = value.sourceShape[axis + 1];
+    uint64_t kernel = value.kernelStrides[1 - axis];
+    uint64_t stride = value.kernelStrides[3 - axis];
+    if (source < kernel ||
+        (source - kernel) / stride + 1 != value.destinationShape[axis + 1])
+      return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                         "pooling result disagrees with its window geometry");
+  }
+  TargetElementwiseOperation combine;
+  switch (value.operation) {
+  case TargetPoolingOperation::Maximum:
+    combine = TargetElementwiseOperation::Max;
+    break;
+  case TargetPoolingOperation::Minimum:
+    combine = TargetElementwiseOperation::Min;
+    break;
+  case TargetPoolingOperation::Sum:
+    if (value.format != LogicalFormat::F32)
+      return kernelError(
+          TargetModelKernelErrorCode::UnsupportedCommand,
+          "plain sum pooling currently qualifies F32 accumulation only");
+    combine = TargetElementwiseOperation::Add;
+    break;
+  default:
+    return kernelError(
+        TargetModelKernelErrorCode::UnsupportedCommand,
+        "pooling kind has no qualified plain numeric implementation");
+  }
+  auto inputKey = PhysicalTensorDescriptor::create(
+      value.format, PhysicalTensorLayout::NCx,
+      std::vector<uint64_t>(value.sourceShape.begin(),
+                            value.sourceShape.end()));
+  auto outputKey = PhysicalTensorDescriptor::create(
+      value.format, PhysicalTensorLayout::NCx,
+      std::vector<uint64_t>(value.destinationShape.begin(),
+                            value.destinationShape.end()));
+  if (!inputKey)
+    return inputKey.takeError();
+  if (!outputKey)
+    return outputKey.takeError();
+  uint64_t count = outputKey->getElementCount();
+  uint64_t kernelWidth = value.kernelStrides[0],
+           kernelHeight = value.kernelStrides[1];
+  uint64_t evaluations;
+  if (!checkedMultiply(count, kernelWidth * kernelHeight, evaluations) ||
+      evaluations > budget.getNumericBudget().getMaximumScalarEvaluations())
+    return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
+                       "pooling scalar work exceeds its command budget");
+  auto vectorKey = makeTensor(value.format, {count});
+  if (!vectorKey)
+    return vectorKey.takeError();
+  auto operation = createFormalElementwiseOperation(
+      combine, {*vectorKey, *vectorKey}, *vectorKey);
+  if (!operation)
+    return operation.takeError();
+  auto input = readTensor(memory, command.launchSlotId.getValue(), value.input,
+                          *inputKey);
+  if (!input)
+    return input.takeError();
+  std::vector<RawLogicalValue> result(count, RawLogicalValue{value.format, 0}),
+      window(count);
+  FormalNumericExecutionContext context;
+  for (uint64_t kh = 0; kh != kernelHeight; ++kh)
+    for (uint64_t kw = 0; kw != kernelWidth; ++kw) {
+      uint64_t offset = 0;
+      for (uint64_t n = 0; n != value.destinationShape[0]; ++n)
+        for (uint64_t h = 0; h != value.destinationShape[1]; ++h)
+          for (uint64_t w = 0; w != value.destinationShape[2]; ++w)
+            for (uint64_t c = 0; c != value.destinationShape[3]; ++c) {
+              uint64_t sourceH = h * value.kernelStrides[3] + kh;
+              uint64_t sourceW = w * value.kernelStrides[2] + kw;
+              uint64_t index =
+                  ((n * value.sourceShape[1] + sourceH) * value.sourceShape[2] +
+                   sourceW) *
+                      value.sourceShape[3] +
+                  c;
+              window[offset++] = (*input)[index];
+            }
+      if (kh == 0 && kw == 0 &&
+          value.operation != TargetPoolingOperation::Sum) {
+        result = window;
+        continue;
+      }
+      auto combined = executeFormalTensorNumeric(
+          context, *operation,
+          llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>>{result, window},
+          budget.getNumericBudget());
+      if (!combined)
+        return combined.takeError();
+      result = std::move(combined->values);
+    }
+  auto packed = packTensor(memory, command.launchSlotId.getValue(),
+                           value.valueDestination, *outputKey, result);
+  if (!packed)
+    return packed.takeError();
+  return withReads(
+      TargetModelCommandEffect{
+          {TargetModelByteWrite{command.launchSlotId.getValue(),
+                                TargetModelAddressSpace::TileSPM,
+                                value.valueDestination, 1, std::move(*packed)}},
+          context.getAggregateFlags(),
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::Formal},
+      {makeTensorRead(command.launchSlotId.getValue(), value.input,
+                      *inputKey)});
+}
+
+llvm::Expected<TargetModelCommandEffect>
 executeReduce(const compiler::TargetCommand &command,
               const target::TargetReduceCommand &value,
               const InvocationMemoryRegistry &memory,

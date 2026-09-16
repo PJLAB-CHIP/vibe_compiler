@@ -113,10 +113,17 @@ struct RootOperandWork {
   std::vector<RootOperandUseWork> uses;
 };
 
+enum class RootBoundaryAccessKind : uint8_t {
+  ExactElements,
+  Scalar,
+  IndexedTensor,
+};
+
 struct RootBoundaryUseWork {
   RootUseId id;
   std::optional<ExactIndexSet> requiredDomain;
   llvm::SmallVector<OwnerIntersection, 4> eligibleFinalOwners;
+  RootBoundaryAccessKind access = RootBoundaryAccessKind::ExactElements;
 };
 
 struct RootBoundaryWork {

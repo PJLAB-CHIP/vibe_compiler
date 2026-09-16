@@ -16,6 +16,7 @@ namespace wafer {
 inline void registerWaferCoreDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::async::AsyncDialect, wafer::WaferDialect>();
   registerWaferTensorIndexingExternalModels(registry);
+  registerWaferTensorGatherTilingExternalModels(registry);
 }
 
 } // namespace wafer

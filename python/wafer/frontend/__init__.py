@@ -11,146 +11,6 @@ import tempfile
 from typing import Any
 
 
-def _state_dict_payloads(torch: Any, exported_program: Any) -> dict[str, Any]:
-    state = getattr(exported_program, "state_dict", None)
-    if not isinstance(state, dict):
-        raise RuntimeError("PyTorch ExportedProgram state_dict must be a mapping")
-    payloads: dict[str, Any] = {}
-    for name, value in state.items():
-        if not isinstance(name, str):
-            raise RuntimeError("PyTorch ExportedProgram state names must be strings")
-        if not isinstance(value, torch.Tensor):
-            payloads[name] = value
-            continue
-        tensor = value.detach().cpu().contiguous()
-        if tensor.dtype == torch.bfloat16:
-            payloads[name] = tensor.view(torch.uint16).numpy().view("|V2")
-        else:
-            payloads[name] = tensor.numpy()
-    return payloads
-
-
-def _promote_biased_convolution(torch: Any, exported_program: Any) -> Any:
-    """Keep convolution and its bias in opmath dtype until the operator result."""
-    convolution_ops = {
-        torch.ops.aten.convolution.default,
-        torch.ops.aten.conv1d.default,
-        torch.ops.aten.conv2d.default,
-        torch.ops.aten.conv3d.default,
-    }
-    low_precision = (torch.float16, torch.bfloat16)
-    if not any(
-        node.op == "call_function"
-        and node.target in convolution_ops
-        and len(node.args) > 2
-        and node.args[2] is not None
-        and getattr(node.meta.get("val"), "dtype", None) in low_precision
-        for node in exported_program.graph.nodes
-    ):
-        return exported_program
-
-    def convolution(input, weight, bias, stride, padding, dilation,
-                    transposed, output_padding, groups):
-        if input.dtype not in low_precision or bias is None:
-            return NotImplemented
-        return torch.ops.aten.convolution.default(
-            input.float(), weight.float(), bias.float(), stride, padding,
-            dilation, transposed, output_padding, groups,
-        ).to(input.dtype)
-
-    # Functionalization presents conv1d/2d/3d as aten.convolution. The F32 call
-    # returns NotImplemented to let the tracer retain it as an operator.
-    return exported_program.run_decompositions(
-        {torch.ops.aten.convolution.default: convolution}
-    )
-
-
-def _decompose_batch_norm_inference(torch: Any, exported_program: Any) -> Any:
-    """Expose the framework's inference opmath before StableHLO capture."""
-    inference = torch.ops.aten._native_batch_norm_legit_no_training.default
-    conditional = (
-        torch.ops.aten.native_batch_norm.default,
-        torch.ops.aten._native_batch_norm_legit.default,
-        torch.ops.aten._native_batch_norm_legit_functional.default,
-    )
-    if not any(
-        node.op == "call_function"
-        and (node.target == inference or (
-            node.target in conditional
-            and (node.args[5] if len(node.args) > 5
-                 else node.kwargs.get("training")) is False
-        ))
-        for node in exported_program.graph.nodes
-    ):
-        return exported_program
-
-    from torch._decomp import get_decompositions
-
-    decompositions = get_decompositions((inference, *conditional))
-
-    def inference_only(decomposition):
-        def decompose(input, weight, bias, running_mean, running_var,
-                      training, momentum, eps):
-            if training is not False:
-                return NotImplemented
-            return decomposition(input, weight, bias, running_mean, running_var,
-                                 training, momentum, eps)
-        return decompose
-
-    for operation in conditional:
-        decompositions[operation] = inference_only(decompositions[operation])
-    return exported_program.run_decompositions(decompositions)
-
-
-def _decompose_composite_opmath(torch: Any, exported_program: Any) -> Any:
-    """Keep framework GELU/LayerNorm opmath before exporter op boundaries vanish."""
-    operations = (torch.ops.aten.gelu.default, torch.ops.aten.native_layer_norm.default)
-    # Functionalization presents layer_norm as native_layer_norm. Include the
-    # outer operation only in detection; the official decomposition owns math.
-    if not any(
-        node.op == "call_function"
-        and node.target in (*operations, torch.ops.aten.layer_norm.default)
-        for node in exported_program.graph.nodes
-    ):
-        return exported_program
-    from torch._decomp import get_decompositions
-
-    return exported_program.run_decompositions(get_decompositions(operations))
-
-
-def _export_stablehlo(torch: Any, stablehlo: Any, exported_program: Any) -> Any:
-    exported_program = _promote_biased_convolution(torch, exported_program)
-    exported_program = _decompose_batch_norm_inference(torch, exported_program)
-    exported_program = _decompose_composite_opmath(torch, exported_program)
-    options = stablehlo.StableHLOExportOptions()
-    options.export_weights = True
-    options.save_weights = True
-    options.inline_all_constant = True
-    options.include_human_readable_text = True
-    state = getattr(exported_program, "state_dict", None)
-    has_bfloat16 = isinstance(state, dict) and any(
-        isinstance(value, torch.Tensor) and value.dtype == torch.bfloat16
-        for value in state.values()
-    )
-    if not has_bfloat16:
-        return stablehlo.exported_program_to_stablehlo(
-            exported_program, options=options
-        )
-
-    graph_options = copy.copy(options)
-    graph_options.export_weights = False
-    program = stablehlo.exported_program_to_stablehlo(
-        exported_program, options=graph_options
-    )
-    bundle = getattr(program, "_bundle", None)
-    if bundle is None or not hasattr(bundle, "state_dict"):
-        raise RuntimeError("pinned PyTorch/XLA result omitted exported state")
-    if bundle.state_dict:
-        raise RuntimeError("PyTorch/XLA exported weights despite disabled export")
-    bundle.state_dict = _state_dict_payloads(torch, exported_program)
-    return program
-
-
 def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
                         inputs: tuple[Any, ...]) -> Any:
     """Capture an original module; the output graph owns all port bindings."""
@@ -225,6 +85,21 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
         torch.ops.aten.silu.default,
         torch.ops.aten.native_layer_norm.default,
     ))
+    native_layer_norm = torch.ops.aten.native_layer_norm.default
+    decompose_layer_norm = decompositions[native_layer_norm]
+
+    def cpu_layer_norm_results(input, *args, **kwargs):
+        output, mean, rstd = decompose_layer_norm(input, *args, **kwargs)
+        # Pinned torch._refs.native_layer_norm casts its statistics to input
+        # dtype for CPU callers. Moving the original module to XLA must not
+        # change these public result dtypes; internal opmath remains F32.
+        return output, mean.to(input.dtype), rstd.to(input.dtype)
+
+    decompositions[native_layer_norm] = cpu_layer_norm_results
+    average_pools = (
+        torch.ops.aten.avg_pool2d.default,
+        torch.ops.aten._adaptive_avg_pool2d.default,
+    )
 
     class CompositeOpmath(TorchFunctionMode):
         def __torch_function__(self, func, types, args=(), kwargs=None):
@@ -244,6 +119,18 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
                     arguments.get("weight"), arguments.get("bias"),
                     arguments.get("eps", 1e-5),
                 )[0]
+            # The public adaptive operator takes a CompositeImplicitAutograd
+            # mean fast path for a 1x1 result, before _adaptive_avg_pool2d is
+            # dispatched. Preserve CPU half/BF16 accumulation on both paths.
+            if func in (torch.nn.functional.adaptive_avg_pool2d,
+                        torch.ops.aten.adaptive_avg_pool2d.default):
+                input_name = ("self" if func == torch.ops.aten.adaptive_avg_pool2d.default
+                              else "input")
+                arguments = dict(zip((input_name, "output_size"), args))
+                arguments.update(kwargs)
+                value = arguments[input_name]
+                if value.dtype in (torch.float16, torch.bfloat16):
+                    return func(value.float(), arguments["output_size"]).to(value.dtype)
             return func(*args, **kwargs)
 
     class Capture(TorchDispatchMode):
@@ -266,6 +153,8 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
                     raise RuntimeError("training BatchNorm is unsupported during XLA export")
                 with self:
                     return decompositions[func](*args, **kwargs)
+            if func in average_pools and args[0].dtype in (torch.float16, torch.bfloat16):
+                return func(args[0].float(), *args[1:], **kwargs).to(args[0].dtype)
             if (func == torch.ops.aten.convolution.default and args[2] is not None
                     and args[0].dtype in (torch.float16, torch.bfloat16)):
                 wide = tuple(value.float() for value in args[:3])

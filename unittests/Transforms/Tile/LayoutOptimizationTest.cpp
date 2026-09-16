@@ -2003,6 +2003,92 @@ module {
 }
 
 TEST_F(LayoutOptimizationTest,
+       LocalAndRemotePartialWindowsUseCoordinatesWithinTheProducerPiece) {
+  for (int64_t rows : {1024, 1025, 1031}) {
+    SCOPED_TRACE(rows);
+    std::string text = R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @source(%input: tensor<2xFULLx64xf16>) {
+      %published = wafer.tile.region(%input : tensor<2xFULLx64xf16>)
+          -> (tensor<2xFULLx64xf16>) {
+      ^bb0(%local: tensor<2xFULLx64xf16>):
+        %piece = tensor.extract_slice %local[1, 5, 0] [1, ROWS, 64]
+            [1, 1, 1] : tensor<2xFULLx64xf16> to tensor<1xROWSx64xf16>
+        %empty = tensor.empty() : tensor<2xFULLx64xf16>
+        %full = tensor.insert_slice %piece into %empty[1, 5, 0]
+            [1, ROWS, 64] [1, 1, 1]
+            : tensor<1xROWSx64xf16> into tensor<2xFULLx64xf16>
+        wafer.tile.yield %full : tensor<2xFULLx64xf16>
+      }
+      %used = wafer.tile.region(%published : tensor<2xFULLx64xf16>)
+          -> (tensor<1xLOCALx64xf16>) {
+      ^bb0(%local: tensor<2xFULLx64xf16>):
+        %piece = tensor.extract_slice %local[1, 5, 0] [1, LOCAL, 64]
+            [1, 1, 1] : tensor<2xFULLx64xf16> to tensor<1xLOCALx64xf16>
+        wafer.tile.yield %piece : tensor<1xLOCALx64xf16>
+      }
+      return
+    }
+  }
+  wafer.tile.module card_id = 0 tile_id = 1 {
+    func.func @destination(%input: tensor<2xFULLx64xf16>) {
+      %used = wafer.tile.region(%input : tensor<2xFULLx64xf16>)
+          -> (tensor<1x1x64xf16>) {
+      ^bb0(%external: tensor<2xFULLx64xf16>):
+        %piece = tensor.extract_slice %external[1, END, 0] [1, 1, 64]
+            [1, 1, 1] : tensor<2xFULLx64xf16> to tensor<1x1x64xf16>
+        wafer.tile.yield %piece : tensor<1x1x64xf16>
+      }
+      return
+    }
+  }
+}
+)mlir";
+    for (auto [token, value] :
+         {std::pair<llvm::StringRef, int64_t>{"FULL", 2 * rows},
+          {"ROWS", rows},
+          {"LOCAL", rows - 1},
+          {"END", rows + 4}}) {
+      size_t position = 0;
+      while ((position = text.find(token.str(), position)) !=
+             std::string::npos) {
+        std::string replacement = std::to_string(value);
+        text.replace(position, token.size(), replacement);
+        position += replacement.size();
+      }
+    }
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    llvm::SmallVector<TileRegionOp, 3> regions;
+    module->walk([&](TileRegionOp region) { regions.push_back(region); });
+    ASSERT_EQ(regions.size(), 3u);
+    StructuredMaterializationRelations relations;
+    relations.boundaryRelations.push_back(
+        {regions[0].getResult(0), regions[2].getBody().getArgument(0)});
+    auto result = prepareCurrentLayoutInput(*module, relations);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    const auto &relation = relations.boundaryRelations.front();
+    auto expected = mlir::RankedTensorType::get(
+        {1, rows, 64}, mlir::Float16Type::get(context.get()));
+    EXPECT_EQ(relation.sourceEndpoint.getType(), expected);
+    EXPECT_EQ(relation.destinationEndpoint.getType(), expected);
+    auto argument =
+        mlir::cast<mlir::BlockArgument>(relation.destinationEndpoint);
+    bool sawRemoteWindow = false;
+    for (auto *user : argument.getUsers())
+      if (auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(user)) {
+        EXPECT_EQ(slice.getStaticOffsets(),
+                  llvm::ArrayRef<int64_t>({0, rows - 1, 0}));
+        EXPECT_EQ(slice.getStaticSizes(), llvm::ArrayRef<int64_t>({1, 1, 64}));
+        sawRemoteWindow = true;
+      }
+    EXPECT_TRUE(sawRemoteWindow);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
+
+TEST_F(LayoutOptimizationTest,
        SameTileExactInsertExtractBoundaryUsesOnlyCompactStorage) {
   constexpr llvm::StringLiteral text = R"mlir(
 #id = affine_map<(b, m, n) -> (b, m, n)>

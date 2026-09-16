@@ -1,6 +1,7 @@
 //===- BoundaryMovement.cpp - Close physical Tile boundaries ----------===//
 
 #include "BoundaryMovement.h"
+#include "StructuredToTile.h"
 
 #include "DistributedCollectiveMovement.h"
 #include "GemmFinalization.h"
@@ -15,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
@@ -1804,12 +1806,31 @@ static void normalizeSubviewResultTypes(mlir::ModuleOp module) {
   }
 }
 
+static bool hasOnlyScalarReadUses(mlir::Value value) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type || value.use_empty() ||
+      (!type.getElementType().isInteger(32) && !type.getElementType().isInteger(64)))
+    return false;
+  return llvm::all_of(value.getUses(), [](mlir::OpOperand &use) {
+    if (mlir::isa<mlir::memref::LoadOp>(use.getOwner()))
+      return use.getOperandNumber() == 0;
+    if (isScalarIntegerMap(use.getOwner()))
+      return mlir::cast<mlir::linalg::GenericOp>(use.getOwner()).isDpsInput(&use);
+    return false;
+  });
+}
+
 static mlir::LogicalResult
 materializeInputViewLoad(mlir::Operation *view, mlir::Value ddrSource,
                          mlir::IRRewriter &rewriter,
                          BoundaryMovementStatistics &statistics) {
   mlir::Value oldValue = view->getResult(0);
   auto ddrView = rebuildInputView(view, ddrSource, rewriter);
+  if (hasOnlyScalarReadUses(oldValue)) {
+    rewriter.replaceAllUsesWith(oldValue, ddrView);
+    rewriter.eraseOp(view);
+    return mlir::success();
+  }
   if (hasOnlyInputViewUses(oldValue)) {
     llvm::SmallVector<mlir::Operation *, 4> children(oldValue.getUsers());
     for (auto *child : children)
@@ -1818,6 +1839,30 @@ materializeInputViewLoad(mlir::Operation *view, mlir::Value ddrSource,
         return mlir::failure();
   } else {
     auto oldType = mlir::cast<mlir::MemRefType>(oldValue.getType());
+    // A bufferized slice insertion already has its final block destination.
+    // Read directly into that view; allocating a staging row here would turn
+    // an indexed gather into per-row allocation and a redundant SPM copy.
+    for (mlir::Operation *user : llvm::make_early_inc_range(oldValue.getUsers())) {
+      auto copy = mlir::dyn_cast<mlir::memref::CopyOp>(user);
+      if (!copy || copy.getSource() != oldValue || copy.getTarget() == oldValue)
+        continue;
+      auto destinationType = mlir::cast<mlir::MemRefType>(copy.getTarget().getType());
+      auto destinationMemory = getWaferMemoryAttr(destinationType);
+      auto sourceMemory = getWaferMemoryAttr(oldType);
+      if (!destinationMemory || !sourceMemory ||
+          destinationMemory.getSpace() != MemorySpace::SPM ||
+          destinationMemory.getLayout() != MemLayout::Tensor ||
+          sourceMemory.getLayout() != MemLayout::Tensor)
+        continue;
+      rewriter.setInsertionPoint(copy);
+      rewriter.create<StorageLoadOp>(copy.getLoc(), ddrView, copy.getTarget());
+      rewriter.eraseOp(copy);
+      ++statistics.ddrLoads;
+    }
+    if (oldValue.use_empty()) {
+      rewriter.eraseOp(view);
+      return mlir::success();
+    }
     llvm::SmallVector<mlir::Value> dynamicSizes;
     rewriter.setInsertionPoint(view);
     for (int64_t dimension = 0; dimension < oldType.getRank(); ++dimension)
@@ -2499,7 +2544,10 @@ static void eraseDeadBridges(mlir::ModuleOp module) {
     llvm::SmallVector<mlir::Operation *, 16> dead;
     module.walk([&](mlir::Operation *operation) {
       if (mlir::isa<mlir::bufferization::ToTensorOp,
-                    mlir::bufferization::ToMemrefOp>(operation) &&
+                    mlir::bufferization::ToMemrefOp,
+                    mlir::ViewLikeOpInterface,
+                    mlir::tensor::ExtractSliceOp, mlir::tensor::ExpandShapeOp,
+                    mlir::tensor::CollapseShapeOp, mlir::tensor::CastOp>(operation) &&
           operation->use_empty())
         dead.push_back(operation);
     });
@@ -3017,6 +3065,12 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
         }
         argument.setType((*ddr).getType());
         for (mlir::bufferization::ToMemrefOp bridge : input.bridges) {
+          if (hasOnlyScalarReadUses(bridge.getMemref())) {
+            rewriter.replaceAllUsesWith(bridge.getMemref(), argument);
+            rewriter.eraseOp(bridge);
+            ++statistics.tensorBridgesRemoved;
+            continue;
+          }
           if (canLoadInputViews(
                   bridge.getMemref(),
                   mlir::cast<mlir::MemRefType>(argument.getType()))) {

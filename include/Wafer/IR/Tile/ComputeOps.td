@@ -109,6 +109,32 @@ def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
       "$input `,` $weight attr-dict `:` functional-type(operands, results)";
 }
 
+def Wafer_ComputePoolOp : Wafer_Op<"tile.pool", [
+    WaferTileDataflowOpInterface,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "target-abstract two-dimensional pooling";
+  let description = [{
+    Reduces each spatial window in an existing NHWC input according to kind:
+    sum, max, min, or avg. Avg is the arithmetic mean over the full window.
+    Input and result use NCx storage. Kernel, stride and dilation use H/W
+    order. Padding is explicit in the input producer; this op does not infer
+    padding values or select a placement, worker or completion boundary.
+  }];
+  let arguments = (ins
+    Wafer_ComputeReduceKindAttr:$kind,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$input,
+    DenseI64ArrayAttr:$kernel,
+    DenseI64ArrayAttr:$strides,
+    DenseI64ArrayAttr:$dilations
+  );
+  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$kind $input attr-dict `:` type($input) `to` type($result)";
+}
+
 def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
     WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,

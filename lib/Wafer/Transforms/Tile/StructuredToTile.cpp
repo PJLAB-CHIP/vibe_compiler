@@ -8,9 +8,11 @@
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
+#include "mlir/Analysis/FlatLinearValueConstraints.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -30,6 +32,36 @@
 #include <utility>
 
 namespace wafer::compiler::detail {
+bool isScalarIntegerMap(mlir::Operation *operation) {
+  auto generic = mlir::dyn_cast_or_null<mlir::linalg::GenericOp>(operation);
+  if (!generic || llvm::any_of(generic.getIteratorTypesArray(), [](auto kind) {
+        return kind != mlir::utils::IteratorType::parallel;
+      }))
+    return false;
+  for (mlir::Type type : generic->getOperandTypes()) {
+    auto shaped = mlir::dyn_cast<mlir::ShapedType>(type);
+    if (!shaped || !shaped.hasStaticShape() ||
+        (!shaped.getElementType().isInteger(32) &&
+         !shaped.getElementType().isInteger(64)))
+      return false;
+  }
+  bool hasIndexArithmetic = false;
+  for (auto &op : generic.getBody()->without_terminator()) {
+    if (!mlir::isa<mlir::arith::ConstantOp, mlir::arith::TruncIOp,
+                   mlir::arith::ExtSIOp, mlir::arith::ExtUIOp,
+                   mlir::arith::MinSIOp, mlir::arith::MaxSIOp,
+                   mlir::arith::MinUIOp, mlir::arith::MaxUIOp,
+                   mlir::arith::CmpIOp, mlir::arith::SelectOp>(op))
+      return false;
+    if (llvm::any_of(op.getResultTypes(), [](mlir::Type type) {
+          return !mlir::isa<mlir::IntegerType>(type);
+        }))
+      return false;
+    hasIndexArithmetic |= !mlir::isa<mlir::arith::ConstantOp>(op);
+  }
+  return hasIndexArithmetic;
+}
+
 namespace {
 
 enum class LoweringKind : uint8_t {
@@ -37,8 +69,10 @@ enum class LoweringKind : uint8_t {
   CapturedFill,
   Contraction,
   Convolution,
+  Pool,
   Reduction,
   Elementwise,
+  ScalarInteger,
 };
 
 struct LoweringPlan {
@@ -790,6 +824,177 @@ getReductionInputDimensions(mlir::linalg::LinalgOp operation) {
   return result;
 }
 
+struct PoolDescriptor {
+  unsigned inputOperand = 0;
+  ComputeReduceKind kind = ComputeReduceKind::Max;
+  llvm::SmallVector<int64_t, 4> inputToNHWC, outputToNHWC, outputFromNHWC;
+  llvm::SmallVector<int64_t, 4> inputShape, outputShape;
+  llvm::SmallVector<int64_t, 2> kernel, strides, dilations;
+};
+
+static mlir::Value findLastFillValueBefore(mlir::Value destination,
+                                           mlir::Operation *operation);
+static bool isPositiveZero(mlir::Value value);
+
+static mlir::FailureOr<PoolDescriptor>
+buildPoolDescriptor(mlir::linalg::LinalgOp operation) {
+  unsigned rank = operation.getNumParallelLoops();
+  unsigned loops = operation.getNumLoops();
+  if (operation.getNumDpsInits() != 1 || rank < 2 || rank > 4 ||
+      loops != rank + 2 || operation.getNumReductionLoops() != 2)
+    return mlir::failure();
+  auto &region = operation->getRegion(0).front();
+  auto operations = region.without_terminator();
+  auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(region.getTerminator());
+  if (!yield || yield.getNumOperands() != 1 ||
+      std::distance(operations.begin(), operations.end()) != 1)
+    return mlir::failure();
+  auto *combiner = &*operations.begin();
+  std::optional<ComputeReduceKind> kind;
+  if (mlir::isa<mlir::arith::MaximumFOp>(combiner))
+    kind = ComputeReduceKind::Max;
+  else if (mlir::isa<mlir::arith::MinimumFOp>(combiner))
+    kind = ComputeReduceKind::Min;
+  else if (mlir::isa<mlir::arith::AddFOp>(combiner))
+    kind = ComputeReduceKind::Sum;
+  if (!kind || yield.getOperand(0) != combiner->getResult(0))
+    return mlir::failure();
+  mlir::Value accumulator = operation.getRegionOutputArgs().front();
+  mlir::Value lhs = combiner->getOperand(0), rhs = combiner->getOperand(1);
+  mlir::Value data = lhs == accumulator   ? rhs
+                     : rhs == accumulator ? lhs
+                                          : mlir::Value{};
+  auto argument = mlir::dyn_cast_or_null<mlir::BlockArgument>(data);
+  if (!argument || argument.getOwner() != &region ||
+      argument.getArgNumber() >= operation.getNumDpsInputs())
+    return mlir::failure();
+  unsigned inputOperand = argument.getArgNumber();
+  for (auto [index, input] : llvm::enumerate(operation.getRegionInputArgs()))
+    if (index != inputOperand && !input.use_empty())
+      return mlir::failure();
+  auto input = getMemRef(operation.getDpsInputs()[inputOperand]);
+  auto output = getMemRef(operation.getDpsInits()[0]);
+  if (!isStaticPositive(input) || !isStaticPositive(output) ||
+      input.getRank() != rank || output.getRank() != rank ||
+      input.getElementType() != output.getElementType())
+    return mlir::failure();
+  // A native sum pool has a zero initial accumulator. Moving a nonzero
+  // source accumulator after the reduction would reassociate floating add.
+  if (*kind == ComputeReduceKind::Sum) {
+    auto initial =
+        findLastFillValueBefore(operation.getDpsInits()[0], operation);
+    if (!initial || !isPositiveZero(initial))
+      return mlir::failure();
+  }
+  auto maps = operation.getIndexingMapsArray();
+  auto inputMap = maps[inputOperand], outputMap = maps.back();
+  if (inputMap.getNumSymbols() || outputMap.getNumSymbols() ||
+      !outputMap.isProjectedPermutation())
+    return mlir::failure();
+  auto iterators = operation.getIteratorTypesArray();
+  auto extents = operation.getStaticLoopRanges();
+  if (extents.size() != loops ||
+      llvm::any_of(extents, [](int64_t n) { return n <= 0; }))
+    return mlir::failure();
+  struct Axis {
+    int64_t input, output, reduction, stride, dilation;
+  };
+  llvm::SmallVector<Axis, 4> axes;
+  llvm::SmallBitVector seenParallel(loops), seenReduction(loops);
+  for (auto [dimension, expression] : llvm::enumerate(inputMap.getResults())) {
+    llvm::SmallVector<int64_t, 8> coefficients;
+    if (mlir::failed(mlir::getFlattenedAffineExpr(expression, loops, 0,
+                                                  &coefficients)) ||
+        coefficients.size() != loops + 1 || coefficients.back() != 0)
+      return mlir::failure();
+    std::optional<unsigned> parallel, reduction;
+    for (unsigned loop = 0; loop != loops; ++loop) {
+      if (!coefficients[loop])
+        continue;
+      if (coefficients[loop] < 0)
+        return mlir::failure();
+      auto &selected = iterators[loop] == mlir::utils::IteratorType::parallel
+                           ? parallel
+                           : reduction;
+      if (selected)
+        return mlir::failure();
+      selected = loop;
+    }
+    if (!parallel || seenParallel.test(*parallel))
+      return mlir::failure();
+    seenParallel.set(*parallel);
+    auto position = findMapResult(
+        outputMap, mlir::getAffineDimExpr(*parallel, operation.getContext()));
+    if (!position)
+      return mlir::failure();
+    if (reduction) {
+      if (seenReduction.test(*reduction))
+        return mlir::failure();
+      seenReduction.set(*reduction);
+    } else if (coefficients[*parallel] != 1 ||
+               input.getDimSize(dimension) != output.getDimSize(*position)) {
+      return mlir::failure();
+    }
+    axes.push_back({static_cast<int64_t>(dimension), *position,
+                    reduction ? static_cast<int64_t>(*reduction) : -1,
+                    coefficients[*parallel],
+                    reduction ? coefficients[*reduction] : 1});
+  }
+  if (axes.size() != rank || seenParallel.count() != rank ||
+      seenReduction.count() != 2)
+    return mlir::failure();
+  llvm::sort(axes,
+             [](const Axis &a, const Axis &b) { return a.output < b.output; });
+  llvm::SmallVector<Axis, 2> retained, windows;
+  for (const auto &axis : axes)
+    (axis.reduction < 0 ? retained : windows).push_back(axis);
+  llvm::sort(windows, [](const Axis &a, const Axis &b) {
+    return a.reduction < b.reduction;
+  });
+  PoolDescriptor result;
+  result.inputOperand = inputOperand;
+  result.kind = *kind;
+  llvm::SmallVector<Axis, 4> canonical;
+  if (retained.size() == 2)
+    canonical.push_back(retained.front());
+  llvm::append_range(canonical, windows);
+  if (!retained.empty())
+    canonical.push_back(retained.back());
+  for (const auto &axis : canonical) {
+    result.inputToNHWC.push_back(axis.input);
+    result.outputToNHWC.push_back(axis.output);
+    result.inputShape.push_back(input.getDimSize(axis.input));
+    result.outputShape.push_back(output.getDimSize(axis.output));
+  }
+  // Missing independent axes are exact unit dimensions, including the rank-2
+  // count window in AvgPool's explicit denominator. No data is replicated.
+  if (rank < 4) {
+    result.inputShape.insert(result.inputShape.begin(), 1);
+    result.outputShape.insert(result.outputShape.begin(), 1);
+  }
+  if (rank == 2) {
+    result.inputShape.push_back(1);
+    result.outputShape.push_back(1);
+  }
+  result.outputFromNHWC.assign(rank, -1);
+  for (auto [index, dimension] : llvm::enumerate(result.outputToNHWC))
+    result.outputFromNHWC[dimension] = index;
+  for (const auto &axis : windows) {
+    int64_t kernel = extents[axis.reduction];
+    __int128 effective = static_cast<__int128>(kernel - 1) * axis.dilation + 1;
+    if (effective > input.getDimSize(axis.input) ||
+        (input.getDimSize(axis.input) - static_cast<int64_t>(effective)) /
+                    axis.stride +
+                1 !=
+            output.getDimSize(axis.output))
+      return mlir::failure();
+    result.kernel.push_back(kernel);
+    result.strides.push_back(axis.stride);
+    result.dilations.push_back(axis.dilation);
+  }
+  return result;
+}
+
 static mlir::LogicalResult preflight(mlir::ModuleOp module,
                                      llvm::SmallVectorImpl<LoweringPlan> &plans,
                                      std::string &detail) {
@@ -821,6 +1026,10 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
       plans.push_back({operation, LoweringKind::Fill});
       return mlir::WalkResult::advance();
     }
+    if (isScalarIntegerMap(operation)) {
+      plans.push_back({operation, LoweringKind::ScalarInteger});
+      return mlir::WalkResult::advance();
+    }
     if (getCapturedFillValue(operation)) {
       plans.push_back({operation, LoweringKind::CapturedFill});
       return mlir::WalkResult::advance();
@@ -840,6 +1049,10 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
     }
     if (mlir::succeeded(buildConvDescriptor(operation))) {
       plans.push_back({operation, LoweringKind::Convolution});
+      return mlir::WalkResult::advance();
+    }
+    if (mlir::succeeded(buildPoolDescriptor(operation))) {
+      plans.push_back({operation, LoweringKind::Pool});
       return mlir::WalkResult::advance();
     }
     if (hasReductionIterator(operation)) {
@@ -894,16 +1107,17 @@ static mlir::LogicalResult preflight(mlir::ModuleOp module,
 // A fill is usable only if it still reaches this read. Layout materialization
 // takes a snapshot of its source, so follow it at the copy's own position, not
 // at the later consumer. Any intervening or unknown write invalidates the fill.
-static ComputeFillOp findLastFillBefore(mlir::Value destination,
-                                        mlir::Operation *operation,
-                                        mlir::AliasAnalysis &aliases) {
+static mlir::Value findLastFillValueBefore(mlir::Value destination,
+                                           mlir::Operation *operation,
+                                           mlir::AliasAnalysis &aliases) {
   if (!destination || !operation)
     return {};
   for (mlir::Operation *previous = operation->getPrevNode(); previous;
        previous = previous->getPrevNode()) {
     if (previous == destination.getDefiningOp()) {
       if (auto materialize = mlir::dyn_cast<LayoutMaterializeOp>(previous))
-        return findLastFillBefore(materialize.getSource(), previous, aliases);
+        return findLastFillValueBefore(materialize.getSource(), previous,
+                                       aliases);
       return {};
     }
     auto effects = mlir::getEffectsRecursively(previous);
@@ -914,12 +1128,25 @@ static ComputeFillOp findLastFillBefore(mlir::Value destination,
               effect.getEffect()))
         return false;
       auto value = effect.getValue();
+      // Tile resource effects describe occupancy; address effects are the
+      // separate value-associated default-resource entries. An unrelated
+      // layout conversion must not erase a reaching fill proof.
+      if (!value && mlir::isa<WaferTileDataflowOpInterface>(previous) &&
+          effect.getResource() != mlir::SideEffects::DefaultResource::get())
+        return false;
       return !value || !aliases.alias(value, destination).isNo();
     });
     if (!writes)
       continue;
-    auto fill = mlir::dyn_cast<ComputeFillOp>(previous);
-    return fill && fill.getDest() == destination ? fill : ComputeFillOp{};
+    if (auto fill = mlir::dyn_cast<ComputeFillOp>(previous))
+      return fill.getDest() == destination ? fill.getValue() : mlir::Value{};
+    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(previous))
+      return fill.getDpsInits()[0] == destination ? fill.getDpsInputs()[0]
+                                                  : mlir::Value{};
+    if (auto fill = mlir::dyn_cast<mlir::linalg::LinalgOp>(previous))
+      if (fill.getNumDpsInits() == 1 && fill.getDpsInits()[0] == destination)
+        return getCapturedFillValue(fill);
+    return {};
   }
   return {};
 }
@@ -939,10 +1166,10 @@ lowerCapturedFill(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   return mlir::success();
 }
 
-static ComputeFillOp findLastFillBefore(mlir::Value destination,
-                                        mlir::Operation *operation) {
+static mlir::Value findLastFillValueBefore(mlir::Value destination,
+                                           mlir::Operation *operation) {
   mlir::AliasAnalysis aliases(operation->getParentOfType<mlir::ModuleOp>());
-  return findLastFillBefore(destination, operation, aliases);
+  return findLastFillValueBefore(destination, operation, aliases);
 }
 
 static bool isPositiveZero(mlir::Value value) {
@@ -1400,8 +1627,8 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
     resultMDim = rewriter.getI64IntegerAttr(1);
     resultNDim = rewriter.getI64IntegerAttr(2);
   }
-  ComputeFillOp fill = findLastFillBefore(destination, operation);
-  const bool needsAccumulator = !fill || !isPositiveZero(fill.getValue());
+  mlir::Value fill = findLastFillValueBefore(destination, operation);
+  const bool needsAccumulator = !fill || !isPositiveZero(fill);
   mlir::Value psum;
   if (needsAccumulator && resultType.getElementType().isF32()) {
     psum = destination;
@@ -1523,8 +1750,8 @@ lowerConvolution(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   if (mlir::failed(restored) || (*restored).getType() != resultType)
     return mlir::failure();
   mlir::Value replacement = *restored;
-  ComputeFillOp fill = findLastFillBefore(destination, operation);
-  if (!fill || !isPositiveZero(fill.getValue())) {
+  mlir::Value fill = findLastFillValueBefore(destination, operation);
+  if (!fill || !isPositiveZero(fill)) {
     auto combined = rewriter.create<ComputeElementwiseOp>(
         operation.getLoc(), resultType,
         ComputeElementwiseKindAttr::get(rewriter.getContext(),
@@ -1543,6 +1770,89 @@ lowerConvolution(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
     return mlir::failure();
   rewriter.eraseOp(operation);
   ++statistics.convolutions;
+  return mlir::success();
+}
+
+static mlir::LogicalResult lowerPool(mlir::linalg::LinalgOp operation,
+                                     mlir::IRRewriter &rewriter,
+                                     StructuredToTileStatistics &statistics) {
+  auto descriptor = buildPoolDescriptor(operation);
+  if (mlir::failed(descriptor))
+    return mlir::failure();
+  mlir::Value destination = operation.getDpsInits()[0];
+  auto resultType = getOwnedType(getMemRef(destination));
+  auto fill = findLastFillValueBefore(destination, operation);
+  auto constant = fill ? fill.getDefiningOp<mlir::arith::ConstantOp>()
+                       : mlir::arith::ConstantOp{};
+  auto initial = constant ? mlir::dyn_cast<mlir::FloatAttr>(constant.getValue())
+                          : mlir::FloatAttr{};
+  bool identity =
+      initial && (descriptor->kind == ComputeReduceKind::Sum
+                      ? isPositiveZero(fill)
+                      : initial.getValue().isInfinity() &&
+                            initial.getValue().isNegative() ==
+                                (descriptor->kind == ComputeReduceKind::Max));
+  rewriter.setInsertionPoint(operation);
+  auto input = permuteBuffer(operation.getDpsInputs()[descriptor->inputOperand],
+                             descriptor->inputToNHWC, rewriter,
+                             operation.getLoc(), statistics);
+  if (mlir::failed(input))
+    return mlir::failure();
+  input = reshapeBuffer(*input, descriptor->inputShape, rewriter,
+                        operation.getLoc(), statistics);
+  if (mlir::failed(input))
+    return mlir::failure();
+  auto nativeInputType = mlir::MemRefType::get(
+      descriptor->inputShape, resultType.getElementType(),
+      mlir::MemRefLayoutAttrInterface{},
+      MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM, MemLayout::NCx));
+  input = materializeBufferAs(*input, nativeInputType, rewriter,
+                              operation.getLoc(), statistics);
+  if (mlir::failed(input))
+    return mlir::failure();
+  llvm::SmallVector<int64_t, 4> shape;
+  for (int64_t dimension : descriptor->outputToNHWC)
+    shape.push_back(resultType.getDimSize(dimension));
+  auto pool = rewriter.create<ComputePoolOp>(
+      operation.getLoc(),
+      getShapedType(nativeInputType, descriptor->outputShape),
+      ComputeReduceKindAttr::get(rewriter.getContext(), descriptor->kind),
+      *input, rewriter.getDenseI64ArrayAttr(descriptor->kernel),
+      rewriter.getDenseI64ArrayAttr(descriptor->strides),
+      rewriter.getDenseI64ArrayAttr(descriptor->dilations));
+  auto logical = reshapeBuffer(pool.getResult(), shape, rewriter,
+                               operation.getLoc(), statistics);
+  if (mlir::failed(logical))
+    return mlir::failure();
+  logical = materializeBufferAs(*logical, getShapedType(resultType, shape),
+                                rewriter, operation.getLoc(), statistics);
+  if (mlir::failed(logical))
+    return mlir::failure();
+  auto restored = permuteBuffer(*logical, descriptor->outputFromNHWC, rewriter,
+                                operation.getLoc(), statistics);
+  if (mlir::failed(restored) || restored->getType() != resultType)
+    return mlir::failure();
+  mlir::Value value = *restored;
+  if (!identity) {
+    auto combineKind = descriptor->kind == ComputeReduceKind::Max
+                           ? ComputeElementwiseKind::Max
+                       : descriptor->kind == ComputeReduceKind::Min
+                           ? ComputeElementwiseKind::Min
+                           : ComputeElementwiseKind::Add;
+    value = rewriter
+                .create<ComputeElementwiseOp>(
+                    operation.getLoc(), resultType,
+                    ComputeElementwiseKindAttr::get(rewriter.getContext(),
+                                                    combineKind),
+                    mlir::ValueRange{destination, value}, mlir::ArrayAttr{})
+                .getResult();
+    ++statistics.elementwiseOperations;
+  }
+  if (!publishComputedValue(operation, destination, value, rewriter,
+                            statistics))
+    return mlir::failure();
+  rewriter.eraseOp(operation);
+  ++statistics.pools;
   return mlir::success();
 }
 
@@ -1600,9 +1910,9 @@ lowerReduction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
     return mlir::failure();
   mlir::MemRefType resultType = getOwnedType(destinationType);
   rewriter.setInsertionPoint(operation);
-  ComputeFillOp fill = findLastFillBefore(destination, operation);
+  mlir::Value fill = findLastFillValueBefore(destination, operation);
   mlir::Value init =
-      fill ? fill.getValue()
+      fill ? fill
            : createReductionIdentity(*kind, inputType.getElementType(),
                                      rewriter, operation.getLoc());
   if (!init || !init.getDefiningOp<mlir::arith::ConstantOp>())
@@ -1910,6 +2220,23 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
   for (const LoweringPlan &plan : plans) {
     mlir::LogicalResult lowered = mlir::failure();
     switch (plan.kind) {
+    case LoweringKind::ScalarInteger: {
+      rewriter.setInsertionPoint(plan.operation);
+      auto loops = mlir::linalg::linalgOpToLoops(rewriter, plan.operation);
+      lowered = mlir::success(mlir::succeeded(loops));
+      if (mlir::succeeded(lowered)) {
+        // The generic loop emitter also loads unused DPS init arguments.
+        // They have no source-level read and must not become volatile Kcore
+        // loads or artificial completion observers in target lowering.
+        if (!loops->empty())
+          loops->front()->walk([&](mlir::memref::LoadOp load) {
+            if (load->use_empty())
+              rewriter.eraseOp(load);
+          });
+        rewriter.eraseOp(plan.operation);
+      }
+      break;
+    }
     case LoweringKind::Fill:
       lowered = lowerFill(plan.operation, rewriter, result.statistics);
       break;
@@ -1922,6 +2249,9 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
     case LoweringKind::Convolution:
       lowered = lowerConvolution(plan.operation, rewriter, result.statistics);
       break;
+    case LoweringKind::Pool:
+      lowered = lowerPool(plan.operation, rewriter, result.statistics);
+      break;
     case LoweringKind::Reduction:
       lowered = lowerReduction(plan.operation, rewriter, result.statistics);
       break;
@@ -1932,6 +2262,9 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
     if (mlir::failed(lowered)) {
       llvm::StringRef kind;
       switch (plan.kind) {
+      case LoweringKind::ScalarInteger:
+        kind = "integer cast/clamp";
+        break;
       case LoweringKind::Fill:
         kind = "fill";
         break;
@@ -1943,6 +2276,9 @@ lowerStructuredComputeToTile(mlir::ModuleOp module,
         break;
       case LoweringKind::Convolution:
         kind = "convolution";
+        break;
+      case LoweringKind::Pool:
+        kind = "pool";
         break;
       case LoweringKind::Reduction:
         kind = "reduction";

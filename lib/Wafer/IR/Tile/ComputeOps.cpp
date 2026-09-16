@@ -183,6 +183,45 @@ mlir::LogicalResult ComputeConvOp::verify() {
       getStridesAttr().asArrayRef(), getDilationsAttr().asArrayRef());
 }
 
+mlir::LogicalResult ComputePoolOp::verify() {
+  auto input = getLogicalTensorType(getInput().getType());
+  auto output = getLogicalTensorType(getResult().getType());
+  if (!input || !output || input->getRank() != 4 || output->getRank() != 4 ||
+      !input->hasStaticShape() || !output->hasStaticShape())
+    return emitOpError("requires static rank-4 NHWC buffers");
+  for (mlir::Type type : {getInput().getType(), getResult().getType()})
+    if (!hasWaferMemorySpace(type, MemorySpace::SPM) ||
+        !hasWaferLayout(type, MemLayout::NCx))
+      return emitOpError("requires NCx SPM input and result");
+  if (input->getElementType() != output->getElementType() ||
+      !mlir::isa<mlir::FloatType>(input->getElementType()))
+    return emitOpError("requires matching floating-point element types");
+  if (llvm::any_of(input->getShape(), [](int64_t size) { return size <= 0; }) ||
+      llvm::any_of(output->getShape(),
+                   [](int64_t size) { return size <= 0; }) ||
+      getKernel().size() != 2 || getStrides().size() != 2 ||
+      getDilations().size() != 2)
+    return emitOpError(
+        "requires positive extents and two kernel/stride/dilation dimensions");
+  if (input->getDimSize(0) != output->getDimSize(0) ||
+      input->getDimSize(3) != output->getDimSize(3))
+    return emitOpError("must preserve batch and channel extents");
+  for (unsigned axis = 0; axis != 2; ++axis) {
+    int64_t kernel = getKernel()[axis], stride = getStrides()[axis];
+    int64_t dilation = getDilations()[axis];
+    if (kernel <= 0 || stride <= 0 || dilation <= 0)
+      return emitOpError("kernel, stride and dilation must be positive");
+    __int128 effective = static_cast<__int128>(kernel - 1) * dilation + 1;
+    int64_t source = input->getDimSize(axis + 1);
+    if (effective > source ||
+        (source - static_cast<int64_t>(effective)) / stride + 1 !=
+            output->getDimSize(axis + 1))
+      return emitOpError(
+          "result extent disagrees with its input window geometry");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult ComputeElementwiseOp::verify() {
   return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
                                        getInputs(), getResult().getType(),

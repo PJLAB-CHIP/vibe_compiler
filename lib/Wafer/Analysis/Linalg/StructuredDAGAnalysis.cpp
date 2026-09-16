@@ -26,7 +26,9 @@ void setFailureReason(std::string *failureReason, llvm::StringRef message) {
 }
 
 bool isStructuredNode(mlir::Operation *operation) {
-  return operation && mlir::isa<mlir::DestinationStyleOpInterface>(operation) &&
+  return operation &&
+         (mlir::isa<mlir::DestinationStyleOpInterface>(operation) ||
+          mlir::isa<mlir::tensor::GatherOp>(operation)) &&
          mlir::isa<mlir::TilingInterface>(operation);
 }
 

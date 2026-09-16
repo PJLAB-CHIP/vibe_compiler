@@ -200,6 +200,81 @@ module {
     return text;
   }
 
+  static std::string makePoolSource(int64_t extent, llvm::StringRef kind,
+                                    bool nchw, bool named,
+                                    llvm::StringRef dtype,
+                                    bool nonIdentity = false,
+                                    unsigned rank = 4) {
+    std::string input = "tensor<1x" + std::string(nchw ? "2x5x" : "5x") +
+                        std::to_string(extent + 2) + (nchw ? "x" : "x2x") +
+                        dtype.str() + ">";
+    std::string output = "tensor<1x" + std::string(nchw ? "2x2x" : "2x") +
+                         std::to_string(extent) + (nchw ? "x" : "x2x") +
+                         dtype.str() + ">";
+    if (rank < 4) {
+      input = "tensor<5x" + std::to_string(extent + 2) +
+              (rank == 3 ? "x2x" : "x") + dtype.str() + ">";
+      output = "tensor<2x" + std::to_string(extent) +
+               (rank == 3 ? "x2x" : "x") + dtype.str() + ">";
+    }
+    llvm::StringRef initial =
+        nonIdentity     ? "1.000000e+00"
+        : kind == "max" ? (dtype == "f16" ? "0xFC00" : "0xFF80")
+        : kind == "min" ? (dtype == "f16" ? "0x7C00" : "0x7F80")
+                        : "0.000000e+00";
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+       << "func.func @entry(%input: " << input << ") -> " << output << " {\n"
+       << "%result = wafer.tile.region(%input : " << input << ") -> (" << output
+       << ") {\n"
+       << "^bb0(%local: " << input << "):\n"
+       << "%initial = arith.constant " << initial << " : " << dtype << "\n"
+       << "%window = tensor.empty() : tensor<2x3xf32>\n"
+       << "%empty = tensor.empty() : " << output << "\n"
+       << "%init = linalg.fill ins(%initial : " << dtype
+       << ") outs(%empty : " << output << ") -> " << output << "\n%pooled = ";
+    if (named)
+      os << "linalg.pooling_nhwc_" << kind
+         << " {strides = dense<[2, 1]> : tensor<2xi64>, dilations = dense<1> : "
+            "tensor<2xi64>}";
+    else {
+      llvm::StringRef loops = rank == 4   ? "(n,h,w,c,rh,rw)"
+                              : rank == 3 ? "(h,w,c,rh,rw)"
+                                          : "(h,w,rh,rw)";
+      os << "linalg.generic {indexing_maps = ["
+         << "affine_map<" << loops << " -> "
+         << (rank == 2   ? "(h*2+rh,w+rw)>"
+             : rank == 3 ? "(h*2+rh,w+rw,c)>"
+             : nchw      ? "(n,c,h*2+rh,w+rw)>"
+                         : "(n,h*2+rh,w+rw,c)>")
+         << ", affine_map<" << loops << " -> (rh,rw)>,"
+         << "affine_map<" << loops << " -> "
+         << (rank == 2   ? "(h,w)>"
+             : rank == 3 ? "(h,w,c)>"
+             : nchw      ? "(n,c,h,w)>"
+                         : "(n,h,w,c)>")
+         << "], iterator_types = [";
+      for (unsigned axis = 0; axis != rank; ++axis)
+        os << "\"parallel\",";
+      os << "\"reduction\",\"reduction\"]}";
+    }
+    os << " ins(%local, %window : " << input << ", tensor<2x3xf32>)"
+       << " outs(%init : " << output << ")";
+    if (!named)
+      os << " { ^bb1(%x: " << dtype << ", %unused: f32, %acc: " << dtype
+         << "):\n"
+         << "%next = arith."
+         << (kind == "max"   ? "maximumf"
+             : kind == "min" ? "minimumf"
+                             : "addf")
+         << " %acc, %x : " << dtype << "\nlinalg.yield %next : " << dtype
+         << "\n}";
+    os << " -> " << output << "\nwafer.tile.yield %pooled : " << output
+       << "\n}\nreturn %result : " << output << "\n}}}\n";
+    return text;
+  }
+
   static std::string makeTwoRegionSource(int64_t extent, bool crossTile) {
     std::string text;
     llvm::raw_string_ostream stream(text);
@@ -1439,13 +1514,14 @@ module {
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
       EXPECT_EQ(countOps<ComputeReduceOp>(module->getOperation()),
                 mode == 0 ? 2u : 1u);
-      EXPECT_EQ(countOps<ComputeElementwiseOp>(module->getOperation()), 1u);
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(module->getOperation()),
+                snapshot ? 0u : 1u);
       module->walk([&](ComputeReduceOp reduce) {
         auto init = reduce.getInit().getDefiningOp<mlir::arith::ConstantOp>();
         ASSERT_TRUE(init);
         EXPECT_EQ(
             mlir::cast<mlir::FloatAttr>(init.getValue()).getValueAsDouble(),
-            0.0);
+            snapshot ? 5.0 : 0.0);
       });
       EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
     }
@@ -2381,6 +2457,100 @@ TEST_F(StructuredToTileTest,
     EXPECT_EQ(movement.statistics.ddrStores, 1u);
     EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
   }
+}
+
+TEST_F(StructuredToTileTest, PoolKindsUseCurrentWindowMapsAndPreserveInit) {
+  for (int64_t extent : {1024, 1025})
+    for (llvm::StringRef kind : {"max", "min", "sum"})
+      for (bool nchw : {false, true})
+        for (llvm::StringRef dtype : {"f16", "bf16"}) {
+          SCOPED_TRACE((llvm::Twine(kind) + "/" + llvm::Twine(extent) + "/" +
+                        dtype + (nchw ? "/nchw" : "/nhwc"))
+                           .str());
+          auto module = parse(
+              makePoolSource(extent, kind, nchw, !nchw, dtype, kind != "sum"));
+          ASSERT_TRUE(module);
+          TileRegionOp region;
+          module->walk([&](TileRegionOp current) { region = current; });
+          StructuredMaterializationRelations relations;
+          relations.structuralOutputs.push_back({0, region.getResult(0)});
+          auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+          ASSERT_TRUE(layout.succeeded()) << layout.detail;
+          auto lowered = lowerStructuredComputeToTile(*module, relations);
+          ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+          EXPECT_EQ(lowered.statistics.pools, 1u);
+          EXPECT_EQ(countOps<ComputePoolOp>(module->getOperation()), 1u);
+          module->walk([&](ComputePoolOp pool) {
+            EXPECT_EQ(pool.getKind(), kind == "max"   ? ComputeReduceKind::Max
+                                      : kind == "min" ? ComputeReduceKind::Min
+                                                      : ComputeReduceKind::Sum);
+            EXPECT_EQ(pool.getKernel(), (llvm::ArrayRef<int64_t>{2, 3}));
+            EXPECT_EQ(pool.getStrides(), (llvm::ArrayRef<int64_t>{2, 1}));
+            EXPECT_EQ(pool.getDilations(), (llvm::ArrayRef<int64_t>{1, 1}));
+            EXPECT_EQ(mlir::cast<mlir::MemRefType>(pool.getResult().getType())
+                          .getShape(),
+                      (llvm::ArrayRef<int64_t>{1, 2, extent, 2}));
+          });
+          EXPECT_EQ(lowered.statistics.elementwiseOperations,
+                    kind == "sum" ? 0u : 1u);
+          EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()),
+                    0u);
+          EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+          auto movement = materializeTileBoundaryMovement(*module, relations);
+          ASSERT_TRUE(movement.succeeded()) << movement.detail;
+          EXPECT_EQ(movement.statistics.ddrLoads, 1u);
+          EXPECT_EQ(movement.statistics.ddrStores, 1u);
+          EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+        }
+}
+
+TEST_F(StructuredToTileTest, PoolSumRejectsReassociationOfNonzeroInit) {
+  auto module = parse(makePoolSource(1025, "sum", true, false, "f16", true));
+  ASSERT_TRUE(module);
+  TileRegionOp region;
+  module->walk([&](TileRegionOp current) { region = current; });
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+  ASSERT_TRUE(layout.succeeded()) << layout.detail;
+  auto lowered = lowerStructuredComputeToTile(*module, relations);
+  EXPECT_FALSE(lowered.succeeded());
+  EXPECT_EQ(countOps<ComputePoolOp>(module->getOperation()), 0u);
+  EXPECT_GT(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST_F(StructuredToTileTest, PoolMissingIndependentAxesUseUnitDimensions) {
+  for (unsigned rank : {2, 3})
+    for (int64_t extent : {1024, 1025}) {
+      auto module = parse(
+          makePoolSource(extent, "sum", false, false, "f16", false, rank));
+      ASSERT_TRUE(module);
+      TileRegionOp region;
+      module->walk([&](TileRegionOp current) { region = current; });
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(lowered.statistics.pools, 1u);
+      module->walk([&](ComputePoolOp pool) {
+        auto input = mlir::cast<mlir::MemRefType>(pool.getInput().getType());
+        auto output = mlir::cast<mlir::MemRefType>(pool.getResult().getType());
+        EXPECT_EQ(input.getShape(), (llvm::ArrayRef<int64_t>{
+                                        1, 5, extent + 2, rank == 2 ? 1 : 2}));
+        EXPECT_EQ(output.getShape(),
+                  (llvm::ArrayRef<int64_t>{1, 2, extent, rank == 2 ? 1 : 2}));
+        EXPECT_EQ(getWaferMemoryAttr(input).getLayout(), MemLayout::NCx);
+        EXPECT_EQ(getWaferMemoryAttr(output).getLayout(), MemLayout::NCx);
+      });
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      EXPECT_EQ(movement.statistics.ddrLoads, 1u);
+      EXPECT_EQ(movement.statistics.ddrStores, 1u);
+      EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+    }
 }
 
 TEST_F(StructuredToTileTest, SameTileRegionsUseOneExplicitDDRStage) {

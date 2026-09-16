@@ -1650,6 +1650,8 @@ module {
     return
   }
 }
+
+
 )mlir");
   ASSERT_TRUE(module);
   mlir::func::FuncOp function = getOnlyFunction(*module);
@@ -1680,6 +1682,49 @@ module {
   LifetimeFailure completionOnlyFailure;
   EXPECT_TRUE(mlir::succeeded(completionOnly.run(
       function, &completionOnlyTracker, &completionOnlyFailure)));
+}
+
+TEST_F(LifetimeAnalysisTest,
+       ScalarStorageObserversKeepPendingDMAAllocationsUntilCompletion) {
+  for (int64_t length : {1024, 1025, 1031}) {
+    SCOPED_TRACE(length);
+    std::string shape = "2x" + std::to_string(length) + "x8xi32";
+    std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+    std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+    std::string bytes = std::to_string(2 * length * 8 * 4);
+    std::string source =
+        "module { func.func @main(%input: " + ddr + ") {\n"
+        "%a = memref.alloc() : " + spm + "\n"
+        "%b = memref.alloc() : " + spm + "\n"
+        "%c = memref.alloc() : " + spm + "\n"
+        "%z = arith.constant 0 : index\n"
+        "%v = arith.constant 7 : i32\n";
+    for (llvm::StringRef destination : {"%a", "%b"})
+      source += "wafer.instr.rdma %input to " + destination.str() +
+                " {byte_count = " + bytes + ": i64, inner_bytes = " + bytes +
+                ": i64, src_iterations = array<i64: 1, 1, 1>, "
+                "src_strides = array<i64: 0, 0, 0>} : " + ddr + " to " + spm + "\n";
+    source += "memref.store %v, %c[%z, %z, %z] : " + spm +
+              "\nwafer.instr.ncc_join [0]\nreturn } }";
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    auto function = getOnlyFunction(*module);
+    llvm::SmallVector<LifetimeDemand, 0> demands;
+    function.walk([&](mlir::memref::AllocOp allocation) {
+      demands.push_back({allocation, 2 * length * 8 * 4, 256,
+                         static_cast<unsigned>(demands.size())});
+    });
+    auto timeline = StructuredTimeline::build(function);
+    ASSERT_TRUE(mlir::succeeded(timeline));
+    LifetimeDataflow dataflow(*timeline, demands, wafer::isWaferSPMMemRefType);
+    LocalCompletionTracker completion;
+    LifetimeFailure failure;
+    ASSERT_TRUE(mlir::succeeded(dataflow.run(function, &completion, &failure)))
+        << static_cast<int>(failure.kind);
+    ASSERT_EQ(demands.size(), 3u);
+    EXPECT_TRUE(lifetimesOverlap(demands[0], demands[2]));
+    EXPECT_TRUE(lifetimesOverlap(demands[1], demands[2]));
+  }
 }
 
 TEST_F(LifetimeAnalysisTest,

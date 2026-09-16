@@ -28,11 +28,14 @@ static llvm::Expected<size_t>
 cloneIndependentNCCAfterSendIssue(TargetLLVMModules &targetLLVMModules) {
   const llvm::StringRef issueSymbol =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue).symbol;
+  const llvm::StringRef receiveSymbol =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare).symbol;
   size_t inserted = 0;
   for (const TargetLLVMModule &targetModule : targetLLVMModules.getModules()) {
     llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
     llvm::SmallVector<llvm::CallInst *, 4> sendIssues;
     llvm::CallInst *nccTemplate = nullptr;
+    llvm::CallInst *receive = nullptr;
     for (llvm::Function &function : module)
       for (llvm::BasicBlock &block : function)
         for (llvm::Instruction &instruction : block) {
@@ -42,6 +45,8 @@ cloneIndependentNCCAfterSendIssue(TargetLLVMModules &targetLLVMModules) {
             continue;
           if (callee->getName() == issueSymbol)
             sendIssues.push_back(call);
+          if (callee->getName() == receiveSymbol)
+            receive = call;
           const TargetCallDescriptor *descriptor =
               findTargetCallDescriptor(callee->getName());
           if (!nccTemplate && descriptor && descriptor->issueDomain &&
@@ -54,6 +59,16 @@ cloneIndependentNCCAfterSendIssue(TargetLLVMModules &targetLLVMModules) {
     if (!nccTemplate)
       return llvm::createStringError(
           "Direct-DTE sender module has no independent NCC call to clone");
+    // Even Tiles issue before preparing their own receive. Their peer already
+    // prepares a receive, so the exchange has no dependency cycle. While an
+    // even Tile is suspended, the peer appends a send endpoint that must not
+    // become part of the even Tile's current issue-readiness wait.
+    if (targetModule.getTileId().getValue() % 2 == 0) {
+      if (!receive || sendIssues.size() != 1)
+        return llvm::createStringError(
+            "late-receiver fixture requires one send and receive per Tile");
+      receive->moveAfter(sendIssues.front());
+    }
     for (llvm::CallInst *issue : sendIssues) {
       auto *clone = llvm::cast<llvm::CallInst>(nccTemplate->clone());
       clone->insertAfter(issue);
@@ -110,6 +125,8 @@ TEST(SystemCTargetModelDTEReadinessTest,
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(result->completedTileCount, 16);
   EXPECT_GT(result->finalDeltaCount, 0u);
+  ASSERT_EQ(result->outputs.size(), 1u);
+  EXPECT_EQ(result->outputs.front().bytes, invocation->expectedOutputBytes);
 }
 
 } // namespace

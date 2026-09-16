@@ -1,6 +1,7 @@
 add_mlir_dialect_library(WaferIR
   WaferDialect.cpp
   WaferInterfaces.cpp
+  TensorGatherTiling.cpp
   NCCCompletion.cpp
   Common/WaferIRVerification.cpp
   Instr/ComputeOps.cpp

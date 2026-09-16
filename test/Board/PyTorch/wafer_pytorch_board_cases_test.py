@@ -372,6 +372,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 )
                 args = types.SimpleNamespace(
                     qualify_communication=None, optimization_policy="search",
+                    target_model=False,
                 )
                 with (
                     mock.patch.object(board_runner, "run") as compiler,
@@ -752,6 +753,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         )
         args = types.SimpleNamespace(
             prepared_work_dir=None, search_width=None, search_trials=None,
+            target_model=False,
             compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
             compile_timing=False, profile=False, profile_trace_event_limit=None,
@@ -808,6 +810,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False,
                 profile=False, profile_trace_event_limit=None,
                 optimization_policy=policy, qualify_communication=None,
+                target_model=False,
             )
             with (
                 mock.patch.object(board_runner, "run", return_value=types.SimpleNamespace(

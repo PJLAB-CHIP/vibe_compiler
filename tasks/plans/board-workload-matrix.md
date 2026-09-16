@@ -33,6 +33,10 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 4097尾块的最低驻留读取仍未达到两个输入各读一次；输入流量目标、实际评分及板端性能分别登记，详见文末访问复用检查点。
 三类case均没有新增真实设备通过结论；总任务状态继续由`tasks/progress.md`维护。
 
+本次提交范围核对补齐此前只在工作树中的gather/embedding、pooling、直接Torch XLA入口清理、局部边界缓冲与相关CMake、测试和设计；
+它们与已提交的优化共同组成上述本地验证版本。此次补交没有修改这些源码实现，canonical完整增量构建确认Ninja no-op；
+原有验证结果按上述版本边界保留，不新增整网或板端通过结论。本地clangd索引缓存不属于交付源码。
+
 ## 阶段记录：GEMM局部累加，再完成单层LM
 
 当前授权顺序为闭合13号结构化循环窗口共享/DDR-DTE构造，再完成4096³ FP16/BF16与4097³ FP16正式search/package/no-card，然后带embedding及LM head的原始单层LLaMA2。
@@ -886,6 +890,41 @@ stride及地址SSA；越界反例检查精确坐标诊断和输入未修改。�
    确保局部失败不会错误终止其它可行方向。
 
 完整LM动态读取、数值、package/no-card，以及三轮性能调优与最终板端资格仍未完成。
+
+### 本轮恢复：通用gather读取实施
+
+用户已确认按调研方案继续实现。当前范围是05号3.5与06号6.5.1：保留标准gather、静态输出/索引需求与运行时表访问分开、
+块级索引/输出allocation、多Tile连续行/片段搬运及其completion/target/host消费者。先完成独立gather全链，再进入原始完整LM，
+相关规则稳定后执行固定FP16 LLaMA完整no-card回归。前述机器交接暂停不再阻止主机开发；真实设备仍按最后确认的未恢复处理。
+
+实施顺序：
+
+1. StableHLO→标准gather、标准接口及structured root/需求消费者；验证clamp、重复indices、整除/尾部和结果exact覆盖。
+2. selected candidate的只读DDR表、局部索引和连续输出块物化；保留实际SSA/owner，生成动态行地址和连续片段搬运。
+3. NCC入口/回边完成要求、SPM scalar索引读取和target/host执行闭合；完整gather数值、actual memory规划与fresh no-card。
+4. 原始完整LM产品检查及固定FP16 block回归，记录实际停点；独立性能比较待设备恢复后执行，不以主机计数宣称加速。
+
+构包调查确认现行RDMA wrapper逐次创建/删除SDK builder。是否优化该路径由匹配发令开销证据决定，不引入第二套prepared IR或
+opaque runtime gather。重复ID去重、排序、cache与额外跨Tile转发不进入本轮首个实现边界。
+
+#### 当前实现检查点：完整embedding数值已通过，效率门禁未闭合
+
+标准`tensor.gather`、输出驱动tiling、只读DDR表可访问性、局部行搬运及目标/主机标量访问已接入。
+原始只读整数输入通过SDK `get_ddr_memory_mapping_with_size`在函数入口映射一次，再由原生LLVM整数load读取；
+SPM整数访问使用SDK mapping及原生load/store，没有新增逐token CRT wrapper。整数cast/clamp的原位宽与signedness保留。
+循环completion改为先分析入口/回边，再一次性物化要求；SPM整数写到实际NCC消费者之间显式保留Kcore发布顺序。
+
+本轮真实`torch.nn.Embedding(2048,64)`、FP16输入ID `[2,1025]`经过正式导出和`none`生产路径，
+生成16 Tile verified package，strict no-card通过；相同原始输入到SystemC全量输出与PyTorch逐bit相等。
+首次SystemC执行的no-progress由send issue跨yield扫描增长中的全局endpoint容器造成：其它Tile追加的send被错误纳入
+本次等待。改为固定本次issue实际创建的端点范围后完整数值通过；延后receive的16 Tile回归同时检查全部输出。
+该故障属于主机模型，不能据此判断历史设备timeout根因。
+本轮canonical完整增量构建及第二次Ninja no-op通过；直接受影响的IR、Planning、Transforms、CodeGen、Conversion、Simulator、
+numeric及SystemC共28个CTest target全部实际执行并通过。该结果仍不代替下述未闭合的产品矩阵与效率门禁。
+
+仍未闭合：cast/clamp中间DDR结果的映射仍在部分循环内重复；gather→reshape的非整除分片引入跨Tile行交换和完整结果carrier，
+局部gather单allocation测试不能代签完整流水线的块级内存门禁。宽行、FP16/BF16、1024/1025/1031、none/search正式产品矩阵，
+更换ID的同程序数值、完整LM及固定FP16 block回归仍须执行。当前没有新板测或性能无退化结论，本轮实现尚未完成。
 
 ### 2026-09-14 机器交接：已实现边界与继续入口
 

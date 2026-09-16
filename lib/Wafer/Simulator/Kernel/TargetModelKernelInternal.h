@@ -72,6 +72,12 @@ executeReduce(const compiler::TargetCommand &command,
               TargetModelExecutionPolicy policy);
 
 llvm::Expected<TargetModelCommandEffect>
+executePool(const compiler::TargetCommand &command,
+            const target::TargetPoolCommand &value,
+            const InvocationMemoryRegistry &memory,
+            TargetModelKernelBudget budget);
+
+llvm::Expected<TargetModelCommandEffect>
 executeGemm(const compiler::TargetCommand &command,
             const target::TargetGemmCommand &value,
             const InvocationMemoryRegistry &memory,

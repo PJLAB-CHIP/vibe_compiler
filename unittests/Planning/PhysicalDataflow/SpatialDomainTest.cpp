@@ -184,6 +184,51 @@ protected:
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
+TEST_F(SpatialDomainTest, GatherSeparatesIndexedTableFromExactIndicesDemand) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t tileRows : {1, 4}) {
+      std::string source;
+      llvm::raw_string_ostream os(source);
+      os << "module { func.func @main(%table: tensor<2048x64xf16>, %ids: tensor<2x"
+         << extent << "x1xi64>) -> tensor<2x" << extent << "x64xf16> {\n"
+         << "%g = tensor.gather %table[%ids] gather_dims([0]) : (tensor<2048x64xf16>, tensor<2x"
+         << extent << "x1xi64>) -> tensor<2x" << extent << "x64xf16>\n"
+         << "return %g : tensor<2x" << extent << "x64xf16> }}";
+      auto module = parse(withTopology(source, tileRows, 4));
+      ASSERT_TRUE(module);
+      std::string detail;
+      auto built = build(*module, detail);
+      ASSERT_TRUE(built) << detail;
+      auto choice = built->domain.getProposals().front();
+      auto evaluation = built->domain.evaluate(built->dag, choice);
+      ASSERT_TRUE(evaluation.isSatisfied());
+      auto *proof = analysis::getExactDemandProof(*evaluation.demand);
+      ASSERT_NE(proof, nullptr);
+      auto roots = RootRegionWorkAnalysis::create(built->dag, *evaluation.assignment, *proof, &detail);
+      ASSERT_TRUE(mlir::succeeded(roots)) << detail;
+      auto root = built->domain.getProblem().getRoots().front().root;
+      unsigned indexedUses = 0;
+      for (TileId tile : built->domain.getProblem().getStructuralProblem().getAvailableTiles()) {
+        auto outcome = roots->query(root, tile);
+        const auto *work = std::get_if<analysis::RootRegionWork>(&outcome);
+        if (!work)
+          continue;
+        ASSERT_EQ(work->operands.size(), 1u);
+        EXPECT_EQ(work->operands.front().operand, 1u);
+        for (const auto &boundary : work->boundaries)
+          for (const auto &use : boundary.consumerUses)
+            if (use.access == analysis::RootBoundaryAccessKind::IndexedTensor) {
+              EXPECT_FALSE(use.requiredDomain);
+              EXPECT_EQ(use.id.operand, 0u);
+              EXPECT_EQ(boundary.sourceValue, built->dag.getFunction().getArgument(0));
+              ++indexedUses;
+            }
+      }
+      EXPECT_EQ(indexedUses, static_cast<unsigned>(tileRows * 4));
+      expectExactShardCoverage(evaluation.assignment->nodes.front(), {2, extent, 64});
+    }
+}
+
 TEST_F(SpatialDomainTest,
        RealAlignedAndRaggedPlansCloseThroughDemandAndRootWork) {
   struct Case {

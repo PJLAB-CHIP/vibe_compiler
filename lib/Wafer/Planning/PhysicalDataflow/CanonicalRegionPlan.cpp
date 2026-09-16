@@ -2,6 +2,8 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -96,6 +98,22 @@ CanonicalRegionPlanOutcome buildGroup(const analysis::RootRegionWork &work) {
                       "root boundary use has no local execution or merge",
                       work.id);
       boundaryUses.insert(use.id);
+      if (use.access == analysis::RootBoundaryAccessKind::IndexedTensor) {
+        auto gather =
+            mlir::dyn_cast_or_null<mlir::tensor::GatherOp>(work.rootOperation);
+        if (!gather || use.id.operand != 0 || use.requiredDomain ||
+            boundary.sourceValue != gather.getSource() ||
+            (boundary.id.kind != analysis::RootBoundaryKind::ProgramInput &&
+             boundary.id.kind != analysis::RootBoundaryKind::Constant))
+          return broken(BrokenRegionPlanReason::WorkStructureMismatch,
+                        "indexed table boundary lost its explicit gather source",
+                        work.id);
+      } else if (!use.requiredDomain && boundary.sourceValue &&
+                 mlir::isa<mlir::ShapedType>(boundary.sourceValue.getType())) {
+        return broken(BrokenRegionPlanReason::WorkStructureMismatch,
+                      "tensor availability requires an indexed access contract",
+                      work.id);
+      }
       if ((!use.requiredDomain && !use.eligibleFinalOwners.empty()) ||
           (!isStructuredBoundary(boundary) && !use.eligibleFinalOwners.empty()))
         return broken(BrokenRegionPlanReason::WorkStructureMismatch,

@@ -1734,34 +1734,6 @@ def _state_dict_numpy(
     }
 
 
-def exported_program_to_stablehlo(
-    torch_module: Any,
-    stablehlo_module: Any,
-    exported_program: Any,
-    *,
-    options: Any | None = None,
-) -> Any:
-    from wafer.frontend import _export_stablehlo
-
-    if options is not None:
-        # The product helper owns the current closed option set. Test callers
-        # may construct that same set but cannot add a second export policy.
-        expected = stablehlo_module.StableHLOExportOptions()
-        expected.export_weights = True
-        expected.save_weights = True
-        expected.inline_all_constant = True
-        expected.include_human_readable_text = True
-        for field in (
-            "export_weights",
-            "save_weights",
-            "inline_all_constant",
-            "include_human_readable_text",
-        ):
-            if getattr(options, field) != getattr(expected, field):
-                raise RuntimeError("test export options diverge from product policy")
-    return _export_stablehlo(torch_module, stablehlo_module, exported_program)
-
-
 def _move_to_device(value: Any, device: Any) -> Any:
     if hasattr(value, "to"):
         return value.to(device)
@@ -1853,22 +1825,9 @@ def emit_reference_stablehlo_program(
     reference_module.eval()
     input_tensor = torch_module.empty(size, size, dtype=torch_module.float16)
 
-    options = stablehlo_module.StableHLOExportOptions()
-    options.export_weights = True
-    options.save_weights = True
-    options.inline_all_constant = True
-    options.include_human_readable_text = True
+    from wafer.frontend import export_pytorch_program
 
-    with torch_module.no_grad():
-        exported = torch_module.export.export(reference_module, (input_tensor,))
-        stablehlo_program = exported_program_to_stablehlo(
-            torch_module,
-            stablehlo_module,
-            exported,
-            options=options,
-        )
-
-    _save_program(stablehlo_program, program_dir)
+    export_pytorch_program(reference_module, (input_tensor,), program_dir)
 
 
 def emit_simple_gemm_program(
@@ -1902,22 +1861,9 @@ def emit_simple_gemm_program(
             "increasing-K reference"
         )
 
-    options = stablehlo_module.StableHLOExportOptions()
-    options.export_weights = True
-    options.save_weights = True
-    options.inline_all_constant = True
-    options.include_human_readable_text = True
-    with torch_module.no_grad():
-        exported = torch_module.export.export(
-            reference_module, (lhs_tensor, rhs_tensor)
-        )
-        stablehlo_program = exported_program_to_stablehlo(
-            torch_module,
-            stablehlo_module,
-            exported,
-            options=options,
-        )
-    _save_program(stablehlo_program, program_dir)
+    from wafer.frontend import export_pytorch_program
+
+    export_pytorch_program(reference_module, (lhs_tensor, rhs_tensor), program_dir)
 
 
 def emit_linear_residual_mlp_program(
@@ -1943,22 +1889,9 @@ def emit_linear_residual_mlp_program(
         atol=1.0e-6,
     )
 
-    options = stablehlo_module.StableHLOExportOptions()
-    options.export_weights = True
-    options.save_weights = True
-    options.inline_all_constant = True
-    options.include_human_readable_text = True
+    from wafer.frontend import export_pytorch_program
 
-    with torch_module.no_grad():
-        exported = torch_module.export.export(reference_module, (input_tensor,))
-        stablehlo_program = exported_program_to_stablehlo(
-            torch_module,
-            stablehlo_module,
-            exported,
-            options=options,
-        )
-
-    _save_program(stablehlo_program, program_dir)
+    export_pytorch_program(reference_module, (input_tensor,), program_dir)
 
 
 def _verify_exported_parameter_payloads(

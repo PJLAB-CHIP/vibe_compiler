@@ -5,6 +5,7 @@
 #include "OnlineAttentionMaterialization.h"
 #include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 
+#include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -14,6 +15,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
@@ -640,7 +642,59 @@ validateRegionChoice(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
   return mlir::success();
 }
 
-mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
+struct RectangularConstant {
+  mlir::TypedAttr background, interior;
+  llvm::SmallVector<int64_t, 4> offsets, sizes;
+};
+
+static std::optional<RectangularConstant>
+getRectangularConstant(mlir::DenseElementsAttr value) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  // This bounds content inspection only, never storage legality.
+  constexpr int64_t maximumInspectedElements = 1 << 20;
+  if (!type || !type.hasStaticShape() || value.isSplat() ||
+      value.getNumElements() <= 0 ||
+      value.getNumElements() > maximumInspectedElements ||
+      !mlir::isa<mlir::IntegerType, mlir::FloatType>(type.getElementType()))
+    return std::nullopt;
+  auto elements = value.getValues<mlir::Attribute>();
+  RectangularConstant result;
+  result.background = mlir::cast<mlir::TypedAttr>(*elements.begin());
+  result.offsets.assign(type.getShape().begin(), type.getShape().end());
+  llvm::SmallVector<int64_t, 4> ends(type.getRank(), 0);
+  int64_t interiorElements = 0;
+  for (auto [linear, element] : llvm::enumerate(elements)) {
+    if (element == result.background)
+      continue;
+    if (!result.interior)
+      result.interior = mlir::cast<mlir::TypedAttr>(element);
+    else if (element != result.interior)
+      return std::nullopt;
+    ++interiorElements;
+    int64_t remaining = linear;
+    for (int64_t axis = type.getRank(); axis-- > 0;) {
+      int64_t coordinate = remaining % type.getDimSize(axis);
+      remaining /= type.getDimSize(axis);
+      result.offsets[axis] = std::min(result.offsets[axis], coordinate);
+      ends[axis] = std::max(ends[axis], coordinate + 1);
+    }
+  }
+  if (!result.interior)
+    return std::nullopt;
+  int64_t volume = 1;
+  for (int64_t axis = 0; axis != type.getRank(); ++axis) {
+    int64_t size = ends[axis] - result.offsets[axis];
+    if (size <= 0 || volume > interiorElements / size)
+      return std::nullopt;
+    volume *= size;
+    result.sizes.push_back(size);
+  }
+  // Every non-background element lies in this bounding box. Equality proves
+  // the entire box is uniform, with no holes or disconnected pieces.
+  return volume == interiorElements ? std::optional(result) : std::nullopt;
+}
+
+mlir::LogicalResult materializeTileLocalConstants(mlir::ModuleOp module) {
   mlir::IRRewriter rewriter(module.getContext());
   // Fold the selected views while their sources still carry splat attributes.
   // Once replaced with fills, full-shape literals would become allocations even
@@ -670,7 +724,7 @@ mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
   module.walk([&](mlir::arith::ConstantOp constant) {
     auto type = mlir::dyn_cast<mlir::RankedTensorType>(constant.getType());
     auto value = mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
-    if (type && type.hasStaticShape() && value && value.isSplat() &&
+    if (type && type.hasStaticShape() && value &&
         constant->getParentOfType<TileRegionOp>())
       constants.push_back(constant);
   });
@@ -681,6 +735,34 @@ mlir::LogicalResult materializeTileLocalSplatConstants(mlir::ModuleOp module) {
     }
     auto type = mlir::cast<mlir::RankedTensorType>(constant.getType());
     auto value = mlir::cast<mlir::DenseElementsAttr>(constant.getValue());
+    if (!value.isSplat()) {
+      auto rectangle = getRectangularConstant(value);
+      if (!rectangle)
+        continue;
+      rewriter.setInsertionPoint(constant);
+      auto fill = [&](llvm::ArrayRef<int64_t> shape, mlir::TypedAttr scalar) {
+        mlir::Value initial =
+            rewriter.create<mlir::arith::ConstantOp>(constant.getLoc(), scalar);
+        mlir::Value empty = rewriter.create<mlir::tensor::EmptyOp>(
+            constant.getLoc(), shape, type.getElementType(),
+            type.getEncoding());
+        return rewriter
+            .create<mlir::linalg::FillOp>(constant.getLoc(), initial, empty)
+            .getResult(0);
+      };
+      mlir::Value background = fill(type.getShape(), rectangle->background);
+      mlir::Value interior = fill(rectangle->sizes, rectangle->interior);
+      auto offsets = mlir::getAsIndexOpFoldResult(rewriter.getContext(),
+                                                  rectangle->offsets);
+      auto sizes =
+          mlir::getAsIndexOpFoldResult(rewriter.getContext(), rectangle->sizes);
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides(
+          type.getRank(), rewriter.getIndexAttr(1));
+      auto inserted = rewriter.create<mlir::tensor::InsertSliceOp>(
+          constant.getLoc(), interior, background, offsets, sizes, strides);
+      rewriter.replaceOp(constant, inserted.getResult());
+      continue;
+    }
     auto scalarValue = value.getSplatValue<mlir::TypedAttr>();
     if (!scalarValue || scalarValue.getType() != type.getElementType())
       return mlir::failure();
@@ -1569,6 +1651,48 @@ struct GroupBuilder {
                                          type.getEncoding())
           .getResult();
 
+    if (mlir::isa_and_nonnull<mlir::tensor::ExpandShapeOp,
+                              mlir::tensor::CollapseShapeOp>(
+            value.getDefiningOp())) {
+      auto result = mlir::cast<mlir::OpResult>(value);
+      auto indexing = analysis::deriveTensorResultIndexing(result);
+      if (!indexing.isExact() || indexing.indexing->operands.size() != 1)
+        return mlir::failure();
+      const auto &operand = indexing.indexing->operands.front();
+      auto pieces =
+          operand.resultToOperand.getExactStaticRectangularImagePieces(
+              requested.offsets, requested.sizes);
+      if (!pieces.isExact() || pieces.domains.size() != 1)
+        return mlir::failure();
+      auto compactType = mlir::RankedTensorType::get(
+          requested.sizes, type.getElementType(), type.getEncoding());
+      auto sourceType = mlir::RankedTensorType::get(
+          pieces.domains.front().sizes, type.getElementType(),
+          type.getEncoding());
+      if (sourceType.getNumElements() != compactType.getNumElements())
+        return mlir::failure();
+      auto reassociation =
+          mlir::getReassociationIndicesForReshape(sourceType, compactType);
+      if (sourceType != compactType && !reassociation)
+        return mlir::failure();
+      auto source = materializeCompactSupportTile(
+          result.getOwner()->getOperand(operand.operand),
+          pieces.domains.front(), fragments);
+      if (mlir::failed(source))
+        return mlir::failure();
+      if (sourceType == compactType)
+        return source;
+      if (sourceType.getRank() < compactType.getRank())
+        return builder
+            .create<mlir::tensor::ExpandShapeOp>(value.getLoc(), compactType,
+                                                 *source, *reassociation)
+            .getResult();
+      return builder
+          .create<mlir::tensor::CollapseShapeOp>(value.getLoc(), compactType,
+                                                 *source, *reassociation)
+          .getResult();
+    }
+
     if (auto inserted = value.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
       auto staticOffsets = getStaticValues(inserted.getMixedOffsets());
       auto staticSizes = getStaticValues(inserted.getMixedSizes());
@@ -1697,7 +1821,10 @@ struct GroupBuilder {
     }
     if (destinationShard &&
         (fragments.size() > 1 ||
-         operand.get().getDefiningOp<mlir::tensor::InsertSliceOp>())) {
+         mlir::isa_and_nonnull<mlir::tensor::InsertSliceOp,
+                               mlir::tensor::ExpandShapeOp,
+                               mlir::tensor::CollapseShapeOp>(
+             operand.get().getDefiningOp()))) {
       const auto workId =
           std::holds_alternative<ReplicaExecutionId>(consumer)
               ? std::get<ReplicaExecutionId>(consumer).producer.work
@@ -3379,7 +3506,7 @@ mlir::FailureOr<SpatialRegionMaterializationResult> materializeSpatialRegions(
           "observable structured result has no selected Tile endpoint");
   }
 
-  if (mlir::failed(materializeTileLocalSplatConstants(*result.module)))
+  if (mlir::failed(materializeTileLocalConstants(*result.module)))
     return mlir::failure();
   bool invalidAccumulation = false;
   result.module->walk([&](mlir::func::FuncOp function) {

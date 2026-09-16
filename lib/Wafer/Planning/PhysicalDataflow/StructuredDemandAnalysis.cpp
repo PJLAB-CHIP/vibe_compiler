@@ -403,7 +403,8 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
   auto dps =
       mlir::dyn_cast<mlir::DestinationStyleOpInterface>(binding.operation);
   auto tiling = mlir::dyn_cast<mlir::TilingInterface>(binding.operation);
-  if (!dps || !tiling)
+  auto gather = mlir::dyn_cast<mlir::tensor::GatherOp>(binding.operation);
+  if ((!dps && !gather) || !tiling)
     return asResult<StructuredOperationFact>(unsupported(
         UnsupportedDemandReason::MissingStructuredIndexing,
         RelationOperationKind::BuildRelationGraph,
@@ -418,6 +419,16 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
                  binding.operation)) {
     fact.iterationShape = attention.getStaticLoopRanges();
     maps = attention.getIndexingMapsArray();
+  } else if (gather && gather.getGatherDims().size() == 1) {
+    llvm::append_range(fact.iterationShape, gather.getResultType().getShape());
+    maps.resize(2);
+    auto indicesMap = analysis::getStructuredOperandMap(gather.getIndicesMutable());
+    if (mlir::failed(indicesMap))
+      return asResult<StructuredOperationFact>(unsupported(
+          UnsupportedDemandReason::MissingStructuredIndexing,
+          RelationOperationKind::BuildRelationGraph,
+          "gather indices have no static output projection", fact.root));
+    maps[1] = *indicesMap;
   } else {
     return asResult<StructuredOperationFact>(unsupported(
         UnsupportedDemandReason::MissingStructuredIndexing,
@@ -451,6 +462,8 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
       readsPayload = linalg.payloadUsesValueFromOperand(&operand);
     else if (attention)
       readsPayload = dps.isDpsInput(&operand);
+    else if (gather)
+      readsPayload = operand.getOperandNumber() == 1;
     if (!readsPayload)
       continue;
     IndexRelationResult relation = IndexRelation::fromAffineMap(
@@ -467,7 +480,7 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
                       fact.root));
     }
     fact.operands.push_back({static_cast<uint32_t>(operand.getOperandNumber()),
-                             dps.isDpsInit(&operand)
+                             dps && dps.isDpsInit(&operand)
                                  ? DemandOperandKind::InitInput
                                  : DemandOperandKind::DataInput,
                              std::move(*relation.relation)});
@@ -485,6 +498,9 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
       map = linalg.getIndexingMapMatchingResult(result);
     else if (attention && result.getResultNumber() == 0)
       map = attention.getOutputMap();
+    else if (gather)
+      map = mlir::AffineMap::getMultiDimIdentityMap(
+          fact.iterationShape.size(), gather.getContext());
     if (!map)
       return asResult<StructuredOperationFact>(
           broken(BrokenDemandContractReason::InterfaceContradiction,

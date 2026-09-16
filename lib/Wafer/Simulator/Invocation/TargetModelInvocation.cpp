@@ -423,8 +423,9 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
 
   for (const Allocation &allocation : allocations) {
     const bool sharedAcrossTiles = !allocation.resource.tileId.has_value();
-    if ((sharedAcrossTiles && allocation.launchSlots.size() != tiles.size()) ||
-        (!sharedAcrossTiles && allocation.launchSlots.size() != 1))
+    // Card ownership permits sharing by the actual participant subset. A
+    // point-to-point DDR publication need not appear in unrelated Tile ABIs.
+    if (!sharedAcrossTiles && allocation.launchSlots.size() != 1)
       return invocationError(
           TargetModelInvocationErrorCode::InvalidTileEntryArgument,
           "physical resource owner disagrees with its Tile ABI domain");

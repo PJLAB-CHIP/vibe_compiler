@@ -238,7 +238,8 @@ def verify_runtime_import(python: pathlib.Path) -> None:
             str(python),
             "-c",
             "import torch; import torch_xla; import _XLAC; "
-            "from torch_xla.stablehlo import exported_program_to_stablehlo",
+            "from torch_xla.core.xla_model import get_stablehlo_bytecode; "
+            "from torch_xla.stablehlo import StableHLOModelBundle, StableHLOGraphModule",
         ]
     )
 

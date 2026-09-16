@@ -8,17 +8,14 @@ import inspect
 import json
 import os
 import pathlib
+import re
 import subprocess
 from unittest import mock
 
 import numpy as np
 import torch
 
-from wafer.frontend import (
-    _decompose_batch_norm_inference,
-    _decompose_composite_opmath,
-    export_pytorch_program,
-)
+from wafer.frontend import export_pytorch_program
 
 
 class StaticModel(torch.nn.Module):
@@ -98,6 +95,28 @@ def snapshot(directory: pathlib.Path) -> dict[str, bytes]:
     }
 
 
+
+def run_exported_graph(directory: pathlib.Path, inputs: tuple[torch.Tensor, ...]):
+    import torch_xla
+
+    record = json.loads((directory / "functions/forward.meta").read_text())
+    arguments = []
+    for location, signature in zip(record["input_locations"], record["input_signature"], strict=True):
+        if location["type_"] == "input_arg":
+            value = inputs[location["position"]]
+        else:
+            path = directory / ("data" if location["type_"] == "parameter" else "constants")
+            path /= location["name"] if location["type_"] == "parameter" else str(location["position"])
+            with path.open("rb") as stream:
+                array = np.load(stream, allow_pickle=False)
+            value = (torch.from_numpy(array.view(np.uint16)).view(torch.bfloat16)
+                     if signature["dtype"] == "bfloat16" else torch.from_numpy(array))
+        arguments.append(value)
+    outputs = torch_xla._XLAC._run_stablehlo(
+        (directory / "functions/forward.stablehlo.bc").read_bytes(), arguments)
+    return tuple(output.cpu() for output in outputs)
+
+
 def check_batch_norm_precision(output_root: pathlib.Path) -> None:
     for dtype, extent in ((torch.float16, 1024), (torch.bfloat16, 1025),
                           (torch.float32, 1031)):
@@ -112,15 +131,10 @@ def check_batch_norm_precision(output_root: pathlib.Path) -> None:
             value = torch.linspace(-2, 2, 24 * extent).reshape(2, 4, 3, extent).to(dtype)
             before = {name: tensor.detach().clone()
                       for name, tensor in model.state_dict().items()}
-            exported = torch.export.export(model, (value,))
-            decomposed = _decompose_batch_norm_inference(torch, exported)
-            with torch.no_grad():
-                torch.testing.assert_close(decomposed.module()(value), model(value))
-            if any("batch_norm" in str(node.target) for node in decomposed.graph.nodes
-                   if node.op == "call_function"):
-                raise RuntimeError("inference decomposition left a BatchNorm call")
             directory = output_root / f"batch-norm-{dtype}-{affine}"
             export_pytorch_program(model, (value,), directory)
+            with torch.no_grad():
+                torch.testing.assert_close(run_exported_graph(directory, (value,))[0], model(value))
             text = subprocess.check_output([
                 os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
                 str(directory / "functions" / "forward.stablehlo.bc"),
@@ -150,23 +164,27 @@ def check_batch_norm_precision(output_root: pathlib.Path) -> None:
                       torch.ops.aten._native_batch_norm_legit.default):
         class NativeBatchNorm(torch.nn.Module):
             def forward(self, x, scale, bias, mean, variance):
-                return operation(x, scale, bias, mean, variance, False, .1, 1e-5)[0]
+                # The conditional ATen schemas permit writes to running
+                # statistics. Keep them local while testing the value result.
+                return operation(x, scale, bias, mean.clone(), variance.clone(), False, .1, 1e-5)[0]
 
-        native = NativeBatchNorm()
+        native = NativeBatchNorm().eval()
         inputs = (value, model.weight, model.bias, model.running_mean, model.running_var)
-        exported = torch.export.export(native, inputs)
-        decomposed = _decompose_batch_norm_inference(torch, exported)
-        if decomposed is exported:
-            raise RuntimeError("conditional inference schema was not decomposed")
+        directory = output_root / f"batch-norm-native-{operation.overloadpacket.__name__}"
+        export_pytorch_program(native, inputs, directory)
         with torch.no_grad():
-            torch.testing.assert_close(decomposed.module()(*inputs), native(*inputs))
+            torch.testing.assert_close(run_exported_graph(directory, inputs)[0], native(*inputs))
 
-    # Training and ordinary primitive graphs do not enter this inference policy.
     value = torch.ones((2, 4, 3, 1024))
-    for model in (torch.nn.BatchNorm2d(4).train(), StaticBranch()):
-        exported = torch.export.export(model, (value,))
-        if _decompose_batch_norm_inference(torch, exported) is not exported:
-            raise RuntimeError("inference policy changed an unrelated graph")
+    try:
+        export_pytorch_program(torch.nn.BatchNorm2d(4).train(), (value,), output_root / "training-bn")
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("training BatchNorm was accepted")
+    directory = output_root / "primitive-bn-control"
+    export_pytorch_program(StaticBranch().eval(), (value,), directory)
+    torch.testing.assert_close(run_exported_graph(directory, (value,)), StaticBranch()(value))
     print("batch_norm_inference: numeric_cases=8 source_to_linalg=6 unrelated_unchanged=true")
 
 
@@ -182,9 +200,9 @@ def check_composite_precision(output_root: pathlib.Path) -> None:
                 for approximate in ("none", "tanh"):
                     model = torch.nn.GELU(approximate=approximate).eval()
                     value = torch.linspace(-6, 6, extent * 16).reshape(1, extent, 16).to(dtype)
-                    exported = torch.export.export(model, (value,))
-                    decomposed = _decompose_composite_opmath(torch, exported)
-                    torch.testing.assert_close(decomposed.module()(value), model(value))
+                    directory = output_root / f"composite-gelu-{dtype}-{extent}-{approximate}"
+                    export_pytorch_program(model, (value,), directory)
+                    torch.testing.assert_close(run_exported_graph(directory, (value,))[0], model(value))
                     special = value.clone()
                     special.flatten()[:7] = torch.tensor(
                         [-float("inf"), float("inf"), float("nan"), -0., 0., -1e-6, 1e-6],
@@ -195,15 +213,7 @@ def check_composite_precision(output_root: pathlib.Path) -> None:
                     # Qualify special values against ATen explicitly; finite
                     # acceptance above still uses the unchanged default backend.
                     with torch.backends.mkldnn.flags(enabled=False):
-                        torch.testing.assert_close(decomposed.module()(special), model(special), equal_nan=True)
-                    for node in decomposed.graph.nodes:
-                        if node.op == "call_function" and node.target in (
-                            torch.ops.aten.erf.default, torch.ops.aten.tanh.default,
-                            torch.ops.aten.mul.Tensor, torch.ops.aten.add.Tensor,
-                        ) and node.meta["val"].dtype != torch.float32:
-                            raise RuntimeError("GELU lost framework opmath")
-                    directory = output_root / f"composite-gelu-{dtype}-{extent}-{approximate}"
-                    export_pytorch_program(model, (value,), directory)
+                        torch.testing.assert_close(run_exported_graph(directory, (special,))[0], model(special), equal_nan=True)
                     text = subprocess.check_output([
                         os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
                         str(directory / "functions" / "forward.stablehlo.bc"),
@@ -241,15 +251,10 @@ def check_composite_precision(output_root: pathlib.Path) -> None:
                     model = NativeLayerNorm().eval()
                     value = (torch.arange(8 * extent).reshape(1, 8, extent).float().sin() + .7).to(dtype)
                     before = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
-                    exported = torch.export.export(model, (value,))
-                    decomposed = _decompose_composite_opmath(torch, exported)
-                    with torch.no_grad():
-                        torch.testing.assert_close(decomposed.module()(value), model(value))
-                    if any(node.op == "call_function" and node.target == torch.ops.aten.native_layer_norm.default
-                           for node in decomposed.graph.nodes):
-                        raise RuntimeError("native LayerNorm was not decomposed")
                     directory = output_root / f"composite-layer-norm-{dtype}-{multiple_axes}-{affine}"
                     export_pytorch_program(model, (value,), directory)
+                    with torch.no_grad():
+                        torch.testing.assert_close(run_exported_graph(directory, (value,)), model(value))
                     text = subprocess.check_output([
                         os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
                         str(directory / "functions" / "forward.stablehlo.bc"),
@@ -268,11 +273,12 @@ def check_composite_precision(output_root: pathlib.Path) -> None:
         # qualify that detection independently of the three-result native schema.
         value = torch.ones((1, 1025, 16), dtype=torch.float16)
         model = torch.nn.LayerNorm(16).half().eval()
-        exported = torch.export.export(model, (value,))
-        torch.testing.assert_close(_decompose_composite_opmath(torch, exported).module()(value), model(value))
-        unrelated = torch.export.export(StaticBranch(), (value,))
-        if _decompose_composite_opmath(torch, unrelated) is not unrelated:
-            raise RuntimeError("composite policy changed unrelated primitive IR")
+        directory = output_root / "outer-layer-norm"
+        export_pytorch_program(model, (value,), directory)
+        torch.testing.assert_close(run_exported_graph(directory, (value,))[0], model(value))
+        directory = output_root / "primitive-composite-control"
+        export_pytorch_program(StaticBranch().eval(), (value,), directory)
+        torch.testing.assert_close(run_exported_graph(directory, (value,)), StaticBranch()(value))
     finally:
         torch.set_num_threads(threads)
     print("composite_opmath: gelu=18 layer_norm=13 source_layer_norm_to_linalg=12 unrelated_unchanged=true")
@@ -420,25 +426,36 @@ def check_direct_xla(output_root: pathlib.Path) -> None:
     print(f"direct_xla: configurations={configurations} executions=12 negatives=11 dynamo=false")
 
 
-def run_exported_graph(directory: pathlib.Path, inputs: tuple[torch.Tensor, ...]):
-    import torch_xla
+def check_pooling_precision(output_root: pathlib.Path) -> None:
+    cases = 0
+    for dtype in (torch.float16, torch.bfloat16):
+        for extent in (1024, 1025):
+            value = torch.linspace(-2, 3, 2 * 9 * extent).reshape(1, 2, 9, extent).to(dtype)
+            models = (
+                torch.nn.MaxPool2d(3, 2, 1),
+                torch.nn.AvgPool2d(3, 2, 1, count_include_pad=True),
+                torch.nn.AvgPool2d(3, 2, 1, count_include_pad=False),
+                torch.nn.AvgPool2d(3, 2, 1, divisor_override=7),
+                torch.nn.AdaptiveAvgPool2d((1, 1)),
+                torch.nn.AdaptiveAvgPool2d((3, 1)),
+            )
+            for index, model in enumerate(models):
+                directory = output_root / f"pool-{dtype}-{extent}-{index}"
+                export_pytorch_program(model.eval(), (value,), directory)
+                actual = run_exported_graph(directory, (value,))[0]
+                torch.testing.assert_close(actual, model(value))
+                text = subprocess.check_output([
+                    os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                    str(directory / "functions/forward.stablehlo.bc"),
+                ], text=True)
+                if index != 0:
+                    reductions = re.findall(
+                        r'(?:"stablehlo.reduce_window".*?\}\) :[^\n]+|stablehlo.reduce\([^\n]+)',
+                        text, flags=re.DOTALL)
+                    assert reductions and all("xf32>" in operation for operation in reductions), text
+                cases += 1
+    print(f"pooling_opmath: cases={cases} max=true avg=true padding_divisor_preserved=true")
 
-    record = json.loads((directory / "functions/forward.meta").read_text())
-    arguments = []
-    for location, signature in zip(record["input_locations"], record["input_signature"], strict=True):
-        if location["type_"] == "input_arg":
-            value = inputs[location["position"]]
-        else:
-            path = directory / ("data" if location["type_"] == "parameter" else "constants")
-            path /= location["name"] if location["type_"] == "parameter" else str(location["position"])
-            with path.open("rb") as stream:
-                array = np.load(stream, allow_pickle=False)
-            value = (torch.from_numpy(array.view(np.uint16)).view(torch.bfloat16)
-                     if signature["dtype"] == "bfloat16" else torch.from_numpy(array))
-        arguments.append(value)
-    outputs = torch_xla._XLAC._run_stablehlo(
-        (directory / "functions/forward.stablehlo.bc").read_bytes(), arguments)
-    return tuple(output.cpu() for output in outputs)
 
 def check_silu_precision(output_root: pathlib.Path) -> None:
     class Silu(torch.nn.Module):
@@ -462,6 +479,7 @@ def check_silu_precision(output_root: pathlib.Path) -> None:
                 if not operations or any("xf32>" not in line for line in operations):
                     raise RuntimeError("SiLU arithmetic lost F32 opmath")
     print("silu_opmath: cases=6 final_narrowing=true")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -488,6 +506,7 @@ def main() -> None:
     check_convolution_precision(args.output_root)
     check_batch_norm_precision(args.output_root)
     check_composite_precision(args.output_root)
+    check_pooling_precision(args.output_root)
     check_silu_precision(args.output_root)
     check_direct_xla(args.output_root)
     try:
@@ -500,4 +519,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    with mock.patch("torch.export.export", side_effect=AssertionError("Dynamo capture is forbidden")):
+        main()

@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -831,7 +832,8 @@ buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
     auto tiling = mlir::dyn_cast<mlir::TilingInterface>(binding.operation);
     auto destination =
         mlir::dyn_cast<mlir::DestinationStyleOpInterface>(binding.operation);
-    if (!tiling || !destination)
+    if (!tiling ||
+        (!destination && !mlir::isa<mlir::tensor::GatherOp>(binding.operation)))
       return {{},
               fail(SpatialDomainFailureKind::UnsupportedSemantics,
                    "structured root lacks tiling or destination semantics",
@@ -869,6 +871,11 @@ buildSpatialDomainProblem(const StructuredDAGAnalysis &dag,
                      "attention spatial constraints are malformed",
                      binding.key)};
       facts.attention = std::move(*constraints);
+    } else if (auto gather =
+                   mlir::dyn_cast<mlir::tensor::GatherOp>(binding.operation)) {
+      llvm::append_range(facts.iteratorExtents, gather.getResultType().getShape());
+      resultMaps.push_back(mlir::AffineMap::getMultiDimIdentityMap(
+          facts.iteratorExtents.size(), gather.getContext()));
     } else {
       return {{},
               fail(SpatialDomainFailureKind::UnsupportedSemantics,

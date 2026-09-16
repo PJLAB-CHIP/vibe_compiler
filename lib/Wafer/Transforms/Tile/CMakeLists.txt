@@ -3,6 +3,7 @@ add_mlir_library(WaferTileTransforms
   DistributedCollectiveMovement.cpp
   ExecutionStructure.cpp
   GemmFinalization.cpp
+  GatherLowering.cpp
   LayoutOptimization.cpp
   LoopSubsetState.cpp
   PhysicalMovementPlacement.cpp
@@ -29,6 +30,7 @@ add_mlir_library(WaferTileTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRLoopLikeInterface
   MLIRMathDialect
   MLIRMemRefDialect

@@ -83,7 +83,7 @@ if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
     execute_process(
       COMMAND "${CMAKE_COMMAND}" -E env "PYTHONDONTWRITEBYTECODE=1"
               "${WAFER_IMPORTER_PYTHON_EXECUTABLE}" -B -c
-              "import torch; import torch_xla; from torch_xla.stablehlo import exported_program_to_stablehlo"
+              "import torch; import torch_xla; from torch_xla.core.xla_model import get_stablehlo_bytecode; from torch_xla.stablehlo import StableHLOModelBundle, StableHLOGraphModule"
       RESULT_VARIABLE WAFER_PYTORCH_XLA_IMPORTER_RESULT
       OUTPUT_QUIET
       ERROR_QUIET

@@ -770,28 +770,33 @@ unsigned elideRedundantFullBufferTransfers(
   if (hasAssignedPlacement)
     return 0;
 
-  struct FunctionTransfers {
-    mlir::func::FuncOp function;
+  struct ScopeTransfers {
+    mlir::Operation *scope;
     llvm::SmallVector<InstrGatherScatterOp, 8> copies;
   };
-  llvm::SmallVector<FunctionTransfers, 4> functions;
-  llvm::DenseMap<mlir::Operation *, unsigned> functionIndices;
+  llvm::SmallVector<ScopeTransfers, 4> scopes;
+  llvm::DenseMap<mlir::Operation *, unsigned> scopeIndices;
   uint64_t collected = 0;
   module.walk([&](InstrGatherScatterOp copy) {
     auto function = copy->getParentOfType<mlir::func::FuncOp>();
     if (!function)
       return;
-    auto [it, inserted] =
-        functionIndices.try_emplace(function.getOperation(), functions.size());
+    // Physical SPM storage is local to its TileRegion. Alias collection still
+    // rejects any use escaping this scope; a whole-function timeline adds no
+    // proof for these copies and is costly to rebuild after each coalescing.
+    auto region = copy->getParentOfType<TileRegionOp>();
+    mlir::Operation *scope =
+        region ? region.getOperation() : function.getOperation();
+    auto [it, inserted] = scopeIndices.try_emplace(scope, scopes.size());
     if (inserted)
-      functions.push_back({function, {}});
-    functions[it->second].copies.push_back(copy);
+      scopes.push_back({scope, {}});
+    scopes[it->second].copies.push_back(copy);
     ++collected;
   });
 
   TransferElisionWork work;
   unsigned eliminated = 0;
-  for (FunctionTransfers &group : functions) {
+  for (ScopeTransfers &group : scopes) {
     // Positions only order this invocation's live operation handles. No GS
     // is created by this rewrite, and erased handles leave both containers.
     llvm::DenseMap<mlir::Operation *, unsigned> positions;
@@ -815,10 +820,10 @@ unsigned elideRedundantFullBufferTransfers(
               "analysis-phase", "elideRedundantFullBufferTransfers",
               "StructuredTimeline::build");
           ++work.timelines;
-          built = mp::StructuredTimeline::build(group.function.getOperation());
+          built = mp::StructuredTimeline::build(group.scope);
         }
         if (mlir::failed(built))
-          break; // This function cannot change without a successful proof.
+          break; // This scope cannot change without a successful proof.
         timeline.emplace(std::move(*built));
       }
       auto enqueueAffected = [&](InstrGatherScatterOp affected) {

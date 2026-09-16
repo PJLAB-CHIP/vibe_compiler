@@ -12,6 +12,10 @@
 
 namespace wafer::compiler::detail {
 
+/// Current integer cast/clamp maps executed by Kcore scalar arithmetic.
+/// Boundary movement uses the same predicate to retain readable DDR inputs.
+bool isScalarIntegerMap(mlir::Operation *operation);
+
 enum class StructuredToTileFailureKind : uint8_t {
   None,
   Unsupported,
@@ -23,6 +27,7 @@ struct StructuredToTileStatistics {
   uint64_t fills = 0;
   uint64_t contractions = 0;
   uint64_t convolutions = 0;
+  uint64_t pools = 0;
   uint64_t reductions = 0;
   uint64_t elementwiseExpressions = 0;
   uint64_t elementwiseOperations = 0;

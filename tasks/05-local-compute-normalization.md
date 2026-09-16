@@ -183,6 +183,34 @@ Unit reshape和广播仅用于证明该已匹配链的输入坐标；其它pure�
 | data-dependent index、非unit常量轴、source在payload内定义、shape不匹配、source或loop extent未知 | 保持原读取，不引入新input或猜测映射 | verifier及不变IR/原有合法化门禁 |
 | 原始完整LM、固定FP16 block | 原source/参数保持，source阶段、实际候选、package/no-card、设备数值分别记账 | 统一runner；设备恢复前不能签实卡完成 |
 
+### 3.5 按运行时索引读取连续切片
+
+- Upstream IR / input：verified static-ranked `stablehlo.gather`，显式整数indices和source；本轮主纵向是只读参数表的整行读取。
+- Current stage responsibility：在official逐元素GatherConversion之前，将可表示的完整切片gather合法化为标准`tensor.gather`；
+  保留source的cast、signedness和StableHLO clamp语义，indices按标准op要求组织坐标维。重复indices合法，不推断`unique`。
+  不匹配的StableHLO形态仍由原official converter处理，其后在实际不支持边界返回typed结果。
+- Output IR / files：显式source、indices、gather维和结果的`tensor.gather`，以及原语义要求的整数变换；不创建模型专用op。
+- Downstream consumer：06号structured root/需求分析及selected output tiling；08/10号物化实际局部输出和DDR行读取。
+- User-level driver / named pipeline：生产`wafer-compile`与`wafer-lower-stablehlo-to-linalg`共用同一个conversion实现。
+- Explicit non-goals：不改变模型数值、ID端口或越界合同，不在host预计算embedding，不引入表排序、去重、跨调用cache或新硬件能力。
+- Completion criteria：标准op的parser/verifier、显式依赖和分块消费者闭合，实际source输入推进到Instr/SPM/target及package/no-card；
+  完整数值、动态访问和completion覆盖按本节矩阵执行。只有source转换成功不算本项完成。
+
+方法比较：pinned StableHLO的通用转换以`linalg.generic`中的scalar extract表达完整gather，适合通用语义展开，但过早隐藏了
+本仓直接消费者需要的行访问结构。标准[`tensor.gather`](https://mlir.llvm.org/docs/Dialects/TensorOps/#tensorgather-tensorgatherop)
+已经表达完整切片及重复索引；它的越界行为未定义，因此转换必须显式保留
+[StableHLO clamp](https://openxla.org/stablehlo/spec#gather)。
+[IREE gather tiling](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/TilingInterfaceImpl.cpp)
+将output/indices切块，source被索引维保持可访问，连续维按输出需求切片；采用这一边界，不引入IREE dialect或旁路kernel。
+Pinned Tensor op没有可直接满足本仓的gather tiling/bufferization实现，所需external interface及实际消费者须在同一修改中接入。
+
+| 输入等价类 | 结构分支及typed失败 | exact输出与下游witness |
+| --- | --- | --- |
+| rank3输出、长度1024/1025/1031、FP16/BF16，i32/i64 indices | 重复、乱序、首末合法ID，原clamp/cast；不设置unique | 同一编译程序更换indices后全部输出逐bit匹配；source与index依赖显式 |
+| static完整切片及output分块 | token/连续维切分、4/16 Tile、多块与tail；不支持的索引形态保持typed拒绝 | 结果覆盖恰好一次，源地址由实际indices决定，连续片段大小正确 |
+| 外部只读表及局部输出 | 表保留DDR绑定；局部索引/输出真实allocation；未知来源/访问不伪造静态需求 | actual completion、SPM offsets、target执行和fresh package/no-card |
+| 原始完整LM、固定FP16 block回归 | 完整source、默认搜索参数和原始reference；主机/板端分别登记 | gather独立数值与完整产品阶段分别验收；设备恢复后再验性能 |
+
 ## 4. Attention Semantic Normalization
 
 ### 4.1 Match边界
