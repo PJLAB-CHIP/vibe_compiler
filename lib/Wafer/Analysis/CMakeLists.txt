@@ -6,6 +6,7 @@ add_mlir_library(WaferAnalysis
   Linalg/SemanticRootAnalysis.cpp
   Linalg/StructuredDAGAnalysis.cpp
   Linalg/TensorResultIndexing.cpp
+  Tile/AccessReuseAnalysis.cpp
   Tile/PhysicalAccessRelation.cpp
   Tile/PhysicalLayoutRelation.cpp
   Tile/TileDataflowAnalysis.cpp
@@ -23,6 +24,7 @@ add_mlir_library(WaferAnalysis
   WaferTarget
   MLIRArithDialect
   MLIRAffineAnalysis
+  MLIRAffineDialect
   MLIRAsyncDialect
   MLIRDestinationStyleOpInterface
   MLIRFuncDialect
@@ -37,4 +39,5 @@ add_mlir_library(WaferAnalysis
   MLIRTensorDialect
   MLIRTilingInterface
   MLIRValueBoundsOpInterface
+  MLIRViewLikeInterface
 )

@@ -16,9 +16,9 @@
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 #include "Wafer/Transforms/Linalg/StructuredGraphNormalization.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
+#include "Wafer/Transforms/Tile/AccessReuse.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
-#include "Wafer/Transforms/Tile/ReadOnlyInputSharing.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -446,15 +446,19 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     if (statistics)
       statistics->boundaryMovement = movement.statistics;
 
-    if (options.qualification && options.qualification->shareReadOnlyInputs) {
-      auto sharing = materializeReadOnlyInputSharing(*candidate->module,
-                                                     candidate->relations);
+    if (options.qualification && options.qualification->reusePeerInputs) {
+      auto sharing = materializeAccessReuse(
+          *candidate->module, candidate->relations,
+          selectPeerAccessReuse(analysis::analyzeAccessReuse(*candidate->module,
+                                                            {}, 0)));
       if (!sharing.succeeded())
-        return fail(sharing.failure == BoundaryMovementFailureKind::Unsupported
+        return fail(sharing.failure == AccessReuseFailureKind::Unsupported
                         ? ExecutableCompilationStatus::UnsupportedFailure
-                        : ExecutableCompilationStatus::CompilerFailure,
-                    "input-sharing", sharing.detail);
-      recordMovementInstrumentation(sharing.statistics);
+                        : sharing.failure == AccessReuseFailureKind::Indeterminate
+                            ? ExecutableCompilationStatus::IndeterminateFailure
+                            : ExecutableCompilationStatus::CompilerFailure,
+                    "access-reuse", sharing.detail);
+      recordMovementInstrumentation(sharing.movement);
     }
 
     CurrentIRDownstreamStatistics downstream;

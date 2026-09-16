@@ -43,8 +43,8 @@ llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
   case CommunicationCandidate::RingReduction:
     selection.movement.reduction = detail::DistributedReductionAlgorithm::Ring;
     break;
-  case CommunicationCandidate::SharedInput:
-    selection.shareReadOnlyInputs = true;
+  case CommunicationCandidate::AccessReusePeer:
+    selection.reusePeerInputs = true;
     break;
   case CommunicationCandidate::PipelinedLoads:
     selection.pipelineLoads = true;

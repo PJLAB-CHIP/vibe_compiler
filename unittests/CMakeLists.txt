@@ -131,7 +131,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Tile/LayoutOptimizationTest.cpp
     Transforms/Tile/StructuredToTileTest.cpp
     Transforms/Tile/ExecutionStructureMaterializationTest.cpp
-    Transforms/Tile/ReadOnlyInputSharingTest.cpp
+    Transforms/Tile/AccessReuseTest.cpp
     Transforms/Linalg/AttentionNormalizationTest.cpp
     Transforms/Linalg/BatchNormFusionTest.cpp
     Transforms/Linalg/ConstantTensorFoldingTest.cpp
@@ -518,6 +518,23 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     ENVIRONMENT
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
   )
+  add_executable(WaferSystemCSimulatorAccessReuseTest
+    Simulator/SystemC/SystemCTargetModelAccessReuseTest.cpp)
+  llvm_update_compile_flags(WaferSystemCSimulatorAccessReuseTest)
+  target_link_libraries(WaferSystemCSimulatorAccessReuseTest PRIVATE
+    WaferSystemCSimulatorTestSupport GTest::gtest)
+  # SystemC supports one elaboration/execution per process.
+  foreach(case RANGE 0 17)
+    add_test(NAME WaferSystemCSimulatorAccessReuseTest.${case}
+      COMMAND WaferSystemCSimulatorAccessReuseTest
+        --gtest_filter=Windows/SystemCTargetModelAccessReuseTest.CompleteReadWindowsMatchIndependentInputBytes/${case})
+    set_tests_properties(WaferSystemCSimulatorAccessReuseTest.${case} PROPERTIES
+      LABELS "systemc-model;managed-dependencies;component"
+      ENVIRONMENT "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}")
+  endforeach()
+  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorAccessReuseTest)
+  target_include_directories(WaferSystemCSimulatorAccessReuseTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/unittests)
   add_custom_target(check-wafer-systemc-model
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
       -R "^WaferSystemCSimulator"

@@ -352,7 +352,7 @@ stage数量、pipeline flag、估算window或IR外resource plan都不能证明�
 - Current stage responsibility：证明相同只读程序窗口的逐次读取关系，物化共享端点；以完整收发组构造循环体内的可推进顺序。
 - Output IR / files：同一candidate中的实际peer/DTE操作、原结构化循环、精确dynamic token及最终offset/binding；不增加通信计划IR。
 - Downstream consumer：唯一completion、SPM planner、Direct-DTE绑定、实际成本模型、target和SystemC。
-- User-level driver / named pipeline：现有none/search与同一materializeReadOnlyInputSharing/constructCommunication入口。
+- User-level driver / named pipeline：现有none/search与同一materializeAccessReuse/constructCommunication入口。
 - Explicit non-goals：不展开工作负载迭代，不根据模型名选路，不猜测动态分支配对，不创建隐式缓存、跨迭代token或全局barrier。
 - Completion criteria：下表覆盖实际动态次数、窗口、token、资源复用和完整结果；大GEMM正式search中共享候选实际评估并给出选择结果。
 

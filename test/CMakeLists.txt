@@ -216,10 +216,10 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
         trigonometry-${_wafer_trig_extent} float32 f32 search target-model)
     endforeach()
     foreach(_wafer_loop_dtype IN ITEMS float16 bfloat16)
-      set(_wafer_loop_test wafer-loop-input-sharing-${_wafer_loop_dtype})
+      set(_wafer_loop_test wafer-loop-access-reuse-${_wafer_loop_dtype})
       add_test(NAME ${_wafer_loop_test}
         COMMAND ${WAFER_IMPORTER_PYTHON_COMMAND}
-          ${CMAKE_CURRENT_SOURCE_DIR}/Tools/wafer_loop_input_sharing_test.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/Tools/wafer_loop_access_reuse_test.py
           --wafer-compile $<TARGET_FILE:wafer-compile-test>
           --work-dir ${CMAKE_CURRENT_BINARY_DIR}/pytorch-product/${_wafer_loop_test}
           --dtype ${_wafer_loop_dtype} --extent 1025)
@@ -274,7 +274,7 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     wafer_add_pytorch_source_no_card_test(
       ${_wafer_gemm_case} float16 fp16 search)
     wafer_add_pytorch_communication_no_card_test(
-      ${_wafer_gemm_case} shared-input)
+      ${_wafer_gemm_case} access-reuse-peer)
   endforeach()
   unset(_wafer_gemm_case)
 

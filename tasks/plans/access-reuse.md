@@ -1,7 +1,8 @@
 # 访问复用（AccessReuse）统一方案
 
 本方案归属`board-testing`，设计owner为06号，验证按16号，源码与API边界按18、19号。
-本轮交付是命名、统一分析和实施合同；编译器实现尚未修改。推进状态只记录在`tasks/progress.md`。
+受限实现及主机验证已落实；实际大GEMM仍保留原256 MiB赢家，64 MiB读取目标没有达成，不能据机制完成宣称该性能问题已解决。
+当前计划保留这项性能差距及后续设备验收边界；结果见同一board工作计划。推进状态只记录在`tasks/progress.md`，实际检查点在同一board工作计划中。
 
 ## 1. 名称与职责
 
@@ -10,7 +11,7 @@
 发现重复只是优化机会。Search先做轻量净收益筛选：明显无收益、收益很小或无法明确估计的机会不生成可执行候选，
 不为了命中复用而增加通信；只有预期净收益明显的选择才进入实际物化和完整评分。
 
-| 边界 | 拟用名称 | 职责 |
+| 边界 | 名称 | 职责 |
 | --- | --- | --- |
 | Analysis/Tile | `AccessReuseAnalysis` | 只读current IR，查询源身份、作用域内内容不变性、精确访问关系和相同/重叠窗口 |
 | search内typed选择 | `AccessReuseChoice` | 用同cohort参数筛选潜在净收益后，选择实际read集合、已有循环scope、供给Tile及有界物化方式；不描述未来buffer或同步 |
@@ -23,12 +24,12 @@
 ## 2. Pipeline contract
 
 - Upstream IR / input：candidate-owned、已选spatial/temporal/layout的TileModule集合，StructuredToTile及既有
-  PhysicalMovementPlacement后的显式load、subview、SCF、typed资源身份与effects；只解释当前已存在的读取。
+  PhysicalMovementPlacement及BoundaryMovement后的显式load、subview、SCF、typed资源身份与effects；只解释当前已存在的读取。
 - Current stage responsibility：按共同源归集当前读取，求scope内精确访问集合，search过滤低净收益机会后提供少量reuse选择；选中后在候选上实际物化，
   并重新验证IR、owner、alias与读集合。不重选算术或layout，不解释未来lowering产物。
 - Output IR / files：分析返回当前IR的可重算事实；变换输出现有memref allocation/view/copy、Tile load/peer和SCF控制流。
   分析结果不是输出协议，不进入后续IR或package。
-- Downstream consumer：原boundary movement、执行流水、TileToInstr、通信构造、completion、唯一SPM/DDR规划和actual cost；
+- Downstream consumer：原执行流水、TileToInstr、通信构造、completion、唯一SPM/DDR规划和actual cost；
   接入顺序与分析失效规则见第5节。
 - User-level driver / named pipeline：现有`wafer-compile --optimization-policy=search`的physical movement候选入口；
   `none`保持原默认行为，显式资格测试通过共同物化函数选定机制。
@@ -99,30 +100,30 @@ image和typed失败能力；当前producer融合也已使用`invariantDimensions
 
 ## 5. Search接入与pass联动
 
-现有顺序是`prepareRegion`形成physical前缀；`EvaluateMovement`克隆后执行BoundaryMovement，再运行输入共享，最后进入统一下游。
-统一方案沿用这个候选owner与原search预算：
+实际接入核对确认：BoundaryMovement还负责function-boundary bufferization和DDR load创建；它之前的IR不能提供全部实际读取。
+因此统一分析以**完成BoundaryMovement的实际前缀**为输入，不提前猜load：
 
 ```text
 spatial / Region / temporal / loop order
   -> layout / bufferization / StructuredToTile / physical movement placement
-  -> AccessReuseAnalysis（当前前缀，只读访问事实）
-  -> search轻量净收益筛选（低收益/不明确的机会到此结束，不占trial）
-  -> 通过门槛的单项及局部联合选择
-  -> 现有candidate clone，IRMapping改接选中的current source/scope
-  -> 原BoundaryMovement
-  -> 同一AccessReuseAnalysis按新epoch复核选中读集合
-  -> materializeAccessReuse（替代原InputSharing入口，统一落实时间/空间选择）
+  -> 原BoundaryMovement（生成实际DDR端口与load）
+  -> AccessReuseAnalysis + search轻量净收益筛选
+  -> 无高收益机会：原候选直接进入统一下游
+  -> 有高收益机会：保留这一份实际边界前缀
+     -> 原分支及复用分支各用普通candidate clone，IRMapping改接选择
+     -> materializeAccessReuse，复用同一前缀、不重做BoundaryMovement
   -> verifier + fresh buffer/alias facts
   -> 原execution structure / Instr / communication / completion
   -> actual SPM/DDR / cost / retained winner
 ```
 
-前缀分析只处理此时已经明确的源与读取。BoundaryMovement后IR发生变化，必须以新IR复核；若选中anchor已删除或语义改变，
-该选择按typed不可用处理，不按名字、遍历序号或“唯一源”恢复。第一版不预测BoundaryMovement未来产生的load。
-已有peer共享从同一个新epoch分析取得事实；迁移测试必须证明原有支持域没有因查询提前而丢失。
+低收益机会不产生额外复用candidate clone、物化或trial；基础边界构造属于原候选的必要工作。
+只有有值得尝试的分支时才保留实际前缀，并为原分支增加一次隔离clone；这不是缓存试跑，也不提前lower以估算容量。
+复用兄弟共用同一个不可变owner，各自实际求值；已消费选择释放其前缀引用，prefix数量计入现有owner/work统计。
+BoundaryMovement通过takeBody保留实际Region block，temporal反馈绑定沿同一IRMapping改接，不用名字或ordinal恢复。
 
-分析只有一个实现，不意味着IR变化后仍复用旧结果。每个不变epoch中复用已收集的源/effect/index事实，选中scope的局部查询按需执行；
-不引入全局cache或跨clone地址索引。clone后复核只解释该clone自己的SSA，分析不替代ownership/verifier。
+分析只保存一个不变IR epoch的源/effect/index事实；clone上的选择以当前SSA重新查询选中scope，相关mutation后结果失效。
+不存在对尚未生成load的前瞻分析，不引入全局cache或跨clone地址索引；原peer支持域由同一物化后输入及迁移测试保留。
 
 此变换不改变PBQP算法；只扩展物理movement的候选。SPM看到缓存、计算输入、overlap scratch及全部真实lifetime后返回结果，
 capacity由外层controller处理；改变temporal分块后重新从当前IR推导窗口。不要求不复用分支先通过SPM，才允许尝试复用。
@@ -131,7 +132,7 @@ capacity由外层controller处理；改变temporal分块后重新从当前IR推�
 ### 5.1 轻量净收益筛选
 
 筛选由search的提案策略负责，AccessReuseAnalysis只提供访问事实。先用已有窗口大小、静态执行次数和跨Tile
-同源读取情况作便宜排序；对前面的机会按需求精确scope窗口。收益筛选在候选clone、materialization和完整lowering之前执行。
+同源读取情况作便宜排序；对前面的机会按需求精确scope窗口。收益筛选在额外复用候选clone、materialization和完整lowering之前执行。
 
 对于一个明确的复用选择，按当前分块/物理前缀比较原读取与所选复用方式，使用同一SearchCostPolicy/cohort的已有带宽和启动成本：
 
@@ -147,7 +148,8 @@ capacity由外层controller处理；改变temporal分块后重新从当前IR推�
 per-Tile/链路口径，不把全卡流量除以单Tile带宽。
 
 首版以同cohort的`instructionFixedPicosecondsEstimate`作为最小净收益尺度，只有预期净收益**严格大于**该尺度才提案。
-该值是复用已有cost参数的启发式门槛，不是硬件测量或性能保证，不增加模型专用阈值；过滤后再按净收益从高到低分配原trial预算。
+该值是复用已有cost参数的启发式门槛，不是硬件测量或性能保证，不增加模型专用阈值；过滤后按净收益/所选窗口字节排序分配原trial预算：大范围驻留不能仅因总收益大，持续压住局部高效复用。
+窗口大小只影响访问顺序，不作容量阈值，不删除通过收益门槛的选择；所有SPM判断仍来自实际规划。
 非正收益、未超过门槛均记为低收益过滤；关键成本或访问事实不足则记为收益不明确，本轮维持原路径。
 不同scope/复用方式独立判断，一个scope低收益不等于该源的其它方式都无收益。
 
@@ -166,10 +168,11 @@ per-Tile/链路口径，不把全卡流量除以单Tile带宽。
 这里的单项是一个读取组的完整选择，本身可以同时包含时间与空间复用；多输入联合才是把不同读取组的选择组合起来。
 
 1. 原始不复用分支始终保留。
-2. 按净收益顺序、按需生成通过门槛的单项选择；同组不同scope是替代选项，不同时重复缓存同一批数据。
-3. 同一实际作用域/相关消费者中，仅组合已经通过门槛且无选择冲突的机会。联合选择的新增搬运重新粗估，
+2. 按上述收益密度顺序、按需生成通过门槛的单项选择；同组不同scope是替代选项，不同时重复缓存同一批数据。
+3. 保留一份通过门槛的纯peer联合选择作为不延长驻留范围的替代；其后再比较驻留组合。相同选择只入队一次，不增加独立预算。
+   同一实际作用域/相关消费者中，仅组合已经通过门槛且无选择冲突的机会。联合选择的新增搬运重新粗估，
    防止重复计收益；联合净收益也必须超过门槛。不为凑组合加入低收益项，不枚举任意输入子集。
-4. 联合选择可以直接提出，不要求其中某个单项先打败全局winner。门槛比较的是相对**同一当前前缀**的预期净收益，
+4. 将各源优先选择组成的一份联合选择放在单项之前，联合选择可以直接提出，不要求其中某个单项先打败全局winner。门槛比较的是相对**同一当前前缀**的预期净收益，
    不同于跨空间/分块方案的最终winner比较；输入数量不限于GEMM的两个输入。
 
 ### 5.3 限制分析与搜索开销
@@ -211,7 +214,7 @@ B在本Tile没有对应重复，仍逐块读取；同源B窗口跨16个Tile相�
 
 ## 7. 迁移与实施顺序
 
-以下均为拟实施映射，本轮不改代码或现有CLI。
+以下为本轮实施映射；旧接口与直接consumer在同一迁移中更新。
 
 | 当前owner | 统一后的owner/直接消费者 | 必须保留的witness |
 | --- | --- | --- |

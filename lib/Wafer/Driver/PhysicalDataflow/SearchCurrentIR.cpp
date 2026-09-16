@@ -16,9 +16,9 @@
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 #include "Wafer/Transforms/Linalg/StructuredGraphNormalization.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
+#include "Wafer/Transforms/Tile/AccessReuse.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
-#include "Wafer/Transforms/Tile/ReadOnlyInputSharing.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
@@ -299,7 +299,10 @@ struct MovementChoice {
   bool allToAll = false;
   bool reduction = false;
   bool pipeline = false;
-  bool shareInput = false;
+  std::optional<AccessReuseChoice> reuse;
+  // Owned, immutable actual IR after boundary closure. Profitable siblings
+  // share this prefix; it contains no predicted loads or storage.
+  std::shared_ptr<const CurrentCandidate> input;
 };
 
 class CurrentIRCandidateSession final : public StructuralCandidateSession {
@@ -398,15 +401,28 @@ public:
         stage = Stage::SelectTemporal;
         return yield();
       }
-      const MovementChoice choice = attempt.movements[attempt.nextMovement++];
+      const MovementChoice choice =
+          std::move(attempt.movements[attempt.nextMovement++]);
       std::string detail;
       mlir::IRMapping mapping;
-      auto candidate = cloneCandidate(*attempt.lowered, mapping, detail);
+      auto candidate = cloneCandidate(
+          choice.input ? *choice.input : *attempt.lowered, mapping, detail);
       if (mlir::failed(candidate))
         return finish(fail(ExecutableCompilationStatus::CompilerFailure,
                            "search-movement-clone", detail));
+      std::optional<AccessReuseChoice> mappedReuse;
+      if (choice.reuse) {
+        auto mapped = mapAccessReuseChoice(*choice.reuse, mapping);
+        if (mlir::failed(mapped))
+          return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                             "search-access-reuse-clone",
+                             "clone omitted a selected read or scope"));
+        mappedReuse = std::move(*mapped);
+      }
       BoundaryMovementOptions movementOptions = choice.options;
       for (auto &component : movementOptions.components) {
+        if (choice.input)
+          break;
         component.anchor.sourceEndpoint =
             mapping.lookupOrNull(component.anchor.sourceEndpoint);
         component.anchor.destinationEndpoint =
@@ -418,9 +434,12 @@ public:
                    "search-movement-clone",
                    "clone omitted a selected communication component"));
       }
-      BoundaryMovementResult movement = materializeTileBoundaryMovement(
-          *candidate->module, candidate->relations, movementOptions);
-      recordMovementInstrumentation(movement.statistics);
+      BoundaryMovementResult movement;
+      if (!choice.input) {
+        movement = materializeTileBoundaryMovement(
+            *candidate->module, candidate->relations, movementOptions);
+        recordMovementInstrumentation(movement.statistics);
+      }
       ExecutableCompilationResult compiled;
       std::optional<analysis::SearchObjective> evaluatedObjective;
       InputCapacityFeedback capacityFeedback;
@@ -431,49 +450,82 @@ public:
                      ? ExecutableCompilationStatus::UnsupportedFailure
                      : ExecutableCompilationStatus::CompilerFailure,
                  "search-boundary-movement", movement.detail);
-      } else if ((choice.recursive &&
-                  !movement.statistics.recursiveDoublingComponents) ||
-                 (choice.allToAll &&
-                  !movement.statistics.dimensionOrderedAllToAllComponents) ||
-                 (choice.reduction &&
-                  !movement.statistics.ringReduceScatterComponents &&
-                  !movement.statistics.ringAllReduceComponents)) {
+      } else if (!choice.input &&
+                 ((choice.recursive &&
+                   !movement.statistics.recursiveDoublingComponents) ||
+                  (choice.allToAll &&
+                   !movement.statistics.dimensionOrderedAllToAllComponents) ||
+                  (choice.reduction &&
+                   !movement.statistics.ringReduceScatterComponents &&
+                   !movement.statistics.ringAllReduceComponents))) {
         compiled = fail(ExecutableCompilationStatus::UnsupportedFailure,
                         "search-boundary-movement",
                         "selected algorithm has no current component");
       } else {
-        if (!choice.shareInput && !choice.pipeline) {
-          if (statistics)
-            ++statistics->inputSharingQueries;
-          if (hasReadOnlyInputSharing(*candidate->module)) {
-            if (statistics) {
-              ++statistics->inputSharingEligible;
-              ++statistics->inputSharingQueued;
+        if (!choice.input && !choice.pipeline) {
+          // BoundaryMovement owns function-boundary bufferization and load
+          // creation. Analyze its actual output, never anticipated loads in
+          // the open physical prefix.
+          auto facts = analysis::analyzeAccessReuse(*candidate->module);
+          auto reuse = proposeAccessReuse(
+              facts, costCohort ? costCohort->getPolicy()
+                                : analysis::SearchCostPolicy{});
+          if (statistics) {
+            ++statistics->accessReuseQueries;
+            statistics->accessReuseEligible += reuse.opportunities;
+            statistics->accessReuseQueued += reuse.choices.size();
+            statistics->accessReuseLowBenefit += reuse.lowBenefit;
+            statistics->accessReuseUnknownBenefit += reuse.unknownBenefit;
+          }
+          support::addCompileCounter("access-reuse", "scope-queries",
+                                     facts.scopeQueries);
+          support::addCompileCounter("access-reuse", "indeterminate-scopes",
+                                     facts.indeterminateScopes);
+          if (!reuse.choices.empty()) {
+            auto prefix =
+                std::make_shared<CurrentCandidate>(std::move(*candidate));
+            auto insert = attempt.movements.begin() +
+                          std::max(attempt.nextMovement, attempt.baseMovements);
+            for (auto &selection : reuse.choices) {
+              MovementChoice selected = choice;
+              selected.input = prefix;
+              selected.reuse = std::move(selection);
+              insert = std::next(
+                  attempt.movements.insert(insert, std::move(selected)));
             }
-            MovementChoice shared = choice;
-            shared.shareInput = true;
-            // Keep the base transport comparison, then serve proven input
-            // reuse before unrelated algorithm combinations of this point.
-            attempt.movements.insert(
-                attempt.movements.begin() +
-                    std::max(attempt.nextMovement, attempt.baseMovements),
-                std::move(shared));
+            // Keep the real boundary output as the siblings' input. The base
+            // candidate uses the same ordinary clone operation; no trial
+            // lowering is performed for profitability or memory prediction.
+            mlir::IRMapping baseMapping;
+            candidate = cloneCandidate(*prefix, baseMapping, detail);
+            if (mlir::failed(candidate))
+              return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                                 "search-access-reuse-prefix", detail));
+            support::addCompileCounter("access-reuse", "retained-prefixes", 1);
           }
         }
-        if (choice.shareInput) {
+        if (mappedReuse) {
           if (statistics)
-            ++statistics->inputSharingCandidates;
-          auto shared = materializeReadOnlyInputSharing(*candidate->module,
-                                                        candidate->relations);
+            ++statistics->accessReuseCandidates;
+          auto shared = materializeAccessReuse(
+              *candidate->module, candidate->relations, *mappedReuse);
           if (!shared.succeeded())
-            return finish(
-                fail(shared.failure == BoundaryMovementFailureKind::Unsupported
-                         ? ExecutableCompilationStatus::UnsupportedFailure
-                         : ExecutableCompilationStatus::CompilerFailure,
-                     "search-input-sharing", shared.detail));
-          recordMovementInstrumentation(shared.statistics);
-          support::addCompileCounter("input-sharing", "removed-ddr-loads",
-                                     shared.statistics.peerReceives);
+            return finish(fail(
+                shared.failure == AccessReuseFailureKind::Unsupported
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : (shared.failure == AccessReuseFailureKind::Indeterminate
+                           ? ExecutableCompilationStatus::IndeterminateFailure
+                           : ExecutableCompilationStatus::CompilerFailure),
+                "search-access-reuse", shared.detail));
+          recordMovementInstrumentation(shared.movement);
+          support::addCompileCounter("access-reuse", "peer-receives",
+                                     shared.movement.peerReceives);
+          support::addCompileCounter("access-reuse", "resident-windows",
+                                     shared.residentWindows);
+          support::addCompileCounter("access-reuse", "sliding-windows",
+                                     shared.slidingWindows);
+          support::addCompileCounter("access-reuse", "two-level-windows",
+                                     shared.twoLevelWindows);
         }
         if (!choice.pipeline &&
             hasDistanceOneLoadPipeline(*candidate->module)) {
@@ -591,8 +643,8 @@ public:
                              capacityFeedback.detail));
         if (choice.pipeline && compiled.isAccepted())
           support::addCompileCounter("search", "pipeline-accepted", 1);
-        if (statistics && choice.shareInput && compiled.isAccepted())
-          ++statistics->inputSharingAccepted;
+        if (statistics && choice.reuse && compiled.isAccepted())
+          ++statistics->accessReuseAccepted;
         if (statistics) {
           ++statistics->movementCandidateActualizations;
           addDownstreamStatistics(statistics->downstream, downstream);
@@ -612,6 +664,8 @@ public:
         temporal.observedTransports.insert(choice.options.transport);
       bool repairQueued = false;
       if (hasActualSPMCapacityRejection(compiled)) {
+        if (statistics && choice.reuse)
+          ++statistics->accessReuseCapacityRejected;
         temporal.capacityObserved |= !capacityFeedback.coordinates.empty();
         bool refined = proposals->observeCapacity(temporal.choices,
                                                   capacityFeedback.coordinates);
@@ -1112,7 +1166,7 @@ private:
       invariant.merged = region.merged;
       const bool sharingQueued = llvm::any_of(
           llvm::ArrayRef(region.movements).drop_front(region.nextMovement),
-          [](const auto &movement) { return movement.shareInput; });
+          [](const auto &movement) { return movement.reuse.has_value(); });
       anchor.regions.push_back(std::move(region));
       if (sharingQueued)
         anchor.regions.push_back(std::move(invariant));
@@ -1127,19 +1181,23 @@ private:
     if (statistics) {
       uint64_t modules = bool(structural);
       std::set<const LayoutInput *> inputs;
+      std::set<const CurrentCandidate *> reuseInputs;
       auto count = [&](const TemporalAttempt &temporal) {
         modules += bool(temporal.tiled.module);
         for (const auto &region : temporal.regions) {
           modules += bool(region.lowered);
           if (region.layoutInput)
             inputs.insert(region.layoutInput.get());
+          for (const auto &movement : region.movements)
+            if (movement.input)
+              reuseInputs.insert(movement.input.get());
         }
       };
       for (const auto &temporal : pending)
         count(temporal);
       if (realization)
         count(*realization);
-      modules += inputs.size();
+      modules += inputs.size() + reuseInputs.size();
       statistics->peakSessionTemporalPrefixes = std::max<uint64_t>(
           statistics->peakSessionTemporalPrefixes, pending.size());
       statistics->peakSessionIRModules =
@@ -1429,12 +1487,17 @@ ExecutableCompilationResult compileSearchCurrentIR(
     searchCounter("merged-region-accepted", statistics->mergedRegionAccepted);
     searchCounter("shared-ddr-candidates", statistics->sharedDDRCandidates);
     searchCounter("shared-ddr-accepted", statistics->sharedDDRAccepted);
-    searchCounter("input-sharing-candidates",
-                  statistics->inputSharingCandidates);
-    searchCounter("input-sharing-queries", statistics->inputSharingQueries);
-    searchCounter("input-sharing-eligible", statistics->inputSharingEligible);
-    searchCounter("input-sharing-queued", statistics->inputSharingQueued);
-    searchCounter("input-sharing-accepted", statistics->inputSharingAccepted);
+    searchCounter("access-reuse-candidates", statistics->accessReuseCandidates);
+    searchCounter("access-reuse-queries", statistics->accessReuseQueries);
+    searchCounter("access-reuse-low-benefit",
+                  statistics->accessReuseLowBenefit);
+    searchCounter("access-reuse-unknown-benefit",
+                  statistics->accessReuseUnknownBenefit);
+    searchCounter("access-reuse-eligible", statistics->accessReuseEligible);
+    searchCounter("access-reuse-queued", statistics->accessReuseQueued);
+    searchCounter("access-reuse-accepted", statistics->accessReuseAccepted);
+    searchCounter("access-reuse-capacity-rejected",
+                  statistics->accessReuseCapacityRejected);
   }
   if (statistics) {
     statistics->planning = searched.planning;

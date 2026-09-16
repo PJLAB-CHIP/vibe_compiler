@@ -7,7 +7,7 @@ add_mlir_library(WaferTileTransforms
   LoopSubsetState.cpp
   PhysicalMovementPlacement.cpp
   Pipelines.cpp
-  ReadOnlyInputSharing.cpp
+  AccessReuse.cpp
   StructuredToTile.cpp
   StructuredBufferRelations.cpp
   TiledOutputStores.cpp

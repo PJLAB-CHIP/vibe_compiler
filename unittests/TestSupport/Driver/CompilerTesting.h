@@ -20,7 +20,7 @@ enum class CommunicationCandidate {
   RecursiveDoubling,
   DimensionOrderedAllToAll,
   RingReduction,
-  SharedInput,
+  AccessReusePeer,
   PipelinedLoads,
 };
 

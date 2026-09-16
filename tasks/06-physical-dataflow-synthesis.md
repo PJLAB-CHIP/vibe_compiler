@@ -115,13 +115,13 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
 `DeviceExecutable`是已通过Instr、SPM/DDR、transport、resource、completion和ABI verification的唯一内存owner。
 `ExecutablePackage`只序列化accepted executable与runtime必需数据，不序列化search状态或调度副本。
 
-### 3.5 访问复用统一分析边界（待讨论）
+### 3.5 访问复用统一分析边界
 
 统一概念为访问复用（`AccessReuse`）；第一版限定为可证明内容不变的读取。
-本节定义拟扩展边界，具体推导、pipeline接入、现有实现迁移与覆盖矩阵见
+本节定义访问复用边界，具体推导、pipeline接入、现有实现迁移与覆盖矩阵见
 [`访问复用统一方案`](plans/access-reuse.md)。当前实现状态仍只看`tasks/progress.md`。
 
-- Upstream IR / input：已选spatial/temporal/layout的candidate current Tile IR，显式load/subview/SCF、
+- Upstream IR / input：已选spatial/temporal/layout并完成BoundaryMovement的candidate current Tile IR，显式load/subview/SCF、
   typed source/resource identity、effect/alias及现有buffer owner关系。
 - Current stage responsibility：`AccessReuseAnalysis`统一解释同源读取的Tile位置、循环域、精确IndexRelation与内容不变性；
   search先用这些current事实与同cohort成本参数做轻量净收益筛选，只为预期净收益明显的机会生成复用候选，
@@ -129,7 +129,7 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
   不记录未来buffer、offset、lifetime或completion。
 - Output IR / files：可失效的只读分析结果，以及实际物化的现有allocation/view/copy、Tile load/peer与SCF；
   新buffer全部具备current owner，无缓存专用IR和跨stage旁路协议。
-- Downstream consumer：原boundary movement、execution structure、Instr、communication/completion、唯一SPM/DDR及actual cost；
+- Downstream consumer：原execution structure、Instr、communication/completion、唯一SPM/DDR及actual cost；
   每次相关IR mutation后分析失效，旧anchor不能按名称或遍历序号恢复。
 - User-level driver / named pipeline：现有search的physical movement候选入口；production与显式资格测试调用同一typed变换API，
   不新增负责自动搜索的pass。旧跨Tile输入共享分析迁入同一owner，不与另一套时间复用pass独立决策。

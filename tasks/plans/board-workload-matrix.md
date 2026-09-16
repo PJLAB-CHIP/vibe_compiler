@@ -117,8 +117,8 @@ baseline构包通过不代签实卡完成。
    这些证据不代签动态索引的完整lowering、package或板端资格。
 3. 当前ViT原始EncoderBlock包含LayerNorm、MultiheadAttention、GELU MLP和两次残差；当前HF LM head无loss时不强制升为F32。
    接入时按实际framework返回dtype保留结果，不能为沿用旧runner而插入额外cast。
-4. `CompilerTesting.cpp`中的 `SharedInput` 仅接受none policy，开启 `shareReadOnlyInputs`；baseline及search都调用
-   同一个 `materializeReadOnlyInputSharing`。现有接口不保证可以对任意search winner直接生成固定其所有其它选择的A/B。
+4. `CompilerTesting.cpp`中的 `AccessReusePeer` 仅接受none policy，开启 `reusePeerInputs`；baseline及search都调用
+   同一个 `materializeAccessReuse`。现有接口不保证可以对任意search winner直接生成固定其所有其它选择的A/B。
 5. ResNet首轮的20个 `stablehlo.batch_norm_inference`残留已补通用合法化，PyTorch导出同时保留官方F32 opmath分解；
    直接source→Linalg及定向主机数值已通过，整网package/no-card尚未闭合。ViT的GELU公开`mhlo.erf`扩展和
    LayerNorm opmath已补通用入口合法化，整除/尾部source通过；1024真实输入已到带attention的structured IR，
@@ -168,9 +168,9 @@ ResNet另有1024整网输入；整数索引的源rank不得为了测试规则伪
 | --- | --- | --- |
 | 生产自动winner | 正式search，默认width8/trials42；读取其实际Instr，记录DDR/DTE及eligible/queued/materialized/accepted情况 | 当前预算实际找到什么、为何选它；DTE是否进入生产搜索并被比较 |
 | 控制条件的独立DDR候选 | 从verified、layout已由原PBQP确定的同一物理前缀出发，保持spatial/temporal/fusion/layout/pipeline选择，保留各reader独立DDR加载 | 相同计算和切分下的DDR流量/执行时间基准 |
-| 控制条件的共享DTE候选 | 同一前缀，经生产 `materializeReadOnlyInputSharing` 物化实际共享、收发与buffers，再走唯一completion/SPM/target | DDR读减少多少，新增DTE/scratch/同步开销是否抵消收益 |
+| 控制条件的共享DTE候选 | 同一前缀，经生产 `materializeAccessReuse` 物化实际共享、收发与buffers，再走唯一completion/SPM/target | DDR读减少多少，新增DTE/scratch/同步开销是否抵消收益 |
 
-当前 `SharedInput` test入口可在none的相同前缀上做资格对照；先确认4096规模下两边合法且其它选择相同。
+当前 `AccessReusePeer` test入口可在none的相同前缀上做资格对照；先确认4096规模下两边合法且其它选择相同。
 若none前缀不可行或与目标search切分不同，不能把两个不同tiling产物写成transport单变量A/B。
 届时在既有test-support边界保留candidate-owned的verified实际前缀，按typed movement choice分别物化；
 同一clone使用IRMapping和有效owner，不按日志/旁路plan重建winner，不增加生产强制DTE开关。该补充须先闭合06/16的直接合同。
@@ -1204,12 +1204,39 @@ no-card日志中的`numeric_execution=false`仅描述runtime无设备验证；�
 
 ### 访问复用统一方案
 
-用户要求先统一空间/时间复用分析、重新命名并形成方案，暂停实现。
+用户已确认统一空间/时间复用方案及净收益筛选，并授权开始实现。
 统一概念为`AccessReuse`，完整方案在[`access-reuse.md`](access-reuse.md)，编号设计边界见06号3.5。
 范围仍为现有跨Tile共享、基础驻留、固定步长滑动窗口和最多两级驻留，暂缓缓存替换；
 不强制M方向切分或B传播，不按GEMM/模型名触发，不增加search预算。
 按用户最新要求，候选生成前增加轻量净收益筛选：低收益、明显得不偿失或收益不明确的机会不物化、不做完整评分、不占trial；
 扣除新增DTE传输/启动与SPM复制成本，联合只从通过门槛的机会构造。筛选门槛复用同cohort固定指令开销尺度，
 不根据单块大小或预测SPM容量判断；完整规则及新增覆盖矩阵见方案5.1—5.3。
-本轮只修改设计与状态，没有修改编译器代码或开展新编译/数值测试；新的DDR减少与SPM可行性均待实际实现验证。
-前述GEMM与LLaMA2已有结果继续作为已测基线，不能代签新方案。
+统一analysis、planning及materializer已接入同一actual candidate路径；原peer实现/测试入口迁移至AccessReuse，不保留兼容实现。
+分析实际从BoundaryMovement输出取load，profitable兄弟复用同一不可变前缀，各自IRMapping后物化；低收益不创建兄弟候选。
+范围内驻留、单轴滑动、两级与空间/时间组合均已生成实际IR，三输入联合选择也已经过Instr/completion/SPM。
+
+本轮检查点（主机）：
+
+- 12项AccessReuse机制测试通过，包括rank3、1024/1025/1031、轴置换与main/tail、4/16 Tile原peer能力、
+  严格净收益门槛、缺失成本、查询work上限、clone anchor、多输入联合、未知effect/其它Tile写入/非矩形/动态域，以及实际8 MiB驻留allocation的typed capacity拒绝。
+- 18项独立SystemC进程全部通过：FP16/BF16×1024/1025/1031×驻留/滑动/两级；16 Tile、完整输出逐字节比较，驻留与两级同时覆盖15条peer接收。
+  原PyTorch循环peer资格的两组dtype也完成source→同一物化入口→SystemC全输出比较。
+- 大GEMM默认width8/trials42，4096³ FP16/BF16及4097³ FP16均完成真实源程序、verified package和fresh no-card。
+  4096³ FP16本轮基线编译事务7.768秒，最终7.735秒；两个包的已记录target module digest相同。
+  因此当前赢家仍为DDR读取256 MiB、写入32 MiB、DTE发送768 MiB、SPM高水位2.75 MiB，未声明新驻留进一步加速此case。
+- 最终4096³ FP16的239个单项机会中31个低收益、40个收益不可估过滤；包含联合的203个typed选择入队，
+  仅3个在全局42次预算内实际求值，1个accepted、2个actual capacity rejection。未访问不能算失败，也不能算已验证。
+  统一分析43次累计0.296秒，收益提案39次累计0.007秒；窗口字节只用于排序，不作容量准入。
+- 初版仅按总净收益排序会让大驻留窗口压住既有peer分支，曾使此case回退到1 GiB读取；已修正为保留一份纯peer联合替代、
+  其它选择按收益/所选窗口字节排序，联合不以单项击败全局winner为前置，完全相同的选择不重复入队。
+  这改变有限预算内的访问顺序，不保证新驻留一定可行或胜出；未达到64 MiB“一次读完”目标。
+
+机制日志为`build/access-reuse-final-mechanism-tests.log`、`build/access-reuse-numeric-final.log`，
+正式GEMM对照为`build/access-reuse-baseline-gemm.log`及`build/access-reuse-final-gemm.log`；
+源程序回归在`build/access-reuse-product-tests.log`：LLaMA2 FP16/BF16也已完成默认8/42的完整source→search→package→fresh no-card，
+五项实际执行均通过；两项LM的总runner时间分别929.91/912.67秒，包含本轮导出、编译、reference准备和no-card，不能与此前12次trial的编译时间直接比较。
+LM本轮没有重新执行全输出TargetModel，原已签显式余弦/相对L2资格保留；此次复用机制的完整数值由上述18项SystemC及2项真实PyTorch peer资格验证。
+21项ExecutableCompilationPolicyTest全部通过；CLI/源码组织4项lit通过；canonical完整增量构建及后续Ninja no-op通过。
+对应日志为`build/access-reuse-policy-regressions.log`、`build/access-reuse-cli-tests.log`、
+`build/access-reuse-canonical-build.log`和`build/access-reuse-canonical-noop.log`。
+上述结果不代签真实板端性能或设备资格。

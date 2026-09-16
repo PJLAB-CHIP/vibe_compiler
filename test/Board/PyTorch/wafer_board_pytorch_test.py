@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
         "--qualify-communication",
         choices=(
             "ring-allgather", "direct-alltoall", "direct-reduce-scatter",
-            "all-reduce", "shared-input", "pipelined-loads",
+            "all-reduce", "access-reuse-peer", "pipelined-loads",
         ),
         help="explicit implementation qualification using wafer-compile-test",
     )
@@ -1142,7 +1142,7 @@ def prepare_case_step(
         if args.qualify_communication is not None:
             if args.optimization_policy != "none":
                 raise RuntimeError("explicit communication qualification cannot run search")
-            selected = args.qualify_communication if args.qualify_communication in ("shared-input", "pipelined-loads") else "peer"
+            selected = args.qualify_communication if args.qualify_communication in ("access-reuse-peer", "pipelined-loads") else "peer"
             compile_command.append(f"--test-communication-candidate={selected}")
         if args.compile_timing:
             compile_command.append("--compile-timing")
@@ -1251,9 +1251,9 @@ def prepare_case_step(
         if case.all_reduce_extent is None or dump_compiler_ir is None:
             raise RuntimeError("AllReduce qualification requires its source and current IR")
         verify_all_reduce(package, dump_compiler_ir, case.all_reduce_extent)
-    if args.qualify_communication == "shared-input":
+    if args.qualify_communication == "access-reuse-peer":
         if case.gemm_dimensions is None or dump_compiler_ir is None:
-            raise RuntimeError("shared-input qualification requires GEMM source and current IR")
+            raise RuntimeError("access-reuse-peer qualification requires GEMM source and current IR")
         verify_shared_gemm_input(dump_compiler_ir, case.gemm_dimensions, case.dtype)
     if args.qualify_communication == "pipelined-loads":
         if dump_compiler_ir is None:

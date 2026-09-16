@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify loop input sharing through PyTorch, the compiler, and SystemC."""
+"""Qualify loop peer access reuse through PyTorch, the compiler, and SystemC."""
 from __future__ import annotations
 
 import argparse
@@ -34,7 +34,7 @@ def main() -> None:
     command = [
         str(args.wafer_compile), "--input-program-dir", str(source),
         "--output-dir", str(args.work_dir / "package"), "--num-partitions=1",
-        "--optimization-policy=none", "--test-communication-candidate=shared-input",
+        "--optimization-policy=none", "--test-communication-candidate=access-reuse-peer",
         "--target-model", "--model-atol=0", "--model-rtol=0",
         "--target-model-max-fused-multiply-adds=100000000",
         "--target-model-max-scalar-evaluations=10000000",
@@ -55,7 +55,7 @@ def main() -> None:
     print(completed.stdout, end="")
     print(completed.stderr, end="", file=sys.stderr)
     if completed.returncode:
-        raise RuntimeError(f"loop input-sharing qualification failed: {completed.returncode}")
+        raise RuntimeError(f"loop peer access-reuse qualification failed: {completed.returncode}")
     if "target model outputs matched; tiles=16" not in completed.stdout:
         raise RuntimeError("functional model did not compare every output")
     # Supplement the typed compiler checks and full numeric result with a

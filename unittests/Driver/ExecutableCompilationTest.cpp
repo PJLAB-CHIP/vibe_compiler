@@ -754,10 +754,12 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
-     SearchActuallyCompilesReadOnlyInputSharingThroughLayoutConsumers) {
+     SearchAccountsForFilteredAndEvaluatedReuse) {
   using namespace wafer::compiler::detail;
-  for (int64_t extent : {1024, 1025, 1031}) {
+  for (int64_t extent : {1024, 1025, 1031, 4096}) {
     SCOPED_TRACE(extent);
+    int64_t k = extent == 4096 ? 4096 : 256;
+    int64_t n = extent == 4096 ? 4096 : 512;
     auto parsed = wafer::compiler::testing::parseProgram();
     ASSERT_TRUE(parsed.module);
     std::string text = llvm::formatv(R"mlir(
@@ -765,18 +767,18 @@ module {{
   wafer.target.topology @default {{card_grid = array<i64: 1, 1>,
       card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh {{axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%lhs: tensor<1x{0}x256xf16>, %rhs: tensor<1x256x512xf16>)
-      -> tensor<1x{0}x512xf16> {{
+  func.func @main(%lhs: tensor<1x{0}x{1}xf16>, %rhs: tensor<1x{1}x{2}xf16>)
+      -> tensor<1x{0}x{2}xf16> {{
     %zero = arith.constant 0.0 : f16
-    %empty = tensor.empty() : tensor<1x{0}x512xf16>
-    %init = linalg.fill ins(%zero : f16) outs(%empty : tensor<1x{0}x512xf16>) -> tensor<1x{0}x512xf16>
-    %result = linalg.batch_matmul ins(%lhs, %rhs : tensor<1x{0}x256xf16>, tensor<1x256x512xf16>)
-        outs(%init : tensor<1x{0}x512xf16>) -> tensor<1x{0}x512xf16>
-    return %result : tensor<1x{0}x512xf16>
+    %empty = tensor.empty() : tensor<1x{0}x{2}xf16>
+    %init = linalg.fill ins(%zero : f16) outs(%empty : tensor<1x{0}x{2}xf16>) -> tensor<1x{0}x{2}xf16>
+    %result = linalg.batch_matmul ins(%lhs, %rhs : tensor<1x{0}x{1}xf16>, tensor<1x{1}x{2}xf16>)
+        outs(%init : tensor<1x{0}x{2}xf16>) -> tensor<1x{0}x{2}xf16>
+    return %result : tensor<1x{0}x{2}xf16>
   }
 }
 )mlir",
-                                     extent)
+                                     extent, k, n)
                            .str();
     parsed.module =
         mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
@@ -785,10 +787,10 @@ module {{
     program.numPartitions = 1;
     program.programUserInputCount = 2;
     program.distributedInputs = {
-        wafer::compiler::testing::boundary(0, {1, extent, 256}),
-        wafer::compiler::testing::boundary(1, {1, 256, 512})};
+        wafer::compiler::testing::boundary(0, {1, extent, k}),
+        wafer::compiler::testing::boundary(1, {1, k, n})};
     program.distributedOutputs = {
-        wafer::compiler::testing::boundary(0, {1, extent, 512})};
+        wafer::compiler::testing::boundary(0, {1, extent, n})};
     wafer::compiler::ProgramDataHandoff data;
     std::string diagnosticText;
     llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -800,12 +802,16 @@ module {{
         *parsed.module, program, wafer::compiler::testing::executionConfig(),
         diagnostics, data, options, &statistics);
     ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
-    EXPECT_GT(statistics.inputSharingCandidates, 0u);
-    EXPECT_GE(statistics.inputSharingQueries, statistics.inputSharingEligible);
-    EXPECT_EQ(statistics.inputSharingEligible, statistics.inputSharingQueued);
-    EXPECT_GE(statistics.inputSharingQueued, statistics.inputSharingCandidates);
-    EXPECT_GT(statistics.inputSharingAccepted, 0u);
-    EXPECT_GT(statistics.acceptedCandidates, statistics.inputSharingAccepted);
+    if (extent == 4096) {
+      EXPECT_GT(statistics.accessReuseCandidates, 0u);
+      EXPECT_GT(statistics.accessReuseAccepted, 0u);
+      EXPECT_GT(statistics.accessReuseCapacityRejected, 0u);
+    }
+    EXPECT_GT(statistics.accessReuseQueries, 0u);
+    EXPECT_GT(statistics.accessReuseEligible, 0u);
+    EXPECT_GT(statistics.accessReuseLowBenefit, 0u);
+    EXPECT_GE(statistics.accessReuseQueued, statistics.accessReuseCandidates);
+    EXPECT_GT(statistics.acceptedCandidates, statistics.accessReuseAccepted);
     EXPECT_EQ(statistics.traversal.candidateActualizations, 42u);
     ASSERT_TRUE(result.executable);
     EXPECT_EQ(result.executable->tiles.size(), 16u);

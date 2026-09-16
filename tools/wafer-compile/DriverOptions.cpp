@@ -33,7 +33,7 @@ void printHelp() {
       << "test-only internal entry also accepts: "
          "[--test-communication-candidate "
          "<peer|shared-ddr|recursive-doubling|dimension-ordered|ring-"
-         "reduction|shared-input|pipelined-loads>] "
+         "reduction|access-reuse-peer|pipelined-loads>] "
          "[--target-model "
          "--model-input <index>=<npy> "
          "--model-expected <index>=<npy> "
