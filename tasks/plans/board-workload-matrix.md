@@ -10,6 +10,34 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 ## 算子回归与重点模型板测（2026-09-17）
 
+### 当前授权顺序与性能保护
+
+用户要求严格依次完成下列1—5项，完成当前项后再进入下一项，不跳项或以中间结果结束。
+它们继续归入同一个`board-testing`，不是五个独立队列项。
+
+| 顺序 | 输入与工作边界 | 完成条件及直接下游 |
+| --- | --- | --- |
+| 1 | 当前compiler、原始HF完整单层LM，S16 FP16/BF16；重新生成source、IDs和全部reference | 正式默认search 8/42、verified package、fresh no-card和串行实卡；各比较全部512000 logits并记录设备耗时，交给后续正确性与性能对照 |
+| 2 | 未融合完整图的实际失败IR与新生成输入；沿producer/consumer缩小首个错误边界 | 确认根因并在其通用owner修复；机制的整除/尾部、实际下游与完整图数值通过；融合block和大GEMM性能保护通过后进入下一项 |
+| 3 | decode两步actual KV、现有快包与current输出；actual指令、搬运和profile | 先复现匹配差异，再修通用切片/搬运或选择根因；两步全部输出及原KV前缀exact，匹配耗时恢复且保护case无可确认退化 |
+| 4 | ViT S1024/1025、完整LM S1024/1025及4K prefill；各自current失败边界 | 按BOOL布局搬运、actual容量/lowering、实际workspace逐项修复；最新版本从原source到完整实卡数值闭合，不从旧包或估算推定合法性 |
+| 5 | 已通过case的匹配性能与actual profile；现有空间切分、temporal tiling和数据复用选择 | 针对有证据的热点做通用优化；逐case对照原最好可复现成绩，每次共用修改通过受影响正确性与性能回归，记录收益及仍未达到的目标 |
+
+全程使用16号原验证链：current source/IR→唯一production driver→实际package/no-card→串行设备执行；
+输出是完整数值、设备计时、实际profile和版本证据，直接供当前项验收与下一项对照。
+不扩大模型范围，不增加ResNet大图，不修改HF reference或既定相似度合同，不按模型名/固定shape特判。
+数值错误先定位首个分歧；性能修改先确认实际热点。空间与temporal候选可优先考虑大parallel轴和复用，
+但必须由实际物化、verifier、唯一SPM规划及实卡结果决定合法性与收益。
+
+| 性能保护矩阵 | 固定输入与完整输出 | 验收 |
+| --- | --- | --- |
+| HF decoder block S16 FP16/BF16 | hidden4096、原32 heads/MLP11008、65536输出 | 保留FP16已匹配9.8215 ms及更早14.181 ms对照；BF16先匹配复测9.955 ms单样本，不能将单样本冒充稳定基线 |
+| 大GEMM 4096³ FP16/BF16、4097³ FP16 | 原始两份runtime矩阵、完整输出；尾块保持所有维度 | 改动前保留有效包与身份，共用planning/lowering修改后重新构包及上板；同环境重复比较，不能以block收益抵消GEMM退化 |
+| 通用根因机制 | rank≥3、主要轴1024/1025/1031；结构分支、typed failure和直接下游 | 修复前后重现同一根因，检查exact coverage/owner/demand/tail或completion；实现前在对应编号设计补齐本项具体矩阵 |
+
+发现设备timeout或异常立即停止设备批次，保留故障事实；不重试、reset或降低验收合同。
+模型快速后端转置/psum接入排在上述五项之后，不在当前顺序内提前施工。
+
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
 source→默认8/42 search→verified package→fresh no-card→串行设备执行及完整输出比较。
@@ -65,7 +93,7 @@ HF prefill S1024/1025、FP16 decode两步也完成fresh source→package/no-card
 19项attention定向单测、四组component、5项lit及6项HF source→TargetModel/no-card通过，canonical构建和no-op通过。
 
 这一资格仅覆盖本轮融合配置；未融合试修的错误根因仍待定位，完整53项同版本资格没有签发。
-性能下一步先排查decode：首步本轮25.955999 ms，高于此前同runtime的5.638 ms样本；第二步33.933998 ms也未达历史最好。
+Decode是上述第3项的已知性能问题：首步本轮25.955999 ms，高于此前同runtime的5.638 ms样本；第二步33.933998 ms也未达历史最好。
 两步actual动态指令94,711/189,499，优先检查cache切片/搬运，再做匹配复验。不能用block提速抵消decode退化。
 模型快速后端的transpose/psum扩展仍排在实卡问题之后，原ViT/长LM等失败继续收口。所有版本与测量见统一板测记录。
 
