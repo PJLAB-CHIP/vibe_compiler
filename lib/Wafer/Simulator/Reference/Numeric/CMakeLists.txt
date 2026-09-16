@@ -5,6 +5,7 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     SoftFloatOracle.cpp
 
     LINK_LIBS PUBLIC
+    LLVMSupport
     WaferFormalNumeric
     WaferTarget
     WaferNumeric::GMP

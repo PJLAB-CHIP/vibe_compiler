@@ -109,6 +109,18 @@ pinned `ArithToLLVM.cpp`将`arith.minsi/maxsi/minui/maxui`直接映射到这四�
 | rank3 F16/BF16 `[2,S,64]`、S=1024/1025/1031、16 Tiles、64行block及tail | 每个实际窗口的clamp地址、计数、Tile身份和调用顺序精确；所有行恰好一次 | final target LLVM→JIT→实际decoded RDMA参数；不代签DMA执行或数值readback |
 | vector min/max、其它intrinsic及既有native负例 | 精确unsupported诊断；sink未begin、无partial结果 | 同一host frontend |
 
+### 映射内存标量访问的主机消费者
+
+14号lowering输出SDK mapping call及原生LLVM整数load/store。Host frontend只接受从已注册mapping返回值经GEP得到的
+pointer，拒绝未知来源、指针逃逸及非i32/i64访问；DDR目前只读。Invocation-owned clone在JIT之前将这些实际load/store
+转为同一TargetCommandSink的typed内存访问，mapping返回模型地址，设备地址不会作为主机pointer被解引用。
+DDR读取同时检查原mapping范围和实际ABI allocation，SPM按实际Tile范围检查；写仅形成原子byte effect。
+整数clamp/cast仍由LLVM JIT执行，model不复写source算术。
+
+SystemC将mapping acquire及标量访问作为同步Kcore observer，存在冲突pending NCC时拒绝，不补join，也不新增NCC pending。
+覆盖i32/i64边界位型、rank3/1024/1025/1031/16 Tile的实际索引→行地址→全输出；另测mapping越界、未完成NCC写入和
+错误pointer来源。该合同只签发主机功能；设备延迟、发令成本及cache行为按硬件事实和本轮板测单独验收。
+
 ## 3. SystemC functional-event architecture
 
 ### 3.1 Process model
@@ -202,6 +214,12 @@ F32 native reduction的formal数学子集包括sum/max/min。Sum保持原逐步R
 源浮点Div的当前目标实现由11号设计规定为Recip再Mul。模型按actual Instr分别计算与舍入两条指令，
 不把它们合并为直接divide；TargetElementwiseOperation及Wafer target-call registry已移除Div，保留独立Recip。
 
+普通Pool的主机子集直接消费`TargetPoolCommand`的NHWC/NCx几何及X/Y kernel/stride，验证N/C和输出窗口范围后，
+通过原physical codec读取窗口并调用既有formal maximum/minimum/add。Max/min使用原format；sum当前只覆盖F32，
+用于原始低精度AvgPool的F32 opmath，归一化继续执行实际后续指令。Raw native Avg、indexed和非零native padding仍是typed
+unsupported；源显式padding与count_include_pad除数不在模型中猜测。所有检查和work budget拒绝先于结果写入；
+结果只作为pending write发布，input记录同一pending read供NCC完成与reuse验证。这是主机数学范围，不新增板端资格。
+
 ### 5.3 `WaferOneDNNBackend` qualification lane
 
 大规模支持项可以进入qualified oneDNN implementation，但必须：
@@ -283,3 +301,11 @@ pointer reinterpretation或浮点control flow。逐bit检查正负零、普通�
 Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是精确扩宽；写回复用共享`convertTargetScalar`的F32→BF16 nearest-even规则，
 不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约继续保持原F32 sum/max/min合同，NaN和其它原不支持域仍typed拒绝。
 覆盖rank3 1024/1025/1031、正负零、subnormal、普通值、最大有限数与舍入边界，对照formal完整codeword；全LM继续使用原比较合同。
+
+### Formal GEMM 的独立输出并行
+
+输入为已验证的FormalGemmOperation、同次invocation的不可变logical inputs及原work budget。较大的实际GEMM可按输出元素并行；
+每个元素仍依次调用原APFloat FMA evaluator，K顺序、psum加法位置和最终转换完全不变。各worker只写自有结果/error/flags slot，
+完成后按原row-major顺序汇总，选择首个错误；任一错误仍不发布部分结果或context flags。使用LLVM既有parallel执行设施，不增加MLIR依赖或数值policy。
+覆盖rank3 1024/1025/1031、F16/BF16/F32、transpose、psum及flags，逐codeword对照同一公开scalar evaluator组成的串行oracle；
+预算拒绝在执行前保持不变。记录work/wall/RSS，并以整层实际TargetModel保持原门限验证。该主机并行不修改任何target同步或设备指令。

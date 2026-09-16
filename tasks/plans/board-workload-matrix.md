@@ -42,7 +42,7 @@ GEMM局部累加、融合参数容量反馈及循环输入共享已接通。4096
 完整单层LM的S16 FP16/BF16已从原始Torch XLA source完成search、verified package及本轮fresh no-card；此次使用width8/trials12，
 两项各1 accepted、11 capacity、0 unsupported/indeterminate，7次有效容量refinement。完整输出均为`[1,16,32000]`，
 输入为原始i64 token IDs，模型仍含embedding、decoder、final norm与LM head；reference、payload与prepared source等价检查已执行。
-这些结果证明编译与无卡装载闭合，不证明整层数值或设备执行。整层SystemC数值核对仍在进行，沿用原`atol=0.004, rtol=0.002`。
+这些结果证明编译与无卡装载闭合，不证明整层数值或设备执行。整层SystemC已完成原`atol=0.004, rtol=0.002`核对但未通过，具体精度归因见后文；该门限没有修改。
 
 本轮沿直接失败边界补齐通用Sin/Cos映射、literal的数据归属、Bool source-byte/target-bit编码、byte-aligned packed mask加载、
 F32单步归约的逐元素lowering以及mapped F32 scalar→dynamic fill。容量反馈的核心根因是publication fence被误作内容写；
@@ -1152,3 +1152,23 @@ Canonical完整增量构建、后续Ninja no-op、直接回归及diff/source缓�
 新增attention机制用例复用原`ATTENTION_COMPARISON`，完整LM仍保持原`HF_LLAMA2_7B_COMPARISON`，二者没有修改。
 曾额外用PyTorch默认elementwise阈值作探索性检查：FP16 1024/1025的3/1个超差在直接XLA执行中同位置出现；它不适合作为此attention workload的新放行合同。
 这些诊断不替代最终完整LM oracle。修复后直接XLA的FP16整层已满足原合同；BF16在XLA执行中仍有较大差异，正在分层区分source与实际target计算。
+
+### 主机formal参考的输出并行
+
+完整LM参考计算的瓶颈是APFloat GEMM逐输出串行；计算量来自原整层约53亿次FMA，不是重新search。
+当前只并行互不依赖的输出，原每输出K顺序、psum位置、APFloat evaluator、flags与预算不变。72组真实规模F16/BF16/F32、四种transpose与psum组合
+按同一公开scalar evaluator组成的串行oracle逐bit一致；ReferenceNumeric/Simulator/TargetNumericBackend全套通过。
+匹配的长K GEMM实际67174400 FMA、612条target command及完整精确输出均相同；source→package→SystemC总wall由44.084秒降至18.449秒，
+RSS分别968132/970684 KiB。该计时只属于主机参考执行，不是设备性能。完整LM串行与并行复核的错误数、首个/最大误差及全部摘要统计一致，两个执行均已结束。
+
+### 当前数值边界与待确认项
+
+修复后的S16完整LM在同一原合同下：FP16为93/512000超差、max abs=0.005859375；BF16为82739/512000超差、max abs=0.05078125。
+独立CPU诊断只按实际Instr的K块执行F32 partial相加，并让RMSNorm按当前参考的F32顺序累加，即复现相同的超差数量、首个位置与最大误差，mean abs接近。
+FP16单独改变linear分块未超差，单独顺序RMS为77处；二者组合为93处。BF16对应53937、38441、82739处。
+这将剩余问题定位到数值归约合同与PyTorch eager实现的差别，不能据此把原门限改大或将整层标作已通过。
+[StableHLO reduce规范](https://openxla.org/stablehlo/spec#reduce)及pinned规范将归约tree留给实现；它不证明实际TX81采用当前软件参考的次序。
+硬件在这些长归约上的精确树序仍需证据，现有支持dtype/psum和有界数值案例不能代签该事实。后续需用户确认数值方向或恢复设备后核对实际硬件。
+
+当前产物边界：大GEMM及完整单层LM的search/package/fresh no-card已经闭合；原模型、dtype与原LM容差不变；整层数值资格仍未闭合。
+本轮没有实卡执行，没有为匹配PyTorch对单个模型改变归约顺序。用户当前约束下，不继续扩展数值重排算法或替换oracle。

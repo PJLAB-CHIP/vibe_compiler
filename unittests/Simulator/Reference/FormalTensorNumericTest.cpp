@@ -248,6 +248,105 @@ TEST(FormalTensorNumericTest,
   }
 }
 
+TEST(FormalTensorNumericTest, ParallelOutputsKeepSerialBitsAndFlags) {
+  for (uint32_t n : {1024u, 1025u, 1031u})
+    for (auto format :
+         {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32})
+      for (unsigned orientations : {0u, 1u, 2u, 3u})
+        for (bool withPartial : {false, true}) {
+          SCOPED_TRACE(n);
+          SCOPED_TRACE(static_cast<unsigned>(format));
+          SCOPED_TRACE(orientations);
+          bool lhsTransposed = orientations & 1;
+          bool rhsTransposed = orientations & 2;
+          SCOPED_TRACE(withPartial);
+          constexpr uint32_t batches = 2, m = 2, k = 17;
+          auto lhs =
+              makeTensor(format, PhysicalTensorLayout::NCx,
+                         lhsTransposed ? std::vector<uint64_t>{batches, k, m}
+                                    : std::vector<uint64_t>{batches, m, k});
+          auto rhs =
+              makeTensor(format, PhysicalTensorLayout::NCx,
+                         rhsTransposed ? std::vector<uint64_t>{batches, n, k}
+                                    : std::vector<uint64_t>{batches, k, n});
+          auto destination =
+              makeTensor(format, PhysicalTensorLayout::NCx, {batches, m, n});
+          std::optional<PhysicalTensorDescriptor> partial;
+          if (withPartial)
+            partial = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
+                                 {batches, m, n});
+          auto lhsOrientation = lhsTransposed ? TargetGemmOrientation::Transpose : TargetGemmOrientation::Normal;
+          auto rhsOrientation = rhsTransposed ? TargetGemmOrientation::Transpose : TargetGemmOrientation::Normal;
+          auto operation = llvm::cantFail(createFormalGemmOperation(
+              lhs, rhs, destination, m, k, n, batches,
+              llvm::cantFail(getCanonicalFormalGemmGeometry(3)), lhsOrientation,
+              rhsOrientation, partial));
+          uint64_t one = format == LogicalFormat::F16    ? 0x3c00
+                         : format == LogicalFormat::BF16 ? 0x3f80
+                                                         : 0x3f800000;
+          uint64_t sign = format == LogicalFormat::F32 ? 0x80000000 : 0x8000;
+          std::vector<std::vector<RawLogicalValue>> inputs(2);
+          for (uint64_t i = 0; i < batches * m * k; ++i)
+            inputs[0].push_back(
+                {format, (one + i % 13) | (i % 7 == 0 ? sign : 0)});
+          for (uint64_t i = 0; i < batches * k * n; ++i)
+            inputs[1].push_back(
+                {format, (one + i % 29) | (i % 11 == 0 ? sign : 0)});
+          // Only the final batch/column signals invalid, so flag collection
+          // must include late independent outputs as well as the first shard.
+          inputs[1].back().bits = format == LogicalFormat::F16    ? 0x7d01
+                                  : format == LogicalFormat::BF16 ? 0x7f81
+                                                                  : 0x7f800001;
+          if (withPartial)
+            inputs.push_back(std::vector<RawLogicalValue>(
+                batches * m * n, {LogicalFormat::F32, 0xbf000001}));
+          FormalTensorNumericResult expected;
+          FormalNumericExecutionContext serial;
+          std::optional<FormalElementwiseOperation> add;
+          if (partial)
+            add = llvm::cantFail(createFormalElementwiseOperation(
+                TargetElementwiseOperation::Add, {*partial, *partial},
+                *partial));
+          for (uint64_t b = 0; b < batches; ++b)
+            for (uint64_t row = 0; row < m; ++row)
+              for (uint64_t col = 0; col < n; ++col) {
+                RawLogicalValue accumulator{LogicalFormat::F32, 0};
+                for (uint64_t inner = 0; inner < k; ++inner) {
+                  auto left =
+                      inputs[0][b * m * k + (lhsTransposed ? inner * m + row
+                                                        : row * k + inner)];
+                  auto right =
+                      inputs[1][b * k * n + (rhsTransposed ? col * k + inner
+                                                        : inner * n + col)];
+                  auto step = llvm::cantFail(evaluateFormalGemmFusedMultiplyAdd(
+                      operation, left, right, accumulator));
+                  accumulator = step.value;
+                  serial.mergeExceptionFlags(step.flags);
+                }
+                if (partial) {
+                  auto sum = llvm::cantFail(evaluateFormalElementwiseLLVM(
+                      *add,
+                      {accumulator, inputs[2][b * m * n + row * n + col]}));
+                  accumulator = sum.value;
+                  serial.mergeExceptionFlags(sum.flags);
+                }
+                auto final = llvm::cantFail(
+                    evaluateFormalGemmFinalize(operation, accumulator));
+                expected.values.push_back(final.value);
+                serial.mergeExceptionFlags(final.flags);
+              }
+          expected.flags = serial.getAggregateFlags();
+          FormalNumericExecutionContext context;
+          auto actual =
+              execute(context, operation, inputs,
+                      FormalNumericWorkBudget::create(
+                          uint64_t(batches) * m * n * (k + 1 + withPartial),
+                          uint64_t(batches) * m * n * k));
+          EXPECT_TRUE(llvm::cantFail(
+              compareFormalTensorNumericResultsExact(actual, expected)));
+        }
+}
+
 TEST(FormalTensorNumericTest,
      GemmUsesBatchRowMajorIncreasingKAndOriginalDestinationFormat) {
   auto command =

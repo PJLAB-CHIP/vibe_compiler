@@ -9,6 +9,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Parallel.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -272,7 +273,7 @@ executeGemm(const FormalGemmOperation &gemm,
             llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs, uint64_t) {
   FormalTensorNumericResult result;
   const uint64_t outputCount = gemm.destination.getElementCount();
-  result.values.reserve(static_cast<size_t>(outputCount));
+  result.values.resize(static_cast<size_t>(outputCount));
   llvm::ArrayRef<RawLogicalValue> lhs = inputs[0];
   llvm::ArrayRef<RawLogicalValue> rhs = inputs[1];
 
@@ -284,52 +285,78 @@ executeGemm(const FormalGemmOperation &gemm,
       return operation.takeError();
     accumulation = std::move(*operation);
   }
-  for (uint64_t batch = 0; batch < gemm.batchCount; ++batch) {
+  struct ElementResult {
+    FormalNumericExceptionFlags flags;
+    std::optional<llvm::Error> error;
+  };
+  std::vector<ElementResult> elements(static_cast<size_t>(outputCount));
+  auto evaluate = [&](size_t index) -> llvm::Error {
+    const uint64_t n = index % gemm.n;
+    const uint64_t m = (index / gemm.n) % gemm.m;
+    const uint64_t batch = index / (uint64_t(gemm.m) * gemm.n);
     const uint64_t lhsBatchBase = batch * gemm.m * gemm.k;
     const uint64_t rhsBatchBase = batch * gemm.k * gemm.n;
-    for (uint64_t m = 0; m < gemm.m; ++m) {
-      for (uint64_t n = 0; n < gemm.n; ++n) {
-        RawLogicalValue accumulator{LogicalFormat::F32, UINT64_C(0)};
-        for (uint64_t k = 0; k < gemm.k; ++k) {
-          const uint64_t lhsIndex =
-              lhsBatchBase +
-              (gemm.lhsOrientation == TargetGemmOrientation::Normal
-                   ? m * gemm.k + k
-                   : k * gemm.m + m);
-          const uint64_t rhsIndex =
-              rhsBatchBase +
-              (gemm.rhsOrientation == TargetGemmOrientation::Normal
-                   ? k * gemm.n + n
-                   : n * gemm.k + k);
-          llvm::Expected<FormalNumericResult> step =
-              evaluateFormalGemmFusedMultiplyAdd(
-                  gemm, lhs[static_cast<size_t>(lhsIndex)],
-                  rhs[static_cast<size_t>(rhsIndex)], accumulator);
-          if (!step)
-            return step.takeError();
-          accumulator = step->value;
-          mergeFlags(result.flags, step->flags);
-        }
-        if (gemm.psum) {
-          const auto partial =
-              inputs[2][batch * gemm.m * gemm.n + m * gemm.n + n];
-          auto sum = evaluateFormalElementwiseLLVM(
-              *accumulation,
-              llvm::ArrayRef<RawLogicalValue>{accumulator, partial});
-          if (!sum)
-            return sum.takeError();
-          accumulator = sum->value;
-          mergeFlags(result.flags, sum->flags);
-        }
-        llvm::Expected<FormalNumericResult> destination =
-            evaluateFormalGemmFinalize(gemm, accumulator);
-        if (!destination)
-          return destination.takeError();
-        result.values.push_back(destination->value);
-        mergeFlags(result.flags, destination->flags);
-      }
+    FormalNumericExceptionFlags flags;
+    RawLogicalValue accumulator{LogicalFormat::F32, UINT64_C(0)};
+    for (uint64_t k = 0; k < gemm.k; ++k) {
+      const uint64_t lhsIndex =
+          lhsBatchBase + (gemm.lhsOrientation == TargetGemmOrientation::Normal
+                              ? m * gemm.k + k
+                              : k * gemm.m + m);
+      const uint64_t rhsIndex =
+          rhsBatchBase + (gemm.rhsOrientation == TargetGemmOrientation::Normal
+                              ? k * gemm.n + n
+                              : n * gemm.k + k);
+      llvm::Expected<FormalNumericResult> step =
+          evaluateFormalGemmFusedMultiplyAdd(
+              gemm, lhs[static_cast<size_t>(lhsIndex)],
+              rhs[static_cast<size_t>(rhsIndex)], accumulator);
+      if (!step)
+        return step.takeError();
+      accumulator = step->value;
+      mergeFlags(flags, step->flags);
+    }
+    if (gemm.psum) {
+      const auto partial = inputs[2][batch * gemm.m * gemm.n + m * gemm.n + n];
+      auto sum = evaluateFormalElementwiseLLVM(
+          *accumulation, llvm::ArrayRef<RawLogicalValue>{accumulator, partial});
+      if (!sum)
+        return sum.takeError();
+      accumulator = sum->value;
+      mergeFlags(flags, sum->flags);
+    }
+    llvm::Expected<FormalNumericResult> destination =
+        evaluateFormalGemmFinalize(gemm, accumulator);
+    if (!destination)
+      return destination.takeError();
+    result.values[index] = destination->value;
+    mergeFlags(flags, destination->flags);
+    elements[index].flags = flags;
+    return llvm::Error::success();
+  };
+  auto work = [&](size_t index) {
+    elements[index].error.emplace(evaluate(index));
+  };
+  // This threshold only amortizes host scheduling. The validated work budget
+  // and numeric algorithm are identical on the serial and parallel paths.
+  if (outputCount >= 128 && outputCount * gemm.k >= 65536)
+    llvm::parallelFor(0, static_cast<size_t>(outputCount), work);
+  else
+    for (size_t index = 0; index < outputCount; ++index)
+      work(index);
+  llvm::Error firstError = llvm::Error::success();
+  for (auto &element : elements) {
+    if (*element.error) {
+      if (!firstError)
+        firstError = std::move(*element.error);
+      else
+        llvm::consumeError(std::move(*element.error));
+    } else {
+      mergeFlags(result.flags, element.flags);
     }
   }
+  if (firstError)
+    return std::move(firstError);
   return result;
 }
 
