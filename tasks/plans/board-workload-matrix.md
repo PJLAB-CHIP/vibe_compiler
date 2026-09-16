@@ -8,7 +8,32 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
 
-## 本轮优先项：GEMM局部累加，再完成单层LM
+## 主机验证汇总（2026-09-16）
+
+用户确认本轮先收尾记录并推送，不继续扩展输入布局转换复用或分块优化。下表汇总已经实际执行的资格；
+下文各阶段检查点保留其当时的版本、预算与结果，不能将较早失败或中间性能数字当作当前结论，也不能把历史通过当成本轮全部重跑。
+
+| Case | 已验证范围 | 本次收尾边界 |
+| --- | --- | --- |
+| LLaMA2单层，S16 FP16/BF16 | 原始Torch XLA source、search、verified package、TargetModel完整logits比较、fresh no-card；完整embedding、decoder、final norm和LM head保留 | 完整数值按用户已确认的cosine≥0.9999且relative L2≤0.01联合合同通过；后续默认8/42构包/no-card也通过。本次单项重跑没有重新签整层数值 |
+| ResNet18，原始224输入FP16 | 此前整网默认8/42 search、verified package及16 Tile fresh no-card通过 | 本次没有重新跑ResNet；编译/no-card资格不代表完整TargetModel数值或实板通过，前述XLA与eager数值差异仍单独记录 |
+| 大GEMM，4096³ FP16/BF16及4097³ FP16 | 已登记矩阵通过默认8/42 search、verified package及fresh no-card | 本次仅重新执行4096³ FP16的search与构包；沿用原source-program，未重做PyTorch reference、TargetModel或no-card，不将这次重跑记为新的完整数值资格 |
+
+本次4096³ FP16重跑前canonical增量构建为Ninja no-op；编译事务11.429秒，42 actual、11 accepted、31 exact rejection，
+0 unsupported/indeterminate。日志为`build/access-reuse-current-rerun-gemm.log`，本轮包和IR在`build/test/access-reuse-current-rerun-gemm/`。
+
+| 实际候选 | DDR读取 | 动态指令总数 | SPM高水位 | 未校准模型估时 |
+| --- | --- | --- | --- | --- |
+| 最终赢家 | 288 MiB | 11,329 | 2.75 MiB | 2.694142968 ms |
+| 读取最少的驻留候选 | 64 MiB | 160,273 | 2.5 MiB | 10.263761014 ms |
+
+最新赢家IR确认FP32 psum在K循环内保持NCX，初始化转换在K循环外；A/B分块的Tensor→NCX转换仍在循环内。
+转换随当前K块数据变化本身合理，不能仅凭位于循环内判为缺陷；A块不随外层N变化，其跨N转换结果存在可研究的复用机会，
+但尚未证明保留该结果的容量/切片合同及实际收益。当前证据不能将全部评分差距归因于输入转换，也不能证明N/K必须缩至128。
+4097尾块的最低驻留读取仍未达到两个输入各读一次；输入流量目标、实际评分及板端性能分别登记，详见文末访问复用检查点。
+三类case均没有新增真实设备通过结论；总任务状态继续由`tasks/progress.md`维护。
+
+## 阶段记录：GEMM局部累加，再完成单层LM
 
 当前授权顺序为闭合13号结构化循环窗口共享/DDR-DTE构造，再完成4096³ FP16/BF16与4097³ FP16正式search/package/no-card，然后带embedding及LM head的原始单层LLaMA2。
 YOLOv5s退出当前验收范围，下文旧检查点中的YOLO仅作历史背景；不再为它添加case或依赖。
