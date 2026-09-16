@@ -1142,3 +1142,13 @@ GEMM正式helper验证更一般的独立情况：默认8/42为34个accepted、8�
 One-Shot共享分析状态、PBQP全局工作预算、通信组内传播及依赖评分反馈的候选生成保持原顺序。
 最终仅保留独立cost组与两路对象编译；本轮不声明ResNet有显著加速或实卡性能提升。
 Canonical完整增量构建、后续Ninja no-op、直接回归及diff/source缓存检查通过，原有不相关改动保留。
+
+### 精度边界核对（整层数值尚未闭合）
+
+原FP16完整模型的SystemC结果有341/512000个logits超过既有0.004/0.002合同，max abs=0.0078125；旧BF16对应执行已在确认需要修复后停止。
+定位到attention matcher跨越normalized probability的窄化，当前已保留这条原始SSA链；同时修复compact peer接收的view types及blocked metadata reshape的target消费者。
+独立CPU重现online舍入位置变化能造成整层超差。另发现原XLA SiLU抓图拆出了中间低精度舍入，现接入PyTorch官方opmath decomposition。
+
+新增attention机制用例复用原`ATTENTION_COMPARISON`，完整LM仍保持原`HF_LLAMA2_7B_COMPARISON`，二者没有修改。
+曾额外用PyTorch默认elementwise阈值作探索性检查：FP16 1024/1025的3/1个超差在直接XLA执行中同位置出现；它不适合作为此attention workload的新放行合同。
+这些诊断不替代最终完整LM oracle。修复后直接XLA的FP16整层已满足原合同；BF16在XLA执行中仍有较大差异，正在分层区分source与实际target计算。

@@ -1430,8 +1430,14 @@ matchAttentionRoot(mlir::func::FuncOp function,
   }
 
   for (unsigned probabilityInput : {0u, 1u}) {
-    mlir::Value logicalProbability = stripTransparentValue(
-        valueContraction.getDpsInputs()[probabilityInput]);
+    mlir::Value logicalProbability =
+        valueContraction.getDpsInputs()[probabilityInput];
+    // Rounding normalized probabilities before PV is not interchangeable
+    // with rounding the online algorithm's unnormalized exponentials.
+    // Only layout changes are transparent on this side of softmax.
+    while (mlir::Value source =
+               getTransparentLayoutSource(logicalProbability.getDefiningOp()))
+      logicalProbability = source;
     std::optional<Softmax> softmax = matchSoftmax(logicalProbability);
     if (!softmax) {
       LLVM_DEBUG(llvm::dbgs()
@@ -1476,6 +1482,10 @@ matchAttentionRoot(mlir::func::FuncOp function,
     match.outputType = logicalMaps->outputType;
     match.indexingMaps = std::move(logicalMaps->maps);
     auto storageType = match.outputType.getElementType();
+    if (probabilityType.getElementType() != storageType) {
+      LLVM_DEBUG(llvm::dbgs() << "reject probability precision boundary\n");
+      continue;
+    }
     if (mlir::cast<mlir::ShapedType>(match.rawScores.getType())
                 .getElementType() != storageType ||
         mlir::cast<mlir::ShapedType>(match.query.getType()).getElementType() !=

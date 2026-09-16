@@ -301,6 +301,12 @@ Decomposition仅将它嵌入实际score tile的Linalg scalar body，移除原来
 覆盖要求：FP16/BF16/F32、mask有无及不同type、scale前后cast、额外score use、region捕获/effect/type不匹配负例，
 1024/1025/1031 graph→spatial→tiled online→Linalg检查相同scalar依赖和舍入；完整block以fresh source验证，最终板端数值另行验收。
 
+softmax→PV之间的浮点转换不是transparent view。当前online form将normalization移至PV之后，不能表达在完整normalized probability上先舍入再做PV的边界。
+因此matcher仅跨越该路径上的layout/view变换；遇到转换，或normalization与PV storage dtype不同，保留原max/exp/sum/divide→convert→PV SSA图。
+这是融合legality约束，不改变输入模型、容差或dtype，也不按模型名选择路径；score region内原有转换仍按其原位置克隆。
+覆盖F16/BF16及1024/1025/1031，检查转换与normalized probability的依赖不变、没有丢失窄化的attention op；实际普通Linalg路径进入Instr、SPM及全输出数值。
+当前不增加无法表示舍入边界的precision字符串。未来若要覆盖此类融合，必须以能保留该边界的IR和算法单独证明。
+
 current semantic subset是forward scaled dot-product attention和optional additive/broadcast mask。dropout或其它random effect、backward、
 sparse/block-sparse attention、runtime paged-cache lookup及未能由下面maps完整证明的variant不进入该op；它们保持原IR或由未来独立
 semantic extension处理，不能通过增加字符串mode绕过verifier。

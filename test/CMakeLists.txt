@@ -186,6 +186,12 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   endfunction()
 
   if(WAFER_ENABLE_SYSTEMC_MODEL)
+    foreach(_wafer_probability_extent IN ITEMS 1024 1025 1031)
+      wafer_add_pytorch_source_no_card_test(
+        attention-probability-rounding-${_wafer_probability_extent} float16 fp16 search target-model)
+      wafer_add_pytorch_source_no_card_test(
+        attention-probability-rounding-${_wafer_probability_extent} bfloat16 bf16 search target-model)
+    endforeach()
     foreach(_wafer_outer_extent IN ITEMS 1024 1025 1031)
       wafer_add_pytorch_source_no_card_test(
         outer-product-${_wafer_outer_extent} float32 f32 search target-model)

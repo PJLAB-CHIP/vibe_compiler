@@ -2275,6 +2275,25 @@ preflight(mlir::ModuleOp module, StructuredMaterializationRelations &relations,
         }
       }
     }
+    // Receiving a compact window changes the source strides/offset of every
+    // remaining metadata view. Prove that chain before creating any peer IR.
+    auto canRetargetPayload = [&](mlir::Value payload) {
+      return payload.getType() == destinationType ||
+             canRetargetViewUsers(payload, destinationType);
+    };
+    if (destinationSubviews.empty()) {
+      if (llvm::any_of(destinationBridges, [&](auto bridge) {
+            return !canRetargetPayload(bridge.getMemref());
+          })) {
+        detail = "compact peer input has unsupported metadata view users";
+        return mlir::failure();
+      }
+    } else if (llvm::any_of(destinationSubviews, [&](auto view) {
+                 return !canRetargetPayload(view.getResult());
+               })) {
+      detail = "compact peer window has unsupported metadata view users";
+      return mlir::failure();
+    }
     std::optional<WaferPhysicalTensorInfo> destinationPhysical =
         computeWaferPhysicalTensorInfo(destinationType);
     if (!destinationPhysical || destinationPhysical->physicalBytes <= 0) {
@@ -2969,12 +2988,12 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
               ReceivedPayload{peer, allocation, argument.getLoc()});
         }
         for (mlir::memref::SubViewOp subview : peer->destinationSubviews) {
-          rewriter.replaceAllUsesWith(subview.getResult(), allocation);
+          retargetInputViewUsers(subview.getResult(), allocation, rewriter);
           rewriter.eraseOp(subview);
         }
         for (mlir::bufferization::ToMemrefOp bridge : input.bridges) {
           if (peer->destinationSubviews.empty())
-            rewriter.replaceAllUsesWith(bridge.getMemref(), allocation);
+            retargetInputViewUsers(bridge.getMemref(), allocation, rewriter);
           if (!bridge.getMemref().use_empty())
             return failApply("peer destination carrier still has a live use");
           rewriter.eraseOp(bridge);

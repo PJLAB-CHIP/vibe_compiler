@@ -146,6 +146,80 @@ TEST_F(AttentionNormalizationTest,
 }
 
 TEST_F(AttentionNormalizationTest,
+       ProbabilityNarrowingRemainsAfterNormalization) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool bfloat : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(bfloat);
+      std::string path =
+          std::string(WAFER_TEST_SOURCE_DIR) +
+          "/test/Transforms/Linalg/Inputs/attention-decode-representative.mlir";
+      auto file = llvm::MemoryBuffer::getFile(path);
+      ASSERT_TRUE(static_cast<bool>(file));
+      auto text = (*file)->getBuffer().str();
+      replaceAll(text, "f16", "f32");
+      replaceAll(text, "-6.550400e+04", "0xFF800000");
+      replaceAll(text, "1031", std::to_string(extent));
+      replaceAll(text, "1030", std::to_string(extent - 1));
+      auto module =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(module);
+      mlir::linalg::GenericOp probability;
+      module->walk([&](mlir::linalg::GenericOp op) {
+        if (llvm::any_of(op.getBody()->without_terminator(),
+                         [](mlir::Operation &nested) {
+                           return mlir::isa<mlir::arith::DivFOp>(nested);
+                         }))
+          probability = op;
+      });
+      ASSERT_TRUE(probability);
+      auto *consumer = *probability.getResult(0).getUsers().begin();
+      auto pv = mlir::cast<mlir::linalg::GenericOp>(consumer);
+      mlir::OpBuilder builder(pv);
+      auto original = mlir::cast<mlir::RankedTensorType>(
+          probability.getResult(0).getType());
+      mlir::Type narrow = bfloat ? mlir::Type(builder.getBF16Type())
+                                 : mlir::Type(builder.getF16Type());
+      auto identity = builder.getMultiDimIdentityMap(original.getRank());
+      auto convert = [&](mlir::Value input, mlir::Type element, bool truncate) {
+        auto type = mlir::RankedTensorType::get(original.getShape(), element);
+        auto empty = builder.create<mlir::tensor::EmptyOp>(
+            pv.getLoc(), type.getShape(), element);
+        return builder
+            .create<mlir::linalg::GenericOp>(
+                pv.getLoc(), mlir::TypeRange{type}, mlir::ValueRange{input},
+                mlir::ValueRange{empty},
+                llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+                llvm::SmallVector<mlir::utils::IteratorType>(
+                    original.getRank(), mlir::utils::IteratorType::parallel),
+                [&](mlir::OpBuilder &nested, mlir::Location loc,
+                    mlir::ValueRange args) {
+                  mlir::Value value;
+                  if (truncate)
+                    value = nested.create<mlir::arith::TruncFOp>(loc, element,
+                                                                 args[0]);
+                  else
+                    value = nested.create<mlir::arith::ExtFOp>(loc, element,
+                                                               args[0]);
+                  nested.create<mlir::linalg::YieldOp>(loc, value);
+                })
+            .getResult(0);
+      };
+      auto rounded = convert(probability.getResult(0), narrow, true);
+      auto restored = convert(rounded, builder.getF32Type(), false);
+      pv->setOperand(0, restored);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+      EXPECT_EQ(count<wafer::LinalgExtAttentionOp>(*module), 0u);
+      EXPECT_EQ(count<mlir::arith::TruncFOp>(*module), 1u);
+      EXPECT_EQ(count<mlir::math::ExpOp>(*module), 1u);
+      EXPECT_EQ(rounded.getDefiningOp()->getOperand(0),
+                probability.getResult(0));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
+TEST_F(AttentionNormalizationTest,
        MaskAccessCompositionPreservesOtherUsesAndStopsAtArithmetic) {
   for (bool aligned : {true, false}) {
     for (bool arithmetic : {false, true}) {

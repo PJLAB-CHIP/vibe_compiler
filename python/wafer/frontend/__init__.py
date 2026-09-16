@@ -222,6 +222,7 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
     )
     decompositions = get_decompositions((
         inference, *conditional_bn, torch.ops.aten.gelu.default,
+        torch.ops.aten.silu.default,
         torch.ops.aten.native_layer_norm.default,
     ))
 

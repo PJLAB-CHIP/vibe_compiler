@@ -394,3 +394,9 @@ frontend mandatory coverage包括：
 完成记录必须区分真实exporter gate、program verifier和下游SPMD handoff/TensorProgram normalization gate。FileCheck、手写MLIR或CPU oracle单独通过
 都不能证明card-local spatial/temporal/fusion/communication scheduling、`DeviceExecutable`、target modules、`ExecutablePackage`、runtime
 或board正确。
+
+### SiLU 的 source opmath
+
+直接Torch XLA抓图时，aten.silu复用pinned PyTorch官方decomposition及其opmath wrapper；F16/BF16输入在F32完成sigmoid和multiply，
+仅在完整算子结果上窄化一次。该规则按真实aten operator分派，不改原模型，不将模型运算移到host，不把sigmoid结果提前窄化。
+覆盖rank3 1024/1025/1031与F16/BF16，检查实际导出StableHLO的算术dtype及CPU/XLA结果；完整单层LM保持原数值合同。

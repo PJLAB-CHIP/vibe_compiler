@@ -526,3 +526,10 @@ actual store及send后的actual dealloc前wait，这两个位置分别是该scra
 worker obligation。这个cross-domain join由actual Instr completion placement产生，不由attention或movement algorithm层写死。
 Selected movement construction必须接入同一token-only边界，schedule owner再从selected lifetime/resource facts选择一般wait位置。
 任何旧immediate-await实现都不是current合同或回归期望。
+
+### Compact peer window 的metadata users
+
+输入为current peer source/destination window及其实际view users；接收allocation使用compact layout时，原subview的offset/stride不再属于新storage。
+物化前逐层用标准MemRef type inference证明剩余subview/collapse/expand可重建，物化后通过同一IRMapping克隆view并传播新type；
+不只替换source SSA而保留旧view type。不支持的metadata view在mutation前拒绝。该规则同时用于DDR和DTE，不改变payload逻辑覆盖。
+覆盖真实rank4 attention普通图、1024/1025/1031与F16/BF16，要求搜索候选和后续Instr/数值执行均通过，旧offset不得传播至compact receiver。

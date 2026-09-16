@@ -420,6 +420,49 @@ def check_direct_xla(output_root: pathlib.Path) -> None:
     print(f"direct_xla: configurations={configurations} executions=12 negatives=11 dynamo=false")
 
 
+def run_exported_graph(directory: pathlib.Path, inputs: tuple[torch.Tensor, ...]):
+    import torch_xla
+
+    record = json.loads((directory / "functions/forward.meta").read_text())
+    arguments = []
+    for location, signature in zip(record["input_locations"], record["input_signature"], strict=True):
+        if location["type_"] == "input_arg":
+            value = inputs[location["position"]]
+        else:
+            path = directory / ("data" if location["type_"] == "parameter" else "constants")
+            path /= location["name"] if location["type_"] == "parameter" else str(location["position"])
+            with path.open("rb") as stream:
+                array = np.load(stream, allow_pickle=False)
+            value = (torch.from_numpy(array.view(np.uint16)).view(torch.bfloat16)
+                     if signature["dtype"] == "bfloat16" else torch.from_numpy(array))
+        arguments.append(value)
+    outputs = torch_xla._XLAC._run_stablehlo(
+        (directory / "functions/forward.stablehlo.bc").read_bytes(), arguments)
+    return tuple(output.cpu() for output in outputs)
+
+def check_silu_precision(output_root: pathlib.Path) -> None:
+    class Silu(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return torch.nn.functional.silu(value)
+
+    for dtype in (torch.float16, torch.bfloat16):
+        for extent in (1024, 1025, 1031):
+            value = torch.linspace(-9, 9, 2 * extent * 16, dtype=torch.float32).reshape(2, extent, 16).to(dtype)
+            module = Silu().eval()
+            directory = output_root / f"silu-{dtype}-{extent}"
+            export_pytorch_program(module, (value,), directory)
+            actual = run_exported_graph(directory, (value,))[0]
+            torch.testing.assert_close(actual, module(value))
+            text = subprocess.check_output([
+                os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                str(directory / "functions/forward.stablehlo.bc"),
+            ], text=True)
+            for kind in ("logistic", "multiply"):
+                operations = [line for line in text.splitlines() if "stablehlo." + kind in line]
+                if not operations or any("xf32>" not in line for line in operations):
+                    raise RuntimeError("SiLU arithmetic lost F32 opmath")
+    print("silu_opmath: cases=6 final_narrowing=true")
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=pathlib.Path, required=True)
@@ -445,6 +488,7 @@ def main() -> None:
     check_convolution_precision(args.output_root)
     check_batch_norm_precision(args.output_root)
     check_composite_precision(args.output_root)
+    check_silu_precision(args.output_root)
     check_direct_xla(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")

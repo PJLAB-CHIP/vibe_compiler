@@ -2,7 +2,7 @@
 // RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/compact.mlir | FileCheck %s --check-prefix=COMPACT
 // RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/dynamic-offset.mlir | FileCheck %s --check-prefix=DYNAMIC
 // RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/mixed-offset.mlir 2>&1 | FileCheck %s --check-prefix=MIXED
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/aligned.mlir 2>&1 | FileCheck %s --check-prefix=ALIGNED
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/aligned.mlir | FileCheck %s --check-prefix=ALIGNED
 
 //--- compact.mlir
 
@@ -139,13 +139,14 @@ func.func @reject_mixed_static_dynamic_collapse(
 
 //--- aligned.mlir
 
-func.func @reject_aligned_collapse(
-    %input: memref<1x4x16xf32, #wafer.memory<ddr, cx>>)
-    -> memref<4x16xf32, #wafer.memory<ddr, cx>> {
+func.func @aligned_collapse(
+    %input: memref<1x1024x65xf32, #wafer.memory<ddr, cx>>)
+    -> memref<1024x65xf32, #wafer.memory<ddr, cx>> {
   %collapsed = memref.collapse_shape %input [[0, 1], [2]]
-      : memref<1x4x16xf32, #wafer.memory<ddr, cx>>
-     into memref<4x16xf32, #wafer.memory<ddr, cx>>
-  return %collapsed : memref<4x16xf32, #wafer.memory<ddr, cx>>
+      : memref<1x1024x65xf32, #wafer.memory<ddr, cx>>
+     into memref<1024x65xf32, #wafer.memory<ddr, cx>>
+  return %collapsed : memref<1024x65xf32, #wafer.memory<ddr, cx>>
 }
 
-// ALIGNED: unsupported_target_address: collapse_shape requires matching Wafer tensor-layout memory and element types
+// ALIGNED-LABEL: llvm.func @aligned_collapse
+// ALIGNED: llvm.return

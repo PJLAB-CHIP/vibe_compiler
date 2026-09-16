@@ -409,3 +409,7 @@ Target lowering保留这条def-use，将F16/BF16/F32位模式bitcast为同宽整
 位宽大于32或没有既有字段编码的类型typed拒绝。所有dtype/shape/descriptor检查仍在发射前完成；不更改dtype，不把运行期参数折成常量。
 直接消费者仍是同一个CRT Memset ABI及SystemC TargetMemsetCommand。覆盖rank3 1024/1025/1031、F32参数load→fill→store、
 constant与dynamic值、raw bits及完整LM的缩放系数；映射及跨worker完成继续由原owner负责。
+
+标准memref collapse/expand在blocked layout上也必须消费同一physical reshape证明：空间、元素类型和layout一致，且完整physical element mapping
+与footprint相等时，target只转发实际source地址；证明失败时typed拒绝。Tensor布局保留原offset delta处理，不用逻辑元素数相等替代blocked物理等价。
+覆盖NCx单位轴的1024/1025/1031、block尾宽、不同channel分解反例及实际attention consumer。

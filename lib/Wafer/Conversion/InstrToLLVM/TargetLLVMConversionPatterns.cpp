@@ -1,12 +1,13 @@
 //===- Target LLVM lowering implementation -------------------------------===//
 
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
+#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 #include "Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
 #include "Wafer/Target/TargetMemory.h"
-#include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -416,12 +417,22 @@ struct TargetCollapseShapeOpLowering
     MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
     MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
     if (sourceMemory.getSpace() != resultMemory.getSpace() ||
-        sourceMemory.getLayout() != MemLayout::Tensor ||
-        resultMemory.getLayout() != MemLayout::Tensor ||
+        sourceMemory.getLayout() != resultMemory.getLayout() ||
         sourceType.getElementType() != resultType.getElementType())
       return collapseOp.emitError()
              << "unsupported_target_address: collapse_shape requires "
-                "matching Wafer tensor-layout memory and element types";
+                "matching Wafer memory and element types";
+
+    if (sourceMemory.getLayout() != MemLayout::Tensor) {
+      if (mlir::failed(
+              analysis::TransferRealizability::proveStaticReshapeMetadataView(
+                  sourceType, resultType, /*destinationMayWrite=*/true)))
+        return collapseOp.emitError(
+            "unsupported_target_address: collapse_shape has no exact physical "
+            "metadata view");
+      rewriter.replaceOp(collapseOp, adaptor.getSrc());
+      return mlir::success();
+    }
 
     mlir::FailureOr<int64_t> sourceElements =
         getStaticElementCount(collapseOp, sourceType, "collapse source");
@@ -471,12 +482,21 @@ struct TargetExpandShapeOpLowering
     MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
     MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
     if (sourceMemory.getSpace() != resultMemory.getSpace() ||
-        sourceMemory.getLayout() != MemLayout::Tensor ||
-        resultMemory.getLayout() != MemLayout::Tensor ||
+        sourceMemory.getLayout() != resultMemory.getLayout() ||
         sourceType.getElementType() != resultType.getElementType())
       return expandOp.emitError()
              << "unsupported_target_address: expand_shape requires matching "
-                "Wafer tensor-layout memory and element types";
+                "Wafer memory and element types";
+
+    if (sourceMemory.getLayout() != MemLayout::Tensor) {
+      if (mlir::failed(
+              analysis::TransferRealizability::proveStaticReshapeMetadataView(
+                  sourceType, resultType, /*destinationMayWrite=*/true)))
+        return expandOp.emitError("unsupported_target_address: expand_shape "
+                                  "has no exact physical metadata view");
+      rewriter.replaceOp(expandOp, adaptor.getSrc());
+      return mlir::success();
+    }
 
     mlir::FailureOr<int64_t> sourceElements =
         getStaticElementCount(expandOp, sourceType, "expand source");

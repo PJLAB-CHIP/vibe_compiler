@@ -386,60 +386,15 @@ def _random_tensor(
     return torch.randint(-4, 5, shape, dtype=dtype, generator=generator)
 
 
-def _stablehlo_export_options(stablehlo_module: object) -> object:
-    options = stablehlo_module.StableHLOExportOptions()
-    options.export_weights = True
-    options.save_weights = True
-    options.inline_all_constant = True
-    options.include_human_readable_text = True
-    return options
-
-
 def _save_exported_program(
     program_dir: pathlib.Path,
     module: torch.nn.Module,
     inputs: tuple[torch.Tensor, ...],
 ) -> None:
-    torch_module, stablehlo_module = capture._import_runtime_modules()
+    from wafer.frontend import export_pytorch_program
+
     module.eval()
-    options = _stablehlo_export_options(stablehlo_module)
-    with torch_module.no_grad():
-        exported = torch_module.export.export(module, inputs)
-        program = capture.exported_program_to_stablehlo(
-            torch_module,
-            stablehlo_module,
-            exported,
-            options=options,
-        )
-    capture._save_program(program, program_dir, options)
-    # Some StableHLO serializer versions omit non-parameter ExportedProgram
-    # state (for example BF16 rotary and causal-mask buffers) while still
-    # emitting parameter metadata for it.  The source program must be
-    # self-contained, so materialize any missing state payload from the same
-    # exported snapshot before validating the directory.  Existing serializer
-    # output remains authoritative and is not rewritten.
-    required_parameters: set[str] = set()
-    for metadata_path in (program_dir / "functions").glob("*.meta"):
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        for location in metadata.get("input_locations", []):
-            if location.get("type_") == "parameter":
-                required_parameters.add(location.get("name", ""))
-    state = dict(module.state_dict())
-    state.update(dict(module.named_buffers()))
-    numpy_module = capture._import_numpy()
-    for name in sorted(required_parameters):
-        if not isinstance(name, str) or not name or "/" in name or "\\" in name:
-            raise RuntimeError("exported state name is not a safe data filename")
-        payload = program_dir / "data" / name
-        if payload.exists():
-            continue
-        tensor = state.get(name)
-        if tensor is None:
-            raise RuntimeError(f"exported parameter has no source state: {name}")
-        payload.parent.mkdir(parents=True, exist_ok=True)
-        value = capture._torch_tensor_to_workload_storage(torch_module, tensor)
-        with payload.open("wb") as stream:
-            numpy_module.save(stream, value, allow_pickle=False)
+    export_pytorch_program(module, inputs, program_dir)
     capture._verify_program_dir_layout(program_dir)
 
 
@@ -1064,6 +1019,14 @@ def _read_only_attention(
     )
 
 
+def _attention_probability_rounding(dtype: torch.dtype, seed: int, *, extent: int) -> PyTorchBoardCase:
+    return _read_only_attention(
+        dtype, seed, name=f"attention-probability-rounding-{extent}",
+        query_length=extent, key_value_length=33, causal=False,
+        num_heads=2, head_dim=16,
+    )
+
+
 def _attention_prefill(
     dtype: torch.dtype, seed: int, *, extent: int = 1024
 ) -> PyTorchBoardCase:
@@ -1345,6 +1308,9 @@ CASE_FACTORIES: dict[
         dtype, seed, extent=1031
     ),
     "single-card-gemm": _single_card_gemm,
+    **{f"attention-probability-rounding-{extent}": (
+        lambda dtype, seed, extent=extent: _attention_probability_rounding(dtype, seed, extent=extent)
+    ) for extent in (1024, 1025, 1031)},
     "outer-product-1024": lambda dtype, seed: _outer_product(dtype, seed, extent=1024),
     "outer-product-1025": lambda dtype, seed: _outer_product(dtype, seed, extent=1025),
     "outer-product-1031": lambda dtype, seed: _outer_product(dtype, seed, extent=1031),

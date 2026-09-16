@@ -8,8 +8,11 @@
 # RUN: %importer_python -c "import pathlib, subprocess; [subprocess.run(['wafer-verify-program', '--program-dir', str(p)], check=True) for p in pathlib.Path('%t').glob('batch-norm-*')]"
 # RUN: %importer_python -c "import pathlib, subprocess; paths = list(pathlib.Path('%t').glob('composite-*')); assert len(paths) == 30; [subprocess.run(['wafer-verify-program', '--program-dir', str(p)], check=True) for p in paths]"
 
+# RUN: %importer_python -c "import pathlib, subprocess; paths = list(pathlib.Path('%t').glob('silu-*')); assert len(paths) == 6; [subprocess.run(['wafer-verify-program', '--program-dir', str(p)], check=True) for p in paths]"
+
 # EXPORT: batch_norm_inference: numeric_cases=8 source_to_linalg=6 unrelated_unchanged=true
 # EXPORT: composite_opmath: gelu=18 layer_norm=13 source_layer_norm_to_linalg=12 unrelated_unchanged=true
+# EXPORT: silu_opmath: cases=6 final_narrowing=true
 # EXPORT: direct_xla: configurations=6 executions=12 negatives=11 dynamo=false
 # EXPORT: wafer_frontend_product: portable=true repeat_equal=true graph_break=rejected
 # VERIFY: wafer-verify-program: verified portable StableHLO program parameters=1 constants=0
