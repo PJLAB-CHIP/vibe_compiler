@@ -1201,3 +1201,12 @@ FP16单独改变linear分块未超差，单独顺序RMS为77处；二者组合�
 canonical构建及no-op记录为`build/comparison-policy-canonical-build.log`和`build/comparison-policy-canonical-noop.log`。
 no-card日志中的`numeric_execution=false`仅描述runtime无设备验证；上游TargetModel已单独实际完成全部输出比较。
 真实板端资格继续独立，未执行设备，不继续扩展归约重排或更高精度算法。
+
+### 访问复用统一方案
+
+用户要求先统一空间/时间复用分析、重新命名并形成方案，暂停实现。
+统一概念为`AccessReuse`，完整方案在[`access-reuse.md`](access-reuse.md)，编号设计边界见06号3.5。
+范围仍为现有跨Tile共享、基础驻留、固定步长滑动窗口和最多两级驻留，暂缓缓存替换；
+不强制M方向切分或B传播，不按GEMM/模型名触发，不增加search预算。
+本轮只修改设计与状态，没有修改编译器代码或开展新编译/数值测试；新的DDR减少与SPM可行性均待实际实现验证。
+前述GEMM与LLaMA2已有结果继续作为已测基线，不能代签新方案。

@@ -115,6 +115,32 @@ effect、token和control flow；worker/order/completion必须在该IR上物化�
 `DeviceExecutable`是已通过Instr、SPM/DDR、transport、resource、completion和ABI verification的唯一内存owner。
 `ExecutablePackage`只序列化accepted executable与runtime必需数据，不序列化search状态或调度副本。
 
+### 3.5 访问复用统一分析边界（待讨论）
+
+统一概念为访问复用（`AccessReuse`）；第一版限定为可证明内容不变的读取。
+本节定义拟扩展边界，具体推导、pipeline接入、现有实现迁移与覆盖矩阵见
+[`访问复用统一方案`](plans/access-reuse.md)。当前实现状态仍只看`tasks/progress.md`。
+
+- Upstream IR / input：已选spatial/temporal/layout的candidate current Tile IR，显式load/subview/SCF、
+  typed source/resource identity、effect/alias及现有buffer owner关系。
+- Current stage responsibility：`AccessReuseAnalysis`统一解释同源读取的Tile位置、循环域、精确IndexRelation与内容不变性；
+  search消费这些current事实选择复用方式，`materializeAccessReuse`在独占候选中落实。分析不选择cache或peer owner，
+  不记录未来buffer、offset、lifetime或completion。
+- Output IR / files：可失效的只读分析结果，以及实际物化的现有allocation/view/copy、Tile load/peer与SCF；
+  新buffer全部具备current owner，无缓存专用IR和跨stage旁路协议。
+- Downstream consumer：原boundary movement、execution structure、Instr、communication/completion、唯一SPM/DDR及actual cost；
+  每次相关IR mutation后分析失效，旧anchor不能按名称或遍历序号恢复。
+- User-level driver / named pipeline：现有search的physical movement候选入口；production与显式资格测试调用同一typed变换API，
+  不新增负责自动搜索的pass。旧跨Tile输入共享分析迁入同一owner，不与另一套时间复用pass独立决策。
+- Explicit non-goals：缓存替换、任意层级、动态/间接访问、多轴滑动、近似窗口、GEMM模板、强制空间划分或Ring、
+  新layout/同步算法及预测SPM准入；保持原算术与dtype。
+- Completion criteria：保留原peer能力；基础驻留、单轴固定步长滑动、相邻scope最多两级及时间/空间组合进入同一候选链；
+  方案覆盖矩阵逐项有actual下游witness，并分别证明GEMM组合可表达、可行、可搜索及实际收益。
+
+缓存范围从选定scope的当前读集合精确推导，不另设自由尺寸搜索。scope选择是物化参数，不是SPM合法性结论。
+静态窗口/bytes可用于排序，实际容量仍只能由完整候选的allocation、layout、alias、effects、completion与lifetime规划结果判断。
+实现阶段须一次更新旧InputSharing的producer、consumer、测试和CMake，不保留兼容wrapper；当前代码名称到新owner的映射见方案。
+
 ## 4. Search 输入、选择与candidate ownership
 
 ### 4.1 Immutable input
