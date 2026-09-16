@@ -1459,7 +1459,7 @@ metadata view没有数据读取语义，却在此处阻断了已经选择的局�
 两项此前都是0 accepted。最终16个Tile的最大单次逻辑输入load分别为524,288/524,800 bytes，
 已无原来的8 MiB完整输入load。它们是actual dataflow上的窗口大小，不是动态DDR总流量或SPM合法性预测；
 成功的actual allocator与target/package/no-card给出主机合法资格。两项均探索到2次input-sharing accepted和1次pipeline accepted，
-这些不是winner的transport结论。设备仍未恢复，没有新的实卡数值、时间或profile，不计入三轮调优。
+这些不是winner的transport结论。该检查点没有新的实卡数值、时间或profile，不计入三轮调优。
 
 机制覆盖包括4/16 Tiles、1024/1025/1031、FP16/BF16、非unit reassociation、offset17、主循环及tail，
 whole+partial共用storage、写入、未知alias、不连续DDR和原dynamic size SSA。完整Transforms 390/390、Driver 126/126通过，
@@ -1500,7 +1500,7 @@ GQA runner wall为309.28/359.53秒、RSS 3,438,760/3,436,556 KiB，本轮同时�
 完整Analysis 109、Planning 123、Transforms 390、Driver 127项通过；补充重叠覆盖后的定向4/10项通过。
 机制覆盖包含真实规模三维精确集合oracle、84个4/16-Tile容量反馈配置、未知分支与typed工作量边界；
 canonical完整增量和Ninja no-op通过。长cache两步仍有653/691次无法确定输入来源的demand，未扩大其归因或SPM合法性。
-设备会话仍未恢复，本节无实卡执行、输出数值、时间或profile，不计入三轮调优；长cache现在只签board-ready。
+本节无实卡执行、输出数值、时间或profile，不计入三轮调优；长cache在该检查点只签board-ready。
 完整证据及产物hash见[插入需求与容量反馈记录](data/board-performance/insert-demand-capacity-feedback-20260914.json)。
 
 固定FP16 LLaMA本轮fresh package/no-card通过，runner wall 1,060.62秒、RSS 2,808,176 KiB，9个accepted。
@@ -1531,8 +1531,8 @@ CPU数值检查另发现两项外部实现边界：pinned `torch.erf`多线程�
 普通有限输入仍对照原默认PyTorch，板测runner的reference及容差没有改变。这些主机观察不能解释板端误差。
 
 证据、源文件及运行包身份见[数学源输入检查点](data/board-performance/source-math-ingestion-20260914.json)。
-ViT整块search/package、尾部的05号下游、全部设备数值和性能仍待完成。设备会话仍因先前QKV真实timeout保持停止；
-本次已确认boot identity未改变，未retry/reset或发起设备launch。
+ViT整块search/package、尾部的05号下游、全部设备数值和性能在该检查点仍待完成。
+该次已确认boot identity未改变，未retry/reset或发起设备launch。
 
 ## 2026-09-14：混合端口、完整单层LM及ViT编译终态
 
@@ -1582,7 +1582,7 @@ GDB暂停和调试器自身的线程池等待不计为compiler耗时；比较基
 layout/bufferization通过。原ViT与固定FP16 LLaMA的8/42主机复验已取得终态，当前没有新的整块设备时间或数值回读。
 四组件754项实际测试全部通过，无skip；完整增量构建及第二次Ninja no-op通过。LLaMA本轮14个源文件与初始快版本、
 上次接受的无卡版本一致；ViT本轮14个源文件与旧诊断输入一致。主机模型运行存在重叠，不能把总wall差直接签为编译性能A/B。
-板卡由用户确认尚未恢复，继续主机工作。完整身份和后续终态进入
+完整身份和后续终态进入
 [精确box合并证据](data/board-performance/exact-box-coalescing-20260914.json)。
 
 本轮终态：ViT compiler transaction 845.145秒、runner 869.35秒、RSS 3,418,808 KiB，未超时；
@@ -1611,7 +1611,7 @@ LLaMA完整no-card通过，runner 1,054.20秒、RSS 2,825,364 KiB，9合法候�
 另4组多use、不同spatial轴、完整值保留、非splat及pow指数行为通过。最终加强的定向验证为2项、1.98秒、RSS69400 KiB。
 完整canonical构建及第二次Ninja no-op通过；Planning/Transforms/Driver共647项实际测试通过，无skip。
 组件之后仅加强新测试的row-size/tail断言，增量构建/no-op及两项定向验证通过，compiler SHA未变。
-本轮两个模型各14个源文件与上轮相同，仍用默认8/42、原seed和FP16；板卡未恢复，没有新设备数值或性能结论。
+本轮两个模型各14个源文件与上轮相同，仍用默认8/42、原seed和FP16；该检查点没有新设备数值或性能结论。
 ViT本轮正常结束：runner842.00秒、RSS3,392,512 KiB，仍为39容量拒绝、3共享完成依赖环，无package。
 重新捕获literal物化前后及首个SPM规划输入并全部通过verifier，确认19个12 MiB F32常量allocation已全部消失。
 当前最大单buffer变为6 MiB的FP16完整中间张量：局部cast结果先GS写入完整`[1,1024,3072]`，再逐行WDMA搬至
@@ -1621,7 +1621,7 @@ ViT本轮正常结束：runner842.00秒、RSS3,392,512 KiB，仍为39容量拒�
 固定FP16 LLaMA完整no-card通过，runner1,063.74秒、RSS2,734,036 KiB；仍9 accepted、33 capacity。
 source/权重不变，运行包及48份final IR改变：静态fill从336降至304，其它指令类别计数相同；
 实际差异包括移除不再使用的square指数fill、缩小局部常量以及重新规划SPM offset。这些静态计数不等于动态性能，
-相对上轮无卡包和初始实卡快包的设备数值/性能均待恢复后重签。
+相对上轮无卡包和初始实卡快包的设备数值/性能均待实卡重签。
 完整身份与终态见[局部常量证据](data/board-performance/splat-demand-localization-20260914.json)。
 
 ## 2026-09-14 完整单层LM直接XLA导出
@@ -1696,8 +1696,8 @@ Generic同时从实际output permutation反解迭代坐标，修复转置输出�
 主机搜索停止的版本边界、统计限制及后续通用修复步骤见[当前矩阵计划](../tasks/plans/board-workload-matrix.md)。
 
 固定FP16 block本轮默认8/42完整package/no-card通过：9 accepted、33容量、0 unsupported，主机1060.77秒。
-包三个文件及48份最终IR与上一轮逐字节一致，source保持初始正确快版本；前序修改相对初始实卡快包的设备回归仍待恢复。
-实卡保持停止，完整LM数值差异仍待解决。
+包三个文件及48份最终IR与上一轮逐字节一致，source保持初始正确快版本；前序修改相对初始实卡快包的设备回归仍待执行。
+该检查点没有实卡执行，完整LM数值差异仍待解决。
 本轮不计入三轮设备调优，所有身份、测试和诊断见
 [投影读取证据](data/board-performance/projected-tensor-reads-20260914.json)。
 
@@ -1723,13 +1723,13 @@ Analysis/Conversion/Transforms/Planning/Pipeline的115/26/406/127/5项与lit 29�
 canonical完整增量构建和Ninja no-op通过。固定FP16 LLaMA block默认8/42完整no-card通过：5个结构、42次actual、
 9 accepted、33容量拒绝、0 unsupported/indeterminate，主机1018.61秒，RSS 2857592 KiB。
 source 14文件与初始正确快版本相同，包三文件及48份最终IR与上一轮全同。本轮没有改变该block的编译产物，
-也没有运行设备、执行算术或取得数值readback；前序局部常量/SPM修改相对初始实卡快包的回归仍待板卡恢复。
+也没有运行设备、执行算术或取得数值readback；前序局部常量/SPM修改相对初始实卡快包的回归在该检查点仍待执行。
 
 完整LM仍需动态词表需求/按需物化、索引scalar读取及target/host消费者、数值与完整package/no-card；
 source相关unsupported的作用范围也尚待修复。本节不计为三轮板端性能调优。
 可复核身份、测试与产物见[运行时索引范围证据](data/board-performance/runtime-index-bounds-20260914.json)。
 
-### 2026-09-14 主机夹界执行与同步缺口交接
+### 2026-09-14 主机夹界执行与同步缺口
 
 host TargetCall frontend已接通scalar整数`min/max`的LLVM JIT执行，原signed/unsigned和位宽语义保持不变。
 5种整数位宽的1,920个结果与rank3 F16/BF16、1024/1025/1031、16 Tiles的3,200次窗口调用通过精确检查；
@@ -1740,8 +1740,8 @@ compiler binary未变化，本次未重编LLaMA或运行设备，最近一次LLa
 另外用12组新生成的实际Instr复现了循环同步问题：循环外写入的首次读取/跨worker等待可能在回边分析中被删掉；
 有无关同worker工作时也可能变为每轮等待。根因是入口与后续迭代状态在同一body上反复改写join，尚未修复。
 没有证据将其归因到历史QKV超时，不能报告设备加速或退化数字。具体输入、实际输出和继续边界见
-[交接证据](data/board-performance/scalar-host-execution-20260914.json)及矩阵计划最新交接节。
-用户要求交出机器，当前收尾提交远程；完整矩阵正确性、三轮调优与最终实卡验收仍未完成。
+[主机执行证据](data/board-performance/scalar-host-execution-20260914.json)及矩阵计划对应主机检查点。
+该检查点未完成完整矩阵正确性、三轮调优与最终实卡验收。
 
 ## 2026-09-17：TX runtime 5.7接口适配、Add与4096³ GEMM
 

@@ -13,7 +13,7 @@
 它们仍属于本work item，不另建网络或通信板测任务。
 后续GQA的多轴contraction、状态协调及metadata view局部加载已通用修复，1024/1025在原默认预算下完成package/no-card；
 长cache的tensor assembly输入需求归因已通用修复，两步4094→4095→4096在原默认预算下各有15个accepted并通过完整package/no-card，达到board-ready；GQA整除/尾部配置本轮复验通过。板端数值和三轮调优保持未完成。
-最新view修改的LLaMA no-card通过，source/权重未变而ELF改变；actual候选DDR读减少、段数增加，matched实卡回归待恢复后执行。
+最新view修改的LLaMA no-card通过，source/权重未变而ELF改变；actual候选DDR读减少、段数增加，matched实卡回归待执行。
 ResNet的BatchNorm已补齐通用source合法化和PyTorch opmath主机覆盖；旧版本三个整网编译均触发1,800秒主机期限。
 Dynamic e-graph重复展开已补request-local read-set复用，同一source的named normalization由155.43秒降至10.52秒，
 IR和原有计数完全相同；该修改的LLaMA完整no-card通过，package三文件与原正确快版本完全相同。当前ResNet正式前端已到TensorProgram，
@@ -24,7 +24,7 @@ ViT的GELU公开扩展和LayerNorm opmath入口已通用修复，1024/1025 sourc
 随后actual容量定位发现完整splat物化问题；按06号修复后54组actual Instr/SPM及三个组件647项通过，
 ViT首个候选的19个12 MiB F32常量buffer已消除。整块仍因完整result/assembly carrier等容量和共享完成依赖环失败；
 下一步继续查该carrier的producer与typed输出/输入关系。固定LLaMA本轮完整no-card通过，静态fill减少32、其它指令类别计数相同，
-包和SPM offset已改变，设备回归仍待恢复；详见扩展矩阵及局部常量证据。
+包和SPM offset已改变，设备回归仍待执行；详见扩展矩阵及局部常量证据。
 独立GELU的默认search package/no-card及frontend门禁通过，LLaMA重新导出的14个源文件与初始快版本相同；
 这些证据只闭合入口缺口，不代签整块数值、设备性能或三轮调优。
 混合dtype端口及整数exact比较已补通用runner验证；完整单层LM已注册，S16 FP16/BF16的全部logits CPU oracle通过。
@@ -34,7 +34,7 @@ source、主机数值与后续lowering/package分别按扩展矩阵检查点登�
 实际完整mask精确校验及Transforms/lit门禁通过。完整LM S16/1024产品入口已到TensorProgram，下一失败为
 generic payload中捕获依赖未进入semantic root/structured DAG分析；未进入actual候选，不归因于搜索预算或SPM。
 本次固定FP16 LLaMA默认8/42完整no-card通过，9 accepted、33容量、0 unsupported；包及48份IR与上轮完全相同，
-source与初始快版本一致，前序修改相对初始快包的设备回归仍待恢复后验收。
+source与初始快版本一致，前序修改相对初始快包的设备回归仍待验收。
 
 ## 输入、输出与边界
 
@@ -63,7 +63,7 @@ LLaMA单独设强制性能检查：可能影响它的修改在稳定后接受前
 下方前轮步骤及预算研究保留证据与未解问题，不另行决定当前顺序；风险候选仍最后处理，主机报告失败与设备超时分开。
 BF16 LLaMA修复、新增case完整接入、正确性压测和三轮调优均尚未完成。嵌套Tensor subview的相对地址修复已通过
 定向主机门禁并使batch共享RHS完成package/no-card，实卡仍有数值超差；ResNet BN、ViT Erf和大GEMM容量问题已定位到明确边界。
-Q/K/V独立诊断发生真实设备完成超时后已停止实卡批次，主机准备与分析继续；详细证据及未完成项由扩展矩阵拥有。
+Q/K/V独立诊断曾发生真实设备完成超时，当次实卡批次已停止；详细证据及未完成项由扩展矩阵拥有。
 
 ## 已完成计时及前轮实施记录
 
@@ -833,7 +833,7 @@ Decode首个temporal候选的`1x4096x512xf16`来自standard reduction contributi
 
 下一施工边界：先追踪standard contribution与merge间完整carrier的实际use/lifetime，以及相同DPS init片段的重复拼接；
 随后补真实block的attention view/indexing proof，并按第6项统一profile采集范围、record和report。
-第2项按新机制补模型执行，既有numeric/SystemC通过不代替新增case；第4/7项的设备性能复验等待合格设备恢复。
+第2项按新机制补模型执行，既有numeric/SystemC通过不代替新增case；第4/7项的设备性能仍待复验。
 搜索预算、访问公平性及更长搜索时间比较仍不在本轮实施范围内。
 
 ### Attention语义与重复片段的本轮实现
@@ -889,7 +889,7 @@ actual subview→base IndexRelation组合，包含嵌套、rank reduction和offs
 
 ### Prefill范围明确的Trace准备
 
-第6项本轮达到host/board-ready准备边界，真实采集仍待可用设备。`wafer-run --profile-trace-event-limit N`显式选择
+第6项在该检查点达到host/board-ready准备边界，尚未完成实卡采集。`wafer-run --profile-trace-event-limit N`显式选择
 每Tile事件前缀；未指定时仍要求全程Trace并在Count超过固定容量时停止。16 MiB/Tile容量不变，Primary→Count→Trace顺序及
 完整输出比较不变。LaunchConfig、CRT record、decoder、collector和报告使用同一limit与全程next_sequence合同。
 
@@ -1118,7 +1118,7 @@ spatial proposal使用现有`IndexRelation`/`TensorResultIndexing`沿实际SSA�
 当前完整Planning 101项、Driver 86项、CodeGen 26项及public link smoke通过；其中9728个live slot真实经过pinned RISC-V后端。
 完整canonical增量构建、Ninja no-op、diff whitespace及Wafer-owned Python cache检查通过。
 完整block及decode的fresh编译/no-card已通过。Block三轮设备采集正常结束，Primary为37.035999 ms，
-但最终PyTorch检查失败：65536个输出全部为NaN。该样本不能计为有效优化收益，decode板测暂停。
+但最终PyTorch检查失败：65536个输出全部为NaN。该样本不能计为有效优化收益，当次未继续执行decode板测。
 实际Instr已找到strided初始化错误：按N切分得到`16x256`、stride `[4096,1]`的fill，TargetCall却按4096个连续元素填充。
 按11号合同修复通用logical fill分段与verifier，再检查是否存在其它数值来源并重新完成产品验收。
 

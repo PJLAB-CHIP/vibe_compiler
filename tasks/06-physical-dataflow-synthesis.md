@@ -260,7 +260,7 @@ Merge仍检查原贡献iteration rectangles的无重叠、精确覆盖和输出�
 | rank3+，1024/1025/1031，GEMM/conv与generic等价 | parallel/reduction分片、kernel轴、多Tile | contribution结果只有原output维；卷积保持局部归约和native conv消费者，不生成七维乘积buffer |
 | 普通sum/max/min，scalar及多维结果 | identity/非identity原init、乱序贡献、非整除 | 每段归约贡献消费一次，原init只合并一次，原scalar combiner和dtype保留 |
 | 重叠/缺失贡献、输出domain不一致、未知combiner | typed failure | 不发布伪造partial/merge，不通过shape猜owner或容量 |
-| 原始ResNet-18 | 默认none/search直接产品路径 | 从source到actual局部Conv/Instr/SPM及package/no-card；实卡仍待恢复 |
+| 原始ResNet-18 | 默认none/search直接产品路径 | 从source到actual局部Conv/Instr/SPM及package/no-card；实卡数值另行验证 |
 下游elementwise lowering通过pinned Linalg `getOpOperandsMatchingBBargs`读取body参数与operand的对应，不能假定每个body都有DPS init参数。
 Selected tile产生的静态unit轴可在索引表达式内折为0（如`m+w`且`extent(w)=1`）；重建的projected map必须逐轴匹配当前operand/result shape，
 不能因output map为identity而绕过input map检查或发出verifier-invalid Tile op。

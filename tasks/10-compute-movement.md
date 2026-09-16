@@ -122,7 +122,7 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
   或把原舍入边界不等价地换成native avg。显式avg kind表示完整窗口的算术平均，并有同一Instr消费者。
 - 非目标：本轮不做indexed/unpool、3-D pool、模型替换或数值容差调整。新增geometry的主机验证不扩展历史板端资格。
 - 完成条件：原始Torch XLA MaxPool/AvgPool与ResNet-18进入既有Pool后端，完整输出和package/no-card分别验证；
-  实卡数值待设备恢复。机制覆盖如下。
+  实卡数值另行验证。机制覆盖如下。
 
 | 输入 | 分支/拒绝 | exact结果与直接下游 |
 | --- | --- | --- |

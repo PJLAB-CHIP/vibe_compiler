@@ -89,7 +89,7 @@ event计时6.874 ms。整个runner为409.272秒，其中CPU PyTorch reference为
 
 ## 主机验证汇总（2026-09-16）
 
-用户确认本轮先收尾记录并推送，不继续扩展输入布局转换复用或分块优化。下表汇总已经实际执行的资格；
+下表汇总该次主机验证已经实际执行的资格，不包含进一步的输入布局转换复用或分块优化；
 下文各阶段检查点保留其当时的版本、预算与结果，不能将较早失败或中间性能数字当作当前结论，也不能把历史通过当成本轮全部重跑。
 
 | Case | 已验证范围 | 本次收尾边界 |
@@ -186,7 +186,7 @@ F32单步归约的逐元素lowering以及mapped F32 scalar→dynamic fill。容�
 用户当前优先级为统一直接Torch XLA抓图并先打通ResNet-18。共享板测helper和reference/GEMM/MLP工具统一调用02号产品入口；
 先用原始224输入推进到完整1000类logits、package及no-card，沿实际停点补Pool和其它直接阻塞。保留原seed、参数和数值容差，
 不再开展其它模型的扩展批次。前序embedding的24项数值/no-card和固定FP16 block通过属于旧ExportedProgram→XLA入口，
-不能代签统一入口后的模型资格。真实设备继续按用户最后确认的未恢复状态处理。
+不能代签统一入口后的模型资格。
 
 本轮pooling检查点：统一`wafer.tile.pool(kind)`已复用既有Instr Pool/SDK ABI；max/min/sum的窗口由current maps、iterator、
 payload及shape证明，rank2/3缺失的N/C通过单位维与显式layout转换处理。AvgPool的sum与原除数计算分别保留；
@@ -513,7 +513,7 @@ ResNet/ViT/完整LM/GQA的1025、GEMM4097³和batch GEMM混合tail作为泛化�
 | ResNet-18三种尺寸 | BN合法化及opmath主机门禁通过；旧版本三个整网编译均触发1,800秒主机期限，未到设备。Dynamic e-graph重复展开已有定向加速与等价证据，当前正式前端已完成 | 当前只重签主配置并采样Region提案热点，根因稳定后再补大图及尾部，不同时反复重启三个长编译 |
 | GQA两种长度 | 原HF eager与portable source通过；默认8/42两者均42次unsupported、0 accepted，未生成package | attention已识别，后续多M轴contraction未进入GEMM；从普通contraction映射归一化修复，不提高预算或在host重复KV |
 | ViT两种长度 | 正式导出成功；source verifier拒绝GELU的Erf custom call；LayerNorm同时以BN training表达 | 在正式source/转换owner闭合Erf及normalization语义，不替换原模块 |
-| Q/K/V独立诊断 | current default search包/no-card已完成，单次设备执行60秒未完成、runtime隔离上下文并退出；无回读结论 | 停止设备批次，不retry/reset；保留主机IR/ABI定位，设备恢复后才可重签板端 |
+| Q/K/V独立诊断 | current default search包/no-card已完成，单次设备执行60秒未完成、runtime隔离上下文并退出；无回读结论，当次已停止设备批次且未retry/reset | 保留主机IR/ABI定位，板端资格须以新的实卡结果验证 |
 
 嵌套view修复已有独立失败复现，包含继承动态地址的静态child越界反例；26项Instr→LLVM lit、Conversion/Target两组unit、
 两项Python合同测试及最终batch package/no-card全部通过，canonical完整增量构建及第二次Ninja no-op通过。
@@ -682,7 +682,7 @@ metadata reshape本身不要求完整输入驻留。只读证明消费value关�
 两项最终16-Tile current dataflow均不再包含原8 MiB输入load；最大单次逻辑load payload分别524,288/524,800 bytes。
 这是当前load的extent检查，不是动态DDR总流量、设备耗时或容量上界推测。两项均有2次input-sharing accepted和1次pipeline accepted，
 这些是探索计数，不能冒充winner的transport或性能收益。原HF完整reference、运行时payload和strict no-card齐全，
-两项GQA达到board-ready；设备仍未恢复，本项没有新的实卡数值/profile，也不计入三轮调优。
+两项GQA达到board-ready；该检查点没有新的实卡数值/profile，也不计入三轮调优。
 固定FP16 LLaMA的独立fresh no-card通过，wall 1,066.73秒、RSS 2,830,984 KiB；14个source文件和权重数据相同，
 但设备module不同，manifest仅对应module digest改变。43,788项temporal选择计数及9个accepted编号与原快版本一致；
 最低估时的22/29候选中，actual DDR读451,372,608→447,432,768 bytes，DDR segments 159,040→159,520，
@@ -736,13 +736,13 @@ projected subset同时覆盖两端extent大小关系。完整Analysis/Planning/T
 两个KV窗口为`[1,2,512,128]`、256 KiB（此前失败候选为`[1,4,2048,128]`、2 MiB）。它们是不同actual候选的窗口证据，
 不能当作动态DDR流量或matched设备性能。两步仍有653/691次unavailable-input-demand，内部或非搬运来源没有被猜成已知。
 GQA完整runner为309.28/359.53秒、峰值RSS 3,438,760/3,436,556 KiB；本轮有并行主机任务，wall不用于签编译性能改善。
-长cache达到board-ready，设备未恢复，所有新数值与性能资格仍待实卡；本项不计入三轮性能调优。
+长cache达到board-ready，数值与性能资格仍待实卡验证；该检查点不计入三轮性能调优。
 证据及完整产物身份见[插入需求与容量反馈记录](../../docs/data/board-performance/insert-demand-capacity-feedback-20260914.json)。
 
 固定FP16 LLaMA本轮独立no-card通过，wall 1,060.62秒、RSS 2,808,176 KiB，仍有9个accepted。
 14个source文件与原快版本及上轮view修改版本一致；完整运行包的manifest、module和data与上轮无卡包逐字节相同，
 temporal选择计数无变化。本轮保存全部16 Tile的final dataflow、Instr和target LLVM，补齐上轮未保留final IR的证据入口。
-这证明本项反馈修复未进一步改变该LLaMA产物；上轮view修改与初始正确快包之间的实卡数值、性能matched A/B仍待恢复后执行。
+这证明本项反馈修复未进一步改变该LLaMA产物；上轮view修改与初始正确快包之间的实卡数值、性能matched A/B仍待执行。
 
 ### 2026-09-14 数学源输入与ViT检查点
 
@@ -814,7 +814,7 @@ transaction 845.145秒，runner 869.35秒、RSS 3,418,808 KiB。One-Shot共30次
 
 固定FP16 LLaMA本轮完整no-card通过，runner 1,054.20秒、RSS 2,825,364 KiB，9 accepted、33 capacity、0 unsupported。
 14个source与初始正确快版本、上轮无卡版本相同；运行包三文件与全部48份final IR均与上轮无卡版本逐字节相同。
-本项没有进一步改变其产物；上轮包仍不同于初始实卡快包，二者设备回归待恢复。用户再次确认板卡尚未恢复，实卡批次保持停止。
+本项没有进一步改变其产物；上轮包仍不同于初始实卡快包，该检查点尚未执行二者设备回归。
 本项仍是正确性/编译资格准备，不能计入三轮设备性能调优。证据见
 [精确box合并记录](../../docs/data/board-performance/exact-box-coalescing-20260914.json)。
 
@@ -834,7 +834,7 @@ ViT仍正常结束于39容量拒绝、3共享完成依赖环；fresh GDB的liter
 仍存在“局部写入完整中间张量→再切片搬出”的路径；后续查该carrier producer、typed输出关系及直接consumer。
 固定LLaMA完整no-card通过、9 accepted，包和48份final IR改变：静态fill减少32，其它指令类别计数相同，
 常量形状与SPM offset变化。不能以该静态差异代签相对上轮无卡包和最初快包的设备回归。
-板卡仍未恢复，设备数值与性能验收不变更；证据见[局部常量记录](../../docs/data/board-performance/splat-demand-localization-20260914.json)。
+该检查点未新增设备数值与性能验收；证据见[局部常量记录](../../docs/data/board-performance/splat-demand-localization-20260914.json)。
 
 ### 2026-09-14 原始完整LM直接XLA导出
 
@@ -887,7 +887,7 @@ S1024完整LM的同一named pipeline由超过120秒变为1.61秒，其中constan
 本轮仍为无卡正确性准备；完整LM数值差异、完整package/no-card及实卡均未闭合，未计入三轮性能调优。
 固定FP16 LLaMA block本轮默认8/42完整no-card通过，9 accepted、33容量、0 unsupported；
 source保持初始快版本，包三文件及全部48份IR与上一轮no-card产物逐字节相同。主机总1059.59秒、RSS 2,840,736 KiB。
-前序修改相对初始快版本的设备回归仍待恢复，不能由本次主机产物相等代签。
+前序修改相对初始快版本的设备回归仍待执行，不能由本次主机产物相等代签。
 完整身份与结果见[常量读取证据](../../docs/data/board-performance/constant-tensor-lookup-20260914.json)。
 
 ### 2026-09-14 投影式读取显式化与动态表访问边界
@@ -929,7 +929,7 @@ GDB的8/1诊断也已完成93次demand检查，两次规划栈采样分别在spa
 完整LM动态读取、package/no-card、数值差异与实卡资格仍未闭合。本项不计为三轮板端性能调优；
 固定FP16 block本轮默认8/42完整package/no-card通过，9 accepted、33容量、0 unsupported；
 主机1060.77秒，RSS 2,849,620 KiB。source与初始快版本相同，包三个文件及48份最终IR与上一轮逐字节一致。
-前序局部常量/SPM修改相对初始实卡快包的设备回归仍待恢复，本次产物相等不代签该门禁。
+前序局部常量/SPM修改相对初始实卡快包的设备回归仍待执行，本次产物相等不代签该门禁。
 详见[投影读取证据](../../docs/data/board-performance/projected-tensor-reads-20260914.json)。
 
 
@@ -950,7 +950,7 @@ stride及地址SSA；越界反例检查精确坐标诊断和输入未修改。�
 固定FP16 LLaMA本轮默认8/42完整package/no-card通过，9 accepted、33容量、0 unsupported/indeterminate。
 主机1018.61秒，compiler transaction 996238.642 ms，RSS 2857592 KiB；仅作本轮编译记录，不作为性能提升结论。
 原始source的14文件与初始快版本相同，包三文件和全部48份最终IR与上一轮逐字节一致。
-前序修改相对初始实卡快包的设备门禁仍待恢复，当前没有实卡动作。详见[运行时索引证据](../../docs/data/board-performance/runtime-index-bounds-20260914.json)。
+前序修改相对初始实卡快包的设备门禁仍待验证，该检查点没有实卡执行。详见[运行时索引证据](../../docs/data/board-performance/runtime-index-bounds-20260914.json)。
 
 后续实施按两个边界推进，不能把下面的调查结论写成已实现能力：
 
@@ -975,14 +975,14 @@ stride及地址SSA；越界反例检查精确坐标诊断和输入未修改。�
 
 用户已确认按调研方案继续实现。当前范围是05号3.5与06号6.5.1：保留标准gather、静态输出/索引需求与运行时表访问分开、
 块级索引/输出allocation、多Tile连续行/片段搬运及其completion/target/host消费者。先完成独立gather全链，再进入原始完整LM，
-相关规则稳定后执行固定FP16 LLaMA完整no-card回归。前述机器交接暂停不再阻止主机开发；真实设备仍按最后确认的未恢复处理。
+相关规则稳定后执行固定FP16 LLaMA完整no-card回归。
 
 实施顺序：
 
 1. StableHLO→标准gather、标准接口及structured root/需求消费者；验证clamp、重复indices、整除/尾部和结果exact覆盖。
 2. selected candidate的只读DDR表、局部索引和连续输出块物化；保留实际SSA/owner，生成动态行地址和连续片段搬运。
 3. NCC入口/回边完成要求、SPM scalar索引读取和target/host执行闭合；完整gather数值、actual memory规划与fresh no-card。
-4. 原始完整LM产品检查及固定FP16 block回归，记录实际停点；独立性能比较待设备恢复后执行，不以主机计数宣称加速。
+4. 原始完整LM产品检查及固定FP16 block回归，记录实际停点；独立性能比较通过实卡执行，不以主机计数宣称加速。
 
 构包调查确认现行RDMA wrapper逐次创建/删除SDK builder。是否优化该路径由匹配发令开销证据决定，不引入第二套prepared IR或
 opaque runtime gather。重复ID去重、排序、cache与额外跨Tile转发不进入本轮首个实现边界。
@@ -1006,10 +1006,9 @@ numeric及SystemC共28个CTest target全部实际执行并通过。该结果仍�
 局部gather单allocation测试不能代签完整流水线的块级内存门禁。宽行、FP16/BF16、1024/1025/1031、none/search正式产品矩阵，
 更换ID的同程序数值、完整LM及固定FP16 block回归仍须执行。当前没有新板测或性能无退化结论，本轮实现尚未完成。
 
-### 2026-09-14 机器交接：已实现边界与继续入口
+### 2026-09-14 主机执行检查点：已实现边界与后续验证
 
-用户要求机器后续交其他人使用，将现有代码及进度提交远程；本次收尾后不继续开发、编译或设备批次。
-板卡仍按用户最后确认的未恢复状态处理。本项保持未完成，不能将这次提交作为正确性压测或三轮调优的完成标记。
+该检查点记录已实现边界及尚缺的验证，不能将该次提交作为正确性压测或三轮调优的完成标记。
 
 已提交的前序工作包括产品直接XLA导出（`5f248da9`）、常量按需读取（`ef2ec16f`）、
 generic投影读取转真实DPS input（`1e968743`）和运行时整数范围证明（`a27e35a3`）。
@@ -1043,10 +1042,10 @@ canonical完整增量构建及Ninja no-op通过。初次新增测试中`llvm::Ex
 其后的直接工作仍是SPM scalar读取与target/host消费者、动态表availability和精确需求的边界、局部窗口物化、
 source-invariant typed failure作用范围，以及完整LM数值/package/no-card闭合。ViT、ResNet、大GEMM、共享RHS、YOLO和
 BF16 LLaMA的既有缺口仍按本计划前述矩阵推进；正确性收口后才能冻结B0并开始三轮性能调优。
-恢复设备验证前须取得用户确认；风险项目最后执行，最终冻结版本后全矩阵实卡验收一次。
+设备验证按16号执行纪律逐case进行；风险项目最后执行，最终冻结版本后全矩阵实卡验收一次。
 
 可移机复现的12组同步诊断输入/实际IR、测试与binary身份见
-[主机执行及交接证据](../../docs/data/board-performance/scalar-host-execution-20260914.json)。
+[主机执行证据](../../docs/data/board-performance/scalar-host-execution-20260914.json)。
 
 
 ### ResNet编译耗时的定向定位

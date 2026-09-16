@@ -181,7 +181,7 @@ Unit reshape和广播仅用于证明该已匹配链的输入坐标；其它pure�
 | 同一source/map多读、已有同map input、不同map、init同时被捕获 | 相同输入只绑定一次；不同map分开；init读不得误连到正在更新的output block argument | DPS ties、SSA uses、实际DAG edge/semantic key |
 | source来自另一个structured root、后继同时有动态表读取 | 新增真实producer→consumer边，保留dynamic extract及其index SSA；非affine表不伪装规则输入 | 原StructuredDAG/SemanticRoot及生产完整LM下一typed边界 |
 | data-dependent index、非unit常量轴、source在payload内定义、shape不匹配、source或loop extent未知 | 保持原读取，不引入新input或猜测映射 | verifier及不变IR/原有合法化门禁 |
-| 原始完整LM、固定FP16 block | 原source/参数保持，source阶段、实际候选、package/no-card、设备数值分别记账 | 统一runner；设备恢复前不能签实卡完成 |
+| 原始完整LM、固定FP16 block | 原source/参数保持，source阶段、实际候选、package/no-card、设备数值分别记账 | 统一runner；实卡完成须有本轮真实设备结果 |
 
 ### 3.5 按运行时索引读取连续切片
 
@@ -209,7 +209,7 @@ Pinned Tensor op没有可直接满足本仓的gather tiling/bufferization实现�
 | rank3输出、长度1024/1025/1031、FP16/BF16，i32/i64 indices | 重复、乱序、首末合法ID，原clamp/cast；不设置unique | 同一编译程序更换indices后全部输出逐bit匹配；source与index依赖显式 |
 | static完整切片及output分块 | token/连续维切分、4/16 Tile、多块与tail；不支持的索引形态保持typed拒绝 | 结果覆盖恰好一次，源地址由实际indices决定，连续片段大小正确 |
 | 外部只读表及局部输出 | 表保留DDR绑定；局部索引/输出真实allocation；未知来源/访问不伪造静态需求 | actual completion、SPM offsets、target执行和fresh package/no-card |
-| 原始完整LM、固定FP16 block回归 | 完整source、默认搜索参数和原始reference；主机/板端分别登记 | gather独立数值与完整产品阶段分别验收；设备恢复后再验性能 |
+| 原始完整LM、固定FP16 block回归 | 完整source、默认搜索参数和原始reference；主机/板端分别登记 | gather独立数值与完整产品阶段分别验收；性能以实卡测量验收 |
 
 ## 4. Attention Semantic Normalization
 
