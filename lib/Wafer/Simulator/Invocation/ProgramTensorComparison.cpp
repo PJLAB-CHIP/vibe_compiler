@@ -18,6 +18,39 @@
 namespace wafer::compiler {
 namespace {
 
+// Admitted formats are at most F32, so their products and squared differences
+// fit in F64 even at the extrema. Accumulate in extended precision and avoid
+// epsilon denominators: zero vectors have an explicit comparison contract.
+struct TensorSimilarity {
+  long double dot = 0.0;
+  long double actualSquared = 0.0;
+  long double expectedSquared = 0.0;
+  long double errorSquared = 0.0;
+
+  void add(double actual, double expected) {
+    const long double a = actual, b = expected;
+    dot += a * b;
+    actualSquared += a * a;
+    expectedSquared += b * b;
+    errorSquared += (a - b) * (a - b);
+  }
+
+  double cosine() const {
+    if (actualSquared == 0.0 || expectedSquared == 0.0)
+      return actualSquared == expectedSquared ? 1.0 : 0.0;
+    return static_cast<double>(
+        std::clamp(dot / std::sqrt(actualSquared) / std::sqrt(expectedSquared),
+                   -1.0L, 1.0L));
+  }
+
+  double relativeL2() const {
+    if (expectedSquared == 0.0)
+      return errorSquared == 0.0 ? 0.0
+                                 : std::numeric_limits<double>::infinity();
+    return static_cast<double>(std::sqrt(errorSquared / expectedSquared));
+  }
+};
+
 llvm::Error comparisonError(ProgramTensorComparisonErrorCode code,
                             const std::string &detail) {
   return llvm::make_error<ProgramTensorComparisonError>(code, detail);
@@ -226,13 +259,12 @@ std::error_code ProgramTensorComparisonError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
-                                               const ProgramTensor &expected,
-                                               double atol, double rtol) {
-  if (!std::isfinite(atol) || !std::isfinite(rtol) || atol < 0.0 || rtol < 0.0)
-    return comparisonError(
-        ProgramTensorComparisonErrorCode::InvalidTolerance,
-        "absolute and relative tolerances must be finite and nonnegative");
+llvm::Error compareProgramTensorExpectedOutput(
+    const ProgramTensor &actual, const ProgramTensor &expected,
+    const ProgramTensorComparisonPolicy &policy) {
+  if (llvm::Error error = validateProgramTensorComparisonPolicy(policy))
+    return error;
+  const double atol = policy.atol, rtol = policy.rtol;
   if (actual.getDType() != expected.getDType())
     return comparisonError(
         ProgramTensorComparisonErrorCode::DTypeMismatch,
@@ -280,6 +312,11 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
   const llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();
   const llvm::ArrayRef<uint8_t> expectedBytes = expected.getBytes();
   const size_t elementCount = actualBytes.size() / elementBytes;
+  if (policy.similarity && elementCount == 0)
+    return comparisonError(
+        ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType,
+        "similarity requires a non-empty tensor");
+  TensorSimilarity similarity;
   size_t mismatchCount = 0;
   std::optional<NumericMismatchSample> firstMismatch;
   std::optional<NumericMismatchSample> maximumAbsoluteError;
@@ -304,6 +341,8 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
 
     const double absoluteError =
         std::abs(actualValue.value - expectedValue.value);
+    if (policy.similarity)
+      similarity.add(actualValue.value, expectedValue.value);
     const double tolerance = atol + rtol * std::abs(expectedValue.value);
     if (!std::isfinite(tolerance))
       return comparisonError(ProgramTensorComparisonErrorCode::InvalidTolerance,
@@ -332,6 +371,20 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
     if (!maximumToleranceRatio || ratio > currentMaximumRatio)
       maximumToleranceRatio = sample;
   }
+  if (policy.similarity) {
+    if (similarity.cosine() >= policy.similarity->minimumCosine &&
+        similarity.relativeL2() <= policy.similarity->maximumRelativeL2)
+      return llvm::Error::success();
+    std::string detail;
+    llvm::raw_string_ostream(detail)
+        << "cosine=" << similarity.cosine()
+        << " minimum_cosine=" << policy.similarity->minimumCosine
+        << " relative_l2=" << similarity.relativeL2()
+        << " maximum_relative_l2=" << policy.similarity->maximumRelativeL2
+        << " elementwise_mismatches=" << mismatchCount << '/' << elementCount;
+    return comparisonError(ProgramTensorComparisonErrorCode::NumericMismatch,
+                           detail);
+  }
   if (mismatchCount != 0)
     return comparisonError(
         ProgramTensorComparisonErrorCode::NumericMismatch,
@@ -341,8 +394,11 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
 }
 
 llvm::Expected<ProgramTensorComparisonStatistics>
-computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
-                                         const ProgramTensor &expected) {
+computeProgramTensorComparisonStatistics(
+    const ProgramTensor &actual, const ProgramTensor &expected,
+    const ProgramTensorComparisonPolicy &policy) {
+  if (llvm::Error error = validateProgramTensorComparisonPolicy(policy))
+    return std::move(error);
   if (actual.getDType() != expected.getDType())
     return comparisonError(
         ProgramTensorComparisonErrorCode::DTypeMismatch,
@@ -382,6 +438,7 @@ computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
   result.elementCount = elementCount;
   long double absoluteErrorSum = 0.0;
   long double ulpDistanceSum = 0.0;
+  TensorSimilarity similarity;
   std::vector<double> absoluteErrors;
   std::vector<uint64_t> ulpDistances;
   absoluteErrors.reserve(elementCount);
@@ -401,6 +458,14 @@ computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
 
     const double absoluteError =
         std::abs(actualValue.value - expectedValue.value);
+    const double tolerance =
+        policy.atol + policy.rtol * std::abs(expectedValue.value);
+    if (!std::isfinite(tolerance))
+      return comparisonError(ProgramTensorComparisonErrorCode::InvalidTolerance,
+                             "computed tolerance is not finite at element=" +
+                                 std::to_string(elementIndex));
+    result.elementwiseMismatchCount += absoluteError > tolerance;
+    similarity.add(actualValue.value, expectedValue.value);
     const uint64_t ulpDistance =
         getUlpDistance(dtype, readFloatBitsAt(dtype, actualBytes, offset),
                        readFloatBitsAt(dtype, expectedBytes, offset),
@@ -422,11 +487,32 @@ computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
   result.p99AbsoluteError = getNearestRankQuantile(absoluteErrors, 0.99);
   result.p999AbsoluteError = getNearestRankQuantile(absoluteErrors, 0.999);
   result.maximumAbsoluteError = absoluteErrors.back();
+  result.cosineSimilarity = similarity.cosine();
+  result.relativeL2Error = similarity.relativeL2();
   result.meanUlpDistance = static_cast<double>(ulpDistanceSum / elementCount);
   result.p99UlpDistance = getNearestRankQuantile(ulpDistances, 0.99);
   result.p999UlpDistance = getNearestRankQuantile(ulpDistances, 0.999);
   result.maximumUlpDistance = ulpDistances.back();
   return result;
+}
+
+llvm::Error validateProgramTensorComparisonPolicy(
+    const ProgramTensorComparisonPolicy &policy) {
+  if (!std::isfinite(policy.atol) || !std::isfinite(policy.rtol) ||
+      policy.atol < 0.0 || policy.rtol < 0.0)
+    return comparisonError(
+        ProgramTensorComparisonErrorCode::InvalidTolerance,
+        "absolute and relative tolerances must be finite and nonnegative");
+  if (policy.similarity &&
+      (!std::isfinite(policy.similarity->minimumCosine) ||
+       policy.similarity->minimumCosine < 0.0 ||
+       policy.similarity->minimumCosine > 1.0 ||
+       !std::isfinite(policy.similarity->maximumRelativeL2) ||
+       policy.similarity->maximumRelativeL2 < 0.0))
+    return comparisonError(ProgramTensorComparisonErrorCode::InvalidTolerance,
+                           "similarity requires finite minimum cosine in [0,1] "
+                           "and nonnegative relative L2");
+  return llvm::Error::success();
 }
 
 } // namespace wafer::compiler

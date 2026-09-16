@@ -27,6 +27,10 @@
 # RUN: test ! -e %t.no-helper-output
 # RUN: not %wafer_compile_test --input-program-dir %t.input --output-dir %t.model-without-target --num-partitions=1 --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=MODEL-WITHOUT-TARGET
 # RUN: test ! -e %t.model-without-target
+# RUN: not %wafer_compile_test --input-program-dir %t.input --output-dir %t.similarity --num-partitions=1 --target-model --model-input 0=%t.in.npy --model-expected 0=%t.ref.npy --model-min-cosine=0.9999 2>&1 | FileCheck %s --check-prefix=SIMILARITY-PAIR
+# RUN: not %wafer_compile_test --input-program-dir %t.input --output-dir %t.similarity --num-partitions=1 --target-model --model-input 0=%t.in.npy --model-expected 0=%t.ref.npy --model-min-cosine=1.01 --model-max-relative-l2=0.01 2>&1 | FileCheck %s --check-prefix=SIMILARITY-RANGE
+# RUN: not %wafer_compile_test --input-program-dir %t.input --output-dir %t.similarity --num-partitions=1 --target-model --model-input 0=%t.in.npy --model-expected 0=%t.ref.npy --model-min-cosine=0.9999 --model-max-relative-l2=nan 2>&1 | FileCheck %s --check-prefix=SIMILARITY-FINITE
+# RUN: test ! -e %t.similarity
 
 # MISSING-INPUT: wafer-compile: missing required --input-program-dir
 # MISSING-OUTPUT: wafer-compile: missing required --output-dir
@@ -50,3 +54,6 @@
 # PROFILE-MODEL: wafer-compile: --profile cannot be combined with --target-model
 # NO-HELPER: wafer-compile: no XLA SPMD partitioner helper configured
 # MODEL-WITHOUT-TARGET: wafer-compile: model input/expected options require --target-model
+# SIMILARITY-PAIR: wafer-compile: --model-min-cosine and --model-max-relative-l2 must be supplied together
+# SIMILARITY-RANGE: wafer-compile: --model-min-cosine must be in [0,1]
+# SIMILARITY-FINITE: wafer-compile: invalid --model-max-relative-l2 value: nan

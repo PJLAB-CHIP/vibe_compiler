@@ -22,7 +22,8 @@ bool runTargetModelGate(
     const CommandLineOptions &options,
     const wafer::compiler::CompiledProgram &compiledProgram,
     llvm::ArrayRef<IndexedPath> inputPaths,
-    llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol,
+    llvm::ArrayRef<IndexedPath> expectedPaths,
+    const wafer::compiler::ProgramTensorComparisonPolicy &comparisonPolicy,
     wafer::model::TargetModelKernelBudget budget,
     wafer::model::TargetModelExecutionPolicy executionPolicy) {
   std::vector<wafer::compiler::ProgramGlobalInputBinding> globalInputs;
@@ -158,10 +159,12 @@ bool runTargetModelGate(
                    << "\n";
       return true;
     }
-    if (options.modelReportNumericStatistics) {
+    if (options.modelReportNumericStatistics ||
+        (comparisonPolicy.similarity &&
+         wafer::compiler::isFloatingProgramTensorDType(actual->getDType()))) {
       auto statistics =
-          wafer::compiler::computeProgramTensorComparisonStatistics(*actual,
-                                                                    *expected);
+          wafer::compiler::computeProgramTensorComparisonStatistics(
+              *actual, *expected, comparisonPolicy);
       if (!statistics) {
         llvm::errs() << "wafer-compile: target model numeric statistics "
                         "failed at index "
@@ -184,11 +187,25 @@ bool runTargetModelGate(
           << " mean_ulp=" << llvm::format("%.17g", statistics->meanUlpDistance)
           << " p99_ulp=" << statistics->p99UlpDistance
           << " p999_ulp=" << statistics->p999UlpDistance
-          << " max_ulp=" << statistics->maximumUlpDistance << "\n";
+          << " max_ulp=" << statistics->maximumUlpDistance
+          << " elementwise_mismatches=" << statistics->elementwiseMismatchCount
+          << " atol=" << comparisonPolicy.atol
+          << " rtol=" << comparisonPolicy.rtol
+          << " cosine=" << llvm::format("%.17g", statistics->cosineSimilarity)
+          << " relative_l2="
+          << llvm::format("%.17g", statistics->relativeL2Error)
+          << " comparison="
+          << (comparisonPolicy.similarity ? "similarity" : "elementwise");
+      if (comparisonPolicy.similarity)
+        llvm::outs() << " minimum_cosine="
+                     << comparisonPolicy.similarity->minimumCosine
+                     << " maximum_relative_l2="
+                     << comparisonPolicy.similarity->maximumRelativeL2;
+      llvm::outs() << "\n";
     }
     if (llvm::Error comparison =
             wafer::compiler::compareProgramTensorExpectedOutput(
-                *actual, *expected, atol, rtol)) {
+                *actual, *expected, comparisonPolicy)) {
       llvm::errs() << "wafer-compile: target model output differs at index "
                    << binding->programIndex << " launch slot " << launchSlot
                    << ": " << llvm::toString(std::move(comparison)) << "\n";

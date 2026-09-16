@@ -26,6 +26,9 @@ HF_LLAMA2_7B_CONFIG = (
 )
 HF_LLAMA2_7B_SEQUENCE_LENGTH = 16
 HF_LLAMA2_7B_COMPARISON = common.ComparisonPolicy(rtol=0.002, atol=0.004)
+LM_LOGITS_COMPARISON = common.ComparisonPolicy(
+    rtol=0.002, atol=0.004, min_cosine=0.9999, max_relative_l2=0.01,
+)
 ATTENTION_COMPARISON = common.ComparisonPolicy(rtol=0.006, atol=0.008)
 ATTENTION_HEAD_DIM = 64
 OPTIMIZATION_POLICIES = ("search", "none")
@@ -878,7 +881,7 @@ def _llama_2_7b_single_layer_lm(
         name=f"llama-2-7b-single-layer-lm-{sequence_length}",
         num_partitions=1, dtype=dtype, inputs=inputs,
         expected_outputs_factory=expected_outputs_factory,
-        export_program=export_program, comparison_policy=HF_LLAMA2_7B_COMPARISON,
+        export_program=export_program, comparison_policy=LM_LOGITS_COMPARISON,
     )
 
 

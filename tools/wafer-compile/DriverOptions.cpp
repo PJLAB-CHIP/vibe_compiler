@@ -29,25 +29,27 @@ void printHelp() {
          "trials limits actual candidate attempts, including failures "
          "(default 42).\n";
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-  llvm::outs() << "test-only internal entry also accepts: "
-                  "[--test-communication-candidate "
-                  "<peer|shared-ddr|recursive-doubling|dimension-ordered|ring-"
-                  "reduction|shared-input|pipelined-loads>] "
-                  "[--target-model "
-                  "--model-input <index>=<npy> "
-                  "--model-expected <index>=<npy> "
-                  "[--model-atol <value>] [--model-rtol <value>] "
-                  "[--model-report-numeric-statistics] "
-                  "--target-model-max-scalar-evaluations <count> "
-                  "--target-model-max-fused-multiply-adds <count> "
-                  "--target-model-max-movement-bytes <bytes> "
-                  "--target-model-max-movement-segments <count> "
-                  "[--target-model-numeric-policy "
-                  "<formal|onednn-then-formal|managed-reference> "
-                  "[--target-model-onednn-record <record>] "
-                  "--target-model-max-onednn-total-bytes <bytes> "
-                  "--target-model-max-onednn-scratchpad-bytes <bytes> "
-                  "--target-model-max-onednn-reorder-bytes <bytes>]]\n";
+  llvm::outs()
+      << "test-only internal entry also accepts: "
+         "[--test-communication-candidate "
+         "<peer|shared-ddr|recursive-doubling|dimension-ordered|ring-"
+         "reduction|shared-input|pipelined-loads>] "
+         "[--target-model "
+         "--model-input <index>=<npy> "
+         "--model-expected <index>=<npy> "
+         "[--model-atol <value>] [--model-rtol <value>] "
+         "[--model-min-cosine <value> --model-max-relative-l2 <value>] "
+         "[--model-report-numeric-statistics] "
+         "--target-model-max-scalar-evaluations <count> "
+         "--target-model-max-fused-multiply-adds <count> "
+         "--target-model-max-movement-bytes <bytes> "
+         "--target-model-max-movement-segments <count> "
+         "[--target-model-numeric-policy "
+         "<formal|onednn-then-formal|managed-reference> "
+         "[--target-model-onednn-record <record>] "
+         "--target-model-max-onednn-total-bytes <bytes> "
+         "--target-model-max-onednn-scratchpad-bytes <bytes> "
+         "--target-model-max-onednn-reorder-bytes <bytes>]]\n";
 #endif
 }
 
@@ -339,6 +341,19 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
     if (arg == "--model-rtol" || arg.starts_with("--model-rtol=")) {
       if (parseValueOption(argc, argv, index, arg, "--model-rtol",
                            options.modelRtol))
+        return false;
+      continue;
+    }
+    if (arg == "--model-min-cosine" || arg.starts_with("--model-min-cosine=")) {
+      if (parseValueOption(argc, argv, index, arg, "--model-min-cosine",
+                           options.modelMinimumCosine))
+        return false;
+      continue;
+    }
+    if (arg == "--model-max-relative-l2" ||
+        arg.starts_with("--model-max-relative-l2=")) {
+      if (parseValueOption(argc, argv, index, arg, "--model-max-relative-l2",
+                           options.modelMaximumRelativeL2))
         return false;
       continue;
     }

@@ -118,6 +118,18 @@ def _save_workload_array(
     )
 
 
+def save_torch_tensor_npy(destination: pathlib.Path, tensor: Any) -> None:
+    """Serialize an existing Torch result; NumPy does not compute the oracle."""
+    import numpy as np
+    import torch
+
+    tensor = tensor.detach().cpu().contiguous()
+    # Public NPY represents BF16 as opaque two-byte storage.
+    array = (tensor.view(torch.uint16).numpy().view("V2")
+             if tensor.dtype == torch.bfloat16 else tensor.numpy())
+    _save_workload_array(np, destination, array)
+
+
 def _array_digest(
     numpy_module: Any, value: Any, *, require_float32: bool = True
 ) -> str:

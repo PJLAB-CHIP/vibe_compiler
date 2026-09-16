@@ -76,9 +76,10 @@ int main(int argc, char **argv) {
         << "wafer-compile: --profile cannot be combined with --target-model\n";
     return 1;
   }
-  bool modelInvocationRequested = !options.modelInputs.empty() ||
-                                  !options.modelExpected.empty() ||
-                                  options.modelAtol || options.modelRtol;
+  bool modelInvocationRequested =
+      !options.modelInputs.empty() || !options.modelExpected.empty() ||
+      options.modelAtol || options.modelRtol || options.modelMinimumCosine ||
+      options.modelMaximumRelativeL2;
   const bool targetModelOptionsProvided =
       options.targetModelMaximumScalarEvaluations ||
       options.targetModelMaximumFusedMultiplyAdds ||
@@ -123,6 +124,22 @@ int main(int argc, char **argv) {
       parseTolerance(options.modelRtol, "--model-rtol", 0.0);
   if (!modelAtol || !modelRtol)
     return 1;
+  if (options.modelMinimumCosine.has_value() !=
+      options.modelMaximumRelativeL2.has_value()) {
+    llvm::errs() << "wafer-compile: --model-min-cosine and "
+                    "--model-max-relative-l2 must be supplied together\n";
+    return 1;
+  }
+  auto modelMinimumCosine =
+      parseTolerance(options.modelMinimumCosine, "--model-min-cosine", 0.0);
+  auto modelMaximumRelativeL2 = parseTolerance(options.modelMaximumRelativeL2,
+                                               "--model-max-relative-l2", 0.0);
+  if (!modelMinimumCosine || !modelMaximumRelativeL2)
+    return 1;
+  if (*modelMinimumCosine > 1.0) {
+    llvm::errs() << "wafer-compile: --model-min-cosine must be in [0,1]\n";
+    return 1;
+  }
   auto modelInputs = parseIndexedPaths(options.modelInputs, "--model-input");
   auto modelExpected =
       parseIndexedPaths(options.modelExpected, "--model-expected");
@@ -480,8 +497,14 @@ int main(int argc, char **argv) {
                         "budget is missing\n";
         return 1;
       }
+      wafer::compiler::ProgramTensorComparisonPolicy comparisonPolicy{
+          *modelAtol, *modelRtol, std::nullopt};
+      if (options.modelMinimumCosine)
+        comparisonPolicy.similarity =
+            wafer::compiler::ProgramTensorSimilarityTolerance{
+                *modelMinimumCosine, *modelMaximumRelativeL2};
       if (runTargetModelGate(options, *compiledProgram, *modelInputs,
-                             *modelExpected, *modelAtol, *modelRtol,
+                             *modelExpected, comparisonPolicy,
                              *targetModelBudget, *targetModelExecutionPolicy))
         return 1;
     }

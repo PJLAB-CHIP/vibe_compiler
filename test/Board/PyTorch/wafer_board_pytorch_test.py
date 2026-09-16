@@ -1157,8 +1157,6 @@ def prepare_case_step(
             if value is not None:
                 compile_command.extend(["--" + option.replace("_", "-"), str(value)])
         if args.target_model:
-            import numpy as np
-
             expected_outputs = case.materialize_expected_outputs()
             model_dir = step_dir / "model"
             model_dir.mkdir()
@@ -1166,17 +1164,9 @@ def prepare_case_step(
             for role, tensors in (("input", case.inputs), ("expected", expected_outputs)):
                 for index, tensor in enumerate(tensors):
                     path = model_dir / f"{role}_{index}.npy"
-                    tensor = tensor.detach().cpu().contiguous()
-                    # The existing external NPY reader represents BF16 as
-                    # two-byte void elements, preserving every stored bit.
-                    array = (tensor.view(torch.uint16).numpy().view("V2")
-                             if tensor.dtype == torch.bfloat16 else tensor.numpy())
-                    np.save(path, array, allow_pickle=False)
+                    board_cases.capture.save_torch_tensor_npy(path, tensor)
                     compile_command.extend([f"--model-{role}", f"{index}={path}"])
-            for tolerance in ("atol", "rtol"):
-                value = getattr(case.comparison_policy, tolerance)
-                if value is not None:
-                    compile_command.extend([f"--model-{tolerance}", str(value)])
+            compile_command.extend(common.model_comparison_arguments(case.comparison_policy))
             for option in ("target_model_max_scalar_evaluations",
                            "target_model_max_fused_multiply_adds",
                            "target_model_max_movement_bytes",
@@ -1507,7 +1497,13 @@ def main() -> int:
                         (step_dir / "raw").glob("*user_input*")
                     )},
                     "outputs": [
-                        summarize_output_error(actual, expected)
+                        {
+                            **summarize_output_error(actual, expected),
+                            **(dataclasses.asdict(common.compute_tensor_similarity(
+                                actual, expected, policy=current_case.comparison_policy,
+                            )) if current_case.comparison_policy.min_cosine is not None
+                               and actual.dtype.is_floating_point else {}),
+                        }
                         for actual, expected in zip(actual_outputs, expected_outputs, strict=True)
                     ],
                     "timing": [line for line in result.stdout.splitlines()
@@ -1524,7 +1520,7 @@ def main() -> int:
                     f"iteration={iteration + 1}/{args.repeat} "
                     f"wall_ms="
                     f"{(time.monotonic_ns() - iteration_start_ns) // 1_000_000} "
-                    "torch_close=true"
+                    "comparison_passed=true"
                 )
             continuation_outputs = actual_outputs
 

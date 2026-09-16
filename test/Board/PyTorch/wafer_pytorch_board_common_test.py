@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import math
 import tempfile
 import unittest
 
@@ -11,6 +12,7 @@ import torch
 
 import wafer_pytorch_board_common as common
 import wafer_board_pytorch_test as board_runner
+import wafer_pytorch_board_cases as cases
 
 
 class CompilerIRDumpTest(unittest.TestCase):
@@ -32,6 +34,78 @@ class CompilerIRDumpTest(unittest.TestCase):
 
 
 class PyTorchBoardCommonTest(unittest.TestCase):
+    def test_similarity_policy_and_model_arguments(self) -> None:
+        policy = cases.LM_LOGITS_COMPARISON
+        self.assertEqual(common.model_comparison_arguments(policy), [
+            "--model-atol", "0.004", "--model-rtol", "0.002",
+            "--model-min-cosine", "0.9999", "--model-max-relative-l2", "0.01",
+        ])
+        self.assertIsNone(cases.HF_LLAMA2_7B_COMPARISON.min_cosine)
+        self.assertEqual(common.model_comparison_arguments(common.PYTORCH_DEFAULT), [])
+        for extent in (1024, 1025, 1031):
+            for dtype in (torch.float16, torch.bfloat16, torch.float32):
+                with self.subTest(extent=extent, dtype=dtype):
+                    expected = torch.ones((2, 2, extent), dtype=dtype)
+                    actual = expected.clone()
+                    actual[-1, -1, -1] += 0.125
+                    with self.assertRaises(AssertionError):
+                        common.assert_tensor_matches(actual, expected,
+                            policy=cases.HF_LLAMA2_7B_COMPARISON, context="elementwise")
+                    common.assert_tensor_matches(actual, expected, policy=policy, context="similarity")
+                    stats = common.compute_tensor_similarity(actual, expected, policy=policy)
+                    n = actual.numel()
+                    self.assertEqual(stats.elementwise_mismatches, 1)
+                    self.assertEqual(stats.max_abs_error, 0.125)
+                    self.assertAlmostEqual(stats.relative_l2_error, 0.125 / math.sqrt(n), places=14)
+                    self.assertAlmostEqual(stats.cosine_similarity,
+                        (n + 0.125) / math.sqrt(n) / math.sqrt(n + 0.265625), places=14)
+                    for wrong in (expected * 2, -expected, torch.zeros_like(expected)):
+                        with self.assertRaises(AssertionError):
+                            common.assert_tensor_matches(wrong, expected, policy=policy, context="wrong")
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = pathlib.Path(directory) / "similarity.raw"
+                        common.write_tensor_raw(path, actual)
+                        common.assert_raw_capture_matches(path, expected, policy=policy, context="readback")
+
+    def test_similarity_zero_nonfinite_and_invalid_contracts(self) -> None:
+        # Tiny shapes isolate zero norms and invalid inputs; real-size positives above.
+        policy = cases.LM_LOGITS_COMPARISON
+        zero = torch.zeros(1, dtype=torch.float16)
+        one = torch.ones_like(zero)
+        ordered = torch.tensor([1, 2], dtype=torch.float16)
+        permuted = ordered.flip(0)
+        stats = common.compute_tensor_similarity(permuted, ordered, policy=policy)
+        self.assertAlmostEqual(stats.cosine_similarity, 0.8, places=14)
+        self.assertAlmostEqual(stats.relative_l2_error, math.sqrt(0.4), places=14)
+        with self.assertRaises(AssertionError):
+            common.assert_tensor_matches(permuted, ordered, policy=policy, context="permuted")
+        for wrong in (ordered.reshape(1, 2), ordered.float()):
+            with self.assertRaises(RuntimeError):
+                common.assert_tensor_matches(wrong, ordered, policy=policy, context="metadata")
+        common.assert_tensor_matches(zero, zero, policy=policy, context="zeros")
+        stats = common.compute_tensor_similarity(zero, zero, policy=policy)
+        self.assertEqual((stats.cosine_similarity, stats.relative_l2_error), (1, 0))
+        for a, b in ((one, zero), (zero, one)):
+            with self.assertRaises(AssertionError):
+                common.assert_tensor_matches(a, b, policy=policy, context="one zero")
+        for value in (math.inf, -math.inf, math.nan):
+            bad = torch.full_like(zero, value)
+            for a, b in ((bad, one), (one, bad), (bad, bad)):
+                with self.assertRaisesRegex(AssertionError, "finite"):
+                    common.assert_tensor_matches(a, b, policy=policy, context="nonfinite")
+        empty = torch.empty((0,), dtype=torch.float16)
+        with self.assertRaisesRegex(RuntimeError, "non-empty"):
+            common.assert_tensor_matches(empty, empty, policy=policy, context="empty")
+        for args in ({"min_cosine": 0.99}, {"max_relative_l2": 0.01},
+                     {"min_cosine": math.nan, "max_relative_l2": 0.01},
+                     {"min_cosine": 1.01, "max_relative_l2": 0.01},
+                     {"min_cosine": -0.1, "max_relative_l2": 0.01},
+                     {"min_cosine": 0.99, "max_relative_l2": math.inf},
+                     {"min_cosine": 0.99, "max_relative_l2": -1},
+                     {"min_cosine": 0.99, "max_relative_l2": 0.01, "equal_nan": True}):
+            with self.assertRaises(ValueError):
+                common.ComparisonPolicy(atol=0.004, rtol=0.002, **args)
+
     def test_integer_ports_preserve_large_values_and_reject_one_bit_errors(self) -> None:
         # Exercise real-size/tail buffers and values above floating-point exact
         # integer ranges. Neither raw transport nor comparison may cast them.
@@ -48,7 +122,8 @@ class PyTorchBoardCommonTest(unittest.TestCase):
                         common.assert_raw_capture_matches(path, expected, context="integer raw")
                         common.write_tensor_raw(path, actual)
                         for policy in (common.PYTORCH_DEFAULT,
-                                       common.ComparisonPolicy(rtol=0.002, atol=0.004)):
+                                       common.ComparisonPolicy(rtol=0.002, atol=0.004),
+                                       cases.LM_LOGITS_COMPARISON):
                             with self.assertRaisesRegex(AssertionError, "1/.* elements"):
                                 common.assert_raw_capture_matches(
                                     path, expected, context="integer tail", policy=policy,

@@ -1161,14 +1161,43 @@ Canonical完整增量构建、后续Ninja no-op、直接回归及diff/source缓�
 匹配的长K GEMM实际67174400 FMA、612条target command及完整精确输出均相同；source→package→SystemC总wall由44.084秒降至18.449秒，
 RSS分别968132/970684 KiB。该计时只属于主机参考执行，不是设备性能。完整LM串行与并行复核的错误数、首个/最大误差及全部摘要统计一致，两个执行均已结束。
 
-### 当前数值边界与待确认项
+### 逐点数值边界与归因
 
 修复后的S16完整LM在同一原合同下：FP16为93/512000超差、max abs=0.005859375；BF16为82739/512000超差、max abs=0.05078125。
 独立CPU诊断只按实际Instr的K块执行F32 partial相加，并让RMSNorm按当前参考的F32顺序累加，即复现相同的超差数量、首个位置与最大误差，mean abs接近。
 FP16单独改变linear分块未超差，单独顺序RMS为77处；二者组合为93处。BF16对应53937、38441、82739处。
-这将剩余问题定位到数值归约合同与PyTorch eager实现的差别，不能据此把原门限改大或将整层标作已通过。
+这将剩余问题定位到数值归约合同与PyTorch eager实现的差别；该归因本身不自动改变验收标准。
 [StableHLO reduce规范](https://openxla.org/stablehlo/spec#reduce)及pinned规范将归约tree留给实现；它不证明实际TX81采用当前软件参考的次序。
-硬件在这些长归约上的精确树序仍需证据，现有支持dtype/psum和有界数值案例不能代签该事实。后续需用户确认数值方向或恢复设备后核对实际硬件。
+硬件在这些长归约上的精确树序仍需证据，现有支持dtype/psum和有界数值案例不能代签该事实。
 
-当前产物边界：大GEMM及完整单层LM的search/package/fresh no-card已经闭合；原模型、dtype与原LM容差不变；整层数值资格仍未闭合。
-本轮没有实卡执行，没有为匹配PyTorch对单个模型改变归约顺序。用户当前约束下，不继续扩展数值重排算法或替换oracle。
+### 显式输出相似度验收
+
+用户审阅整体误差及余弦下界后，明确接受本轮单层主机结果，并授权调整比较方法。
+按16号验证合同，完整LM浮点输出选择cosine>=0.9999且relative_l2<=0.01，两项同时通过；
+原atol=0.004、rtol=0.002保留为逐点诊断。其它case不变，整数、shape/dtype、NaN/Inf保持严格检查。
+通用比较器不识别模型名；case显式策略进入TargetModel CLI与唯一board runner，不改变被测算术或PyTorch oracle。
+相似度由实际完整输出计算，先前根据误差统计推导的下界仅为讨论数据。当前覆盖矩阵见16号“浮点输出的显式相似度策略”。
+本轮比较边界验证已完成：
+
+- `ProgramTensorComparisonTest` 16项实际通过，其中新策略覆盖三种浮点dtype、1024/1025/1031、已知cosine/L2公式、
+  同向缩放、错位/反向、零范数、非有限值、整数与metadata负例，原逐点测试继续通过。
+- `wafer-pytorch-board-tensor-reference-python`的10项与`wafer-pytorch-board-cases-python`全套通过；
+  同一策略实际经过raw写入/读取，整数大值差1仍失败，CLI成对参数保持。NPY传输复用原capture helper，oracle及比较仍由Torch拥有。
+- 两项compiler CLI lit通过：新门限缺项、越界、非有限值在编译前拒绝；生产入口不接收内部模型选项。
+- canonical完整增量构建、后续Ninja no-op及diff/source缓存检查通过。
+
+本轮FP16/BF16原始source→search（8/12）→verified package→TargetModel→fresh no-card全部通过。
+使用唯一PyTorch runner重新生成原始IDs及完整eager reference，实际比较512000个logits，16 Tile完成、145820条command。
+本轮使用既有formal numeric policy；此前诊断使用managed-reference，两者分开记录，不把不同执行后端的误差变化称为算法修复。
+
+| 精度 | 实际cosine | 实际relative L2 | 原逐点超差 | max abs | 新合同 |
+| --- | --- | --- | --- | --- | --- |
+| FP16 | 0.99999950744975685 | 0.00099252216486836898（0.0992522%） | 75/512000 | 0.0068359375 | 通过 |
+| BF16 | 0.99999244647110341 | 0.0038867732670465269（0.3886773%） | 82739/512000 | 0.05078125 | 通过 |
+
+执行日志：`build/llama2-similarity-fp16.log`、`build/llama2-similarity-bf16.log`；对应fresh产物在
+`build/test/llama2-similarity-{fp16,bf16}`。比较器/CLI证据为`build/comparison-policy-cpp-final.log`、
+`build/comparison-policy-python-closure.log`、`build/comparison-policy-cases.log`、`build/comparison-policy-cli.log`；
+canonical构建及no-op记录为`build/comparison-policy-canonical-build.log`和`build/comparison-policy-canonical-noop.log`。
+no-card日志中的`numeric_execution=false`仅描述runtime无设备验证；上游TargetModel已单独实际完成全部输出比较。
+真实板端资格继续独立，未执行设备，不继续扩展归约重排或更高精度算法。

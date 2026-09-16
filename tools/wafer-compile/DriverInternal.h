@@ -8,6 +8,7 @@
 #include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/Driver/CompiledProgram.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
+#include "Wafer/Simulator/Invocation/ProgramTensorComparison.h"
 #include "Wafer/Simulator/SystemC/SystemCTargetModel.h"
 #endif
 
@@ -39,6 +40,8 @@ struct CommandLineOptions {
   std::vector<std::string> modelExpected;
   std::optional<std::string> modelAtol;
   std::optional<std::string> modelRtol;
+  std::optional<std::string> modelMinimumCosine;
+  std::optional<std::string> modelMaximumRelativeL2;
   bool modelReportNumericStatistics = false;
   bool targetModel = false;
   std::optional<std::string> targetModelMaximumScalarEvaluations;
@@ -102,7 +105,8 @@ bool runTargetModelGate(
     const CommandLineOptions &options,
     const wafer::compiler::CompiledProgram &compiledProgram,
     llvm::ArrayRef<IndexedPath> inputPaths,
-    llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol,
+    llvm::ArrayRef<IndexedPath> expectedPaths,
+    const wafer::compiler::ProgramTensorComparisonPolicy &comparisonPolicy,
     wafer::model::TargetModelKernelBudget budget,
     wafer::model::TargetModelExecutionPolicy executionPolicy);
 #endif

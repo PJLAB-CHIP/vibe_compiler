@@ -132,7 +132,8 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 - Output IR / files：同一portable source、原dtype的raw输入和全部reference、按实际端口绑定的runner参数；无第二份dtype表。
 - Downstream consumer：生产`wafer-compile`与原`prepare_runtime_payloads`、`wafer-run`及完整PyTorch比较。
 - User-level driver / named pipeline：原PyTorch case registry和唯一board runner；source/no-card与实卡资格继续分别登记。
-- Explicit non-goals：不新增runtime dtype/ABI，不做host embedding，不裁剪词表/输出位置，不新增runner、不改变原block或参考容差。
+- Explicit non-goals：不新增runtime dtype/ABI，不做host embedding，不裁剪词表/输出位置，不新增runner、不改变原block；
+  完整LM的比较策略按下述用户授权合同单独显式选择。
 - Completion criteria：混合端口真实export→metadata→payload的dtype/shape/角色闭合，整数误差1必须拒绝；
   新LM保留实际embedding、一个原始decoder、final RMSNorm及全部LM logits；source/lowering/package未闭合时不签board-ready。
 
@@ -144,7 +145,8 @@ S16为主配置并覆盖FP16/BF16，S1024/1025为真实规模整除/尾部；cas
 
 原始 module 通过02号直接 XLA capture 合同导出，不要求 Dynamo 预追踪。共享权重、buffer 与 runtime ID 按实际
 tensor identity 绑定，参数及 CPU reference 不变。导出/source 校验、XLA CPU 数值、Wafer no-card 与实卡资格分别登记；
-两套主机 GEMM 的累加/舍入差异不能冒充设备缺陷，也不能据此放宽该 case 的既定容差。
+两套主机 GEMM 的累加/舍入差异不能冒充设备缺陷。比较策略由case显式声明；只有用户授权修改验收标准后才可改变，
+不能由compiler根据模型名、输出或失败结果自行放宽。
 
 | 覆盖输入/分支 | exact要求、失败与直接witness |
 | --- | --- |
@@ -153,6 +155,36 @@ tensor identity 绑定，参数及 CPU reference 不变。导出/source 校验�
 | dtype/shape/角色不符、非CPU或不支持的dtype | 在设备launch前拒绝；不改dtype以绕过未实现合同 |
 | 单层LM S16、1024/1025及BF16补充 | 原HF所有logits及source输入i64、实际embedding gather和完整词表投影；同一source改ID会改变reference，越界ID在host失败 |
 | 原FP16/BF16 block及其它同dtype case | 构造、reference和原source保持；此处解除的是runner的人为同dtype限制，不为编译器补猜测的索引语义 |
+
+#### 浮点输出的显式相似度策略
+
+- 输入：本轮完整actual/独立expected张量及显式comparison policy；dtype、shape、字节数保持严格一致。
+- 职责：默认逐元素`abs(a-b) <= atol + rtol*abs(b)`；显式提供成对的`min_cosine`和`max_relative_l2`时，
+  浮点输出改按整张量展平后的`dot(a,b)/(norm(a)*norm(b))`及`norm(a-b)/norm(b)`共同验收。
+  两项必须同时通过，不能以高余弦掩盖幅度错误。逐点容差保留为诊断，不能再单独阻断相似度策略。
+- 输出/消费者：typed比较结果、实际余弦/相对L2和原逐点超差统计，供TargetModel gate和唯一PyTorch board runner使用；
+  `wafer-compile-test`通过成对的`--model-min-cosine`、`--model-max-relative-l2`传递同一case策略。
+- 边界：浮点统计提升到至少F64，不改变被测程序、输入、独立oracle或归约；整数始终exact。
+  相似度模式拒绝NaN/Inf，即使两边相同。两个全零向量约定cosine=1、relative_l2=0；仅参考全零时relative_l2=Inf，
+  仅实际全零时cosine=0、relative_l2=1。空张量相似度未定义，明确拒绝，不加epsilon掩盖零范数。
+- 完成条件：C++模型与Python回读使用相同公式/阈值/边界，原逐点策略保持；真实source→package→TargetModel执行新策略。
+  该结果只签主机数值资格，不代签no-card、设备或多层模型。
+- Non-goals：不改数值算法、不全局放宽容差、不按模型名识别策略，不用历史误差摘要推导的下界代替实际比较。
+
+选择依据：PyTorch `assert_close`提供逐点策略；成熟的
+[TensorRT Polygraphy distance_metrics](https://docs.nvidia.com/deeplearning/tensorrt/latest/_static/polygraphy/_modules/polygraphy/comparator/compare.html)
+把L2与cosine作为必须同时通过的输出比较。本仓采用相对L2以归一化输出尺度；阈值由case合同决定，不引用其默认值。
+完整单层LM显式采用cosine>=0.9999且relative_l2<=0.01；原atol=0.004、rtol=0.002仅作逐点诊断。
+原decoder block、attention、GEMM和其它case策略保持。
+
+| 输入等价类/分支 | exact输出、typed失败与下游witness |
+| --- | --- |
+| rank3、1024/1025/1031，F16/BF16/F32，少数逐点超差 | 原逐点策略失败；相似度策略按实际向量通过，报告逐点超差数量及已知公式的cosine/L2 |
+| 同向缩放、符号翻转、错位输出 | 缩放即使cosine=1仍由relative_l2拒绝；其它错误按实际指标拒绝 |
+| 全零/单侧零/空、非有限值、非法或不成对阈值 | 按上述约定返回确定结果或typed错误，Python与C++一致 |
+| 整数、大值及错误shape/dtype/字节数 | 不受相似度门限影响，原严格检查继续失败 |
+| 正式模型入口与PyTorch runner | 显式策略穿过CLI/case，成功也输出指标；未选策略的入口保持逐点行为 |
+| 完整单层LM S16 FP16/BF16 | 本轮原始source、全512000 logits与eager reference，经实际TargetModel计算指标并验收；设备资格独立 |
 
 ### 3.2 Canonical build gate
 
