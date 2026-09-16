@@ -36,6 +36,12 @@ def Wafer_LinalgExtAttentionOp
     form. Its three online reduction components are exposed only through
     WaferCoupledReductionOpInterface and are materialized only after the
     Spatial/Region choice, not as extra graph-level results.
+
+    Formation permits F32 softmax followed by one default-rounded conversion
+    to the common F16/BF16 query/key/value/output type. Online normalization
+    rounds unnormalized probabilities at PV input and normalizes the final
+    accumulator; it does not preserve eager normalized-probability rounding.
+    Score-region arithmetic and conversion boundaries remain explicit SSA.
   }];
 
   let arguments = (ins

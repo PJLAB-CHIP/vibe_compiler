@@ -1,0 +1,1166 @@
+{
+  "date": "2026-09-17",
+  "base_commit": "a8f11499",
+  "change": "FP32 softmax to FP16/BF16 probability is accepted by complete attention formation; existing online decomposition; unchanged HF source/reference and similarity limits",
+  "environment": {
+    "compiler": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+    "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+    "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "commit": "a8f11499",
+    "boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+    "parallelism": 80,
+    "canonical_build": "passed; subsequent Ninja no-op",
+    "resnet_extent": 224,
+    "source_revision": "a8f11499 plus direct operand projections and mixed-precision attention formation",
+    "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+    "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile"
+  },
+  "source_implementation": {
+    "prefill": "HF eager_attention_forward",
+    "decode": "HF LlamaAttention + DynamicCache",
+    "block": "HF LlamaDecoderLayer"
+  },
+  "host_checks": {
+    "build": {
+      "path": "build/test/attention-fusion-build.log",
+      "sha256": "2a47f5a41e3d0013019599d102ea14bfc36e96a5eeec1062f942ea13dc8d3168"
+    },
+    "no_op": {
+      "path": "build/test/board-attention-fusion-20260917/canonical-noop.log",
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    "focused": {
+      "path": "build/test/attention-fusion-focused.log",
+      "sha256": "29ab29f89d018a604a9dbc808f67dd7625e4b3471a11e5d8b50d03006345518d"
+    },
+    "components": {
+      "path": "build/test/board-attention-fusion-20260917/components.log",
+      "sha256": "0d316b8c393bc62fe0cab9fd28f38651e7fc2979762e36611a559c08e136bc41"
+    },
+    "lit": {
+      "path": "build/test/board-attention-fusion-20260917/focused-lit.log",
+      "sha256": "3abf1f08305f014388b83ce1b7153feeff07df9be6ce570fd993e7f0ed1b8448"
+    },
+    "source_model": {
+      "path": "build/test/board-attention-fusion-20260917/source-model-configured.log",
+      "sha256": "fd6f07b70b5a46d7ad56d603152b17c6ebcebed4f691060edb28f94b9551dfb6"
+    },
+    "source_model_details": {
+      "path": "build/test/board-attention-fusion-20260917/source-model-details.log",
+      "sha256": "54a25fffcb374cd944fa5cf5394de02a31638ec070a265f45f2a39da258e4fbb"
+    }
+  },
+  "formed_ir": [
+    {
+      "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-formed-attention.mlir",
+      "sha256": "1ef9b01b996f713b384bca99692a93c34eee77337810295c197f59e32279fc25"
+    },
+    {
+      "path": "build/test/board-attention-fusion-20260917/block-fp16-formed-attention.mlir",
+      "sha256": "fc488878126211e9d97505be2070a3daa3dfc09e3f3c52bab61713c8b9b56f8b"
+    },
+    {
+      "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-formed-attention.mlir",
+      "sha256": "99a96e9b7a300a02a510d6eed21ed50a68714e9653d6f5938d639e8639832094"
+    }
+  ],
+  "cases": [
+    {
+      "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "attention-decode-kv-cache",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "attention-decode-kv-cache",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-16T18:46:09Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 18.204269713023677,
+      "audits": [
+        {
+          "case": "attention-decode-kv-cache",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "68730106b60ea70f9967592e68dc537afeb9c626cc34f8116c5854ef94a1e970",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+            "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+            "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+            "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 4096,
+              "max_abs_error": 4.57763671875e-05,
+              "cosine_similarity": 0.9999997597717873,
+              "relative_l2_error": 0.0006938379798784821,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 8.91622039489448e-06
+            },
+            {
+              "shape": [
+                1,
+                32,
+                1024,
+                128
+              ],
+              "dtype": "torch.float16",
+              "elements": 4194304,
+              "max_abs_error": 0.0001220703125,
+              "cosine_similarity": 0.9999999999993954,
+              "relative_l2_error": 1.1659907865463165e-06,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.9398173612426035e-10
+            },
+            {
+              "shape": [
+                1,
+                32,
+                1024,
+                128
+              ],
+              "dtype": "torch.float16",
+              "elements": 4194304,
+              "max_abs_error": 6.103515625e-05,
+              "cosine_similarity": 1.0,
+              "relative_l2_error": 1.0808032926152984e-07,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 2.816022970364429e-10
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=25955999"
+          ]
+        },
+        {
+          "case": "attention-decode-kv-cache-continuation",
+          "step": 2,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "0e68e4424191fa2a2da55ec45a06f5a5bb958d19098c4aecab365d2e510e3c87",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "720290da4654d41418b64ee61449cbb8c6612bb18ae6b69f4702678dd1e9a3ea",
+            "card_00_user_input_1.f16.raw": "250c21ea9d405ccdd0847ab31f1f9dd29fbcdec205c061e69775594d5fc29950",
+            "card_00_user_input_2.f16.raw": "32827052832674fdfbd5ee1cb1665e1a3eb9a8453f4050eabaa81684b03da637",
+            "card_00_user_input_3.f16.raw": "382e008e5bc647359ed6f41cb932f732b000a96c6048edd3cae85e65df04c175"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 4096,
+              "max_abs_error": 4.57763671875e-05,
+              "cosine_similarity": 0.9999997451378219,
+              "relative_l2_error": 0.0007145614958492933,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 9.234805474989116e-06
+            },
+            {
+              "shape": [
+                1,
+                32,
+                1025,
+                128
+              ],
+              "dtype": "torch.float16",
+              "elements": 4198400,
+              "max_abs_error": 6.103515625e-05,
+              "cosine_similarity": 0.9999999999997813,
+              "relative_l2_error": 7.667483509047694e-07,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 2.340231908530724e-10
+            },
+            {
+              "shape": [
+                1,
+                32,
+                1025,
+                128
+              ],
+              "dtype": "torch.float16",
+              "elements": 4198400,
+              "max_abs_error": 0.0001220703125,
+              "cosine_similarity": 1.0,
+              "relative_l2_error": 1.393931204201155e-07,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.0644203922370585e-10
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=33933998"
+          ]
+        }
+      ],
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board.json",
+        "sha256": "04440dc55adae9b303cfa462369464a997ed2d229def3345d9acfbf380b750d5"
+      },
+      "log": {
+        "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board.log",
+        "sha256": "806a96501e39dbeced79ea8159259c983884f17e76caf48930f8b3a97b1800ba"
+      },
+      "captures": [
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board/step_01/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "a1018a555352b1b907907ce2921199e0912eb30b138af9d5812ab0bf3ba15ff4"
+        },
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board/step_01/raw/card_00_output_1.capture.f16.raw",
+          "sha256": "250c21ea9d405ccdd0847ab31f1f9dd29fbcdec205c061e69775594d5fc29950"
+        },
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board/step_01/raw/card_00_output_2.capture.f16.raw",
+          "sha256": "32827052832674fdfbd5ee1cb1665e1a3eb9a8453f4050eabaa81684b03da637"
+        },
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board/step_02/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "46a208c8af9c76a0199668361acacd6c4cbb2895076b84a1fc08bdc5c28d9b6c"
+        },
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board/step_02/raw/card_00_output_1.capture.f16.raw",
+          "sha256": "251ca4caaeeac10a1aca8652f622fc1eddc7e3b460a7381642eeb42763e2cddb"
+        },
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-board/step_02/raw/card_00_output_2.capture.f16.raw",
+          "sha256": "4d1748385b433c79ef9dcc2385de1667910a30b2e57fbd6cf9f38fbaeb8d0636"
+        }
+      ]
+    },
+    {
+      "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "attention-prefill",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "attention-prefill",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/attention-prefill-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/attention-prefill-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-16T18:38:19Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 7.62414702802198,
+      "audits": [
+        {
+          "case": "attention-prefill",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "5a12227d85ff06590233b46c1e6ac510dc9242769bc025dc9d29ed4e683499f4",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+            "card_00_user_input_1.f16.raw": "d716550f19b6d693a99752c3f06821918a599b3c6225b2917c34344a20ff959a",
+            "card_00_user_input_2.f16.raw": "0b6c743a61b8ef61075ec409eb3015054ccfe643b8cd0c0fcdb7afaeb103e83d",
+            "card_00_user_input_3.f16.raw": "8999d112a6737781e55db31819bad2733aad98fcd2dc5b978c7c3768123a2a7f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                1024,
+                64
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999999161923511,
+              "relative_l2_error": 0.0004094186175391358,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 1.5944716324156616e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1665000"
+          ]
+        }
+      ],
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/attention-prefill-float16-board.json",
+        "sha256": "f4b7208bcbd4409904882a938115afc0eec2434343db9b1eea22decd8c596ee2"
+      },
+      "log": {
+        "path": "build/test/board-attention-fusion-20260917/attention-prefill-float16-board.log",
+        "sha256": "4ee01cb5e0e58beda0f3570434b6d901f7dba20dcf50781dbb6fb7120ff137b6"
+      },
+      "captures": [
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-prefill-float16-board/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "f7bb27557ab4545cc7dd2d44cacdf0cb62e52068dde3ecd76b723fe9514e4b09"
+        }
+      ]
+    },
+    {
+      "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "attention-prefill-tail-1025",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "attention-prefill-tail-1025",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/attention-prefill-tail-1025-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/attention-prefill-tail-1025-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-16T18:39:46Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 7.624610658996971,
+      "audits": [
+        {
+          "case": "attention-prefill-tail-1025",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "fc521f43f2b272c0a6d4a9e7ee611c7ec9b5b2639da4759974c2b89199b9981e",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "185b9a60972940a87ac1b0e835898f50ea8b5c1f1c286929cf8bdd9d1c65dcaa",
+            "card_00_user_input_1.f16.raw": "a6127787a4f38405be8bf19ae9b34d20257d8f5bb86bd764ddd8d1a8189a9756",
+            "card_00_user_input_2.f16.raw": "13068ca12c08e8290314cd56342be39e30b94f816deaf495e860a486cf64806b",
+            "card_00_user_input_3.f16.raw": "2171de57869dbdc24a4bb274eb7a393678b15a4e57df72892265c3cbd43d9f44"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                1025,
+                64
+              ],
+              "dtype": "torch.float16",
+              "elements": 65600,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999999171630768,
+              "relative_l2_error": 0.0004072321268240844,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 1.5851275586500402e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1970000"
+          ]
+        }
+      ],
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/attention-prefill-tail-1025-float16-board.json",
+        "sha256": "93f2cf1f7714924087125936f36f510d0ceaeea47b7391c9d76a00d55e6dd61a"
+      },
+      "log": {
+        "path": "build/test/board-attention-fusion-20260917/attention-prefill-tail-1025-float16-board.log",
+        "sha256": "ca26fe69060e837a68529186c1d45329f392b5af7038aab2cec6749a1b286db9"
+      },
+      "captures": [
+        {
+          "path": "build/test/board-attention-fusion-20260917/attention-prefill-tail-1025-float16-board/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "7872e1f2fea0a18ccf9bfd617db9da6ebce03acb657e08f337189fae5717fc04"
+        }
+      ]
+    },
+    {
+      "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-16T18:45:32Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 20.979932993010152,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "cac6a47c11f03f7c79e74f91a96229a5844ac6cc1b8d52d71de452b22921514a",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65536,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999879965260843,
+              "relative_l2_error": 0.004899748790239562,
+              "elementwise_mismatches": 51,
+              "mean_abs_error": 0.0007326925697270781
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9955000"
+          ]
+        }
+      ],
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-board.json",
+        "sha256": "e398036b6ac49064a90332de229c46f6c56c94eae2522a83057bc677b6c09290"
+      },
+      "log": {
+        "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-board.log",
+        "sha256": "23c8fa6fe23d7ae0e28719fcd757e9fd34f5c7bec787db387618e3af364c5146"
+      },
+      "captures": [
+        {
+          "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+          "sha256": "178e19390f2eeb909b613ae1aeb79933797a4c9358f178f22f530b426bd57d52"
+        }
+      ]
+    },
+    {
+      "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-16T18:42:39Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 27.88829944099416,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998115787115,
+              "relative_l2_error": 0.0006141426009450267,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 9.299789235228673e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9839000"
+          ]
+        }
+      ],
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-board.json",
+        "sha256": "f8e2c3b7b02b8c43f40f8902d68227011e6e1aee3cfb3b53d01aa8ca433a826a"
+      },
+      "log": {
+        "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-board.log",
+        "sha256": "d9ebc66dcec9b590b0b8ae6a9a7ac71344b52aed60bc34f9ccd9d7220125e20a"
+      },
+      "captures": [
+        {
+          "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-board/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+        }
+      ]
+    }
+  ],
+  "status": "scoped-board-numerics-passed; block matched performance improved; decode performance remains open",
+  "numerical_contract": {
+    "min_cosine": 0.9999,
+    "max_relative_l2": 0.01,
+    "source_and_reference": "unchanged official HF eager modules",
+    "old_cache_prefix": "exact"
+  },
+  "regression_origin": {
+    "commit": "308b4583",
+    "detail": "Probability rounding preservation rejected FP32 softmax -> storage cast. Historical fast block already uses online attention; fusion restores this algorithmic route under the explicitly accepted similarity contract."
+  },
+  "source_files": [
+    {
+      "path": "lib/Wafer/Transforms/Linalg/AttentionMatching.cpp",
+      "sha256": "48e0f9c5df692e04ab723fcdca455cfa330d94bf4b2f70015dab761724bc1d36"
+    },
+    {
+      "path": "include/Wafer/IR/LinalgExt/AttentionOps.td",
+      "sha256": "44c3e94fcd6305fbe7501254cf4f97b1921ce36b734022c8461ccca05be32490"
+    },
+    {
+      "path": "lib/Wafer/Planning/PhysicalDataflow/OperandReuse.cpp",
+      "sha256": "eaac81846f0f81683e8c926e21c78db8d9d51c640898eef968e9de4d86864a9d"
+    }
+  ],
+  "preparations": [
+    {
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/attention-decode-kv-cache-float16-prepare.json",
+        "sha256": "282dcd0bedcef199d994807a9459c805b84de412d530258edbae798cb26556ee"
+      },
+      "status": "passed",
+      "wall_seconds": 420.35962903199834
+    },
+    {
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/attention-prefill-float16-prepare.json",
+        "sha256": "c6506d6dcb24d889421ca3c8f153d33abae9a70a72b52807907f1e69e42fff4e"
+      },
+      "status": "passed",
+      "wall_seconds": 35.222971230978146
+    },
+    {
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/attention-prefill-tail-1025-float16-prepare.json",
+        "sha256": "fc7c0c214525e59fe1e97c2f2985506467256b799c6ad34259f259da865045d0"
+      },
+      "status": "passed",
+      "wall_seconds": 54.56083654597751
+    },
+    {
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-prepare.json",
+        "sha256": "bbd39a75211231d4885759940f1cef5bf2d88091079e36f00335fa429b7cbaa3"
+      },
+      "status": "passed",
+      "wall_seconds": 354.69077376500354
+    },
+    {
+      "record": {
+        "path": "build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-prepare.json",
+        "sha256": "c5b84f13c2b68535af2779ef77c1822e1745b1465b9b33ecc39708eeac567d03"
+      },
+      "status": "passed",
+      "wall_seconds": 367.80295052198926
+    }
+  ],
+  "matched_block_performance": {
+    "kind": "frozen product revisions with fresh identical HF input/reference and 12 verified weight/buffer digests; not an isolated pass A/B",
+    "sequence": [
+      "historical-fast",
+      "flash-attention",
+      "flash-attention",
+      "historical-fast"
+    ],
+    "samples_ms": {
+      "historical-fast": [
+        14.154,
+        14.208
+      ],
+      "flash-attention": [
+        9.817,
+        9.826
+      ]
+    },
+    "medians_ms": {
+      "historical-fast": 14.181000000000001,
+      "flash-attention": 9.8215
+    },
+    "latency_reduction": 0.30741837670121996,
+    "full_output_bitwise_identical": true,
+    "captures": [
+      {
+        "path": "build/test/board-attention-fusion-20260917/control-1-historical-fast/raw/card_00_output_0.capture.f16.raw",
+        "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+      },
+      {
+        "path": "build/test/board-attention-fusion-20260917/control-2-flash-attention/raw/card_00_output_0.capture.f16.raw",
+        "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+      },
+      {
+        "path": "build/test/board-attention-fusion-20260917/control-3-flash-attention/raw/card_00_output_0.capture.f16.raw",
+        "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+      },
+      {
+        "path": "build/test/board-attention-fusion-20260917/control-4-historical-fast/raw/card_00_output_0.capture.f16.raw",
+        "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+      }
+    ],
+    "records": [
+      {
+        "variant": "historical-fast",
+        "manifest_sha256": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+        "status": "passed",
+        "started_utc": "2026-09-16T18:43:38Z",
+        "weights_sha256": {
+          "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+          "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+          "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+          "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+          "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+          "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+          "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+          "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+          "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+          "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+        },
+        "source_equal": false,
+        "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "frozen_source_sha256": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b",
+        "comparison": {
+          "rtol": 0.002,
+          "atol": 0.004,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "outputs": [
+          {
+            "cosine_similarity": 0.9999998115787115,
+            "relative_l2_error": 0.0006141426009450267,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 9.299789235228673e-05,
+            "max_abs_error": 0.0009765625
+          }
+        ],
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+        },
+        "expected": {
+          "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+        },
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=14154000"
+        ]
+      },
+      {
+        "variant": "flash-attention",
+        "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+        "status": "passed",
+        "started_utc": "2026-09-16T18:44:04Z",
+        "weights_sha256": {
+          "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+          "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+          "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+          "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+          "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+          "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+          "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+          "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+          "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+          "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+        },
+        "source_equal": true,
+        "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "frozen_source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "comparison": {
+          "rtol": 0.002,
+          "atol": 0.004,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "outputs": [
+          {
+            "cosine_similarity": 0.9999998115787115,
+            "relative_l2_error": 0.0006141426009450267,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 9.299789235228673e-05,
+            "max_abs_error": 0.0009765625
+          }
+        ],
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+        },
+        "expected": {
+          "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+        },
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=9817000"
+        ]
+      },
+      {
+        "variant": "flash-attention",
+        "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+        "status": "passed",
+        "started_utc": "2026-09-16T18:44:28Z",
+        "weights_sha256": {
+          "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+          "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+          "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+          "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+          "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+          "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+          "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+          "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+          "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+          "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+        },
+        "source_equal": true,
+        "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "frozen_source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "comparison": {
+          "rtol": 0.002,
+          "atol": 0.004,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "outputs": [
+          {
+            "cosine_similarity": 0.9999998115787115,
+            "relative_l2_error": 0.0006141426009450267,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 9.299789235228673e-05,
+            "max_abs_error": 0.0009765625
+          }
+        ],
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+        },
+        "expected": {
+          "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+        },
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=9826000"
+        ]
+      },
+      {
+        "variant": "historical-fast",
+        "manifest_sha256": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+        "status": "passed",
+        "started_utc": "2026-09-16T18:44:51Z",
+        "weights_sha256": {
+          "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+          "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+          "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+          "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+          "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+          "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+          "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+          "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+          "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+          "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+          "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+        },
+        "source_equal": false,
+        "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "frozen_source_sha256": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b",
+        "comparison": {
+          "rtol": 0.002,
+          "atol": 0.004,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "outputs": [
+          {
+            "cosine_similarity": 0.9999998115787115,
+            "relative_l2_error": 0.0006141426009450267,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 9.299789235228673e-05,
+            "max_abs_error": 0.0009765625
+          }
+        ],
+        "inputs": {
+          "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+        },
+        "expected": {
+          "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+        },
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=14208000"
+        ]
+      }
+    ],
+    "evidence": [
+      {
+        "path": "build/test/board-attention-fusion-20260917/frozen-controls.json",
+        "sha256": "1c46638fb136f3e48632678aa6573b7dfa8b6a12485960ebfabfebe05d49a93a"
+      },
+      {
+        "path": "build/test/board-attention-fusion-20260917/frozen-controls.log",
+        "sha256": "ad164f8fddabc8324c37e94fe0cd3e6376f32cdf35f35078df1b28173ab8a116"
+      }
+    ]
+  },
+  "actual_block_counters": {
+    "async-events-executions": 0,
+    "async-events-executions-known": 1,
+    "async-events-sites": 0,
+    "async-events-sites-known": 1,
+    "ct-executions": 1264,
+    "ct-executions-known": 1,
+    "ct-sites": 1264,
+    "ct-sites-known": 1,
+    "ddr-buffer-count": 1088,
+    "ddr-buffer-count-known": 1,
+    "ddr-high-water-max": 213248,
+    "ddr-high-water-max-known": 1,
+    "ddr-read-bytes": 438839104,
+    "ddr-read-bytes-known": 1,
+    "ddr-write-bytes": 14836480,
+    "ddr-write-bytes-known": 1,
+    "dte-executions": 0,
+    "dte-executions-known": 1,
+    "dte-receive-executions": 0,
+    "dte-receive-executions-known": 1,
+    "dte-receive-sites": 0,
+    "dte-receive-sites-known": 1,
+    "dte-send-executions": 0,
+    "dte-send-executions-known": 1,
+    "dte-send-sites": 0,
+    "dte-send-sites-known": 1,
+    "dte-sites": 0,
+    "dte-sites-known": 1,
+    "dte-wait-executions": 0,
+    "dte-wait-executions-known": 1,
+    "dte-wait-sites": 0,
+    "dte-wait-sites-known": 1,
+    "gather-scatter-bytes": 558423360,
+    "gather-scatter-bytes-known": 1,
+    "gather-scatter-executions": 22728,
+    "gather-scatter-executions-known": 1,
+    "gather-scatter-inner-iterations": 4799128,
+    "gather-scatter-inner-iterations-known": 1,
+    "gather-scatter-sites": 4528,
+    "gather-scatter-sites-known": 1,
+    "instructions-executions": 46504,
+    "instructions-executions-known": 1,
+    "instructions-sites": 16832,
+    "instructions-sites-known": 1,
+    "ncc-join-executions": 2560,
+    "ncc-join-executions-known": 1,
+    "ncc-join-sites": 2560,
+    "ncc-join-sites-known": 1,
+    "ne-executions": 5376,
+    "ne-executions-known": 1,
+    "ne-f16-bf16-logical-ops": 6480199680,
+    "ne-f16-bf16-logical-ops-known": 1,
+    "ne-sites": 256,
+    "ne-sites-known": 1,
+    "noc-receive-bytes": 0,
+    "noc-receive-bytes-known": 1,
+    "noc-transmit-bytes": 0,
+    "noc-transmit-bytes-known": 1,
+    "non-terminal-ncc-join-executions": 2544,
+    "non-terminal-ncc-join-executions-known": 1,
+    "non-terminal-ncc-join-sites": 2544,
+    "non-terminal-ncc-join-sites-known": 1,
+    "per-tile-instructions-known": 1,
+    "per-tile-instructions-max": 2938,
+    "per-tile-instructions-min": 2434,
+    "per-tile-instructions-sum": 46504,
+    "rdma-executions": 11616,
+    "rdma-executions-known": 1,
+    "rdma-sites": 6496,
+    "rdma-sites-known": 1,
+    "spm-buffer-count": 7568,
+    "spm-buffer-count-known": 1,
+    "spm-high-water-max": 2450944,
+    "spm-high-water-max-known": 1,
+    "spm-movement-bytes": 1012098944,
+    "spm-movement-bytes-known": 1,
+    "steady-state-ncc-join-executions": 0,
+    "steady-state-ncc-join-executions-known": 1,
+    "steady-state-ncc-join-sites": 0,
+    "steady-state-ncc-join-sites-known": 1,
+    "tdma-executions": 23616,
+    "tdma-executions-known": 1,
+    "tdma-sites": 4800,
+    "tdma-sites-known": 1,
+    "tiles": 16,
+    "vector-f16-bf16-logical-ops": 466944,
+    "vector-f16-bf16-logical-ops-known": 1,
+    "vector-f32-logical-ops": 4298336,
+    "vector-f32-logical-ops-known": 1,
+    "wdma-executions": 2072,
+    "wdma-executions-known": 1,
+    "wdma-sites": 1456,
+    "wdma-sites-known": 1
+  },
+  "open_items": [
+    "Unfused projection-only trial still fails numerics; root cause is not established by successful fused candidates.",
+    "FP16 decode first step regresses from previous 5.638 ms to 25.955999 ms; current steps have 94711/189499 dynamic instructions. Preserve earlier best references.",
+    "Same-version 53-configuration qualification and three performance rounds remain incomplete.",
+    "Target-model transpose/psum fast backend extension remains queued behind real-card correctness/performance."
+  ]
+}

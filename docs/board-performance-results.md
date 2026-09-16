@@ -1789,6 +1789,13 @@ GEMM原PyTorch FP16默认`rtol=0.001, atol=1e-5`下29605/16777216项失败（约
 
 原42项中41项实卡通过，4K prefill在编译阶段暴露relation store指针失效；修复后该source已完成package/no-card。
 新增4096³ BF16、4097³ FP16及ResNet18原生224输入均完成实卡全输出比较。ResNet不扩展整网大图。
+Batch共享RHS的整除和尾块也完整通过，设备分别1.849/3.379 ms，cosine均大于0.9999999995，relative L2分别0.0000308400/0.0000311218。
+加上修复后的完整LM两种dtype，本轮共48/53项完成实卡数值验收。其余五项保持失败，不外推已通过范围。
+
+4K prefill的设备准备在allocation/launch前被容量检查拒绝：16 Tile各申请4,295,491,584 bytes workspace，合计
+68,727,865,344 bytes（64.0078125 GiB），另有外部端口等需求。runtime返回`context=usable`，没有设备完成超时，
+没有retry/reset；该包只有no-card资格。ViT S1024/1025的42次候选均停在BOOL Tensor→NCx搬运证明；完整LM S1024/1025
+也尚无可行候选，保留其实际capacity/unsupported停点。
 
 | Case | Device elapsed，单样本 | Cosine | Relative L2 |
 | --- | ---: | ---: | ---: |
@@ -1821,3 +1828,73 @@ CRT host检查执行真实packet构造，覆盖13种format、RDMA/WDMA、连续/
 其余35/43个可比旧配置执行步未出现超过10%的单样本增长。历史与当前的compiler/runtime均变化，不能由这些比值归因，
 也不能把普通单样本说成稳定均值。完整LM数值错误已修复；用户随后要求继续性能攻关，逐case保留同环境的最好可复现成绩，
 不能以其它case收益抵消退化。下一步先用相同5.7 runtime复验旧快包和当前包，再以实际profile定位block及完整LM热点。
+
+## 2026-09-17：同runtime复现block退化
+
+同一5.7 runtime、runner和设备执行旧快包A及本轮初始退化包B，顺序A/B、B/A。
+每次新生成PyTorch输入、reference及12份权重/固定buffer文件；四次输入、reference与权重digest分别一致，全部65536输出通过。
+旧快包的前端导出已与current不同：原prepared runner严格拒绝source不一致，未launch。
+随后显式把两者作为冻结的不同产品版本比较：复用原runner的payload、no-card、执行和完整比较函数，
+独立核对原参数及I/O签名；未修改production prepared-source合同，也没有使用历史raw作为输入。
+这组结果包含前端及编译器变化，不能称为某个pass的单变量A/B。
+
+| 冻结产物 | 普通设备样本（ms） | 中位数（ms） | actual DDR读取 | actual DDR segments |
+| --- | --- | ---: | ---: | ---: |
+| 历史正确快包 | 14.161、14.192 | 14.1765 | 451,372,608 bytes | 159,040 |
+| 本轮初始退化包 | 49.339001、49.550999 | 49.445 | 4,988,946,052 bytes | 3,900,676 |
+
+中位数退化3.4878倍；旧快包在5.7仍约14.2 ms，说明这组退化与新生成程序有关，不能归咎于runtime统一变慢。
+DDR读取为11.0528倍。actual IR显示后半段output projection及MLP的每Tile GEMM由M=16改为M=1，
+多个Tile重复读取大权重；不是根据模型名推定通信或内存事实。
+
+`a8f11499`实现的current重编包另完成一次Primary/Count/Trace，普通Primary为49.673 ms，全部输出通过；
+98,238个动态event完整采集，Count/Trace与Primary输出一致，record/PMU恢复检查通过。
+最终Instr的DDR读取及47,279条动态指令与初始退化包一致。Trace中各Tile的RDMA active为30.507—36.718 ms，
+平均34.074 ms，NE平均1.417 ms，支持优先调查重复读取；这些来自独立Trace运行，各engine可重叠，不能相加或直接从Primary扣除。
+部分同engine site归因有重叠歧义，保留diagnostic，不将其包装成精确逐op耗时。
+
+本轮重新编译、profile构包及fresh no-card总wall为593.478秒；profile完整runner为170.294秒，包含主机报告生成，
+二者都不是设备耗时。后续试修必须用当前source/预算重新构包并验证其它受影响case，不能直接交付旧快包作为修复。
+样本、版本、全部数值、profile摘要和原始文件digest见[复现证据](data/board-performance/llama-regression-20260917.json)。
+
+保留当前operand直接投影的候选试修已完成31项SpatialDomain及Planning/Driver/Transforms/CodeGen四组主机检查，
+canonical完整增量构建及Ninja no-op通过。FP16/BF16 block与三个大GEMM的source→package/no-card通过。
+FP16 block候选的actual DDR读取降至430,126,976 bytes，动态指令19,352；但实卡完整输出失败：
+cosine=0.5732875219480722、relative L2=0.9227336873114299，64352/65536项逐点超差。
+16 Tile均正常完成和清理；8.746 ms只保存为失败执行的诊断，不属于有效性能成绩。
+这一未融合版本未获接纳。后续有界诊断中，BF16完整block同样失败；独立QK、PV、rank3/rank4 softmax及带NT/F32 psum的
+projection均通过。未融合完整图的错误根因仍未确定；后续融合候选使用独立版本和本轮实测签发资格。
+
+## 2026-09-17：恢复HF混合精度attention融合
+
+官方HF `eager_attention_forward`在FP32 softmax之后转回query dtype再执行PV。`308b4583`为保留这个逐点舍入边界，
+使matcher不再跨越该转换。用户明确要求恢复融合后，05号合同允许完整attention root中的单次默认舍入FP32→FP16/BF16，
+继续使用已有online attention实现和相似度门限；score中的scale、mask及原转换位置保留，HF source/reference不改。
+旧14 ms快包的actual IR本身已是PV后归一化的online attention，因此这里是恢复这类HF图的融合，不能将其描述为硬件新增支持。
+
+本轮compiler同时包含保留直接operand投影的提案排序修复。完整block两种dtype各形成一个`flash_attention`；
+官方`LlamaAttention`/`DynamicCache`的decode形成`flash_decoding`。各配置均重新export、构包并通过fresh no-card后串行上板。
+
+| 配置/步骤 | 设备耗时（ms） | 完整计算输出cosine | relative L2 | 结果 |
+| --- | ---: | ---: | ---: | --- |
+| HF LLaMA block S16 FP16，首次资格 | 9.839 | 0.999999811579 | 0.000614143 | 通过，65536输出，逐点超差0 |
+| HF LLaMA block S16 BF16 | 9.955 | 0.999987996526 | 0.004899749 | 通过，逐点超差51仅作诊断 |
+| HF prefill S1024 FP16 | 1.665 | 0.999999916192 | 0.000409419 | 通过，actual online K2循环 |
+| HF prefill S1025 FP16 | 1.970 | 0.999999917163 | 0.000407232 | 通过，多block及tail |
+| HF decode FP16，KV更新至1024 | 25.955999 | 0.999999759772 | 0.000693838 | 三个输出通过，原KV前缀exact |
+| HF decode FP16，实际KV延续至1025 | 33.933998 | 0.999999745138 | 0.000714561 | 三个输出通过，消费第一步实际回读 |
+
+同一runtime再按A/B、B/A比较旧快包和本轮FP16包，每次重新生成输入/reference并核对12份参数及I/O。
+A为14.154、14.208 ms，中位14.181 ms；B为9.817、9.826 ms，中位9.8215 ms，耗时下降30.7418%。
+四次完整输出raw的SHA256完全相同。本对照仍是冻结产品版本比较，包含前端、融合和planning变化，不是单个pass的消融实验。
+当前block actual DDR读取438,839,104 bytes，动态指令46,504；原快基线继续保留。
+
+Decode数值资格通过但性能尚不接纳：首步此前同runtime样本为5.638 ms，本轮25.955999 ms；第二步此前59.056001 ms，
+本轮33.933998 ms，仍未恢复更早快样本。两步actual动态指令为94,711/189,499，先排查cache切片与搬运发射，
+再做匹配性能复验；不以block收益抵消decode退化。未融合试修的数值错误也不能因融合候选通过而声称根因已修复。
+
+19项attention定向单测、IR/Planning/Transforms/Conversion四组component、5项定向lit均通过。
+官方HF attention在1024/1025/1031及FP16/BF16的6项source→TargetModel完整数值→no-card全部通过，
+无skip；canonical完整增量构建及后续Ninja no-op通过。最初一次CTest因调用环境PATH缺clang++在编译前失败，
+补齐既有pinned工具路径后六项实际执行通过。逐次包身份、source、数值、对照和检查日志见
+[融合验证证据](data/board-performance/attention-fusion-20260917.json)。

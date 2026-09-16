@@ -71,6 +71,63 @@ protected:
     return manager.run(module);
   }
 
+  mlir::OwningOpRef<mlir::ModuleOp>
+  parseMixedPrecisionProgram(int64_t extent, bool bfloat) {
+    // Keep the representative QK/PV and cache graph, but use the HF eager
+    // precision boundary: storage scores -> F32 softmax -> storage PV input.
+    auto file = llvm::MemoryBuffer::getFile(
+        std::string(WAFER_TEST_SOURCE_DIR) +
+        "/test/Transforms/Linalg/Inputs/attention-decode-representative.mlir");
+    if (!file)
+      return {};
+    std::string text = (*file)->getBuffer().str();
+    auto begin = text.find("    %max_empty");
+    auto end = text.find("    %out_empty");
+    std::string softmax = text.substr(begin, end - begin);
+    replaceAll(softmax, "f16", "f32");
+    replaceAll(softmax, "%scores", "%wide_scores");
+    replaceAll(softmax, "%lowest", "%lowest_f32");
+    replaceAll(softmax, "%zero", "%zero_f32");
+    std::string widening = R"mlir(
+    %zero_f32 = arith.constant 0.0 : f32
+    %lowest_f32 = arith.constant 0xFF800000 : f32
+    %wide_empty = tensor.empty() : tensor<2x1024x1031xf32>
+    %wide_scores = linalg.generic {
+        indexing_maps = [affine_map<(b, m, t) -> (b, m, t)>,
+                         affine_map<(b, m, t) -> (b, m, t)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%scores : tensor<2x1024x1031xf16>)
+        outs(%wide_empty : tensor<2x1024x1031xf32>) {
+    ^bb0(%value: f16, %unused: f32):
+      %wide = arith.extf %value : f16 to f32
+      linalg.yield %wide : f32
+    } -> tensor<2x1024x1031xf32>
+)mlir";
+    std::string narrowing = R"mlir(
+    %rounded_empty = tensor.empty() : tensor<2x1024x1031xf16>
+    %rounded_probability = linalg.generic {
+        indexing_maps = [affine_map<(b, m, t) -> (b, m, t)>,
+                         affine_map<(b, m, t) -> (b, m, t)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%probability : tensor<2x1024x1031xf32>)
+        outs(%rounded_empty : tensor<2x1024x1031xf16>) {
+    ^bb0(%value: f32, %unused: f16):
+      %rounded = arith.truncf %value : f32 to f16
+      linalg.yield %rounded : f16
+    } -> tensor<2x1024x1031xf16>
+)mlir";
+    std::string suffix = text.substr(end);
+    replaceAll(suffix, "%probability", "%rounded_probability");
+    text = text.substr(0, begin) + widening + softmax + narrowing + suffix;
+    replaceAll(text, "1031", std::to_string(extent));
+    replaceAll(text, "1030", std::to_string(extent - 1));
+    if (bfloat) {
+      replaceAll(text, "f16", "bf16");
+      replaceAll(text, "-6.550400e+04", "-6.553600e+04");
+    }
+    return mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+  }
+
   template <typename Op> static size_t count(mlir::Operation *root) {
     size_t result = 0;
     root->walk([&](Op) { ++result; });
@@ -143,6 +200,67 @@ TEST_F(AttentionNormalizationTest,
   EXPECT_TRUE(llvm::equal(attention.getStaticLoopRanges(),
                           llvm::ArrayRef<int64_t>{2, 1024, 128, 1031, 64}));
   EXPECT_EQ(count<mlir::math::ExpOp>(*module), 0u);
+}
+
+TEST_F(AttentionNormalizationTest,
+       MixedPrecisionProbabilityFormsAttentionAndPreservesOtherUsers) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool bfloat : {false, true})
+      for (bool extraUser : {false, true}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(bfloat);
+        SCOPED_TRACE(extraUser);
+        auto module = parseMixedPrecisionProgram(extent, bfloat);
+        ASSERT_TRUE(module);
+        auto truncation = findSingle<mlir::arith::TruncFOp>(*module);
+        ASSERT_TRUE(truncation);
+        auto conversion = truncation->getParentOfType<mlir::linalg::GenericOp>();
+        auto probability = conversion.getDpsInputs().front();
+        auto function = conversion->getParentOfType<mlir::func::FuncOp>();
+        if (extraUser) {
+          mlir::OpBuilder builder(function.getBody().front().getTerminator());
+          auto returned = mlir::cast<mlir::func::ReturnOp>(
+              function.getBody().front().getTerminator());
+          llvm::SmallVector<mlir::Value> values(returned.getOperands());
+          values.push_back(conversion.getResult(0));
+          llvm::SmallVector<mlir::Type> types(function.getResultTypes());
+          types.push_back(conversion.getResult(0).getType());
+          function.setType(builder.getFunctionType(function.getArgumentTypes(),
+                                                  types));
+          builder.create<mlir::func::ReturnOp>(returned.getLoc(), values);
+          returned.erase();
+        }
+        ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+        auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
+        ASSERT_TRUE(attention);
+        EXPECT_EQ(attention.getAlgorithm(),
+                  wafer::AttentionAlgorithm::FlashDecoding);
+        EXPECT_TRUE(llvm::equal(attention.getStaticLoopRanges(),
+                    llvm::ArrayRef<int64_t>{2, 1024, 128, extent, 64}));
+        EXPECT_TRUE(attention.getScoreType().isF32());
+        EXPECT_EQ(attention.getQuery().getType().getElementType().isBF16(),
+                  bfloat);
+        EXPECT_EQ(count<mlir::arith::TruncFOp>(*module), extraUser ? 1u : 0u);
+        EXPECT_EQ(count<mlir::math::ExpOp>(*module), extraUser ? 1u : 0u);
+        if (extraUser) {
+          EXPECT_EQ(conversion.getDpsInputs().front(), probability);
+        }
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
+TEST_F(AttentionNormalizationTest,
+       ExplicitProbabilityRoundingRemainsOrdinaryLinalg) {
+  auto module = parseMixedPrecisionProgram(1031, false);
+  ASSERT_TRUE(module);
+  auto truncation = findSingle<mlir::arith::TruncFOp>(*module);
+  ASSERT_TRUE(truncation);
+  truncation.setRoundingmode(mlir::arith::RoundingMode::toward_zero);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  auto before = print(*module);
+  ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+  EXPECT_EQ(count<wafer::LinalgExtAttentionOp>(*module), 0u);
+  EXPECT_EQ(print(*module), before);
 }
 
 TEST_F(AttentionNormalizationTest,

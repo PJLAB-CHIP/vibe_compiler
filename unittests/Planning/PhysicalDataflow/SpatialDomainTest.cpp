@@ -1133,6 +1133,96 @@ TEST_F(SpatialDomainTest,
 }
 
 TEST_F(SpatialDomainTest,
+       BoundedProducerQueriesKeepDirectOperandReuseAndRawPartitions) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t tiles : {4, 16}) {
+      for (bool sharedDag : {false, true}) {
+        SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(tiles) +
+                     ":" + std::to_string(sharedDag));
+        const std::string lhs = "tensor<1x16x128xf16>";
+        const std::string rhs =
+            "tensor<1x128x" + std::to_string(extent) + "xf16>";
+        const std::string result =
+            "tensor<1x16x" + std::to_string(extent) + "xf16>";
+        std::string source;
+        llvm::raw_string_ostream out(source);
+        out << "module { func.func @main(%lhs: " << lhs << ", %rhs: " << rhs
+            << ", %init: " << result << ") -> " << result
+            << " {\n%empty = tensor.empty() : " << lhs << "\n";
+        std::string value = "%lhs";
+        // A long chain exhausts depth; a shallow shared DAG exhausts work.
+        // Both are real current SSA, not an assumed fusion or allocation.
+        for (unsigned index = 0; index < (sharedDag ? 8u : 20u); ++index) {
+          const std::string next = "%p" + std::to_string(index);
+          out << next << " = linalg.map ins(" << value;
+          if (sharedDag)
+            out << ", " << value;
+          out << " : " << lhs;
+          if (sharedDag)
+            out << ", " << lhs;
+          out << ") outs(%empty : " << lhs << ") (%a: f16";
+          if (sharedDag)
+            out << ", %b: f16";
+          out << ") { %v = arith." << (sharedDag ? "addf %a, %b" : "negf %a")
+              << " : f16\nlinalg.yield %v : f16 }\n";
+          value = next;
+        }
+        out << "%result = linalg.batch_matmul ins(" << value << ", %rhs : "
+            << lhs << ", " << rhs << ") outs(%init : " << result << ") -> "
+            << result << "\nreturn %result : " << result << "\n}}";
+        auto module = parse(withTopology(source, 2, tiles / 2));
+        ASSERT_TRUE(module);
+        mlir::linalg::BatchMatmulOp matmul;
+        module->walk([&](mlir::linalg::BatchMatmulOp op) { matmul = op; });
+        ASSERT_TRUE(matmul);
+        const std::string before = print(module->getOperation());
+        auto projections = getReadOperandProjections(matmul);
+        ASSERT_TRUE(projections);
+        ASSERT_EQ(projections->size(), 2u);
+        EXPECT_EQ(projections->front().sizes,
+                  (llvm::SmallVector<int64_t, 4>{1, 16, 128}));
+        EXPECT_EQ(projections->front().bytes, 16u * 128u * 2u);
+        EXPECT_FALSE(projections->front().iterators.test(2));
+        EXPECT_FALSE(projections->front().programArgument);
+        EXPECT_EQ(projections->back().sizes,
+                  (llvm::SmallVector<int64_t, 4>{1, 128, extent}));
+        EXPECT_EQ(projections->back().bytes, uint64_t(128 * extent * 2));
+        EXPECT_FALSE(projections->back().iterators.test(1));
+        std::string detail;
+        auto built = build(*module, detail);
+        ASSERT_TRUE(built) << detail;
+        auto proposals = built->domain.getProposals();
+        ASSERT_FALSE(proposals.empty());
+        const auto &roots = built->domain.getProblem().getSemanticRoots();
+        auto selected = llvm::find_if(proposals.front().nodes, [&](auto &node) {
+          return roots.find(node.root)->operation == matmul.getOperation();
+        });
+        ASSERT_NE(selected, proposals.front().nodes.end());
+        EXPECT_EQ(selected->axes[1].parameter, 1);
+        EXPECT_EQ(selected->axes[2].parameter, tiles);
+        EXPECT_TRUE(llvm::any_of(proposals, [&](const auto &plan) {
+          return llvm::any_of(plan.nodes, [&](const auto &node) {
+            return node.root == selected->root &&
+                   node.axes[1].parameter == tiles && node.axes[2].parameter == 1;
+          });
+        }));
+        auto evaluation = built->domain.evaluate(built->dag, proposals.front());
+        ASSERT_TRUE(evaluation.isSatisfied());
+        const auto *proof = analysis::getExactDemandProof(*evaluation.demand);
+        ASSERT_NE(proof, nullptr);
+        auto works = RootRegionWorkAnalysis::create(
+            built->dag, *evaluation.assignment, *proof, &detail);
+        ASSERT_TRUE(mlir::succeeded(works)) << detail;
+        for (const auto &node : evaluation.assignment->nodes)
+          expectExactShardCoverage(
+              node, built->domain.getProblem().findRoot(node.root)->iteratorExtents);
+        EXPECT_EQ(print(module->getOperation()), before);
+      }
+    }
+  }
+}
+
+TEST_F(SpatialDomainTest,
        OperandReuseProposalsFollowMapsAndKeepOriginalPartitions) {
   for (int64_t extent : {1024, 1025, 1031}) {
     for (int64_t tiles : {4, 16}) {

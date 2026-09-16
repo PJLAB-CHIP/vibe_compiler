@@ -329,11 +329,31 @@ Decomposition仅将它嵌入实际score tile的Linalg scalar body，移除原来
 覆盖要求：FP16/BF16/F32、mask有无及不同type、scale前后cast、额外score use、region捕获/effect/type不匹配负例，
 1024/1025/1031 graph→spatial→tiled online→Linalg检查相同scalar依赖和舍入；完整block以fresh source验证，最终板端数值另行验收。
 
-softmax→PV之间的浮点转换不是transparent view。当前online form将normalization移至PV之后，不能表达在完整normalized probability上先舍入再做PV的边界。
-因此matcher仅跨越该路径上的layout/view变换；遇到转换，或normalization与PV storage dtype不同，保留原max/exp/sum/divide→convert→PV SSA图。
-这是融合legality约束，不改变输入模型、容差或dtype，也不按模型名选择路径；score region内原有转换仍按其原位置克隆。
-覆盖F16/BF16及1024/1025/1031，检查转换与normalized probability的依赖不变、没有丢失窄化的attention op；实际普通Linalg路径进入Instr、SPM及全输出数值。
-当前不增加无法表示舍入边界的precision字符串。未来若要覆盖此类融合，必须以能保留该边界的IR和算法单独证明。
+softmax→PV之间的浮点转换不是transparent view。完整attention识别允许FP32 softmax结果经一次默认舍入的
+`arith.truncf`转换为共同的FP16/BF16 Q/K/V/output storage type，再参与PV；转换两侧可有已证明的layout/view。
+这是attention算法形成时允许的浮点重排：online form将normalization移至PV之后，未归一化的exponential在PV输入处
+转为storage type，不要求复现eager路径对完整normalized probability的逐点舍入。该授权只适用于完整attention root，
+不扩展ordinary graph的cast消除，不改变source、reference或验证门限；score region内原有转换仍按原位置克隆。
+其它dtype、显式rounding mode、多重窄化/扩展或cast后的算术仍保留原图。已有score/probability额外users继续消费原SSA。
+
+算法沿用[FlashAttention](https://arxiv.org/abs/2205.14135)的分块online normalization，以及
+[IREE attention/online_attention](https://iree.dev/reference/mlir-dialects/LinalgExt/#iree_linalg_extonline_attention-linalgextonlineattentionop)
+的graph到stateful form边界；不增加另一套kernel、numeric policy字符串或IR。现有attention op及其types、score region
+完整决定融合后的计算，唯一decomposition在actual tiling之后消费它。
+
+本项输入为current structured QK→score→FP32 softmax→storage conversion→PV SSA；输出为现有attention op及保留的额外users；
+直接下游为06号spatial/temporal、online decomposition、Instr/SPM和ExecutablePackage。用户入口为普通compiler及
+`wafer-normalize-attention` named pipeline。Non-goals为任意cast链消除、source改写、硬件同步调整及数值门限放宽。
+完成要求是下表覆盖、canonical构建和完整block fresh no-card/实卡验收，不能只凭attention op形成签发成功。
+
+| 输入/分支 | exact结构要求 | 直接下游与数值witness |
+| --- | --- | --- |
+| FP16/BF16、K2=1024/1025/1031、FP32 softmax后单次窄化 | 形成一个attention；score yield保持F32，Q/K/V/output保持storage dtype，完整maps/归约轴不变 | online main/tail→Instr；完整block source→package/no-card→实卡 |
+| normalized probability有额外user | 仅替换PV root；原divide→trunc依赖为额外user保留 | verifier及返回值use-def |
+| F32 storage中的窄化再扩展、多重转换、显式rounding mode | 不形成attention，不消除原转换 | verifier及原SSA依赖 |
+| 原同dtype attention、带mask/score转换 | 原算法分类、score region和已有接口不变 | 既有normalization/decomposition/attention integration回归 |
+
+普通浮点完整输出按16号合同同时满足cosine≥0.9999和relative L2≤0.01；模型实卡结果拥有本轮资格，主机结构证明不替代数值验证。
 
 current semantic subset是forward scaled dot-product attention和optional additive/broadcast mask。dropout或其它random effect、backward、
 sparse/block-sparse attention、runtime paged-cache lookup及未能由下面maps完整证明的variant不进入该op；它们保持原IR或由未来独立

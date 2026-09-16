@@ -4,6 +4,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "llvm/Support/MathExtras.h"
@@ -28,13 +29,54 @@ getReadOperandProjections(mlir::Operation *operation,
   analysis::IndexRelationLimits limits;
   limits.rectangleProof = analysis::RectangleProofMode::Construction;
   llvm::SmallVector<OperandProjection, 4> projections;
+  auto appendProjection = [&](mlir::Value value,
+                              const analysis::IndexRelation &relation) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    auto element = type ? type.getElementType() : value.getType();
+    if (!element.isIntOrFloat())
+      return false;
+    auto image = relation.getExactStaticRectangularImage(zero, domain, limits);
+    OperandProjection projection;
+    if (image.isExact()) {
+      projection.offsets = image.domain->offsets;
+      projection.sizes = image.domain->sizes;
+    } else if (type && type.hasStaticShape()) {
+      // Strided images can have holes while still proving invariance. Keep
+      // the original logical-size ranking weight, but do not advertise an
+      // exact shared source window for coordination.
+      projection.sizes.assign(type.getShape().begin(), type.getShape().end());
+    } else {
+      return false;
+    }
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value))
+      if (auto function = mlir::dyn_cast<mlir::func::FuncOp>(
+              argument.getOwner()->getParentOp()))
+        if (auto identity = function.getArgAttrOfType<ProgramArgumentAttr>(
+                argument.getArgNumber(), kWaferProgramArgumentAttrName))
+          if (image.isExact())
+            projection.programArgument = identity.getIndex();
+    projection.bytes = (element.getIntOrFloatBitWidth() + 7) / 8;
+    for (auto size : projection.sizes)
+      projection.bytes =
+          llvm::SaturatingMultiply(projection.bytes, uint64_t(size));
+    projection.iterators.resize(domain.size(), true);
+    for (unsigned axis = 0; axis < domain.size(); ++axis)
+      if (relation.isInvariantOnDestinationDimension(domain, axis, limits)
+              .isProvenTrue())
+        projection.iterators.reset(axis);
+    projections.push_back(std::move(projection));
+    return true;
+  };
   unsigned work = 0;
   std::function<bool(mlir::Value, const analysis::IndexRelation &, unsigned)>
       visit;
   visit = [&](mlir::Value value, const analysis::IndexRelation &relation,
               unsigned depth) {
-    if (++work > 128 || depth > 16)
+    if (++work > 128 || depth > 16) {
+      support::addCompileCounter("operand-reuse", work > 128 ? "work-limit"
+                                                           : "depth-limit", 1);
       return false;
+    }
     if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value))
       if (auto input = analysis::getSingleExecutionRegionEntryOperand(argument))
         return visit(input, relation, depth + 1);
@@ -85,40 +127,7 @@ getReadOperandProjections(mlir::Operation *operation,
         return true;
       }
     }
-    auto element = type ? type.getElementType() : value.getType();
-    if (!element.isIntOrFloat())
-      return false;
-    auto image = relation.getExactStaticRectangularImage(zero, domain, limits);
-    OperandProjection projection;
-    if (image.isExact()) {
-      projection.offsets = image.domain->offsets;
-      projection.sizes = image.domain->sizes;
-    } else if (type && type.hasStaticShape()) {
-      // Strided images can have holes while still proving invariance. Keep
-      // the original logical-size ranking weight, but do not advertise an
-      // exact shared source window for coordination.
-      projection.sizes.assign(type.getShape().begin(), type.getShape().end());
-    } else {
-      return false;
-    }
-    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value))
-      if (auto function = mlir::dyn_cast<mlir::func::FuncOp>(
-              argument.getOwner()->getParentOp()))
-        if (auto identity = function.getArgAttrOfType<ProgramArgumentAttr>(
-                argument.getArgNumber(), kWaferProgramArgumentAttrName))
-          if (image.isExact())
-            projection.programArgument = identity.getIndex();
-    projection.bytes = (element.getIntOrFloatBitWidth() + 7) / 8;
-    for (auto size : projection.sizes)
-      projection.bytes =
-          llvm::SaturatingMultiply(projection.bytes, uint64_t(size));
-    projection.iterators.resize(domain.size(), true);
-    for (unsigned axis = 0; axis < domain.size(); ++axis)
-      if (relation.isInvariantOnDestinationDimension(domain, axis, limits)
-              .isProvenTrue())
-        projection.iterators.reset(axis);
-    projections.push_back(std::move(projection));
-    return true;
+    return appendProjection(value, relation);
   };
   // Compose through current pure producers: a final cast or view does not
   // erase the input invariance of a reduction producer. Inits are mutable
@@ -132,8 +141,17 @@ getReadOperandProjections(mlir::Operation *operation,
       return std::nullopt;
     auto relation = analysis::IndexRelation::fromAffineMap(
         *map, domain, type ? type.getShape() : llvm::ArrayRef<int64_t>{}, limits);
-    if (!relation.isExact() || !visit(input->get(), *relation.get(), 0))
+    if (!relation.isExact())
       return std::nullopt;
+    const size_t firstProjection = projections.size();
+    if (!visit(input->get(), *relation.get(), 0)) {
+      // An incomplete producer refinement must not erase the current
+      // operand's proven access, nor retain a partial set of its leaves.
+      projections.resize(firstProjection);
+      if (!appendProjection(input->get(), *relation.get()))
+        return std::nullopt;
+      support::addCompileCounter("operand-reuse", "direct-projections", 1);
+    }
   }
   return projections;
 }

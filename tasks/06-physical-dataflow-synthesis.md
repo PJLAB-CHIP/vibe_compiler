@@ -41,8 +41,8 @@ verified current IR
 搜索可以克隆最近的`IsolatedFromAbove` candidate owner试行alternative。失败的transaction整体擦除；
 Accepted owner原样交给下游和最终publication，不重建IR或offset。
 
-跨Tile shared-DDR的Region DAG并不提供实际执行同步。13号记录了现有release/acquire完成缺口；
-其协议及actual downstream验证闭合前，搜索物化和主机编译通过不能证明该候选板端正确。
+跨Tile shared-DDR的Region DAG并不提供实际执行同步。候选须按13号合同物化并验证current Instr中的
+`ddr_publish`/`ddr_acquire`及对应资源关系；搜索物化和主机编译通过本身不代签板端正确性。
 
 ## 2. Pipeline Contract
 
@@ -234,6 +234,23 @@ Search的constructive parallel proposal还应覆盖输入复用方向。对curre
 不删除原候选。覆盖共享RHS的broadcast→reshape→contraction、归约→view→consumer及1024/1025/1031尾块；
 检查原候选域、exact demand和直接materialization消费者，并以实际batch GEMM及ViT source→package/no-card闭合。
 可选graph-coherent placement提案所用的demand查询同样限定为构造证明；未知时保留raw seed，正式候选的完整demand验证不变。
+
+输入复用排序的producer追溯是对当前operand访问的细化，不能成为保留该访问的前置。一次operand的追溯因深度、work或
+relation证明未知而停止时，丢弃该次未完成的细化，只保留从root indexing map直接证明的当前operand投影；其它operand独立处理。
+不提高既有追溯预算，不猜测被截断producer的叶子、allocation或DDR流量，不把部分成功的叶子混入完整细化结果。
+投影只供spatial/temporal proposal排序；没有function argument身份的中间value不能冒充共享program输入。
+正式候选仍实际物化后进行demand、Instr、SPM与cost验证，原始candidate域和算术不变。
+这一边界采用[MLIR的当前operand切片模型](https://mlir.llvm.org/docs/Tutorials/transform/Ch0/#tiling-and-loop-materialization)，
+而非把整条producer图预先视为已融合；[XLA的fusion说明](https://openxla.org/xla/gpu_architecture)也将实际融合后的中间存储消除
+与原图区分。此处只决定有界提案排序，不在分析阶段实施融合或发布推算的memory事实。
+
+| 输入/结构分支 | exact输出与未知边界 | 下游witness |
+| --- | --- | --- |
+| rank3 contraction前的长unary链，1024/1025/1031 | 超深度时保留直接LHS投影及独立RHS不变性，未完成的叶子不残留 | 4/16 Tile proposal保留低重复读取方向及raw方向，exact shard/demand/work coverage |
+| 共享DAG的多输入重复使用 | work达到上限仍保留直接operand信息，不增加遍历预算 | 同一SpatialPlanDomain与RootRegionWork，IR只读；不以字节权重裁剪合法域 |
+| 原有短链、reshape、归约、置换及未知关系 | 已证明的细化与原排序保留；直接关系也未知时仍返回unknown | 既有spatial/temporal回归、GEMM整除/尾块实际package/no-card |
+| 原block FP16/BF16及完整LM S16 | 同一source/预算编译并完成PyTorch，权重读取来自actual IR | 同环境普通A/B、B/A；原14 ms快包保留为跨版本控制，影响范围内case分别验收 |
+
 覆盖rank3+、1024/1025/1031、归约producer到contraction、reshape、受限domain、优先级冲突及强制归约；检查分片覆盖、merge/raw域和actual下游，不扩张搜索预算。
 与Shardy的固定点求解不同，此处只生成有界候选：从首个完整seed分别执行前向优先和反向优先的两次遍历，原seed、其余proposal及raw域保留。
 

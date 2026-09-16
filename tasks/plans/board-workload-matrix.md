@@ -48,6 +48,27 @@ source→默认8/42 search→verified package→fresh no-card→串行设备执�
 输出完全相同；multihead-mask基线触发同一relation失效崩溃，当前不再崩溃但其旧attention形成断言仍失败；
 另一个未改动的Torch XLA workload corpus存在export digest不一致。它们的具体日志及身份与板测记录一起保留。
 
+本轮当前资格为48/53项实卡完整数值通过。剩余4K prefill已构包/no-card，但实际包的workspace合计64.0078125 GiB，
+在设备allocation/launch前被容量检查拒绝；ViT S1024/1025及完整LM S1024/1025仍在编译边界。
+这些失败继续与性能退化一起收口，不以已通过子集或旧主机结果签发全矩阵完成。
+
+后续性能诊断已在同一5.7 runtime复现旧快block与退化包的差异，证据见统一板测记录。
+保留直接operand投影的候选试修通过主机机制与block两种dtype、三个大GEMM的package/no-card，
+但其未融合FP16 block实卡cosine=0.5733、relative L2=0.9227，未达到既定合同，未获接纳。
+该候选的8.746 ms不是有效性能成绩；失败记录和未确定的根因保留，后续融合组合按下段独立验收。
+这一失败属于后续试修版本，不覆盖上段已签结果的版本身份。
+
+用户随后明确要求将FP32 softmax后转回FP16/BF16的完整attention融合为Flash Attention。
+已按05号完整root合同恢复融合，不改HF模型/reference或相似度门限。原直接operand投影修改与融合组合后的
+FP16/BF16 block本轮实卡均通过；FP16匹配A/B、B/A中位9.8215 ms，旧快包14.181 ms，四次输出raw完全一致。
+HF prefill S1024/1025、FP16 decode两步也完成fresh source→package/no-card→实卡全输出验证；decode消费实际KV延续，旧前缀exact。
+19项attention定向单测、四组component、5项lit及6项HF source→TargetModel/no-card通过，canonical构建和no-op通过。
+
+这一资格仅覆盖本轮融合配置；未融合试修的错误根因仍待定位，完整53项同版本资格没有签发。
+性能下一步先排查decode：首步本轮25.955999 ms，高于此前同runtime的5.638 ms样本；第二步33.933998 ms也未达历史最好。
+两步actual动态指令94,711/189,499，优先检查cache切片/搬运，再做匹配复验。不能用block提速抵消decode退化。
+模型快速后端的transpose/psum扩展仍排在实卡问题之后，原ViT/长LM等失败继续收口。所有版本与测量见统一板测记录。
+
 ## 普通浮点case统一相似度验收（2026-09-17）
 
 用户接受本轮GEMM整体精度后要求其它同类case同步调整。本次实现16号既有相似度合同的case接入，

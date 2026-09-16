@@ -1,0 +1,1274 @@
+{
+  "date": "2026-09-17",
+  "environment": {
+    "compiler": "db522b7f0adf59c7e5862d7d019ee71b24b49ba5dc5ee5624a77acf9700006c7",
+    "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+    "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "commit": "cfc4bdd7d661fba1f3457ce1f7af8c0819ad1de7",
+    "boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+    "parallelism": 80,
+    "canonical_build": "Ninja no-op",
+    "resnet_extent": 224,
+    "source_revision": "cfc4bdd7 plus bounded operand-reuse queries and reshape relation lifetime repair; bounded optional coherent placement demand; enumerate only valid region use choices",
+    "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+    "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile"
+  },
+  "case": "llama-2-7b-block",
+  "dtype": "float16",
+  "shape": [
+    1,
+    16,
+    4096
+  ],
+  "seed": 20260803,
+  "search_width": 8,
+  "search_trials": 42,
+  "comparison_kind": "Frozen product revisions, including changed frontend export. Identical fresh PyTorch weights, runtime input, eager reference, hardware and TX 5.7 runtime. This isolates the regression to the product artifacts but not one compiler pass.",
+  "sequence": [
+    "historical-fast",
+    "regressed",
+    "regressed",
+    "historical-fast"
+  ],
+  "variants": {
+    "historical-fast": {
+      "compiler_sha256": "5de4a1fc362c2e1e07610ba82bcb4e81bac1ecd82ad1223662aa13b27b68cb7c",
+      "package_files": [
+        {
+          "path": "build/test/model-performance/reuse-final-llama-42/package/data/program-data.bin",
+          "sha256": "2c70f48e3e9be02d85e54cf0486fdf833a0ddd09a3e13659e7d8a874268cad59"
+        },
+        {
+          "path": "build/test/model-performance/reuse-final-llama-42/package/manifest.json",
+          "sha256": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e"
+        },
+        {
+          "path": "build/test/model-performance/reuse-final-llama-42/package/modules/module_00000.so",
+          "sha256": "df29e4aaed1c679e5b897e17bba401b42a8c9ec4e7dceed58897296fe204fa27"
+        }
+      ],
+      "compile_log": {
+        "path": "build/test/model-performance/reuse-final-llama-42.log",
+        "sha256": "3e63d8110beb0cdd4c5b4f5acdb3b73d0d416ebf1c28a9ff51752b2cde056991"
+      },
+      "best_candidate_counters": {
+        "accepted": 1,
+        "actual-tile-0-regions": 81,
+        "actual-tile-1-regions": 81,
+        "actual-tile-10-regions": 81,
+        "actual-tile-11-regions": 81,
+        "actual-tile-12-regions": 81,
+        "actual-tile-13-regions": 81,
+        "actual-tile-14-regions": 81,
+        "actual-tile-15-regions": 81,
+        "actual-tile-2-regions": 81,
+        "actual-tile-3-regions": 81,
+        "actual-tile-4-regions": 81,
+        "actual-tile-5-regions": 81,
+        "actual-tile-6-regions": 81,
+        "actual-tile-7-regions": 81,
+        "actual-tile-8-regions": 81,
+        "actual-tile-9-regions": 81,
+        "actual-tile-regions": 1296,
+        "actualizations": 1,
+        "ddr-read-bytes": 451372608,
+        "ddr-read-bytes-known": 1,
+        "ddr-segments": 159040,
+        "ddr-segments-known": 1,
+        "ddr-write-bytes": 30319296,
+        "ddr-write-bytes-known": 1,
+        "exact-rejected": 0,
+        "indeterminate": 0,
+        "instruction-count": 38064,
+        "instruction-count-known": 1,
+        "maximum-tile-ddr-segments": 9940,
+        "merges": 0,
+        "objective-coarse-estimate": 0,
+        "objective-ddr-buffer-count": 1296,
+        "objective-ddr-high-water-bytes": 638208,
+        "objective-ddr-picoseconds": 3211279360,
+        "objective-dte-endpoint-picoseconds": 0,
+        "objective-dte-startup-picoseconds": 0,
+        "objective-dte-wait-picoseconds": 0,
+        "objective-estimated-picoseconds": 3211279360,
+        "objective-instruction-picoseconds": 2379000000,
+        "objective-known": 1,
+        "objective-ncc-wait-picoseconds": 62715000,
+        "objective-ne-picoseconds": 50626560,
+        "objective-noc-hop-picoseconds": 0,
+        "objective-noc-picoseconds": 0,
+        "objective-profile-calibrated": 0,
+        "objective-profile-identity": 6,
+        "objective-spm-buffer-count": 10080,
+        "objective-spm-high-water-bytes": 2342912,
+        "objective-spm-picoseconds": 430256563,
+        "objective-vector-f16-picoseconds": 464000,
+        "objective-vector-f32-picoseconds": 9339188,
+        "structural-session": 0,
+        "unsupported": 0
+      },
+      "device_ms": [
+        14.161,
+        14.192
+      ],
+      "median_ms": 14.1765,
+      "min_ms": 14.161,
+      "max_ms": 14.192
+    },
+    "regressed": {
+      "compiler_sha256": "d8f84079bd7c481e634f9ccb30a75d999c312bdbf4f9b8b070b99062c5a6e1c1",
+      "package_files": [
+        {
+          "path": "build/test/board-regression-20260917/llama-2-7b-block-float16-prepare/package/data/program-data.bin",
+          "sha256": "19b6b824a3b97cc6671164e01335558f9ebc4418d80cb5163e27262f8a005d02"
+        },
+        {
+          "path": "build/test/board-regression-20260917/llama-2-7b-block-float16-prepare/package/manifest.json",
+          "sha256": "e2807169f70fb6a672488c917e6f272a08781974ce8b6cf6238ebdb9b318020d"
+        },
+        {
+          "path": "build/test/board-regression-20260917/llama-2-7b-block-float16-prepare/package/modules/module_00000.so",
+          "sha256": "f7f88ed3ec692024298ef46a57dd64cebd03956ec8fddf8e774e0e54e6c12528"
+        }
+      ],
+      "compile_log": {
+        "path": "build/test/board-regression-20260917/llama-2-7b-block-float16-prepare.log",
+        "sha256": "2eca5c782864f12f979d33be3328574574460c70d52a770c8c03ac14dc87d4f8"
+      },
+      "best_candidate_counters": {
+        "accepted": 1,
+        "actual-tile-0-regions": 14,
+        "actual-tile-1-regions": 14,
+        "actual-tile-10-regions": 14,
+        "actual-tile-11-regions": 14,
+        "actual-tile-12-regions": 14,
+        "actual-tile-13-regions": 14,
+        "actual-tile-14-regions": 14,
+        "actual-tile-15-regions": 20,
+        "actual-tile-2-regions": 14,
+        "actual-tile-3-regions": 14,
+        "actual-tile-4-regions": 14,
+        "actual-tile-5-regions": 14,
+        "actual-tile-6-regions": 14,
+        "actual-tile-7-regions": 14,
+        "actual-tile-8-regions": 14,
+        "actual-tile-9-regions": 14,
+        "actual-tile-regions": 230,
+        "actualizations": 1,
+        "ddr-read-bytes": 4988946052,
+        "ddr-read-bytes-known": 1,
+        "ddr-segments": 3900676,
+        "ddr-segments-known": 1,
+        "ddr-write-bytes": 9479232,
+        "ddr-write-bytes-known": 1,
+        "exact-rejected": 0,
+        "indeterminate": 0,
+        "instruction-count": 47279,
+        "instruction-count-known": 1,
+        "maximum-tile-ddr-segments": 243901,
+        "merges": 0,
+        "objective-coarse-estimate": 0,
+        "objective-ddr-buffer-count": 247,
+        "objective-ddr-high-water-bytes": 527360,
+        "objective-ddr-picoseconds": 33322835227,
+        "objective-dte-endpoint-picoseconds": 0,
+        "objective-dte-startup-picoseconds": 0,
+        "objective-dte-wait-picoseconds": 0,
+        "objective-estimated-picoseconds": 33322835227,
+        "objective-instruction-picoseconds": 3014000000,
+        "objective-known": 1,
+        "objective-ncc-wait-picoseconds": 42735000,
+        "objective-ne-picoseconds": 50626560,
+        "objective-noc-hop-picoseconds": 0,
+        "objective-noc-picoseconds": 0,
+        "objective-profile-calibrated": 0,
+        "objective-profile-identity": 6,
+        "objective-spm-buffer-count": 8572,
+        "objective-spm-high-water-bytes": 2880000,
+        "objective-spm-picoseconds": 3714299157,
+        "objective-vector-f16-picoseconds": 328000,
+        "objective-vector-f32-picoseconds": 7912188,
+        "structural-session": 0,
+        "unsupported": 0
+      },
+      "device_ms": [
+        49.339001,
+        49.550999
+      ],
+      "median_ms": 49.445,
+      "min_ms": 49.339001,
+      "max_ms": 49.550999
+    }
+  },
+  "records": [
+    {
+      "variant": "historical-fast",
+      "manifest_sha256": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+      "status": "passed",
+      "started_utc": "2026-09-16T17:54:51Z",
+      "weights_sha256": {
+        "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+      },
+      "source_equal": false,
+      "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+      "frozen_source_sha256": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "outputs": [
+        {
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05,
+          "max_abs_error": 0.0009765625
+        }
+      ],
+      "inputs": {
+        "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+      },
+      "expected": {
+        "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=14161000"
+      ]
+    },
+    {
+      "variant": "regressed",
+      "manifest_sha256": "e2807169f70fb6a672488c917e6f272a08781974ce8b6cf6238ebdb9b318020d",
+      "status": "passed",
+      "started_utc": "2026-09-16T17:55:16Z",
+      "weights_sha256": {
+        "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+      },
+      "source_equal": true,
+      "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+      "frozen_source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "outputs": [
+        {
+          "cosine_similarity": 0.9999998866155352,
+          "relative_l2_error": 0.0004763423575170532,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 6.570903497049585e-05,
+          "max_abs_error": 0.0009765625
+        }
+      ],
+      "inputs": {
+        "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+      },
+      "expected": {
+        "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=49339001"
+      ]
+    },
+    {
+      "variant": "regressed",
+      "manifest_sha256": "e2807169f70fb6a672488c917e6f272a08781974ce8b6cf6238ebdb9b318020d",
+      "status": "passed",
+      "started_utc": "2026-09-16T17:55:39Z",
+      "weights_sha256": {
+        "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+      },
+      "source_equal": true,
+      "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+      "frozen_source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "outputs": [
+        {
+          "cosine_similarity": 0.9999998866155352,
+          "relative_l2_error": 0.0004763423575170532,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 6.570903497049585e-05,
+          "max_abs_error": 0.0009765625
+        }
+      ],
+      "inputs": {
+        "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+      },
+      "expected": {
+        "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=49550999"
+      ]
+    },
+    {
+      "variant": "historical-fast",
+      "manifest_sha256": "968af3b772f708fc9dc4111d183c9f0d0eb15fca7928b884722d15047c9d858e",
+      "status": "passed",
+      "started_utc": "2026-09-16T17:56:02Z",
+      "weights_sha256": {
+        "decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+      },
+      "source_equal": false,
+      "source_sha256": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+      "frozen_source_sha256": "16d96c936df23c4c6d87c81cd57b0241f3c30759115aefed98dc1f918c15484b",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "outputs": [
+        {
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05,
+          "max_abs_error": 0.0009765625
+        }
+      ],
+      "inputs": {
+        "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+      },
+      "expected": {
+        "card_00_output_0.expected.f16.raw": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=14192000"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "path": "build/test/llama-performance-20260917/run_frozen_controls.py",
+      "sha256": "945e415b0689700b1dc88a54ae24291b7be2c0cf9136a5b19db582adcf813719"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/frozen-controls.log",
+      "sha256": "f32614629d45ea5fae73d03f3364979e97ef5dfbce5c1b80292475c5d0870a0b"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-1-historical-fast/board.log",
+      "sha256": "c1a1dee4a022eedaf39e14a97ca040d98c49e72bc73fcb724fd16710638a0155"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-2-regressed/board.log",
+      "sha256": "b349a9401118ffd3964da1fc9f9118a4cc23b87b9156bbc91707e3eac6257a78"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-3-regressed/board.log",
+      "sha256": "5f042368f7d90a26175f549dab111709f9296f34ed29c3a9ec400d826b5fc41e"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-4-historical-fast/board.log",
+      "sha256": "55d3e68089452e0435d96f363d222b74e9bbbb4097fa0213d4b83a24b6b51c86"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-1-historical-fast/no-card.log",
+      "sha256": "686bcccbbc291b512f6307f8000de4c5a1e0148161e38c28f9cc59e6ea77ea25"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-2-regressed/no-card.log",
+      "sha256": "f73364b1a978503d6de450c7118c73fc04f7fdf728ab073f9f74ac303c044c40"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-3-regressed/no-card.log",
+      "sha256": "f73364b1a978503d6de450c7118c73fc04f7fdf728ab073f9f74ac303c044c40"
+    },
+    {
+      "path": "build/test/llama-performance-20260917/control-4-historical-fast/no-card.log",
+      "sha256": "686bcccbbc291b512f6307f8000de4c5a1e0148161e38c28f9cc59e6ea77ea25"
+    }
+  ],
+  "median_slowdown": 3.4878143406341477,
+  "actual_ddr_read_ratio": 11.052832988926081,
+  "current_profile": {
+    "compiler_sha256": "db522b7f0adf59c7e5862d7d019ee71b24b49ba5dc5ee5624a77acf9700006c7",
+    "prepare": {
+      "compiler_sha256": "db522b7f0adf59c7e5862d7d019ee71b24b49ba5dc5ee5624a77acf9700006c7",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "prepare",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/llama-performance-20260917/llama-2-7b-block-float16-prepare",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--no-card",
+        "--profile",
+        "--dump-compiler-ir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/llama-performance-20260917/llama-2-7b-block-float16-prepare/compiler-ir"
+      ],
+      "started_utc": "2026-09-16T17:48:05Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 593.4781558380055,
+      "audits": []
+    },
+    "board": {
+      "compiler_sha256": "db522b7f0adf59c7e5862d7d019ee71b24b49ba5dc5ee5624a77acf9700006c7",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/llama-performance-20260917/llama-2-7b-block-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/llama-performance-20260917/llama-2-7b-block-float16-prepare",
+        "--profile",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-16T17:58:10Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 170.2938709910086,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "38b481208c16bb809f7c22130869dfdb387c388426f77dd2a4915e892f79c32d",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998866155352,
+              "relative_l2_error": 0.0004763423575170532,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 6.570903497049585e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=49673000",
+            "profile_run: /home/ubuntu/hxf_dev/vibe_compiler/build/test/llama-performance-20260917/llama-2-7b-block-float16-prepare/package/package.profile/runs/current"
+          ]
+        }
+      ]
+    },
+    "valid": true,
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": true,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "trace_capture": {
+      "captured_events": 98238,
+      "full_execution": true,
+      "scope": "full-execution",
+      "total_events": 98238
+    },
+    "duration": {
+      "completion_observation_fraction": 0.0008439659480692297,
+      "completion_observation_resolution_ns": 42254,
+      "device_elapsed_ns": 49673000,
+      "device_elapsed_quantized_zero": false,
+      "device_timer_kind": "tx-stream-events",
+      "host_completion_high_resolution": true,
+      "host_envelope_available": true,
+      "host_launch_to_completion_ns": 50066001,
+      "host_non_submit_envelope_ns": 49951328,
+      "host_submit_ns": 114673,
+      "host_submit_quantized_zero": false,
+      "includes_device_control_wait_and_scheduling": true,
+      "includes_host_completion_polling": false,
+      "includes_host_submit": false,
+      "includes_trace_instrumentation": false,
+      "is_engine_only": false,
+      "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+      "qualified": true,
+      "sample_id": "primary",
+      "sample_index": 0,
+      "scope": "primary-launch-to-stream-completion",
+      "status": "Measured"
+    },
+    "engine_active_time": {
+      "additive_to_kernel_launch_envelope": false,
+      "by_engine": [
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 15815.6875,
+          "engine": "CT",
+          "maximum_per_tile_ns": 15816,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 15811,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 253051
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 1416715.9375,
+          "engine": "NE",
+          "maximum_per_tile_ns": 1416774,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 1416712,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 22667455
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 34073608.375,
+          "engine": "RDMA",
+          "maximum_per_tile_ns": 36717861,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 30507455,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 545177734
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 84694.0,
+          "engine": "WDMA",
+          "maximum_per_tile_ns": 103006,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 67746,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 1355104
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 5099305.0,
+          "engine": "TDMA",
+          "maximum_per_tile_ns": 5100187,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 5097911,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 81588880
+        }
+      ],
+      "card_wide_engine_elapsed_ns": null,
+      "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+      "card_wide_engine_elapsed_status": "Unavailable",
+      "cross_tile_sum_role": "work-volume-not-wall-time",
+      "measurement_kind": "trace-pmu-engine-active-time",
+      "measurement_run": "trace-diagnostic",
+      "per_tile_work_volume": {
+        "available_tile_count": 16,
+        "average_per_tile_total_work_ns": 40690139.0,
+        "maximum_per_tile_total_work_ns": 43335690,
+        "minimum_per_tile_total_work_ns": 37120613,
+        "status": "Measured",
+        "sum_across_tiles_work_ns": 651042224
+      },
+      "relation_to_primary": "separate-run-proxy",
+      "scope": "per-tile-per-ncc-engine",
+      "source_capture": "trace",
+      "unit": "ns"
+    },
+    "hardware_cost_analysis": {
+      "additive_to_primary": false,
+      "by_engine": [
+        {
+          "engine": "CT",
+          "estimated_ns": 8240.1875,
+          "estimated_scope": "average-per-tile-peak-throughput-floor",
+          "floor_ns": 8240.1875,
+          "floor_range_per_tile_ns": {
+            "average_per_tile_ns": 8240.1875,
+            "maximum_per_tile_ns": 8240.1875,
+            "minimum_per_tile_ns": 8240.1875
+          },
+          "limitations": [
+            "CT uses per-tile peak vector rates only; command startup, issue, pipeline fill/drain and memory effects are not modeled.",
+            "The result is a theoretical arithmetic floor from the separate static final-program workload, not a measured duration and not a Primary component."
+          ],
+          "measured_active_ns": {
+            "average_per_tile_ns": 15815.6875,
+            "maximum_per_tile_ns": 15816,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 15811,
+            "status": "Measured"
+          },
+          "measured_to_model_ratio": 1.919335876762513,
+          "model_basis": "64 GOPS F16/BF16 and 32 GOPS F32 vector peak per tile",
+          "model_status": "theoretical-lower-bound",
+          "work": {
+            "aggregate": "4386912",
+            "average_per_tile": 274182.0,
+            "breakdown": {
+              "vector_f16_bf16_logical_ops": "335872",
+              "vector_f32_logical_ops": "4051040",
+              "vector_other_logical_ops": "0"
+            },
+            "known_tile_count": 16,
+            "maximum_per_tile": "274182",
+            "minimum_per_tile": "274182",
+            "unit": "logical_ops"
+          }
+        },
+        {
+          "engine": "NE",
+          "estimated_ns": 50626.56000000001,
+          "estimated_scope": "average-per-tile-peak-throughput-floor",
+          "floor_ns": 50626.56000000001,
+          "floor_range_per_tile_ns": {
+            "average_per_tile_ns": 50626.56000000001,
+            "maximum_per_tile_ns": 50626.56,
+            "minimum_per_tile_ns": 50626.56
+          },
+          "limitations": [
+            "Peak throughput is a theoretical arithmetic floor; instruction startup, issue, pipeline fill/drain, layout and contention are not modeled.",
+            "The model is per tile and is not additive to the Primary launch-to-completion envelope."
+          ],
+          "measured_active_ns": {
+            "average_per_tile_ns": 1416715.9375,
+            "maximum_per_tile_ns": 1416774,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 1416712,
+            "status": "Measured"
+          },
+          "measured_to_model_ratio": 27.983650034685343,
+          "model_basis": "8 TOPS F16/BF16 NPU peak per tile",
+          "model_status": "theoretical-lower-bound",
+          "work": {
+            "aggregate": "6480199680",
+            "average_per_tile": 405012480.0,
+            "breakdown": {
+              "npu_f16_bf16_logical_ops": "6480199680",
+              "npu_other_logical_ops": "0"
+            },
+            "known_tile_count": 16,
+            "maximum_per_tile": "405012480",
+            "minimum_per_tile": "405012480",
+            "unit": "logical_ops"
+          }
+        },
+        {
+          "engine": "RDMA",
+          "estimated_ns": null,
+          "estimated_scope": null,
+          "floor_ns": 24944730.26,
+          "floor_range_per_tile_ns": null,
+          "limitations": [
+            "200 GB/s is a shared card DDR peak, not a per-tile RDMA or WDMA rate.",
+            "Read and write traffic share DDR resources; the RDMA and WDMA references must not be added unless an independent overlap model exists.",
+            "The comparison uses a separate Trace-run per-tile PMU average and is never added to or subtracted from Primary.",
+            "Tile workloads differ, so no equal-share per-tile time comparison is formed; only the card traffic floor is reported."
+          ],
+          "measured_active_ns": {
+            "average_per_tile_ns": 34073608.375,
+            "maximum_per_tile_ns": 36717861,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 30507455,
+            "status": "Measured"
+          },
+          "measured_to_model_ratio": null,
+          "model_basis": "200 GB/s card DDR peak",
+          "model_status": "theoretical-lower-bound",
+          "work": {
+            "aggregate": "4988946052",
+            "average_per_tile": 311809128.25,
+            "known_tile_count": 16,
+            "maximum_per_tile": "311917612",
+            "minimum_per_tile": "311801896",
+            "unit": "bytes"
+          }
+        },
+        {
+          "engine": "WDMA",
+          "estimated_ns": null,
+          "estimated_scope": null,
+          "floor_ns": 47396.16,
+          "floor_range_per_tile_ns": null,
+          "limitations": [
+            "200 GB/s is a shared card DDR peak, not a per-tile RDMA or WDMA rate.",
+            "Read and write traffic share DDR resources; the RDMA and WDMA references must not be added unless an independent overlap model exists.",
+            "The comparison uses a separate Trace-run per-tile PMU average and is never added to or subtracted from Primary.",
+            "Tile workloads differ, so no equal-share per-tile time comparison is formed; only the card traffic floor is reported."
+          ],
+          "measured_active_ns": {
+            "average_per_tile_ns": 84694.0,
+            "maximum_per_tile_ns": 103006,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 67746,
+            "status": "Measured"
+          },
+          "measured_to_model_ratio": null,
+          "model_basis": "200 GB/s card DDR peak",
+          "model_status": "theoretical-lower-bound",
+          "work": {
+            "aggregate": "9479232",
+            "average_per_tile": 592452.0,
+            "known_tile_count": 16,
+            "maximum_per_tile": "596992",
+            "minimum_per_tile": "524352",
+            "unit": "bytes"
+          }
+        },
+        {
+          "engine": "TDMA",
+          "estimated_ns": null,
+          "estimated_scope": null,
+          "floor_ns": null,
+          "floor_range_per_tile_ns": null,
+          "limitations": [
+            "No supported SPM movement bandwidth, issue latency or clock is available, so TDMA time is intentionally unavailable.",
+            "The shown work is residual local SPM movement after subtracting RDMA/WDMA bytes. It can include GatherScatter or other local movement and is not exact per-TDMA-command attribution."
+          ],
+          "measured_active_ns": {
+            "average_per_tile_ns": 5099305.0,
+            "maximum_per_tile_ns": 5100187,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 5097911,
+            "status": "Measured"
+          },
+          "measured_to_model_ratio": null,
+          "model_basis": "SPM movement throughput unavailable",
+          "model_status": "unavailable",
+          "work": {
+            "aggregate": "5035625664",
+            "average_per_tile": 314726604.0,
+            "known_tile_count": 16,
+            "maximum_per_tile": "314732876",
+            "minimum_per_tile": "314632524",
+            "unit": "local_spm_movement_bytes"
+          }
+        },
+        {
+          "engine": "DIRECT_DTE",
+          "estimated_ns": 0.0,
+          "estimated_scope": "average-per-tile-single-link-payload-reference",
+          "floor_ns": null,
+          "floor_range_per_tile_ns": null,
+          "limitations": [
+            "128 GB/s is a single directional NoC link peak. The reference only serializes the average injected payload for one Tile on one ideal link.",
+            "It is not a collective lower bound or expected Direct-DTE latency: route, hops, phase dependencies, peer-ready, FSM, setup, completion wait, cleanup and contention are not modeled.",
+            "Direct-DTE PMU activity and Kcore rdcycle waits have no qualified nanosecond mapping, so no measured/model ratio is produced."
+          ],
+          "measured_active_ns": {
+            "average_per_tile_ns": null,
+            "maximum_per_tile_ns": null,
+            "measurement_kind": null,
+            "minimum_per_tile_ns": null,
+            "status": "Unavailable"
+          },
+          "measured_to_model_ratio": null,
+          "model_basis": "128 GB/s single-direction NoC link peak",
+          "model_status": "reference-only",
+          "work": {
+            "aggregate": "0",
+            "average_per_tile": 0.0,
+            "breakdown": {
+              "aggregate_receive_bytes": "0",
+              "aggregate_transmit_bytes": "0"
+            },
+            "known_tile_count": 16,
+            "maximum_per_tile": "0",
+            "minimum_per_tile": "0",
+            "unit": "noc_transmit_payload_bytes"
+          }
+        }
+      ],
+      "model": "tx81-static-throughput-lower-bound",
+      "rates": {
+        "ddr_bytes_per_second": 200000000000,
+        "directional_noc_bytes_per_second": 128000000000,
+        "f16_bf16_npu_logical_ops_per_second_per_tile": 8000000000000,
+        "f16_bf16_vector_logical_ops_per_second_per_tile": 64000000000,
+        "f32_vector_logical_ops_per_second_per_tile": 32000000000,
+        "spm_movement_bytes_per_second": null
+      },
+      "relation_to_primary": "non-additive-model-reference",
+      "scope": "complete-final-instruction-program-per-physical-tile",
+      "source": "compiler-static-final-instruction-program"
+    },
+    "evidence": [
+      {
+        "path": "build/test/llama-performance-20260917/llama-2-7b-block-float16-prepare/package/package.profile/runs/current/analysis.json",
+        "sha256": "88ea7acce7a39f33ef9c8a59e55ddc5af7251b61a3945af91dca2851db5948ec"
+      },
+      {
+        "path": "build/test/llama-performance-20260917/llama-2-7b-block-float16-prepare/package/package.profile/runs/current/evidence.json",
+        "sha256": "01d5db53c5cdb718da80f83b2376722a5840397e6152089dec91bbe2619a1c7d"
+      },
+      {
+        "path": "build/test/llama-performance-20260917/current-profile-prepare.log",
+        "sha256": "7513ece1ac5ef7a06ad57178e29d36043620814f65a945b5497ad94e680f8d19"
+      }
+    ]
+  },
+  "direct_operand_projection_trial": {
+    "status": "rejected-numerical-validation",
+    "accepted_optimization": false,
+    "compiler_sha256": "df665196241a7fa411cea87284d3d5811d7f844d8ddb53955e1532e3a655b751",
+    "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+    "case": "llama-2-7b-block",
+    "dtype": "float16",
+    "source": "current export, default search width 8 / trials 42",
+    "device_ms": 8.746,
+    "timing_qualified": false,
+    "cosine": 0.5732875219480722,
+    "minimum_cosine": 0.9999,
+    "relative_l2": 0.9227336873114299,
+    "maximum_relative_l2": 0.01,
+    "elementwise_mismatches": 64352,
+    "elements": 65536,
+    "mean_abs": 0.1614891983626876,
+    "max_abs": 1.35333251953125,
+    "completion": "16 Tile completion and normal cleanup; full output comparison failed",
+    "host_checks": "SpatialDomain 31/31; Planning, Driver, Transforms, CodeGen suites passed; canonical full incremental build and Ninja no-op passed. These do not establish numerical correctness.",
+    "prepared_no_card": [
+      "block float16",
+      "block bfloat16",
+      "GEMM4096 float16",
+      "GEMM4096 bfloat16",
+      "GEMM4097 float16"
+    ],
+    "subsequent_board_runs": "A bounded diagnostic batch followed: BF16 full block also failed; isolated QK, PV, rank3/rank4 softmax and NT projection with F32 psum passed. Fresh fused candidates are recorded separately in attention-fusion-20260917.json.",
+    "actual_winner": {
+      "ddr_read_bytes": 430126976,
+      "instruction_count": 19352,
+      "regions": 546
+    },
+    "evidence": [
+      {
+        "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-board.log",
+        "sha256": "0aa86c2ee2365bbc26767f662f75aded7782972bba83f71497b15992627f8f56"
+      },
+      {
+        "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare.log",
+        "sha256": "7b78f177237940667d40429426162f3d2608167cff0255c4977a0dd886c363ed"
+      },
+      {
+        "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/package/manifest.json",
+        "sha256": "c601113af7ccea303127c5885a4ee81c2bb6b2de0d219f01eca5e225da812e1e"
+      },
+      {
+        "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/package/modules/module_00000.so",
+        "sha256": "27b9fc806df54e8a08ed3ca75691b50d4226b2ed11aa3e4b2a4059c4079a2a50"
+      },
+      {
+        "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-board/raw/card_00_output_0.capture.f16.raw",
+        "sha256": "a658bcdbf077276e5997e0c77bc8b9ebe11f74bf57c430105172ca4cb7d57b54"
+      }
+    ],
+    "model_diagnosis": {
+      "status": "not-executed",
+      "reason": "Full-model compilation cancelled after reviewing the managed-reference boundary: oriented/psum GEMM requires expensive formal evaluation. Follow-up uses bounded subgraphs from the failing S16 attention."
+    },
+    "followup_diagnostics": {
+      "bfloat16_block": {
+        "compiler_sha256": "df665196241a7fa411cea87284d3d5811d7f844d8ddb53955e1532e3a655b751",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-block",
+        "dtype": "bfloat16",
+        "mode": "board",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-block",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-board",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "started_utc": "2026-09-16T18:27:26Z",
+        "status": "needs-review",
+        "exit_code": 1,
+        "wall_seconds": 20.81763740698807,
+        "audits": []
+      },
+      "isolated_subgraphs": [
+        {
+          "case": "llama-block-projection-diagnostic",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "74bd239b0f10ba7065c588fe46e99d44954f7d21fdcbdedf50ab5abfbb1b4234",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+            "card_00_user_input_1.f16.raw": "8f602350905a0465a2aeff3c6fd964cc1f8d90f5c2299a16baf0ea830e66b52f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.001953125,
+              "cosine_similarity": 0.9999999984063441,
+              "relative_l2_error": 5.6627189458192914e-05,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 4.171505679551046e-06
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1788000"
+          ],
+          "evidence": {
+            "path": "build/test/board-performance-20260917-reuse/llama-block-projection-diagnostic-board/numeric-audit-01.json",
+            "sha256": "81d93e3ff73a5bd9b81ce2c8496c550779ff3b683cd116050a897b12eaa4f4f7"
+          }
+        },
+        {
+          "case": "llama-block-pv-diagnostic",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6b612c1a0ed1c7245a89535db29898e04931fa96ddb5b95564f7e170238937fe",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "ef0712b93bdc659b5054b7c61c4b1faafac543ab48ce6e1fd169d6ec8beb38eb",
+            "card_00_user_input_1.f16.raw": "67c4778b7562825966e723bc49569f82cba2d7ad60f9ce116cc03fda84dc22a5"
+          },
+          "outputs": [
+            {
+              "shape": [
+                32,
+                16,
+                128
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0001220703125,
+              "cosine_similarity": 0.9999999999576897,
+              "relative_l2_error": 9.19945822739453e-06,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 4.902176442556083e-09
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=735000"
+          ],
+          "evidence": {
+            "path": "build/test/board-performance-20260917-reuse/llama-block-pv-diagnostic-board/numeric-audit-01.json",
+            "sha256": "8ba45cce93583371a06ab58a3c1b09d6b411cdc5b416c746c2fe83d8aad74f71"
+          }
+        },
+        {
+          "case": "llama-block-qk-diagnostic",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "42df11d4bccac151dbd10bed4ea47ab06578670c2dc41a013676324e20930f8a",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+            "card_00_user_input_1.f16.raw": "d716550f19b6d693a99752c3f06821918a599b3c6225b2917c34344a20ff959a"
+          },
+          "outputs": [
+            {
+              "shape": [
+                32,
+                16,
+                16
+              ],
+              "dtype": "torch.float16",
+              "elements": 8192,
+              "max_abs_error": 0.0001220703125,
+              "cosine_similarity": 0.9999999999702545,
+              "relative_l2_error": 7.71348116788877e-06,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 1.7062120605260134e-08
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=700000"
+          ],
+          "evidence": {
+            "path": "build/test/board-performance-20260917-reuse/llama-block-qk-diagnostic-board/numeric-audit-01.json",
+            "sha256": "3d1bcd1b71ebdb110204923311edbb1469b3d47c105989fab8619eab6a1a6c87"
+          }
+        },
+        {
+          "case": "llama-block-softmax-diagnostic",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "1fe35fb25a4f680b23b1e2911604e68f0dc8fc683aec6735f5510be6e4c7467f",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "ef0712b93bdc659b5054b7c61c4b1faafac543ab48ce6e1fd169d6ec8beb38eb"
+          },
+          "outputs": [
+            {
+              "shape": [
+                32,
+                16,
+                16
+              ],
+              "dtype": "torch.float16",
+              "elements": 8192,
+              "max_abs_error": 0.0,
+              "cosine_similarity": 1.0,
+              "relative_l2_error": 0.0,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 0.0
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=824000"
+          ],
+          "evidence": {
+            "path": "build/test/board-performance-20260917-reuse/llama-block-softmax-diagnostic-board/numeric-audit-01.json",
+            "sha256": "e2706616332b439249543154ab2d76eccbbe5cf57f8884e969f9db619e79c6e9"
+          }
+        },
+        {
+          "case": "llama-block-softmax-rank4-diagnostic",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "9ce2bc3718c67df027de54d44a072057e8802b70408fe2cf131661010c2948ff",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "ef0712b93bdc659b5054b7c61c4b1faafac543ab48ce6e1fd169d6ec8beb38eb"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                32,
+                16,
+                16
+              ],
+              "dtype": "torch.float16",
+              "elements": 8192,
+              "max_abs_error": 0.0,
+              "cosine_similarity": 1.0,
+              "relative_l2_error": 0.0,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 0.0
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=875000"
+          ],
+          "evidence": {
+            "path": "build/test/board-performance-20260917-reuse/llama-block-softmax-rank4-diagnostic-board/numeric-audit-01.json",
+            "sha256": "7a9c1712438f9a13ddd0e23fc600dcc3fbdd05ae900a7036215aec0c5ef431ba"
+          }
+        }
+      ]
+    }
+  }
+}

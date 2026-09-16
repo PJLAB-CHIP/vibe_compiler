@@ -29,7 +29,7 @@
   ],
   "counts": {
     "board-passed": 48,
-    "prepare-passed": 1,
+    "board-needs-review": 1,
     "prepare-needs-review": 4
   },
   "measurement": "Fresh source/input/PyTorch reference; search width 8/trials 42; fresh no-card before each serial board case; one ordinary tx-stream-events sample per step. Compiler and CRT identities belong to individual attempts.",
@@ -5866,9 +5866,43 @@
               "sha256": "966ce545217f5cc059a33d71843421495736facfc90c7f4d269be974b8dfb90c"
             }
           ]
+        },
+        {
+          "compiler_sha256": "245f1bea6ac86d4773d20f2b6ff7050f9e8c9e8491daefa8299cdebe65f8f920",
+          "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+          "case": "attention-prefill-llama-2-7b",
+          "dtype": "float16",
+          "mode": "board",
+          "started_utc": "2026-09-16T17:47:47Z",
+          "status": "needs-review",
+          "exit_code": 1,
+          "wall_seconds": 279.798128800001,
+          "audits": [],
+          "crt_sha256": "eeaa32d10cde99b3d6f1f7bc4c8c2034b329193bd11d03e5040751538ab94c77",
+          "record": {
+            "path": "build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board.json",
+            "sha256": "f6a134cf3db2edec92cb88520022970079fa18b6f9a63cfb91af3f8029ca770b"
+          },
+          "log": {
+            "path": "build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board.log",
+            "sha256": "413e87966d3ff632b600092bb6a99f50a53a5d5fc6c900d2ddb22137e68f1033"
+          },
+          "failure_details": [
+            "wafer_board_pytorch_test: command failed with exit code 1: ['/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run', '--package-dir', '/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-prepare/package', '--device-timing', '--board', '--device-id', '0', '--expected-runtime-version', '1400', '--expected-device-name', '/dev/accel/dev-0', '--expected-pci-bus-id', '0000:3b:00.0', '--expected-tile-count', '16', '--expected-runtime-library-sha256', '3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c', '--completion-timeout-ms', '60000', '--output', '0=/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board/raw/card_00_output_0.capture.f16.raw', '--resource', '3=/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board/raw/card_00_user_input_0.f16.raw', '--resource', '2=/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board/raw/card_00_user_input_1.f16.raw', '--resource', '0=/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board/raw/card_00_user_input_2.f16.raw', '--resource', '1=/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board/raw/card_00_user_input_3.f16.raw']"
+          ],
+          "packages": [],
+          "device_logs": [],
+          "expected_outputs": [
+            {
+              "path": "build/test/board-regression-20260917-fixes/attention-prefill-llama-2-7b-float16-board/raw/card_00_output_0.expected.f16.raw",
+              "sha256": "5addd30e7741762c86de6fde29abfc2285d6cdf3bb745dc009303c2efae1641b"
+            }
+          ],
+          "captured_outputs": [],
+          "module_files": []
         }
       ],
-      "result": "prepare-passed"
+      "result": "board-needs-review"
     },
     {
       "case": "single-card-gemm-4096",
