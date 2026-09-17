@@ -2130,3 +2130,16 @@
   后者由既有GatherScatter实现。allocation、owner和lifetime继续在实际IR中形成，由唯一SPM planner验证。
 - 防复发：连续/有空隙/共享source分别覆盖FP16/BF16、1024/1025/1031、多块及单行尾部，逐byte检查实际RDMA/GS坐标与无重叠；
   性能验证同时检查静态小命令数、实际动态命令和普通设备耗时，不能用减少逻辑copy数量替代实际成本。
+
+## 已选子块的需求必须穿过完整view链及Region边界
+
+- 根因：逐层投影slice/reshape会把最终连续的局部窗口暂时拆成非矩形片段；只允许单次collapse或expand又会拒绝合法局部shape。
+  失败后按原operand type拼装完整tensor，会让计算已经缩小而buffer重新膨胀。
+- 修复边界：由索引interface组合完整单来源关系，再证明所选窗口的exact image及局部顺序；spatial消费TilingInterface实际生成的subset，
+  temporal消费当前slice及loop SSA。必要的collapse→expand只包含局部元素；局部请求失败不能转成完整请求。
+- Region输入有两个独立陷阱：同一SSA的不同operand需求不能由value级IRMapping互相覆盖；无use的重复argument没有读取需求，
+  不能阻止其它consumer的boundary compaction。同一producer endpoint共用一个输入，各use保留自己的subset。
+- 函数输入slice须留在消费Region内供layout分析读取。提前移到Region外会隐藏局部view，使后续出现完整DDR→NCX搬运和过多DMA descriptor；
+  不能通过放宽descriptor上限修复。既有完整函数参数SSA不等于创建完整SPM allocation。
+- 防复发：1024/1025/1031、4/16 Tile覆盖多层view、共享输入、不同operand map、无use参数、真实full-use及temporal主/尾部；
+  检查exact coverage并推进至实际Instr/SPM。4096/4097大GEMM同时验证实际读取及descriptor路径。

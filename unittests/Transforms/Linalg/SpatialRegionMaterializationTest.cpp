@@ -518,7 +518,8 @@ TEST(SpatialRegionMaterializationTest,
         16u);
     unsigned tileableOperations = 0;
     materialized->module->walk([&](mlir::TilingInterface tiling) {
-      if (!tiling->getParentOfType<wafer::TileRegionOp>())
+      if (!tiling->getParentOfType<wafer::TileRegionOp>() ||
+          !mlir::isa<mlir::DestinationStyleOpInterface>(tiling.getOperation()))
         return;
       ++tileableOperations;
       ASSERT_TRUE(tiling);
@@ -979,51 +980,170 @@ TEST(SpatialRegionMaterializationTest,
      CoalescesReshapedColumnDemandWithoutMergingSpatialOwners) {
   using namespace wafer;
   using namespace wafer::compiler::detail;
-  for (int64_t extent : {1024, 1025, 1031}) {
-    SCOPED_TRACE(extent);
-    auto context = createContext();
-    std::string text;
-    llvm::raw_string_ostream out(text);
-    std::string sourceType = "tensor<2x" + std::to_string(extent) + "x128xf16>";
-    std::string expandedType =
-        "tensor<2x" + std::to_string(extent) + "x4x32xf16>";
-    std::string outputType =
-        "tensor<2x4x" + std::to_string(extent) + "x32xf16>";
-    out << R"mlir(module {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool flatten : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(flatten);
+      auto context = createContext();
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      std::string sourceType =
+          "tensor<2x" + std::to_string(extent) + "x128xf16>";
+      std::string expandedType =
+          "tensor<2x" + std::to_string(extent) + "x4x32xf16>";
+      std::string outputType =
+          "tensor<2x4x" + std::to_string(extent) + "x32xf16>";
+      out << R"mlir(module {
   wafer.target.topology @target {card_grid = array<i64: 1, 1>,
       card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
       unavailable_tiles = array<i64>}
   wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
   func.func @main(%input: )mlir"
-        << sourceType << ") -> " << outputType << " {\n"
-        << "%empty = tensor.empty() : " << sourceType << "\n"
-        << "%producer = linalg.map ins(%input : " << sourceType
-        << ") outs(%empty : " << sourceType << R"mlir() (%x: f16) {
+          << sourceType << ") -> " << outputType << " {\n"
+          << "%empty = tensor.empty() : " << sourceType << "\n"
+          << "%producer = linalg.map ins(%input : " << sourceType
+          << ") outs(%empty : " << sourceType << R"mlir() (%x: f16) {
     %twice = arith.addf %x, %x : f16
     linalg.yield %twice : f16
   }
-  %expanded = tensor.expand_shape %producer [[0], [1], [2, 3]]
-      output_shape [2, )mlir"
-        << extent << ", 4, 32] : " << sourceType << " into " << expandedType
-        << "\n%out = tensor.empty() : " << outputType << R"mlir(
+  )mlir";
+      std::string expandedSource = sourceType;
+      if (flatten) {
+        expandedSource = "tensor<" + std::to_string(2 * extent * 128) + "xf16>";
+        out << "%flat = tensor.collapse_shape %producer [[0, 1, 2]] : "
+            << sourceType << " into " << expandedSource << "\n";
+      }
+      out << "%expanded = tensor.expand_shape "
+          << (flatten ? "%flat [[0, 1, 2, 3]]" : "%producer [[0], [1], [2, 3]]")
+          << " output_shape [2, " << extent << ", 4, 32] : " << expandedSource
+          << " into " << expandedType
+          << "\n%out = tensor.empty() : " << outputType << R"mlir(
   %consumer = linalg.generic {
       indexing_maps = [affine_map<(b, h, m, n) -> (b, m, h, n)>,
                        affine_map<(b, h, m, n) -> (b, h, m, n)>],
       iterator_types = ["parallel", "parallel", "parallel", "parallel"]}
       ins(%expanded : )mlir"
-        << expandedType << ") outs(%out : " << outputType << R"mlir() {
+          << expandedType << ") outs(%out : " << outputType << R"mlir() {
     ^bb0(%x: f16, %old: f16):
       %square = arith.mulf %x, %x : f16
       linalg.yield %square : f16
   } -> )mlir"
-        << outputType << "\nreturn %consumer : " << outputType << "\n}}\n";
+          << outputType << "\nreturn %consumer : " << outputType << "\n}}\n";
+      auto source =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(source);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+      std::string detail;
+      auto actual = materializeWithSpatialPlan(
+          *source,
+          [](SpatialPlan &plan) {
+            ASSERT_EQ(plan.nodes.size(), 2u);
+            for (auto &node : plan.nodes) {
+              for (auto &axis : node.axes) {
+                axis.scheme = IteratorPartitionScheme::BalancedParts;
+                axis.parameter = 1;
+              }
+              node.axes[1].parameter = 4;
+              node.embedding = {TileId(0), TileId(1), TileId(2), TileId(3)};
+              node.reductionMerges.clear();
+            }
+          },
+          detail);
+      ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+      // The producer splits rows; each consumer selects a different 32-column
+      // slab through expand_shape. Four independent owners supply each slab.
+      // Each slab is assembled in compact coordinates while its four source
+      // fragments retain their global owner windows.
+      unsigned copies = 0;
+      std::vector<unsigned> coverage(4 * extent);
+      actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
+        auto slice =
+            insert.getSource().getDefiningOp<mlir::tensor::ExtractSliceOp>();
+        if (!slice ||
+            slice.getSourceType().getShape() !=
+                (llvm::ArrayRef<int64_t>{2, extent, 128}) ||
+            insert.getDestType().getShape() !=
+                (llvm::ArrayRef<int64_t>{2, extent, 32}))
+          return;
+        ++copies;
+        auto offsets = slice.getStaticOffsets();
+        auto sizes = slice.getStaticSizes();
+        EXPECT_EQ(insert.getStaticOffsets(),
+                  llvm::ArrayRef<int64_t>({0, offsets[1], 0}));
+        EXPECT_EQ(sizes, insert.getStaticSizes());
+        EXPECT_EQ(offsets[0], 0);
+        EXPECT_EQ(sizes[0], 2);
+        EXPECT_EQ(sizes[2], 32);
+        ASSERT_GE(offsets[2], 0);
+        ASSERT_LT(offsets[2], 128);
+        EXPECT_EQ(offsets[2] % 32, 0);
+        ASSERT_GE(offsets[1], 0);
+        ASSERT_LE(offsets[1] + sizes[1], extent);
+        EXPECT_GE(sizes[1], extent / 4);
+        for (int64_t row = offsets[1]; row < offsets[1] + sizes[1]; ++row)
+          ++coverage[(offsets[2] / 32) * extent + row];
+      });
+      EXPECT_EQ(copies, 16u);
+      EXPECT_TRUE(
+          llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
+      EXPECT_EQ(countOps<TileRegionOp>(actual->module->getOperation()), 8u);
+      EXPECT_FALSE(actual->relations.boundaryRelations.empty());
+      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+          actual->module->getOperation(), actual->relations)));
+      auto layout =
+          resolveCurrentLayoutsAndBufferize(*actual->module, actual->relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+    }
+}
+
+TEST(SpatialRegionMaterializationTest,
+     RepeatedProducerOperandsKeepTheirDistinctIndexingDemands) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    const std::string type = "tensor<1x" + std::to_string(extent) + "x" +
+                             std::to_string(extent) + "xf16>";
+    std::string text = R"mlir(module {
+      wafer.target.topology @target {card_grid = array<i64: 1, 1>,
+        card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+        unavailable_tiles = array<i64>}
+      wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+      func.func @main(%input: TYPE) -> TYPE {
+        %empty = tensor.empty() : TYPE
+        %producer = linalg.map ins(%input : TYPE) outs(%empty : TYPE)
+          (%x: f16) {
+          %twice = arith.addf %x, %x : f16
+          linalg.yield %twice : f16
+        }
+        %consumer = linalg.generic {
+          indexing_maps = [affine_map<(b, m, n) -> (b, m, n)>,
+                           affine_map<(b, m, n) -> (b, n, m)>,
+                           affine_map<(b, m, n) -> (b, m, n)>],
+          iterator_types = ["parallel", "parallel", "parallel"]}
+          ins(%producer, %producer : TYPE, TYPE) outs(%empty : TYPE) {
+        ^bb0(%x: f16, %y: f16, %old: f16):
+          %sum = arith.addf %x, %y : f16
+          linalg.yield %sum : f16
+        } -> TYPE
+        return %consumer : TYPE
+      }
+    })mlir";
+    size_t position = 0;
+    while ((position = text.find("TYPE", position)) != std::string::npos) {
+      text.replace(position, 4, type);
+      position += type.size();
+    }
     auto source = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
     ASSERT_TRUE(source);
-    ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
     std::string detail;
-    auto actual = materializeWithSpatialPlan(
+    SpatialRegionMaterializationFailure failure;
+    auto actual = materializeWithSpatialDomainPlan(
         *source,
-        [](SpatialPlan &plan) {
+        [&](const auto &, SpatialPlan &plan, std::string &) {
           ASSERT_EQ(plan.nodes.size(), 2u);
           for (auto &node : plan.nodes) {
             for (auto &axis : node.axes) {
@@ -1032,57 +1152,229 @@ TEST(SpatialRegionMaterializationTest,
             }
             node.axes[1].parameter = 4;
             node.embedding = {TileId(0), TileId(1), TileId(2), TileId(3)};
-            node.reductionMerges.clear();
           }
         },
-        detail);
+        failure, detail);
     ASSERT_TRUE(mlir::succeeded(actual)) << detail;
-    ASSERT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
-    // The producer splits rows; each consumer selects a different 32-column
-    // slab through expand_shape. Four independent owners supply each slab.
-    // Each slab is assembled in compact coordinates while its four source
-    // fragments retain their global owner windows.
-    unsigned copies = 0;
-    std::vector<unsigned> coverage(4 * extent);
-    actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
-      auto slice =
-          insert.getSource().getDefiningOp<mlir::tensor::ExtractSliceOp>();
-      if (!slice ||
-          slice.getSourceType().getShape() !=
-              (llvm::ArrayRef<int64_t>{2, extent, 128}) ||
-          insert.getDestType().getShape() !=
-              (llvm::ArrayRef<int64_t>{2, extent, 32}))
-        return;
-      ++copies;
-      auto offsets = slice.getStaticOffsets();
-      auto sizes = slice.getStaticSizes();
-      EXPECT_EQ(insert.getStaticOffsets(),
-                llvm::ArrayRef<int64_t>({0, offsets[1], 0}));
-      EXPECT_EQ(sizes, insert.getStaticSizes());
-      EXPECT_EQ(offsets[0], 0);
-      EXPECT_EQ(sizes[0], 2);
-      EXPECT_EQ(sizes[2], 32);
-      ASSERT_GE(offsets[2], 0);
-      ASSERT_LT(offsets[2], 128);
-      EXPECT_EQ(offsets[2] % 32, 0);
-      ASSERT_GE(offsets[1], 0);
-      ASSERT_LE(offsets[1] + sizes[1], extent);
-      EXPECT_GE(sizes[1], extent / 4);
-      for (int64_t row = offsets[1]; row < offsets[1] + sizes[1]; ++row)
-        ++coverage[(offsets[2] / 32) * extent + row];
+    unsigned consumers = 0;
+    int64_t rows = 0;
+    actual->module->walk([&](mlir::linalg::GenericOp consumer) {
+      ++consumers;
+      ASSERT_EQ(consumer.getInputs().size(), 2u);
+      auto lhs =
+          mlir::cast<mlir::RankedTensorType>(consumer.getInputs()[0].getType());
+      auto rhs =
+          mlir::cast<mlir::RankedTensorType>(consumer.getInputs()[1].getType());
+      EXPECT_EQ(lhs.getDimSize(0), 1);
+      EXPECT_EQ(lhs.getDimSize(2), extent);
+      EXPECT_TRUE(lhs.getDimSize(1) == extent / 4 ||
+                  lhs.getDimSize(1) == (extent + 3) / 4);
+      EXPECT_EQ(rhs.getShape(),
+                (llvm::ArrayRef<int64_t>{1, extent, lhs.getDimSize(1)}));
+      rows += lhs.getDimSize(1);
     });
-    EXPECT_EQ(copies, 16u);
-    EXPECT_TRUE(
-        llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
-    EXPECT_EQ(countOps<TileRegionOp>(actual->module->getOperation()), 8u);
-    EXPECT_FALSE(actual->relations.boundaryRelations.empty());
-    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
-        actual->module->getOperation(), actual->relations)));
-    auto layout =
-        resolveCurrentLayoutsAndBufferize(*actual->module, actual->relations);
-    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    EXPECT_EQ(consumers, 4u);
+    EXPECT_EQ(rows, extent);
+    llvm::SmallVector<std::pair<mlir::Value, mlir::Operation *>> peerInputs;
+    for (const auto &relation : actual->relations.boundaryRelations) {
+      auto argument =
+          mlir::cast<mlir::BlockArgument>(relation.destinationEndpoint);
+      auto region =
+          mlir::cast<TileRegionOp>(argument.getOwner()->getParentOp());
+      auto pair =
+          std::make_pair(relation.sourceEndpoint, region.getOperation());
+      EXPECT_FALSE(llvm::is_contained(peerInputs, pair));
+      peerInputs.push_back(pair);
+    }
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+    EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+        *actual->module, actual->relations)));
   }
+}
+
+TEST(SpatialRegionMaterializationTest,
+     SelectedComponentViewsKeepFragmentAssemblyLocal) {
+  using namespace wafer;
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t parts : {4, 16}) {
+      SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(parts));
+      auto context = createContext();
+      const std::string n = std::to_string(extent);
+      const std::string columns = std::to_string(parts * 128);
+      const std::string sourceType =
+          "tensor<3x" + n + "x1x" + columns + "xf16>";
+      const std::string selectedType =
+          "tensor<1x" + n + "x1x" + columns + "xf16>";
+      const std::string flatType =
+          "tensor<" + std::to_string(extent * parts * 128) + "xf16>";
+      const std::string viewType =
+          "tensor<" + n + "x" + std::to_string(parts * 2) + "x64xf16>";
+      const std::string outputType =
+          "tensor<1x" + std::to_string(parts * 2) + "x" + n + "x64xf16>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << R"mlir(module {
+  wafer.target.topology @target {card_grid = array<i64: 1, 1>,
+      card_interconnect = "mesh", tile_grid = array<i64: 4, 4>,
+      unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: )mlir"
+          << sourceType << ") -> " << outputType << " {\n"
+          << "%empty = tensor.empty() : " << sourceType << "\n"
+          << "%producer = linalg.map ins(%input : " << sourceType
+          << ") outs(%empty : " << sourceType << R"mlir() (%x: f16) {
+    %twice = arith.addf %x, %x : f16
+    linalg.yield %twice : f16
+  }
+  )mlir" << "%selected = tensor.extract_slice %producer[2, 0, 0, 0] [1, "
+          << n << ", 1, " << columns << "] [1, 1, 1, 1] : " << sourceType
+          << " to " << selectedType
+          << "\n%flat = tensor.collapse_shape %selected [[0, 1, 2, 3]] : "
+          << selectedType << " into " << flatType
+          << "\n%view = tensor.expand_shape %flat [[0, 1, 2]] output_shape ["
+          << n << ", " << parts * 2 << ", 64] : " << flatType << " into "
+          << viewType << "\n%out = tensor.empty() : " << outputType << R"mlir(
+  %consumer = linalg.generic {
+      indexing_maps = [affine_map<(b, h, m, n) -> (m, h, n)>,
+                       affine_map<(b, h, m, n) -> (b, h, m, n)>],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel"]}
+      ins(%view : )mlir"
+          << viewType << ") outs(%out : " << outputType << R"mlir() {
+    ^bb0(%x: f16, %old: f16):
+      %square = arith.mulf %x, %x : f16
+      linalg.yield %square : f16
+  } -> )mlir"
+          << outputType << "\nreturn %consumer : " << outputType << "\n}}\n";
+      auto source =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(source);
+      std::string detail;
+      SpatialRegionMaterializationFailure materializationFailure;
+      auto actual = materializeWithSpatialDomainPlan(
+          *source,
+          [&](const auto &, SpatialPlan &plan, std::string &) {
+            ASSERT_EQ(plan.nodes.size(), 2u);
+            for (auto &node : plan.nodes) {
+              for (auto &axis : node.axes) {
+                axis.scheme = IteratorPartitionScheme::BalancedParts;
+                axis.parameter = 1;
+              }
+              node.axes[1].parameter = parts;
+              node.embedding.clear();
+              for (int64_t tile = 0; tile < parts; ++tile)
+                node.embedding.push_back(TileId(tile));
+              node.reductionMerges.clear();
+            }
+          },
+          materializationFailure, detail);
+      ASSERT_TRUE(mlir::succeeded(actual)) << detail;
+      std::vector<unsigned> coverage(parts * extent);
+      unsigned copies = 0;
+      actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
+        auto slice =
+            insert.getSource().getDefiningOp<mlir::tensor::ExtractSliceOp>();
+        if (!slice ||
+            slice.getSourceType().getShape() !=
+                (llvm::ArrayRef<int64_t>{3, extent, 1, parts * 128}) ||
+            insert.getDestType().getShape() !=
+                (llvm::ArrayRef<int64_t>{1, extent, 1, 128}))
+          return;
+        ++copies;
+        auto offsets = slice.getStaticOffsets();
+        auto sizes = slice.getStaticSizes();
+        EXPECT_EQ(offsets[0], 2);
+        EXPECT_EQ(offsets[2], 0);
+        EXPECT_EQ(sizes[0], 1);
+        EXPECT_EQ(sizes[2], 1);
+        EXPECT_EQ(sizes[3], 128);
+        EXPECT_EQ(insert.getStaticOffsets(),
+                  (llvm::ArrayRef<int64_t>{0, offsets[1], 0, 0}));
+        EXPECT_EQ(insert.getStaticSizes(), sizes);
+        ASSERT_GE(offsets[3], 0);
+        ASSERT_LT(offsets[3], parts * 128);
+        EXPECT_EQ(offsets[3] % 128, 0);
+        ASSERT_GE(offsets[1], 0);
+        ASSERT_LE(offsets[1] + sizes[1], extent);
+        for (int64_t row = offsets[1]; row < offsets[1] + sizes[1]; ++row)
+          ++coverage[(offsets[3] / 128) * extent + row];
+      });
+      EXPECT_EQ(copies, parts * parts);
+      EXPECT_TRUE(
+          llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
+      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+          actual->module->getOperation(), actual->relations)));
+      llvm::SmallVector<TileRegionOp, 16> regions;
+      actual->module->walk(
+          [&](TileRegionOp region) { regions.push_back(region); });
+      unsigned loops = 0;
+      unsigned tails = 0;
+      for (auto region : regions) {
+        auto temporal = buildTemporalDomain(region);
+        ASSERT_TRUE(temporal.succeeded());
+        auto first = temporal.domain->getFirstChoice();
+        ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Choice);
+        TemporalChoice choice = *first.getChoice();
+        for (auto [scope, descriptor] : llvm::zip_equal(
+                 choice.scopes, temporal.domain->getScopeDescriptors())) {
+          for (size_t axis = 0; axis < scope.iteratorTileSizes.size(); ++axis)
+            if (descriptor.iteratorCapabilities[axis] ==
+                IteratorTilingCapability::Tileable)
+              scope.iteratorTileSizes[axis] =
+                  std::min<int64_t>(128, descriptor.iterationExtents[axis]);
+          auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
+                                                   scope.iteratorTileSizes,
+                                                   descriptor.precedence);
+          ASSERT_TRUE(mlir::succeeded(order));
+          scope.loopOrder = std::move(*order);
+        }
+        ASSERT_TRUE(temporal.domain->contains(choice));
+        TemporalTilingFailure failure;
+        auto tiled = applyTemporalTiling({{*temporal.domain, choice}},
+                                         actual->relations, &failure);
+        ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+        loops += tiled->loops;
+        tails += tiled->specializedTails;
+      }
+      EXPECT_GT(loops, parts);
+      EXPECT_EQ(tails == 0, extent == 1024);
+      auto layout =
+          resolveCurrentLayoutsAndBufferize(*actual->module, actual->relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      actual->module->walk([&](mlir::memref::AllocOp allocation) {
+        EXPECT_LT(allocation.getType().getNumElements(),
+                  3 * extent * parts * 128);
+      });
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
+      auto compute =
+          lowerStructuredComputeToTile(*actual->module, actual->relations);
+      ASSERT_TRUE(compute.succeeded()) << compute.detail;
+      auto movement =
+          materializeTileBoundaryMovement(*actual->module, actual->relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      wafer::frontend::FrontendProgramVerificationResult program;
+      program.numPartitions = 1;
+      program.programUserInputCount = 1;
+      program.distributedInputs = {
+          wafer::compiler::testing::boundary(0, {3, extent, 1, parts * 128})};
+      program.distributedOutputs = {
+          wafer::compiler::testing::boundary(0, {1, parts * 2, extent, 64})};
+      wafer::compiler::ProgramDataHandoff data;
+      std::string diagnosticsText;
+      llvm::raw_string_ostream diagnostics(diagnosticsText);
+      CurrentIRDownstreamStatistics downstream;
+      ExecutableLoweringStatistics executable;
+      auto compiled = compileCurrentIRCandidateToExecutable(
+          std::move(actual->module), std::move(actual->relations), CardId(0),
+          allTiles(), program, wafer::compiler::testing::executionConfig(),
+          diagnostics, data, {}, &downstream, &executable);
+      ASSERT_TRUE(compiled.isAccepted())
+          << compiled.gate << ": " << compiled.detail << "\n"
+          << diagnosticsText;
+      EXPECT_EQ(executable.actualMemoryTargetGateInvocations, 1u);
+      EXPECT_EQ(executable.deviceExecutablesProduced, 1u);
+      EXPECT_GT(downstream.instructionOperations, 0u);
+    }
 }
 
 TEST(SpatialRegionMaterializationTest,
@@ -1506,14 +1798,18 @@ module {
   });
   EXPECT_EQ(localReductions, 4u);
   unsigned initRegionOperands = 0;
-  materialized->module->walk([&](wafer::TileRegionOp region) {
-    for (mlir::Value operand : region.getInputs())
-      if (operand.getType() ==
-          mlir::RankedTensorType::get({2, 128},
-                                      mlir::Float16Type::get(context.get())))
-        ++initRegionOperands;
+  std::set<int64_t> initRows;
+  materialized->module->walk([&](mlir::tensor::ExtractSliceOp slice) {
+    if (!mlir::isa<mlir::BlockArgument>(slice.getSource()) ||
+        slice.getSourceType().getShape() != (llvm::ArrayRef<int64_t>{2, 128}))
+      return;
+    EXPECT_EQ(slice.getStaticSizes(), (llvm::ArrayRef<int64_t>{1, 128}));
+    EXPECT_EQ(slice.getStaticOffsets()[1], 0);
+    EXPECT_TRUE(initRows.insert(slice.getStaticOffsets()[0]).second);
+    ++initRegionOperands;
   });
   EXPECT_EQ(initRegionOperands, 2u);
+  EXPECT_EQ(initRows, (std::set<int64_t>{0, 1}));
 }
 
 TEST(SpatialRegionMaterializationTest,
@@ -2129,12 +2425,14 @@ module {
   const unsigned onlineCount = countOps<wafer::LinalgExtOnlineAttentionOp>(
       materialized->module->getOperation());
   EXPECT_GE(onlineCount, 16u);
+  // The complete indexing chain is identity; the selected local query feeds
+  // online state directly without reconstructing an intermediate full view.
   EXPECT_EQ(countOps<mlir::tensor::ExpandShapeOp>(
                 materialized->module->getOperation()),
-            onlineCount);
+            0u);
   EXPECT_EQ(countOps<mlir::tensor::CollapseShapeOp>(
                 materialized->module->getOperation()),
-            onlineCount);
+            0u);
   EXPECT_TRUE(mlir::succeeded(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           materialized->module->getOperation(), materialized->relations)));

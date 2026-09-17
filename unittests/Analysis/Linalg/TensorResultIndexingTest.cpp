@@ -12,6 +12,7 @@
 #include "gtest/gtest.h"
 
 #include <memory>
+#include <utility>
 
 namespace {
 
@@ -23,6 +24,97 @@ std::unique_ptr<mlir::MLIRContext> createContext() {
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
+}
+
+TEST(TensorResultIndexingTest, ComposedViewsKeepASelectedColumnWindowCompact) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    const std::string n = std::to_string(extent);
+    const std::string source = "tensor<3x" + n + "x1x768xf16>";
+    const std::string slice = "tensor<1x" + n + "x1x768xf16>";
+    const std::string flat = "tensor<" + std::to_string(extent * 768) + "xf16>";
+    const std::string view = "tensor<" + n + "x12x64xf16>";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        "module { func.func @read(%input: " + source + ") -> " + view +
+            " { %s = tensor.extract_slice %input[2, 0, 0, 0] [1, " + n +
+            ", 1, 768] [1, 1, 1, 1] : " + source + " to " + slice +
+            "\n%f = tensor.collapse_shape %s [[0, 1, 2, 3]] : " + slice +
+            " into " + flat +
+            "\n%v = tensor.expand_shape %f [[0, 1, 2]] output_shape [" + n +
+            ", 12, 64] : " + flat + " into " + view + "\nreturn %v : " + view +
+            "\n}}",
+        context.get());
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto result = function.getBody().front().getTerminator()->getOperand(0);
+    auto chain = deriveTensorViewIndexing(result);
+    ASSERT_TRUE(chain.isExact()) << chain.detail;
+    ASSERT_EQ(chain.indexing->source, function.getArgument(0));
+    for (auto window : {std::pair<int64_t, int64_t>{128, 128},
+                        std::pair<int64_t, int64_t>{extent - 7, 7}}) {
+      auto image = getTensorViewTileSource(
+          *chain.indexing, {extent, 12, 64},
+          {{window.first, 10, 0}, {window.second, 2, 64}});
+      ASSERT_TRUE(image.isExact()) << image.reason;
+      EXPECT_EQ(image.domain->offsets,
+                (llvm::SmallVector<int64_t, 4>{2, window.first, 0, 640}));
+      EXPECT_EQ(image.domain->sizes,
+                (llvm::SmallVector<int64_t, 4>{1, window.second, 1, 128}));
+      for (int64_t row = 0; row < window.second; ++row)
+        for (int64_t col = 0; col < 64; ++col)
+          ASSERT_TRUE(chain.indexing->resultToSource.contains(
+              {window.first + row, 11, col},
+              {2, window.first + row, 0, 704 + col}));
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest, TransparentReadsStopAtPartialAndUpdatedSources) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      func.func @read(%input: tensor<2x1031x128xf16>,
+                      %dest: tensor<2x1031x130xf16>) {
+        %zero = arith.constant 0.0 : f16
+        %pad = tensor.pad %input low[0, 0, 1] high[0, 0, 1] {
+        ^bb0(%b: index, %m: index, %n: index):
+          tensor.yield %zero : f16
+        } : tensor<2x1031x128xf16> to tensor<2x1031x130xf16>
+        %insert = tensor.insert_slice %input into %dest[0, 0, 1]
+          [2, 1031, 128] [1, 1, 1] : tensor<2x1031x128xf16> into tensor<2x1031x130xf16>
+        %p = tensor.collapse_shape %pad [[0], [1, 2]]
+          : tensor<2x1031x130xf16> into tensor<2x134030xf16>
+        %i = tensor.collapse_shape %insert [[0], [1, 2]]
+          : tensor<2x1031x130xf16> into tensor<2x134030xf16>
+        %stride = tensor.extract_slice %input[0, 0, 0] [2, 1031, 64]
+          [1, 1, 2] : tensor<2x1031x128xf16> to tensor<2x1031x64xf16>
+        return
+      }
+    })mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  unsigned chains = 0;
+  module->walk([&](mlir::tensor::CollapseShapeOp op) {
+    auto chain = deriveTensorViewIndexing(op.getResult());
+    ASSERT_TRUE(chain.isExact()) << chain.detail;
+    EXPECT_EQ(chain.indexing->source, op.getSrc());
+    auto leaf =
+        deriveTensorResultIndexing(mlir::cast<mlir::OpResult>(op.getSrc()));
+    ASSERT_TRUE(leaf.isExact());
+    EXPECT_EQ(leaf.indexing->getTransparentSource(), nullptr);
+    ++chains;
+  });
+  EXPECT_EQ(chains, 2u);
+  module->walk([&](mlir::tensor::ExtractSliceOp op) {
+    auto chain = deriveTensorViewIndexing(op.getResult());
+    ASSERT_TRUE(chain.isExact());
+    auto tile = getTensorViewTileSource(*chain.indexing, {2, 1031, 64},
+                                        {{0, 128, 0}, {2, 128, 64}});
+    EXPECT_EQ(tile.status, IndexRelationStatus::Unsupported);
+  });
 }
 
 TEST(TensorResultIndexingTest,

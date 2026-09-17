@@ -222,6 +222,11 @@ bool isTemporalCandidate(mlir::Operation *operation) {
         return tensor && (!tensor.hasRank() || !tensor.hasStaticShape());
       }))
     return false;
+  // Source-free tensor initializers are tiled only when their consumer asks
+  // for a result subset; they do not define independent compute loop scopes.
+  if (llvm::none_of(operation->getOperandTypes(),
+                    llvm::IsaPred<mlir::TensorType>))
+    return false;
   if (!mlir::isa<mlir::TilingInterface>(operation) ||
       !mlir::isMemoryEffectFree(operation) ||
       mlir::isa<WaferLinalgExtCollectiveOpInterface>(operation) ||
@@ -340,13 +345,6 @@ std::optional<mlir::OpOperand *> getOnlyOperationUse(mlir::Operation *op) {
       onlyUse = &use;
     }
   return onlyUse ? std::optional<mlir::OpOperand *>(onlyUse) : std::nullopt;
-}
-
-bool isViewTransparentKind(TensorIndexingTransformKind kind) {
-  return kind == TensorIndexingTransformKind::Cast ||
-         kind == TensorIndexingTransformKind::ExtractSlice ||
-         kind == TensorIndexingTransformKind::ExpandShape ||
-         kind == TensorIndexingTransformKind::CollapseShape;
 }
 
 bool matchOffsetDimension(mlir::AffineExpr expression,
@@ -728,17 +726,13 @@ queryTemporalFusion(mlir::OpResult producer,
                 : analysis::IndexRelationStatus::Unsupported;
         return relationFailure(status, step.detail);
       }
-      if (!isViewTransparentKind(step.indexing->kind) ||
-          step.indexing->operands.size() != 1 ||
-          step.indexing->operands.front().role !=
-              TensorIndexingOperandRole::Source ||
-          step.indexing->operands.front().operand != use->getOperandNumber())
+      const auto *source = step.indexing->getTransparentSource();
+      if (!source || source->operand != use->getOperandNumber())
         return {TemporalFusionQueryKind::NonUnique,
                 "producer use is not a transparent source relation"};
       if (!visitedViews.insert(owner).second)
         continue;
-      auto next = step.indexing->operands.front().resultToOperand.compose(
-          path.relation, limits);
+      auto next = source->resultToOperand.compose(path.relation, limits);
       if (!next.isExact())
         return relationFailure(next.status, next.reason);
       pending.push_back({owner->getResult(0), std::move(*next.get())});

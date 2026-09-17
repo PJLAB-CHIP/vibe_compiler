@@ -3,6 +3,7 @@
 #include "TemporalTiling.h"
 
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
+#include "Wafer/Transforms/Linalg/StructuredTiling.h"
 
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -22,6 +23,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/SubsetOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Transforms/CSE.h"
@@ -1724,27 +1726,95 @@ void eraseDeadOperations(mlir::IRRewriter &rewriter, TileRegionOp region) {
       rewriter.eraseOp(operation);
 }
 
-struct SimplifySlicedUnitCollapse
-    : mlir::OpRewritePattern<mlir::tensor::CollapseShapeOp> {
-  using OpRewritePattern::OpRewritePattern;
+// This is a selected-slice transformation, not ordinary graph exploration.
+// Compose the view chain before taking its image: an intermediate flatten can
+// scatter one compact multi-dimensional window into many disjoint intervals.
+struct LocalizeTensorViewSlice
+    : mlir::OpInterfaceRewritePattern<mlir::SubsetExtractionOpInterface> {
+  using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
 
   mlir::LogicalResult
-  matchAndRewrite(mlir::tensor::CollapseShapeOp op,
+  matchAndRewrite(mlir::SubsetExtractionOpInterface slice,
                   mlir::PatternRewriter &rewriter) const override {
-    if (!llvm::any_of(op.getResult().getUsers(), [](mlir::Operation *user) {
-          return mlir::isa<mlir::tensor::ExtractSliceOp>(user);
-        }))
-      return mlir::failure();
-    for (llvm::ArrayRef<int64_t> group : op.getReassociationIndices()) {
-      unsigned nonUnit = 0;
-      for (int64_t dimension : group)
-        nonUnit += op.getSrcType().getDimSize(dimension) != 1;
-      if (nonUnit > 1)
-        return mlir::failure();
+    auto type =
+        mlir::dyn_cast<mlir::RankedTensorType>(slice.getResult().getType());
+    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
+        slice.getSourceOperand().get().getType());
+    auto subset = mlir::cast<mlir::SubsetOpInterface>(slice.getOperation())
+                      .getAccessedHyperrectangularSlice();
+    if (!type || !sourceType || !type.hasStaticShape() ||
+        !sourceType.hasStaticShape() || type.getRank() == 0 ||
+        mlir::failed(subset))
+      return rewriter.notifyMatchFailure(slice,
+                                         "requires a static tensor subset");
+    llvm::SmallVector<int64_t, 4> staticSizes;
+    for (auto size : subset->getMixedSizes()) {
+      auto constant = mlir::getConstantIntValue(size);
+      if (!constant)
+        return rewriter.notifyMatchFailure(slice,
+                                           "requires static tile extents");
+      staticSizes.push_back(*constant);
     }
-    return mlir::success(mlir::succeeded(
-        mlir::tensor::simplifyCollapseShapeWithRankReducingExtractSlice(
-            op, rewriter)));
+    if (llvm::any_of(subset->getMixedStrides(), [](auto stride) {
+          return !mlir::isConstantIntValue(stride, 1);
+        }))
+      return rewriter.notifyMatchFailure(slice,
+                                         "requires a dense tensor subset");
+    auto chain =
+        analysis::deriveTensorViewIndexing(slice.getSourceOperand().get());
+    if (!chain.isExact())
+      return rewriter.notifyMatchFailure(slice, chain.detail);
+    auto map = chain.indexing->resultToSource.getProjectedAffineMap(
+        rewriter.getContext());
+    if (!map)
+      return rewriter.notifyMatchFailure(slice, "tile offset is not affine");
+
+    // An affine view translates an exact rectangle without changing its
+    // shape. Prove density once; actual offsets remain the current loop SSA.
+    llvm::SmallVector<int64_t, 4> zero(staticSizes.size(), 0);
+    auto image = analysis::getTensorViewTileSource(
+        *chain.indexing, sourceType.getShape(), {zero, staticSizes});
+    if (!image.isExact())
+      return rewriter.notifyMatchFailure(slice, image.reason);
+    auto localSourceType = mlir::RankedTensorType::get(
+        image.domain->sizes, type.getElementType(), type.getEncoding());
+    if (localSourceType.getNumElements() != type.getNumElements() ||
+        localSourceType.getRank() == 0)
+      return rewriter.notifyMatchFailure(slice,
+                                         "view does not preserve tile order");
+    llvm::SmallVector<mlir::Attribute, 4> zeroAttributes(
+        zero.size(), rewriter.getIndexAttr(0));
+    llvm::SmallVector<mlir::Attribute, 4> mappedZero;
+    if (mlir::failed(map->constantFold(zeroAttributes, mappedZero)))
+      return rewriter.notifyMatchFailure(slice, "affine origin is unavailable");
+
+    auto originalType =
+        mlir::cast<mlir::RankedTensorType>(chain.indexing->source.getType());
+    if (originalType.getElementType() != type.getElementType() ||
+        originalType.getEncoding() != type.getEncoding())
+      return rewriter.notifyMatchFailure(slice,
+                                         "source representation differs");
+    llvm::SmallVector<mlir::AffineMap, 4> translations;
+    for (auto [axis, expression] : llvm::enumerate(map->getResults())) {
+      int64_t origin = mlir::cast<mlir::IntegerAttr>(mappedZero[axis]).getInt();
+      int64_t delta = 0;
+      if (llvm::SubOverflow(image.domain->offsets[axis], origin, delta))
+        return rewriter.notifyMatchFailure(slice, "tile origin overflows");
+      translations.push_back(mlir::AffineMap::get(
+          map->getNumDims(), 0, expression + delta, rewriter.getContext()));
+    }
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
+    for (auto [axis, translation] : llvm::enumerate(translations)) {
+      offsets.push_back(mlir::affine::makeComposedFoldedAffineApply(
+          rewriter, slice.getLoc(), translation, subset->getMixedOffsets()));
+      sizes.push_back(rewriter.getIndexAttr(image.domain->sizes[axis]));
+      strides.push_back(rewriter.getIndexAttr(1));
+    }
+    mlir::Value result = rewriter.create<mlir::tensor::ExtractSliceOp>(
+        slice.getLoc(), chain.indexing->source, offsets, sizes, strides);
+    result = reshapeStaticTensorTile(rewriter, slice.getLoc(), result, type);
+    rewriter.replaceOp(slice, result);
+    return mlir::success();
   }
 };
 
@@ -1762,7 +1832,7 @@ canonicalizeTiledRegion(TileRegionOp region,
   // Affine composition can expose an IV only after a previous rewrite.
   // Keep its loop-range proof in the same worklist, including late fusion.
   mlir::scf::populateSCFForLoopCanonicalizationPatterns(patterns);
-  patterns.add<SimplifySlicedUnitCollapse>(region.getContext());
+  patterns.add<LocalizeTensorViewSlice>(region.getContext());
   mlir::tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);
   mlir::tensor::populateReassociativeReshapeFoldingPatterns(patterns);
   mlir::tensor::populateFoldTensorEmptyPatterns(patterns,

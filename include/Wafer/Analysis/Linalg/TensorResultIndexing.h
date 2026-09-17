@@ -39,6 +39,17 @@ struct TensorResultIndexing {
   mlir::OpResult result;
   TensorIndexingTransformKind kind = TensorIndexingTransformKind::Cast;
   llvm::SmallVector<TensorOperandIndexing, 2> operands;
+
+  /// A complete pure read from one source, proved by the indexing relation.
+  /// Partial definitions and destination updates remain materialization leaves.
+  const TensorOperandIndexing *getTransparentSource() const {
+    if (operands.size() != 1 ||
+        operands.front().role != TensorIndexingOperandRole::Source ||
+        !operands.front()
+             .resultToOperand.hasTotalBoundedAffineMapConstruction())
+      return nullptr;
+    return &operands.front();
+  }
 };
 
 struct TensorResultIndexingResult {
@@ -57,6 +68,38 @@ struct TensorResultIndexingResult {
 /// materialize or predict tiles, buffers, movement, or storage.
 TensorResultIndexingResult deriveTensorResultIndexing(
     mlir::OpResult result,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
+/// One current transparent, total, single-source indexing chain. The source
+/// handle is borrowed for this IR epoch; the relation contains no allocation
+/// facts.
+struct TensorViewIndexing {
+  mlir::Value source;
+  IndexRelation resultToSource;
+};
+
+struct TensorViewIndexingResult {
+  TensorResultIndexingStatus status = TensorResultIndexingStatus::Unsupported;
+  std::optional<TensorViewIndexing> indexing;
+  std::string detail;
+
+  bool isExact() const {
+    return status == TensorResultIndexingStatus::Exact && indexing.has_value();
+  }
+};
+
+/// Compose current interface relations before querying a selected tile. Stop
+/// at opaque, partial, multi-source or block boundaries; never select a path by
+/// operation type. Local order is proved separately for the selected demand.
+TensorViewIndexingResult deriveTensorViewIndexing(
+    mlir::Value value,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
+/// Prove both the exact dense source window and its local row-major order.
+/// Equal element counts alone do not authorize reshaping a selected tile.
+StaticRectangularIndexSetResult getTensorViewTileSource(
+    const TensorViewIndexing &indexing, llvm::ArrayRef<int64_t> resultShape,
+    const StaticRectangularIndexSet &requested,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
 /// Map a finite result demand to one operand of an exact current support

@@ -790,8 +790,8 @@ preflightBoundaryWindows(mlir::ModuleOp module,
           consumerPlan.extracts.push_back(extract);
           consumerPlan.relativeOffsets.push_back(std::move(relative));
         }
-        if (consumerPlan.extracts.empty())
-          return false;
+        // An unused argument has no demand. Retarget its type together with
+        // the actual input; it must not block other consumers' local windows.
         plan.uses.push_back(std::move(consumerPlan));
         return true;
       };

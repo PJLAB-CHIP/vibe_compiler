@@ -300,6 +300,100 @@ TEST(TemporalTilingTest, SlicedUnitCollapseReadsOnlyTheSelectedInputTile) {
   }
 }
 
+TEST(TemporalTilingTest, ComposedInputViewsReadOnlyTheCurrentHeadAndRows) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    const std::string n = std::to_string(extent);
+    const std::string input = "tensor<3x" + n + "x1x768xf16>";
+    const std::string selected = "tensor<1x" + n + "x1x768xf16>";
+    const std::string flat = "tensor<" + std::to_string(extent * 768) + "xf16>";
+    const std::string output = "tensor<" + n + "x12x64xf16>";
+    std::string body;
+    llvm::raw_string_ostream out(body);
+    out << "%selected = tensor.extract_slice %arg[2, 0, 0, 0] [1, " << n
+        << ", 1, 768] [1, 1, 1, 1] : " << input << " to " << selected
+        << "\n%flat = tensor.collapse_shape %selected [[0, 1, 2, 3]] : "
+        << selected << " into " << flat
+        << "\n%view = tensor.expand_shape %flat [[0, 1, 2]] output_shape [" << n
+        << ", 12, 64] : " << flat << " into " << output
+        << "\n%empty = tensor.empty() : " << output
+        << "\n%value = linalg.map ins(%view : " << output
+        << ") outs(%empty : " << output << R"mlir() (%x: f16) {
+      %twice = arith.addf %x, %x : f16
+      linalg.yield %twice : f16
+    })mlir";
+    auto module = parseModule(*context, body, input, output);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto original = region.getBody().front().getArgument(0);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = selectTileSizes(*domain.domain, {128, 2, 64});
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    TemporalTilingFailure failure;
+    auto tiled =
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+    EXPECT_EQ(tiled->loops, 2u);
+    EXPECT_EQ(tiled->specializedTails, extent % 128 == 0 ? 0u : 1u);
+    unsigned reads = 0;
+    module->walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource() != original)
+        return;
+      ++reads;
+      auto sizes = slice.getStaticSizes();
+      ASSERT_EQ(sizes.size(), 4u);
+      EXPECT_EQ(sizes[0], 1);
+      EXPECT_EQ(sizes[2], 1);
+      EXPECT_EQ(sizes[3], 128);
+      EXPECT_TRUE(sizes[1] == 128 || sizes[1] == extent % 128);
+      EXPECT_EQ(slice.getStaticOffsets()[0], 2);
+      EXPECT_EQ(slice.getStaticOffsets()[2], 0);
+      EXPECT_EQ(slice.getStaticStrides(),
+                (llvm::ArrayRef<int64_t>{1, 1, 1, 1}));
+    });
+    EXPECT_EQ(reads, extent % 128 == 0 ? 1u : 2u);
+    auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    auto compute = lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(compute.succeeded()) << compute.detail;
+    auto movement = materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    unsigned loads = 0;
+    module->walk([&](StorageLoadOp load) {
+      auto type = mlir::cast<mlir::MemRefType>(load.getOperand(1).getType());
+      EXPECT_LE(type.getNumElements(), 128 * 128);
+      ++loads;
+    });
+    EXPECT_EQ(loads, reads);
+    module->walk([&](mlir::memref::AllocOp allocation) {
+      if (isWaferSPMMemRefType(allocation.getType())) {
+        EXPECT_LE(allocation.getType().getNumElements(), 128 * 128);
+      }
+    });
+    std::string detail;
+    auto standalone =
+        createStandaloneTileModules(std::move(module), &detail, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+    ASSERT_EQ(standalone->size(), 1u);
+    auto &tile = standalone->front();
+    TileRegionToInstrLoweringSession session(*context);
+    llvm::SmallVector<TileRegionOp, 2> regions;
+    tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+    for (auto op : regions)
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(op, session)));
+    ASSERT_TRUE(mlir::succeeded(
+        convertBufferizationCopiesToInstr(*tile.module, session)));
+    ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+    TileMemoryPlanningFailure memoryFailure;
+    auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+    ASSERT_TRUE(mlir::succeeded(planned));
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+  }
+}
+
 TEST(TemporalTilingTest, TwoRaggedAxesProduceAtMostFourStaticBodies) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto module =

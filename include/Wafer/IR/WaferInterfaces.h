@@ -52,7 +52,7 @@ struct TensorIndexingDescription {
 /// tensor operations whose exact static indexing semantics are consumed by
 /// structured demand analysis.
 void registerWaferTensorIndexingExternalModels(mlir::DialectRegistry &registry);
-void registerWaferTensorGatherTilingExternalModels(mlir::DialectRegistry &registry);
+void registerWaferTensorTilingExternalModels(mlir::DialectRegistry &registry);
 
 enum class WaferLinalgExtCollectiveKind {
   AllGather,

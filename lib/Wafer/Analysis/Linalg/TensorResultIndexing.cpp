@@ -32,6 +32,81 @@ fromRelationFailure(const IndexRelationResult &result) {
 
 } // namespace
 
+TensorViewIndexingResult
+deriveTensorViewIndexing(mlir::Value value, const IndexRelationLimits &limits) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!type || !type.hasStaticShape())
+    return {TensorResultIndexingStatus::Unsupported, std::nullopt,
+            "view chain requires a static ranked tensor"};
+  auto relation = IndexRelation::identity(type.getShape(), limits);
+  mlir::Value source = value;
+  unsigned steps = 0;
+  while (auto result = mlir::dyn_cast<mlir::OpResult>(source)) {
+    if (++steps > limits.maxRectangularPieces)
+      return {TensorResultIndexingStatus::ResourceExhausted, std::nullopt,
+              "view chain exceeded its relation work budget"};
+    auto step = deriveTensorResultIndexing(result, limits);
+    if (step.status == TensorResultIndexingStatus::Unsupported)
+      break;
+    if (!step.isExact())
+      return {step.status, std::nullopt, step.detail};
+    const auto *operand = step.indexing->getTransparentSource();
+    if (!operand)
+      break;
+    if (relation.isExact())
+      relation = relation.get()->compose(operand->resultToOperand, limits);
+    if (!relation.isExact()) {
+      auto failure = fromRelationFailure(relation);
+      return {failure.status, std::nullopt, failure.detail};
+    }
+    source = result.getOwner()->getOperand(operand->operand);
+  }
+  if (source == value)
+    return {TensorResultIndexingStatus::Unsupported, std::nullopt,
+            "value has no transparent view chain"};
+  return {TensorResultIndexingStatus::Exact,
+          TensorViewIndexing{source, std::move(*relation.get())},
+          {}};
+}
+
+StaticRectangularIndexSetResult
+getTensorViewTileSource(const TensorViewIndexing &indexing,
+                        llvm::ArrayRef<int64_t> resultShape,
+                        const StaticRectangularIndexSet &requested,
+                        const IndexRelationLimits &limits) {
+  auto image = indexing.resultToSource.getExactStaticRectangularImage(
+      requested.offsets, requested.sizes, limits);
+  if (!image.isExact())
+    return image;
+  auto sourceType =
+      mlir::cast<mlir::RankedTensorType>(indexing.source.getType());
+  llvm::SmallVector<int64_t, 4> resultStrides(resultShape.size(), 1);
+  llvm::SmallVector<int64_t, 4> sourceStrides(sourceType.getRank(), 1);
+  auto tile = IndexRelation::staticSlice(
+      requested.sizes, resultShape, requested.offsets, resultStrides, limits);
+  auto source =
+      IndexRelation::staticSlice(image.domain->sizes, sourceType.getShape(),
+                                 image.domain->offsets, sourceStrides, limits);
+  auto reshape = IndexRelation::staticReshape(requested.sizes,
+                                              image.domain->sizes, limits);
+  for (const auto *part : {&tile, &source, &reshape})
+    if (!part->isExact())
+      return {part->status, std::nullopt, part->reason};
+  auto actual = tile.get()->compose(indexing.resultToSource, limits);
+  auto expected = reshape.get()->compose(*source.get(), limits);
+  for (const auto *part : {&actual, &expected})
+    if (!part->isExact())
+      return {part->status, std::nullopt, part->reason};
+  auto order = actual.get()->isEquivalentTo(*expected.get(), limits);
+  if (!order.isProvenTrue())
+    return {order.status == IndexRelationStatus::Exact
+                ? IndexRelationStatus::Unsupported
+                : order.status,
+            std::nullopt,
+            "selected source tile does not preserve row-major order"};
+  return image;
+}
+
 mlir::FailureOr<mlir::AffineMap>
 getStructuredOperandMap(mlir::OpOperand &operand) {
   if (auto gather = mlir::dyn_cast<mlir::tensor::GatherOp>(operand.getOwner())) {

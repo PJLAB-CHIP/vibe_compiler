@@ -2163,9 +2163,9 @@ module {
             : tensor<1xROWSx64xf16> into tensor<2xFULLx64xf16>
         wafer.tile.yield %full : tensor<2xFULLx64xf16>
       }
-      %used = wafer.tile.region(%published : tensor<2xFULLx64xf16>)
+      %used = wafer.tile.region(%published, %published : tensor<2xFULLx64xf16>, tensor<2xFULLx64xf16>)
           -> (tensor<1xLOCALx64xf16>) {
-      ^bb0(%local: tensor<2xFULLx64xf16>):
+      ^bb0(%unused: tensor<2xFULLx64xf16>, %local: tensor<2xFULLx64xf16>):
         %piece = tensor.extract_slice %local[1, 5, 0] [1, LOCAL, 64]
             [1, 1, 1] : tensor<2xFULLx64xf16> to tensor<1xLOCALx64xf16>
         wafer.tile.yield %piece : tensor<1xLOCALx64xf16>
@@ -2215,6 +2215,9 @@ module {
         {1, rows, 64}, mlir::Float16Type::get(context.get()));
     EXPECT_EQ(relation.sourceEndpoint.getType(), expected);
     EXPECT_EQ(relation.destinationEndpoint.getType(), expected);
+    EXPECT_EQ(regions[1].getInputs()[0].getType(), expected);
+    EXPECT_EQ(regions[1].getBody().getArgument(0).getType(), expected);
+    EXPECT_TRUE(regions[1].getBody().getArgument(0).use_empty());
     auto argument =
         mlir::cast<mlir::BlockArgument>(relation.destinationEndpoint);
     bool sawRemoteWindow = false;

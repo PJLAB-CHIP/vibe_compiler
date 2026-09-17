@@ -7,10 +7,53 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
 
 using namespace wafer;
+
+mlir::Value wafer::reshapeStaticTensorTile(mlir::OpBuilder &builder,
+                                           mlir::Location location,
+                                           mlir::Value source,
+                                           mlir::RankedTensorType resultType) {
+  auto sourceType = mlir::cast<mlir::RankedTensorType>(source.getType());
+  assert(sourceType.hasStaticShape() && resultType.hasStaticShape() &&
+         sourceType.getRank() > 0 && resultType.getRank() > 0 &&
+         sourceType.getNumElements() == resultType.getNumElements() &&
+         sourceType.getElementType() == resultType.getElementType() &&
+         sourceType.getEncoding() == resultType.getEncoding());
+  if (sourceType == resultType)
+    return source;
+  if (auto groups =
+          mlir::getReassociationIndicesForReshape(sourceType, resultType)) {
+    if (sourceType.getRank() > resultType.getRank())
+      return builder.create<mlir::tensor::CollapseShapeOp>(location, resultType,
+                                                           source, *groups);
+    return builder.create<mlir::tensor::ExpandShapeOp>(location, resultType,
+                                                       source, *groups);
+  }
+  auto flatType = mlir::RankedTensorType::get({sourceType.getNumElements()},
+                                              sourceType.getElementType(),
+                                              sourceType.getEncoding());
+  if (sourceType.getRank() > 1) {
+    mlir::ReassociationIndices axes;
+    for (int64_t axis = 0; axis < sourceType.getRank(); ++axis)
+      axes.push_back(axis);
+    source = builder.create<mlir::tensor::CollapseShapeOp>(
+        location, flatType, source,
+        llvm::ArrayRef<mlir::ReassociationIndices>{axes});
+  }
+  if (resultType.getRank() == 1)
+    return source;
+  mlir::ReassociationIndices axes;
+  for (int64_t axis = 0; axis < resultType.getRank(); ++axis)
+    axes.push_back(axis);
+  return builder.create<mlir::tensor::ExpandShapeOp>(
+      location, resultType, source,
+      llvm::ArrayRef<mlir::ReassociationIndices>{axes});
+}
 
 namespace {
 

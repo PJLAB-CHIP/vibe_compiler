@@ -69,6 +69,10 @@ post-attention bounded logical normalization
 不读取估计SPM用量，也不改变已定义的fill/input初始化。重复使用的empty分别按各自实际slice生成，未被替换的uses继续保留。
 修改先于layout/One-Shot分析，所有后续分析从更新后的current IR重建。覆盖rank3/4、1024/1025/1031、rank reduction、多use及定义过内容的init。
 
+边界窗口收缩只依据current SSA上的实际读取。重复输入或改写留下的无use Region argument没有tensor demand，
+不能阻止同一producer其它局部读取的收缩；改变carrier type时同步改变这些空参数的输入和类型，保持Region verifier有效。
+真实full-use仍保留完整值。覆盖1024/1025/1031、同Tile和跨Tile部分窗口、重复/空参数及非零offset，检查重定位坐标与实际buffer尺寸。
+
 函数边界的memory space按当前FuncOp的symbol uses判定，每个函数的参数与结果共用同一个选择。该选择仅活于一次layout/bufferization调用；
 pinned One-Shot的FuncOp/CallOp转换保留函数身份和callee引用，改变的buffer类型不需要重新扫描symbol uses。跨候选或下一次调用重新判定。
 覆盖大量rank3静态参数、1024/1025/1031、外部entry与被调用helper；检查逐参数/结果memory space及查询次数，并以同输入实际编译记录核对工作量与耗时。

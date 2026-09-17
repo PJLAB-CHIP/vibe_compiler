@@ -134,6 +134,35 @@ S1025分别为24/18。该预算内没有找到可行candidate，不表示模型�
 编译期间一次主机调用栈落在`TemporalProposals::appendCapacityDirection`，只用于定位耗时边界，不据单次栈声称停滞根因。
 下一步针对actual容量demand与分块反馈继续定位，不再为这个ViT source扩展safe-softmax保护链的后端表示。
 
+### 局部需求的interface闭合
+
+本次实际发现的问题不在轴大小启发式：已选窗口经过support view链时，逐层image及单次reshape限制使物化退回完整tensor；
+另有无use的重复Region参数阻止producer窗口收缩。06/08号合同现明确以current索引关系和实际subset驱动物化：
+
+- spatial消费TilingInterface生成的actual subset，view只由索引interface组合解释；temporal复用同一关系证明处理动态IV和主/尾块。
+- 局部reshape必要时使用局部collapse→expand；均匀literal直接保留scalar位型，不要求其来源image是单个矩形。
+- 同一SSA的不同operand保留各自需求，同一producer endpoint只建立一个Region输入；无use参数不阻止其它局部读的compaction。
+- 函数输入的实际slice保留在消费Region内，避免移到外层后layout丢失局部view而产生完整搬运；allocator、DMA上限和SPM准入未改。
+
+真实规模1024/1025/1031、4/16 Tile、多来源、不同operand map、共享full-use和temporal主/尾部已推进至实际Instr/SPM。
+七个component及八个public link smoke已执行；最后补齐uniform literal边界后，Transforms的457项全部通过，
+Driver三项直接保护和四个layout/bufferization lit再次通过；canonical完整增量构建及Ninja no-op通过。
+测试矩阵在06号设计，不以主机机制通过代签完整模型或设备性能。
+
+五项block/GEMM均重新导出原source、生成输入和独立PyTorch reference、构包并通过no-card。
+三组GEMM包与上一轮实卡通过包全部文件相同；两种block包已改变，须重新完成实卡数值和匹配性能。
+GEMM4096 BF16第一次实卡全输出通过、设备耗时6.969 ms，第二次completion超时，批次已停止并等待恢复确认；
+没有重试、reset或继续其它case。详细身份及证据见统一性能记录。该单次结果不签三轮保护或性能恢复。
+随后用户明确要求检查Add：fresh FP16 Add构包/no-card通过，占用为空闲，单次上板返回`txStreamQuery 0x46000006`，
+未取得输出，设备侧保持待恢复。没有重新运行GEMM或其它模型。
+
+最终当前compiler从两项fresh ViT source各执行默认8/42搜索：S1024耗时716.524秒，S1025耗时743.469秒；
+两项均为41个actual SPM容量拒绝、1个局部operand物化unsupported、0 accepted、0 indeterminate。
+原4.5 MiB QKV view重建及无use参数阻止3 MiB producer窗口收缩的根因已由机制输入闭合，但剩余candidate仍有
+FFN/attention实际容量需求未缩到可行范围，另一个局部物化边界未闭合。完整ViT仍无package/no-card或实卡资格，
+不能把这次通用机制修复记为第4项完成。下一步沿当前candidate的actual allocation owner和所选窗口继续定位，
+保留unsupported与capacity区分，不调大预算掩盖局部物化失败。
+
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
 source→默认8/42 search→verified package→fresh no-card→串行设备执行及完整输出比较。

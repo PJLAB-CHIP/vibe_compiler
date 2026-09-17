@@ -2149,3 +2149,24 @@ relative L2为0.0002089591/0.0002102428，均通过原相似度合同。全负�
 这消除了当前source的BOOL lowering阻塞，但未签完整ViT no-card或实卡通过，也没有设备性能成绩。
 原始导出、完整主机数值及编译输出在`build/test/vit-current/`的`vit-*-softmax/`、
 `vit-softmax-source-check.log`和`vit-*-softmax.log`。
+
+## 2026-09-17：接口驱动的局部需求修复及保护边界
+
+本轮修改组合current view索引关系，以Tiling/Subset interface实际产生的子块驱动物化，并修复无use的Region参数阻止
+boundary compaction的问题。三组大GEMM的新package与上一轮已通过实卡的package全部文件逐byte相同；
+LLaMA block FP16/BF16的新package有变化，已重新生成输入和独立PyTorch reference并通过no-card，实卡保护待完成。
+
+GEMM4096 BF16以当前package、fresh输入/reference执行，第一次完整输出通过：cosine=0.99999998739370277，
+relative L2=0.00015884460990067264，设备耗时6.969 ms。第二次普通执行发生60秒completion超时，runtime隔离context，
+本轮批次停止；没有进行第三次、后续case、reset或retry。两次launch前全系统只读占用检查均为空闲，只有已核实的日志服务。
+同一包第一次通过且与此前三次通过的包逐byte相同，只能排除本次GEMM产物发生改变，不能据此判断超时根因或设备是否恢复。
+该单样本不签三次性能结论，不替换原最好基线。
+
+compiler SHA256为`fdb0802593fb1f288a8ea8a1cf116957bbb3aea5b355121536007c217013124b`，
+runtime为SDK 5.7.0.0524.01 / API 1400。原始输入、package、no-card与第一次输出记录在
+`build/test/vit-current/final/`；超时输出在`build/test/vit-current/single-card-gemm-4096-bfloat16-final-board.log`。
+
+随后用户明确要求运行Add检查。使用当前compiler fresh导出的16,384元素FP16 Add、fresh输入与PyTorch exact reference，
+构包/no-card通过，占用检查为空闲；单次上板completion查询返回`txStreamQuery 0x46000006`，context再次隔离，
+未取得输出，后续设备执行停止。此检查只证明Add也未正常完成，不推定具体硬件或固件根因。
+记录在`build/test/vit-current/add-current.log`及`final/add-current/`。

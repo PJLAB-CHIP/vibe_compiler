@@ -476,6 +476,47 @@ offset grid、静态size及步长满足生成合同。重叠window或其它无�
 | reshape后的多Tile fragment assembly，1024/1025/1031 | 每个actual来源独立合并、精确offset/size/coverage；insert数随片段而非行数增长 | spatial materializer→verifier、layout/bufferization及既有actual Instr/SPM门禁 |
 | 原模型source、固定预算与dtype | ViT编译work/timing及剩余typed结果；LLaMA无卡产物/actual结构回归 | 完整模型package仍须独立验收，主机改善不代签实卡性能 |
 
+#### 跨view链的局部需求闭合
+
+- Upstream IR / input：已选spatial operand rectangle或temporal实际`extract_slice`，以及current SSA上的
+  已有索引接口能解释的纯单来源、完整定义的关系链；来源仍由当前fragment endpoint或tensor SSA表达。
+- Current stage responsibility：先组合整条透明view关系，再把局部需求映射到来源；不能逐层遇到非矩形中间
+  image就退回完整tensor拼装。Spatial直接在局部坐标拼接已选来源，temporal将实际slice穿过同一已证明的view链。
+- Output IR / files：只覆盖实际需求的tensor slice、局部reshape和必要的局部拼接；所有新值和来源都有实际SSA。
+- Downstream consumer：原temporal/layout路径、One-Shot Bufferization、movement、Instr及唯一SPM规划。
+- User-level driver / named pipeline：现有spatial与temporal materializer，共享只读关系查询和局部reshape物化；不新增产品入口。
+- Explicit non-goals：不改变选择启发式、SPM准入、数值顺序、dtype或真实full-use；不在allocator补裁剪，
+  不把完整shape占位留给下游canonicalizer完成局部化，不引入普通graph的e-graph外等价搜索。
+- Completion criteria：组合链的exact读写坐标、主/尾块、共享来源及真实full-use保持；直接下游实际allocation随
+  已选局部需求缩小，原ViT及LLaMA block/大GEMM保护走正式产品链验证。
+
+对照MLIR的[reshape slice helper](https://mlir.llvm.org/doxygen/ExtractSliceFromReshapeUtils_8cpp_source.html)：
+它通过inverse indexing将局部结果分解为source slices并在局部destination拼装；本仓已有IndexRelation负责同一数学证明。
+先组合透明链可避免flatten临时坐标把一块多维窗口拆成逐行片段。仅通过关系证明且保留顺序的局部view才可reshape，
+不能只因元素数相同就重解释置换。Dynamic offset必须符合已证明的当前slice/loop关系，未知保持typed失败边界。
+Spatial先调用源op的`TilingInterface`生成实际局部计算及operand subset，再对这些actual subset物化来源，
+不先按原operand type重建整图。接口adapter的operand由candidate自有的临时SSA映射提供；随后逐个替换实际subset，
+adapter移除后消除临时值。只有实际局部计算直接读取完整operand时才请求完整值，不能因局部生成失败静默改成完整拼装。
+这些映射只在当前materialization调用中存活，不跨IR stage保存计划、owner或memory事实。
+同一SSA的不同operand保留各自索引需求，不能仅用`IRMapping`的value替换覆盖其它use；同一已物化producer的多个fragment需求共用
+一个实际Region输入，各自在region内读取自己的subset。函数输入直接引用既有boundary SSA，实际slice保留在消费region内部，
+不把selected窗口先移出region再只传入紧凑参数，否则局部layout分析会丢失当前view边界。此规则不生成完整输入allocation。
+物化入口不维护view op名单；由现有`WaferTensorIndexingOpInterface`提供语义，通过关系证明单来源、完整定义、局部矩形和row-major顺序。
+若完整单来源关系的来源是均匀literal，实际selected subset直接保留该scalar位型和dtype生成局部constant；
+此时不要求原来源坐标中的image为单个矩形，因为任意已证明在域内的读取均返回同一位型。
+局部shape不能由单次collapse/expand表达时，共同物化器生成局部collapse→expand，flat中间值仍只有所需元素；不能退回原完整shape。
+完整值有真实consumer时保留原值，只局部化部分读取；不把这种合法存活误判为过大占位。
+Bufferization只决定既有destination的alias/allocation，不负责重新发现上游局部需求。
+
+| 输入等价类 | exact要求 | 下游witness |
+| --- | --- | --- |
+| rank3+，1024/1025/1031，slice→flatten→unflatten及多层view | whole-chain来源/坐标一致，非零offset、head/feature子集不扩大为完整tensor | spatial 4/16 Tile、actual layout/bufferization、Instr/SPM |
+| temporal 128等主块、1/7等tail，多block与动态IV | 每次读取恰为所选窗口，合计完整覆盖、无重叠；不用逐iteration展开 | temporal actual SCF→bufferization/Instr/SPM |
+| spatial后继续temporal，多个来源/consumer及共享full-use | 独立owner不合并，局部窗口不串用，真实full-use保留 | stage交接和实际allocation检查 |
+| 均匀literal经reshape，局部image跨原来源行界，FP16/BF16/F32及负零 | 1024/1025/1031、4/16 Tile，局部常量位型、窗口coverage和主/尾部保持 | actual spatial→temporal→Instr/SPM，不因非矩形image重建完整常量 |
+| 无法证明的关系、非unit stride、非透明计算/effect边界 | 不猜测reshape或丢弃语义，保持typed结果；不伪造容量结论 | verifier及负例 |
+| 原始ViT与保护case | 相同source、dtype、默认预算及原数值合同 | fresh package/no-card，串行实卡及匹配性能 |
+
 #### 已选局部需求中的规则常量
 
 - Upstream IR / input：spatial choice已物化的TileRegion，含dense tensor constant及实际extract_slice、reshape或cast。

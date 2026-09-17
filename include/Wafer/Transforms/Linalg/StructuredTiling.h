@@ -14,6 +14,14 @@
 
 namespace wafer {
 
+/// Materialize a row-major reshape of an already local tile. The caller must
+/// prove order preservation and provide positive-rank static tensor types with
+/// equal element counts, element types and encodings. The intermediate, when
+/// needed, has only this tile's elements, never the original tensor's shape.
+mlir::Value reshapeStaticTensorTile(mlir::OpBuilder &builder,
+                                    mlir::Location location, mlir::Value source,
+                                    mlir::RankedTensorType resultType);
+
 struct OperandTileIterationDomain {
   llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
   llvm::SmallVector<mlir::OpFoldResult, 4> sizes;

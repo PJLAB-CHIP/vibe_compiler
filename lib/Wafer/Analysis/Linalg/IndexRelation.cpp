@@ -964,6 +964,7 @@ IndexRelationResult IndexRelation::staticSlice(
                   "static slice exceeds source domain");
   }
   result.relation->injectiveByConstruction = true;
+  result.relation->totalBoundedAffineMapByConstruction = true;
   return result;
 }
 
@@ -1142,15 +1143,21 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
   const bool isAffineCollapse =
       hasRowMajorMapping &&
       llvm::all_of(rowMajorMappings,
-                   [](const RowMajorRectangleMapping &mapping) {
-                     return mapping.sourceDimensions.size() <= 1;
+                   [&](const RowMajorRectangleMapping &mapping) {
+                     return llvm::count_if(mapping.sourceDimensions,
+                                           [&](unsigned dimension) {
+                                             return sourceShape[dimension] != 1;
+                                           }) <= 1;
                    });
   if (isAffineCollapse) {
     MLIRContext context;
     llvm::SmallVector<AffineExpr, 4> results(
         sourceShape.size(), getAffineConstantExpr(0, &context));
     for (const RowMajorRectangleMapping &mapping : rowMajorMappings) {
-      if (mapping.sourceDimensions.empty())
+      auto source = llvm::find_if(mapping.sourceDimensions, [&](unsigned axis) {
+        return sourceShape[axis] != 1;
+      });
+      if (source == mapping.sourceDimensions.end())
         continue;
       AffineExpr expression = getAffineConstantExpr(0, &context);
       int64_t stride = 1;
@@ -1165,7 +1172,7 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
       }
       if (!hasRowMajorMapping)
         break;
-      results[mapping.sourceDimensions.front()] = expression;
+      results[*source] = expression;
     }
     IndexRelationResult result = fromAffineMap(
         AffineMap::get(destinationShape.size(), 0, results, &context),
@@ -1492,6 +1499,11 @@ IndexRelation::compose(const IndexRelation &next,
       rectangleSourceShape && next.rectangleDestinationShape &&
       next.rectangleSourceShape &&
       *rectangleSourceShape == *next.rectangleDestinationShape;
+  // Cancel complete intermediate coordinate systems before projecting a tile.
+  // Rebuild minimal reassociation groups instead of retaining a flatten axis.
+  if (composedCanonicalRowMajorOrder)
+    return staticReshape(*rectangleDestinationShape, *next.rectangleSourceShape,
+                         limits);
   if (status == IndexRelationStatus::Exact &&
       next.status == IndexRelationStatus::Exact &&
       totalBoundedAffineMapByConstruction &&
@@ -1599,14 +1611,6 @@ IndexRelation::compose(const IndexRelation &next,
     result.relation->rectangleDestinationShape = rectangleDestinationShape;
     result.relation->rectangleSourceShape = next.rectangleSourceShape;
     result.relation->functionalByConstruction = true;
-    result.relation->totalBoundedAffineMapByConstruction = true;
-  }
-  if (composedStatus == IndexRelationStatus::Exact &&
-      composedCanonicalRowMajorOrder) {
-    result.relation->rectangleDestinationShape = rectangleDestinationShape;
-    result.relation->rectangleSourceShape = next.rectangleSourceShape;
-    result.relation->functionalByConstruction = true;
-    result.relation->canonicalRowMajorOrderByConstruction = true;
     result.relation->totalBoundedAffineMapByConstruction = true;
   }
   return result;

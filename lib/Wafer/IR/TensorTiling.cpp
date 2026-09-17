@@ -1,4 +1,4 @@
-//===- TensorGatherTiling.cpp - Output-driven indexed tensor slices -----===//
+//===- TensorTiling.cpp - Tensor result tile interface models -----===//
 
 #include "Wafer/IR/WaferInterfaces.h"
 
@@ -10,9 +10,65 @@
 namespace wafer {
 namespace {
 
+struct EmptyTiling final
+    : mlir::TilingInterface::ExternalModel<EmptyTiling, mlir::tensor::EmptyOp> {
+  llvm::SmallVector<mlir::utils::IteratorType>
+  getLoopIteratorTypes(mlir::Operation *op) const {
+    auto type = mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    return llvm::SmallVector<mlir::utils::IteratorType>(
+        type.getRank(), mlir::utils::IteratorType::parallel);
+  }
+
+  llvm::SmallVector<mlir::Range>
+  getIterationDomain(mlir::Operation *op, mlir::OpBuilder &builder) const {
+    llvm::SmallVector<mlir::Range> ranges;
+    for (auto size :
+         mlir::tensor::getMixedSizes(builder, op->getLoc(), op->getResult(0)))
+      ranges.push_back(
+          {builder.getIndexAttr(0), size, builder.getIndexAttr(1)});
+    return ranges;
+  }
+
+  mlir::FailureOr<mlir::TilingResult>
+  getTiledImplementation(mlir::Operation *op, mlir::OpBuilder &builder,
+                         llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                         llvm::ArrayRef<mlir::OpFoldResult> sizes) const {
+    auto type = mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    if (offsets.size() != sizes.size() ||
+        sizes.size() != static_cast<size_t>(type.getRank()))
+      return mlir::failure();
+    auto tile = builder.create<mlir::tensor::EmptyOp>(
+        op->getLoc(), sizes, type.getElementType(), type.getEncoding());
+    return mlir::TilingResult{{tile}, {tile.getResult()}, {}};
+  }
+
+  mlir::LogicalResult getResultTilePosition(
+      mlir::Operation *, mlir::OpBuilder &, unsigned resultNumber,
+      llvm::ArrayRef<mlir::OpFoldResult> offsets,
+      llvm::ArrayRef<mlir::OpFoldResult> sizes,
+      llvm::SmallVectorImpl<mlir::OpFoldResult> &resultOffsets,
+      llvm::SmallVectorImpl<mlir::OpFoldResult> &resultSizes) const {
+    if (resultNumber != 0)
+      return mlir::failure();
+    resultOffsets.assign(offsets.begin(), offsets.end());
+    resultSizes.assign(sizes.begin(), sizes.end());
+    return mlir::success();
+  }
+
+  mlir::FailureOr<mlir::TilingResult>
+  generateResultTileValue(mlir::Operation *op, mlir::OpBuilder &builder,
+                          unsigned resultNumber,
+                          llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                          llvm::ArrayRef<mlir::OpFoldResult> sizes) const {
+    if (resultNumber != 0)
+      return mlir::failure();
+    return getTiledImplementation(op, builder, offsets, sizes);
+  }
+};
+
 struct GatherTiling final
     : mlir::TilingInterface::ExternalModel<GatherTiling,
-                                            mlir::tensor::GatherOp> {
+                                           mlir::tensor::GatherOp> {
   llvm::SmallVector<mlir::utils::IteratorType>
   getLoopIteratorTypes(mlir::Operation *op) const {
     auto gather = mlir::cast<mlir::tensor::GatherOp>(op);
@@ -24,22 +80,24 @@ struct GatherTiling final
   getIterationDomain(mlir::Operation *op, mlir::OpBuilder &builder) const {
     auto gather = mlir::cast<mlir::tensor::GatherOp>(op);
     llvm::SmallVector<mlir::Range> ranges;
-    for (mlir::OpFoldResult size : mlir::tensor::getMixedSizes(
-             builder, op->getLoc(), gather.getResult()))
-      ranges.push_back({builder.getIndexAttr(0), size, builder.getIndexAttr(1)});
+    for (mlir::OpFoldResult size :
+         mlir::tensor::getMixedSizes(builder, op->getLoc(), gather.getResult()))
+      ranges.push_back(
+          {builder.getIndexAttr(0), size, builder.getIndexAttr(1)});
     return ranges;
   }
 
   mlir::FailureOr<mlir::TilingResult>
   getTiledImplementation(mlir::Operation *op, mlir::OpBuilder &builder,
-                          llvm::ArrayRef<mlir::OpFoldResult> offsets,
-                          llvm::ArrayRef<mlir::OpFoldResult> sizes) const {
+                         llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                         llvm::ArrayRef<mlir::OpFoldResult> sizes) const {
     auto gather = mlir::cast<mlir::tensor::GatherOp>(op);
     unsigned batchRank = gather.getIndicesType().getRank() - 1;
     unsigned sourceRank = gather.getSourceType().getRank();
     auto dims = gather.getGatherDims();
-    bool rankReduced = gather.getResultType().getRank() ==
-                       static_cast<int64_t>(batchRank + sourceRank - dims.size());
+    bool rankReduced =
+        gather.getResultType().getRank() ==
+        static_cast<int64_t>(batchRank + sourceRank - dims.size());
     if (offsets.size() != sizes.size() ||
         offsets.size() != static_cast<size_t>(gather.getResultType().getRank()))
       return mlir::failure();
@@ -52,8 +110,8 @@ struct GatherTiling final
           return mlir::failure();
 
     llvm::SmallVector<mlir::OpFoldResult> sourceOffsets, sourceSizes;
-    auto fullSourceSizes = mlir::tensor::getMixedSizes(
-        builder, op->getLoc(), gather.getSource());
+    auto fullSourceSizes =
+        mlir::tensor::getMixedSizes(builder, op->getLoc(), gather.getSource());
     unsigned resultDimension = batchRank;
     for (unsigned dim = 0; dim < sourceRank; ++dim) {
       if (llvm::is_contained(dims, dim)) {
@@ -69,7 +127,7 @@ struct GatherTiling final
     llvm::SmallVector<mlir::OpFoldResult> indexOffsets(
         offsets.begin(), offsets.begin() + batchRank);
     llvm::SmallVector<mlir::OpFoldResult> indexSizes(sizes.begin(),
-                                                   sizes.begin() + batchRank);
+                                                     sizes.begin() + batchRank);
     indexOffsets.push_back(builder.getIndexAttr(0));
     indexSizes.push_back(builder.getIndexAttr(dims.size()));
     auto slice = [&](mlir::Value value,
@@ -102,10 +160,11 @@ struct GatherTiling final
     return mlir::success();
   }
 
-  mlir::FailureOr<mlir::TilingResult> generateResultTileValue(
-      mlir::Operation *op, mlir::OpBuilder &builder, unsigned resultNumber,
-      llvm::ArrayRef<mlir::OpFoldResult> offsets,
-      llvm::ArrayRef<mlir::OpFoldResult> sizes) const {
+  mlir::FailureOr<mlir::TilingResult>
+  generateResultTileValue(mlir::Operation *op, mlir::OpBuilder &builder,
+                          unsigned resultNumber,
+                          llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                          llvm::ArrayRef<mlir::OpFoldResult> sizes) const {
     if (resultNumber != 0)
       return mlir::failure();
     return getTiledImplementation(op, builder, offsets, sizes);
@@ -113,11 +172,11 @@ struct GatherTiling final
 };
 } // namespace
 
-void registerWaferTensorGatherTilingExternalModels(
-    mlir::DialectRegistry &registry) {
-  registry.addExtension(+[](mlir::MLIRContext *context,
-                            mlir::tensor::TensorDialect *) {
-    mlir::tensor::GatherOp::attachInterface<GatherTiling>(*context);
-  });
+void registerWaferTensorTilingExternalModels(mlir::DialectRegistry &registry) {
+  registry.addExtension(
+      +[](mlir::MLIRContext *context, mlir::tensor::TensorDialect *) {
+        mlir::tensor::GatherOp::attachInterface<GatherTiling>(*context);
+        mlir::tensor::EmptyOp::attachInterface<EmptyTiling>(*context);
+      });
 }
 } // namespace wafer

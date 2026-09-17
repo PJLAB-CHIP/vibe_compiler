@@ -18,8 +18,10 @@
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/SubsetOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Transforms/RegionUtils.h"
 
@@ -112,17 +114,6 @@ struct SourceValueKey {
   friend bool operator==(const SourceValueKey &lhs, const SourceValueKey &rhs) {
     return lhs.kind == rhs.kind && lhs.owner == rhs.owner &&
            lhs.result == rhs.result;
-  }
-};
-
-struct SourceSliceKey {
-  SourceValueKey source;
-  std::vector<int64_t> offsets;
-  std::vector<int64_t> sizes;
-
-  friend bool operator<(const SourceSliceKey &lhs, const SourceSliceKey &rhs) {
-    return std::tie(lhs.source, lhs.offsets, lhs.sizes) <
-           std::tie(rhs.source, rhs.offsets, rhs.sizes);
   }
 };
 
@@ -702,12 +693,16 @@ mlir::LogicalResult materializeTileLocalConstants(mlir::ModuleOp module) {
   // the view, inside its current Region, rather than hoisting them with a
   // folder.
   module.walk([&](mlir::Operation *view) {
-    if (!mlir::isa<mlir::tensor::ExtractSliceOp, mlir::tensor::ExpandShapeOp,
-                   mlir::tensor::CollapseShapeOp, mlir::tensor::CastOp>(view) ||
+    if (view->getNumResults() != 1 ||
         !view->getParentOfType<TileRegionOp>())
       return;
+    auto indexing = analysis::deriveTensorResultIndexing(view->getResult(0));
+    const auto *source =
+        indexing.isExact() ? indexing.indexing->getTransparentSource() : nullptr;
+    if (!source)
+      return;
     auto constant =
-        view->getOperand(0).getDefiningOp<mlir::arith::ConstantOp>();
+        view->getOperand(source->operand).getDefiningOp<mlir::arith::ConstantOp>();
     if (!constant)
       return;
     auto value = mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
@@ -827,10 +822,10 @@ mlir::LogicalResult materializeTileLocalConstants(mlir::ModuleOp module) {
 }
 
 struct GroupBuilder {
-  struct CompactSupportTile {
-    mlir::Value value;
-    llvm::SmallVector<int64_t, 4> offsets;
-    llvm::SmallVector<int64_t, 4> sizes;
+  struct OperandTileSource {
+    mlir::Value adapterInput;
+    mlir::Value source;
+    llvm::SmallVector<DemandFragmentId, 4> fragments;
   };
 
   mlir::ModuleOp source;
@@ -860,8 +855,8 @@ struct GroupBuilder {
   mlir::OpBuilder builder;
   mlir::IRMapping mapping;
   std::map<SourceValueKey, mlir::BlockArgument> boundaryArguments;
-  std::map<SourceSliceKey, mlir::BlockArgument> slicedBoundaryArguments;
   std::map<DemandFragmentId, mlir::BlockArgument> fragmentArguments;
+  std::map<ProducedValueKey, mlir::BlockArgument> producedArguments;
   std::map<CoupledStateKey, mlir::BlockArgument> coupledStateArguments;
   std::map<StandardPartialKey, mlir::BlockArgument> standardPartialArguments;
   llvm::SmallVector<mlir::Value, 8> regionInputs;
@@ -879,7 +874,6 @@ struct GroupBuilder {
   std::map<RegionExecutionId,
            llvm::SmallVector<std::pair<StandardPartialKey, mlir::Value>, 2>>
       executionStandardPartials;
-  llvm::DenseMap<mlir::Value, CompactSupportTile> compactSupportTiles;
 
   GroupBuilder(
       mlir::ModuleOp source, mlir::func::FuncOp sourceFunction,
@@ -958,54 +952,6 @@ struct GroupBuilder {
         *key, sourceValue.getType(), sourceValue.getLoc());
     mlir::BlockArgument argument = addRegionInput(entryArgument);
     boundaryArguments.emplace(*key, argument);
-    return argument;
-  }
-
-  mlir::FailureOr<mlir::Value> getOrCreateSlicedBoundary(
-      mlir::Value sourceValue,
-      const analysis::StaticRectangularIndexSet &requested) {
-    std::optional<SourceValueKey> sourceKey =
-        getSourceValueKey(sourceValue, sourceFunction, nodes);
-    auto sourceType =
-        mlir::dyn_cast<mlir::RankedTensorType>(sourceValue.getType());
-    if (!sourceKey ||
-        sourceKey->kind != SourceValueKey::Kind::FunctionArgument ||
-        !sourceType || !sourceType.hasStaticShape() ||
-        requested.offsets.size() != static_cast<size_t>(sourceType.getRank()) ||
-        requested.sizes.size() != static_cast<size_t>(sourceType.getRank()))
-      return mlir::failure();
-    for (auto [offset, size, extent] : llvm::zip_equal(
-             requested.offsets, requested.sizes, sourceType.getShape())) {
-      int64_t end = 0;
-      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, end) ||
-          end > extent)
-        return mlir::failure();
-    }
-
-    SourceSliceKey key{
-        *sourceKey,
-        std::vector<int64_t>(requested.offsets.begin(),
-                             requested.offsets.end()),
-        std::vector<int64_t>(requested.sizes.begin(), requested.sizes.end())};
-    auto found = slicedBoundaryArguments.find(key);
-    if (found != slicedBoundaryArguments.end())
-      return found->second;
-
-    mlir::Value entryArgument = getOrCreateEntrySourceArgument(
-        *sourceKey, sourceType, sourceValue.getLoc());
-    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
-    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
-    llvm::SmallVector<mlir::OpFoldResult, 4> strides;
-    for (auto [offset, size] :
-         llvm::zip_equal(requested.offsets, requested.sizes)) {
-      offsets.push_back(entryBuilder.getIndexAttr(offset));
-      sizes.push_back(entryBuilder.getIndexAttr(size));
-      strides.push_back(entryBuilder.getIndexAttr(1));
-    }
-    auto slice = entryBuilder.create<mlir::tensor::ExtractSliceOp>(
-        sourceValue.getLoc(), entryArgument, offsets, sizes, strides);
-    mlir::BlockArgument argument = addRegionInput(slice.getResult());
-    slicedBoundaryArguments.emplace(std::move(key), argument);
     return argument;
   }
 
@@ -1114,6 +1060,13 @@ struct GroupBuilder {
       return fail<mlir::Value>(
           failure, SpatialRegionMaterializationFailureKind::BrokenContract,
           "external fragment has no selected producer endpoint");
+    // Multiple operand demands can read the same immutable producer endpoint.
+    // Keep one actual Region input, while each use retains its own subset.
+    if (auto existing = producedArguments.find(planned->second);
+        existing != producedArguments.end()) {
+      fragmentArguments.emplace(fragment, existing->second);
+      return existing->second;
+    }
     mlir::Value actualInput;
     if (planned->second.tile == group.tile) {
       if (auto execution = findCurrentProducer(fragment)) {
@@ -1151,6 +1104,7 @@ struct GroupBuilder {
     }
     mlir::BlockArgument argument = addRegionInput(actualInput);
     fragmentArguments.emplace(fragment, argument);
+    producedArguments.emplace(planned->second, argument);
     if (planned->second.tile != group.tile)
       boundaryInputs.push_back({fragment, planned->second.tile, argument});
     return argument;
@@ -1482,6 +1436,25 @@ struct GroupBuilder {
           slices.push_back({fragment, std::move(clipped)});
       }
     }
+    if (requested && slices.size() == 1 &&
+        slices.front().box.offsets == requested->offsets &&
+        slices.front().box.sizes == requested->sizes) {
+      auto source =
+          getOrCreateFragmentValue(sourceValue, slices.front().fragment);
+      if (mlir::failed(source))
+        return mlir::failure();
+      llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
+      for (auto offset : requested->offsets)
+        offsets.push_back(builder.getIndexAttr(offset));
+      for (auto size : requested->sizes) {
+        sizes.push_back(builder.getIndexAttr(size));
+        strides.push_back(builder.getIndexAttr(1));
+      }
+      return builder
+          .create<mlir::tensor::ExtractSliceOp>(sourceValue.getLoc(), *source,
+                                                offsets, sizes, strides)
+          .getResult();
+    }
     auto empty = builder.create<mlir::tensor::EmptyOp>(
         sourceValue.getLoc(),
         requested ? llvm::ArrayRef<int64_t>(requested->sizes)
@@ -1644,61 +1617,51 @@ struct GroupBuilder {
         return mlir::failure();
     }
 
-    if (value.getDefiningOp<mlir::tensor::EmptyOp>())
-      return builder
-          .create<mlir::tensor::EmptyOp>(value.getLoc(), requested.sizes,
-                                         type.getElementType(),
-                                         type.getEncoding())
-          .getResult();
-
-    if (mlir::isa_and_nonnull<mlir::tensor::ExpandShapeOp,
-                              mlir::tensor::CollapseShapeOp>(
-            value.getDefiningOp())) {
-      auto result = mlir::cast<mlir::OpResult>(value);
-      auto indexing = analysis::deriveTensorResultIndexing(result);
-      if (!indexing.isExact() || indexing.indexing->operands.size() != 1)
-        return mlir::failure();
-      const auto &operand = indexing.indexing->operands.front();
-      auto pieces =
-          operand.resultToOperand.getExactStaticRectangularImagePieces(
-              requested.offsets, requested.sizes);
-      if (!pieces.isExact() || pieces.domains.size() != 1)
-        return mlir::failure();
+    auto indexing = analysis::deriveTensorViewIndexing(value);
+    if (indexing.isExact()) {
       auto compactType = mlir::RankedTensorType::get(
           requested.sizes, type.getElementType(), type.getEncoding());
-      auto sourceType = mlir::RankedTensorType::get(
-          pieces.domains.front().sizes, type.getElementType(),
-          type.getEncoding());
-      if (sourceType.getNumElements() != compactType.getNumElements())
+      auto sourceType = mlir::cast<mlir::RankedTensorType>(
+          indexing.indexing->source.getType());
+      if (compactType.getRank() == 0 || sourceType.getRank() == 0 ||
+          sourceType.getElementType() != type.getElementType() ||
+          sourceType.getEncoding() != type.getEncoding())
         return mlir::failure();
-      auto reassociation =
-          mlir::getReassociationIndicesForReshape(sourceType, compactType);
-      if (sourceType != compactType && !reassociation)
+      // A total single-source read preserves a uniform literal even when its
+      // selected source image crosses row boundaries and is not rectangular.
+      // The original scalar attribute preserves every bit, including -0.0.
+      mlir::DenseElementsAttr literal;
+      if (mlir::matchPattern(indexing.indexing->source,
+                            mlir::m_Constant(&literal)) && literal.isSplat())
+        return builder
+            .create<mlir::arith::ConstantOp>(value.getLoc(), compactType,
+                                             literal.resizeSplat(compactType))
+            .getResult();
+      auto piece = analysis::getTensorViewTileSource(
+          *indexing.indexing, type.getShape(), requested);
+      if (!piece.isExact())
         return mlir::failure();
-      auto source = materializeCompactSupportTile(
-          result.getOwner()->getOperand(operand.operand),
-          pieces.domains.front(), fragments);
+      auto source = materializeCompactSupportTile(indexing.indexing->source,
+                                                  *piece.domain, fragments);
       if (mlir::failed(source))
         return mlir::failure();
-      if (sourceType == compactType)
-        return source;
-      if (sourceType.getRank() < compactType.getRank())
-        return builder
-            .create<mlir::tensor::ExpandShapeOp>(value.getLoc(), compactType,
-                                                 *source, *reassociation)
-            .getResult();
-      return builder
-          .create<mlir::tensor::CollapseShapeOp>(value.getLoc(), compactType,
-                                                 *source, *reassociation)
-          .getResult();
+      return reshapeStaticTensorTile(builder, value.getLoc(), *source,
+                                     compactType);
     }
+    if (indexing.status != analysis::TensorResultIndexingStatus::Unsupported)
+      return mlir::failure();
 
-    if (auto inserted = value.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
-      auto staticOffsets = getStaticValues(inserted.getMixedOffsets());
-      auto staticSizes = getStaticValues(inserted.getMixedSizes());
-      auto staticStrides = getStaticValues(inserted.getMixedStrides());
+    if (auto inserted =
+            value.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
+      auto subset = mlir::cast<mlir::SubsetOpInterface>(inserted.getOperation())
+                        .getAccessedHyperrectangularSlice();
+      if (mlir::failed(subset))
+        return mlir::failure();
+      auto staticOffsets = getStaticValues(subset->getMixedOffsets());
+      auto staticSizes = getStaticValues(subset->getMixedSizes());
+      auto staticStrides = getStaticValues(subset->getMixedStrides());
       auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
-          inserted.getSource().getType());
+          inserted.getSourceOperand().get().getType());
       if (!staticOffsets || !staticSizes || !staticStrides || !sourceType ||
           sourceType.getRank() != type.getRank() ||
           !llvm::equal(*staticSizes, sourceType.getShape()) ||
@@ -1706,7 +1669,7 @@ struct GroupBuilder {
                         [](int64_t stride) { return stride == 1; }))
         return mlir::failure();
       mlir::FailureOr<mlir::Value> compact = materializeCompactSupportTile(
-          inserted.getDest(), requested, fragments);
+          inserted.getDestinationOperand().get(), requested, fragments);
       if (mlir::failed(compact))
         return mlir::failure();
 
@@ -1731,7 +1694,7 @@ struct GroupBuilder {
       if (!intersects)
         return compact;
       mlir::FailureOr<mlir::Value> sourceTile = materializeCompactSupportTile(
-          inserted.getSource(), sourceRequest, fragments);
+          inserted.getSourceOperand().get(), sourceRequest, fragments);
       if (mlir::failed(sourceTile))
         return mlir::failure();
       llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
@@ -1753,7 +1716,10 @@ struct GroupBuilder {
     if (std::optional<SourceValueKey> key =
             getSourceValueKey(value, sourceFunction, nodes)) {
       if (key->kind == SourceValueKey::Kind::FunctionArgument) {
-        return getOrCreateSlicedBoundary(value, requested);
+        auto boundary = getOrCreateBoundary(value);
+        if (mlir::failed(boundary))
+          return mlir::failure();
+        full = *boundary;
       } else {
         llvm::SmallVector<DemandFragmentId, 4> matching;
         for (const DemandFragmentId &fragment : fragments)
@@ -1774,13 +1740,75 @@ struct GroupBuilder {
         return assembleFragments(value, matching, requested);
       }
     } else {
+      auto result = mlir::dyn_cast<mlir::OpResult>(value);
+      auto *definition = result ? result.getOwner() : nullptr;
+      if (!definition || !mlir::isMemoryEffectFree(definition))
+        return mlir::failure();
+      if (mlir::isa<mlir::TilingInterface>(definition)) {
+        mlir::IRMapping local;
+        llvm::SmallVector<OperandTileSource, 4> operandTiles;
+        auto map = [&](mlir::Value operand) -> mlir::LogicalResult {
+          if (local.contains(operand))
+            return mlir::success();
+          auto tensor =
+              mlir::dyn_cast<mlir::RankedTensorType>(operand.getType());
+          if (tensor && tensor.hasStaticShape() && tensor.getRank() > 0) {
+            auto placeholder = builder.create<mlir::tensor::EmptyOp>(
+                operand.getLoc(), tensor.getShape(), tensor.getElementType(),
+                tensor.getEncoding());
+            local.map(operand, placeholder.getResult());
+            operandTiles.push_back(
+                {placeholder.getResult(), operand,
+                 llvm::SmallVector<DemandFragmentId, 4>(fragments)});
+            return mlir::success();
+          }
+          return mlir::success(
+              mlir::succeeded(mapSupportValue(operand, local)));
+        };
+        for (auto operand : definition->getOperands())
+          if (mlir::failed(map(operand)))
+            return mlir::failure();
+        llvm::SetVector<mlir::Value> captures;
+        mlir::getUsedValuesDefinedAbove(definition->getRegions(), captures);
+        for (auto capture : captures)
+          if (mlir::failed(map(capture)))
+            return mlir::failure();
+        // This actual candidate adapter cannot reference the original IR.
+        auto *adapter = builder.clone(*definition, local);
+        llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes;
+        for (auto offset : requested.offsets)
+          offsets.push_back(builder.getIndexAttr(offset));
+        for (auto size : requested.sizes)
+          sizes.push_back(builder.getIndexAttr(size));
+        auto tiled =
+            mlir::cast<mlir::TilingInterface>(adapter).generateResultTileValue(
+                builder, result.getResultNumber(), offsets, sizes);
+        if (mlir::failed(tiled) || tiled->tiledValues.size() != 1 ||
+            mlir::failed(
+                materializeOperandTiles(operandTiles, tiled->tiledValues)))
+          return mlir::failure();
+        if (adapter->use_empty() &&
+            llvm::none_of(tiled->tiledValues, [&](auto tiledValue) {
+              return tiledValue.getDefiningOp() == adapter;
+            }))
+          adapter->erase();
+        if (mlir::failed(finishOperandTiles(operandTiles)))
+          return mlir::failure();
+        return tiled->tiledValues.front();
+      }
+      bool whole = llvm::equal(requested.sizes, type.getShape()) &&
+                   llvm::all_of(requested.offsets,
+                                [](int64_t offset) { return offset == 0; });
+      if (!whole && llvm::any_of(definition->getOperandTypes(),
+                                 llvm::IsaPred<mlir::TensorType>))
+        return mlir::failure();
+      // A source leaf (such as a literal) may be read directly. An opaque
+      // tensor transform may only be reconstructed for an actual full use.
       llvm::SmallVector<DemandFragmentId, 4> selectedFragments(
           fragments.begin(), fragments.end());
       mlir::IRMapping supportMapping;
       auto mapped = materializeSupportAfterFragmentAssembly(
           value, selectedFragments, supportMapping);
-      if (mlir::failed(mapped))
-        mapped = mapSupportValue(value);
       if (mlir::failed(mapped))
         return mlir::failure();
       full = *mapped;
@@ -1802,7 +1830,8 @@ struct GroupBuilder {
 
   mlir::FailureOr<mlir::Value>
   mapExecutionOperand(const RegionExecutionId &consumer,
-                      mlir::OpOperand &operand) {
+                      mlir::OpOperand &operand,
+                      llvm::SmallVectorImpl<OperandTileSource> &sources) {
     llvm::SmallVector<const DemandFragmentId *, 2> external =
         findExternalBindings(consumer, operand.getOperandNumber(),
                              operand.get());
@@ -1812,126 +1841,100 @@ struct GroupBuilder {
       fragments.push_back(binding->fragment);
     for (const DemandFragmentId *fragment : external)
       fragments.push_back(*fragment);
-    const compiler::detail::LogicalShardId *destinationShard = nullptr;
-    if (const auto *required = std::get_if<ExecutionInstanceId>(&consumer)) {
-      const auto *root = std::get_if<RequiredRootExecution>(&required->source);
-      destinationShard = root ? &root->shard : nullptr;
-    } else {
-      destinationShard = &std::get<ReplicaExecutionId>(consumer).producer.shard;
-    }
-    if (destinationShard &&
-        (fragments.size() > 1 ||
-         mlir::isa_and_nonnull<mlir::tensor::InsertSliceOp,
-                               mlir::tensor::ExpandShapeOp,
-                               mlir::tensor::CollapseShapeOp>(
-             operand.get().getDefiningOp()))) {
-      const auto workId =
-          std::holds_alternative<ReplicaExecutionId>(consumer)
-              ? std::get<ReplicaExecutionId>(consumer).producer.work
-              : analysis::RootRegionWorkId{destinationShard->root, group.tile};
-      const analysis::RootRegionWork *work = findWork(rootWorks, workId);
-      auto operandWork =
-          work ? llvm::find_if(work->operands,
-                               [&](const auto &candidate) {
-                                 return candidate.operand ==
-                                        operand.getOperandNumber();
-                               })
-               : std::vector<analysis::RootOperandWork>::const_iterator{};
-      if (work && operandWork != work->operands.end()) {
-        auto use = llvm::find_if(operandWork->uses, [&](const auto &candidate) {
-          return candidate.id.operand == operand.getOperandNumber() &&
-                 candidate.id.destination ==
-                     analysis::DemandDestination(*destinationShard);
-        });
-        if (use != operandWork->uses.end()) {
-          auto normalized =
-              analysis::normalizeFiniteExactIndexSet(use->operandDemand);
-          if (mlir::succeeded(normalized) &&
-              normalized->getBoxes().size() == 1) {
-            const auto box = normalized->getBoxes().front();
-            mlir::FailureOr<mlir::Value> compact =
-                materializeCompactSupportTile(operand.get(), box, fragments);
-            if (mlir::succeeded(compact)) {
-              auto fullType =
-                  mlir::cast<mlir::RankedTensorType>(operand.get().getType());
-              mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
-                  operand.get().getLoc(), fullType.getShape(),
-                  fullType.getElementType(), fullType.getEncoding());
-              llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
-              llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
-              llvm::SmallVector<mlir::OpFoldResult, 4> strides;
-              for (int64_t offset : box.offsets)
-                offsets.push_back(builder.getIndexAttr(offset));
-              for (int64_t size : box.sizes)
-                sizes.push_back(builder.getIndexAttr(size));
-              for (int64_t dimension = 0; dimension < fullType.getRank();
-                   ++dimension)
-                strides.push_back(builder.getIndexAttr(1));
-              mlir::Value full = builder
-                                     .create<mlir::tensor::InsertSliceOp>(
-                                         operand.get().getLoc(), *compact,
-                                         empty, offsets, sizes, strides)
-                                     .getResult();
-              compactSupportTiles.try_emplace(
-                  full, CompactSupportTile{*compact, box.offsets, box.sizes});
-              return full;
-            }
-          }
-        }
-      }
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(operand.get().getType());
+    if (type && type.hasStaticShape() && type.getRank() > 0) {
+      // Supply candidate-owned SSA to the source interface. Its actual subset
+      // reads determine the requests below; no full source is assembled here.
+      auto adapterInput = builder.create<mlir::tensor::EmptyOp>(
+          operand.get().getLoc(), type.getShape(), type.getElementType(),
+          type.getEncoding());
+      sources.push_back(
+          {adapterInput.getResult(), operand.get(), std::move(fragments)});
+      return adapterInput.getResult();
     }
     if (!fragments.empty())
       return assembleFragments(operand.get(), std::move(fragments));
     return mapSupportValue(operand.get());
   }
 
-  mlir::LogicalResult applyCompactSupportTiles() {
-    for (auto &[full, compact] : compactSupportTiles) {
-      llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
-      for (mlir::Operation *user : full.getUsers())
-        if (auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(user))
-          slices.push_back(slice);
-      for (mlir::tensor::ExtractSliceOp slice : slices) {
-        auto offsets = getStaticValues(slice.getMixedOffsets());
-        auto sizes = getStaticValues(slice.getMixedSizes());
-        auto strides = getStaticValues(slice.getMixedStrides());
-        if (!offsets || !sizes || !strides || *offsets != compact.offsets ||
-            *sizes != compact.sizes ||
-            !llvm::all_of(*strides, [](int64_t stride) { return stride == 1; }))
-          continue;
-        if (slice.getType() != compact.value.getType())
+  mlir::LogicalResult
+  materializeOperandTiles(llvm::ArrayRef<OperandTileSource> sources,
+                          llvm::MutableArrayRef<mlir::Value> results = {}) {
+    for (const auto &source : sources) {
+      auto adapterInput = source.adapterInput;
+      llvm::SmallVector<mlir::SubsetExtractionOpInterface, 4> subsets;
+      for (auto *user : adapterInput.getUsers())
+        if (auto subset =
+                mlir::dyn_cast<mlir::SubsetExtractionOpInterface>(user);
+            subset && subset.getSourceOperand().get() == adapterInput)
+          subsets.push_back(subset);
+      // Use actual operation order, never SSA use-list order, for emission.
+      llvm::sort(subsets,
+                 [](auto lhs, auto rhs) { return lhs->isBeforeInBlock(rhs); });
+      for (auto subset : subsets) {
+        auto box = mlir::cast<mlir::SubsetOpInterface>(subset.getOperation())
+                       .getAccessedHyperrectangularSlice();
+        if (mlir::failed(box))
           return mlir::failure();
-        slice.getResult().replaceAllUsesWith(compact.value);
-        slice.erase();
+        auto offsets = getStaticValues(box->getMixedOffsets());
+        auto sizes = getStaticValues(box->getMixedSizes());
+        auto strides = getStaticValues(box->getMixedStrides());
+        if (!offsets || !sizes || !strides ||
+            llvm::any_of(*strides, [](int64_t stride) { return stride != 1; }))
+          return mlir::failure();
+        mlir::OpBuilder::InsertionGuard insertion(builder);
+        builder.setInsertionPoint(subset);
+        auto tile = materializeCompactSupportTile(
+            source.source,
+            {llvm::to_vector<4>(*offsets), llvm::to_vector<4>(*sizes)},
+            source.fragments);
+        auto type = mlir::dyn_cast<mlir::RankedTensorType>(
+            subset.getResult().getType());
+        if (mlir::failed(tile) || !type || !type.hasStaticShape())
+          return mlir::failure();
+        auto tileType = mlir::cast<mlir::RankedTensorType>(tile->getType());
+        if (tileType != type) {
+          if (type.getRank() == 0 || tileType.getRank() == 0 ||
+              type.getNumElements() != tileType.getNumElements() ||
+              type.getElementType() != tileType.getElementType() ||
+              type.getEncoding() != tileType.getEncoding())
+            return mlir::failure();
+          *tile =
+              reshapeStaticTensorTile(builder, subset.getLoc(), *tile, type);
+        }
+        for (auto &result : results)
+          if (result == subset.getResult())
+            result = *tile;
+        subset.getResult().replaceAllUsesWith(*tile);
+        subset->erase();
       }
     }
     return mlir::success();
   }
 
-  void eraseDeadCompactSupportWrappers() {
-    llvm::SmallVector<mlir::Value, 4> completed;
-    for (auto &[full, compact] : compactSupportTiles) {
-      (void)compact;
-      if (!full.use_empty())
-        continue;
-      llvm::SmallVector<mlir::Operation *, 8> worklist;
-      if (mlir::Operation *definition = full.getDefiningOp())
-        worklist.push_back(definition);
-      while (!worklist.empty()) {
-        mlir::Operation *operation = worklist.pop_back_val();
-        if (!operation->getBlock() || !mlir::isOpTriviallyDead(operation))
-          continue;
-        llvm::SmallVector<mlir::Operation *, 4> producers;
-        for (mlir::Value operand : operation->getOperands())
-          if (mlir::Operation *producer = operand.getDefiningOp())
-            producers.push_back(producer);
-        operation->erase();
-        llvm::append_range(worklist, producers);
+  mlir::LogicalResult
+  finishOperandTiles(llvm::SmallVectorImpl<OperandTileSource> &sources) {
+    for (const auto &source : sources) {
+      auto adapterInput = source.adapterInput;
+      if (!adapterInput.use_empty()) {
+        // The tiled operation itself consumes the complete value: this is an
+        // actual full use, not recovery from a failed local request.
+        auto type = mlir::cast<mlir::RankedTensorType>(adapterInput.getType());
+        analysis::StaticRectangularIndexSet whole{
+            llvm::SmallVector<int64_t, 4>(type.getRank(), 0),
+            llvm::to_vector<4>(type.getShape())};
+        mlir::OpBuilder::InsertionGuard insertion(builder);
+        builder.setInsertionPoint(adapterInput.getDefiningOp());
+        auto full = materializeCompactSupportTile(source.source, whole,
+                                                  source.fragments);
+        if (mlir::failed(full))
+          return mlir::failure();
+        adapterInput.replaceAllUsesWith(*full);
       }
-      completed.push_back(full);
+      adapterInput.getDefiningOp()->erase();
     }
-    for (mlir::Value full : completed)
-      compactSupportTiles.erase(full);
+    sources.clear();
+    return mlir::success();
   }
 
   mlir::FailureOr<std::pair<const analysis::RootRegionWork *,
@@ -2126,10 +2129,11 @@ struct GroupBuilder {
       iterationSizes.push_back(builder.getIndexAttr(globalSizes[dimension]));
     }
     llvm::SmallVector<mlir::Value, 2> resultDestinations;
+    llvm::SmallVector<OperandTileSource, 4> operandTiles;
     for (const analysis::ReductionResultSlice &result : merge.results) {
-      auto mappedInit =
-          mapExecutionOperand(ExecutionInstanceId{execution},
-                              *dps.getDpsInitOperand(result.result));
+      auto mappedInit = mapExecutionOperand(
+          ExecutionInstanceId{execution}, *dps.getDpsInitOperand(result.result),
+          operandTiles);
       llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
       llvm::SmallVector<mlir::OpFoldResult> resultSizes;
       if (mlir::failed(mappedInit) ||
@@ -2248,6 +2252,9 @@ struct GroupBuilder {
                   offsets, sizes, strides)
               .getResult());
     }
+    if (mlir::failed(materializeOperandTiles(operandTiles)) ||
+        mlir::failed(finishOperandTiles(operandTiles)))
+      return mlir::failure();
     executionResults.emplace(ExecutionInstanceId{execution}, fullResults);
     return fullResults;
   }
@@ -2388,6 +2395,9 @@ struct GroupBuilder {
     auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(sourceRoot);
 
     mlir::IRMapping rootMapping;
+    llvm::SmallVector<mlir::Value, 4> rootOperands(
+        sourceRoot->getNumOperands());
+    llvm::SmallVector<OperandTileSource, 4> operandTiles;
     llvm::SmallVector<mlir::Operation *, 2> temporaryInitPlaceholders;
     for (mlir::OpOperand &operand : sourceRoot->getOpOperands()) {
       bool isInit = false;
@@ -2405,14 +2415,16 @@ struct GroupBuilder {
         auto placeholder = builder.create<mlir::tensor::EmptyOp>(
             sourceRoot->getLoc(), type.getShape(), type.getElementType());
         rootMapping.map(operand.get(), placeholder.getResult());
+        rootOperands[operand.getOperandNumber()] = placeholder.getResult();
         temporaryInitPlaceholders.push_back(placeholder);
         continue;
       }
       mlir::FailureOr<mlir::Value> mapped =
-          mapExecutionOperand(execution, operand);
+          mapExecutionOperand(execution, operand, operandTiles);
       if (mlir::failed(mapped))
         return mlir::failure();
       rootMapping.map(operand.get(), *mapped);
+      rootOperands[operand.getOperandNumber()] = *mapped;
     }
     llvm::SetVector<mlir::Value> captures;
     mlir::getUsedValuesDefinedAbove(sourceRoot->getRegions(), captures);
@@ -2438,20 +2450,22 @@ struct GroupBuilder {
           attention.getMask() ? rootMapping.lookupOrNull(attention.getMask())
                               : mlir::Value{};
       auto state = materializeOnlineAttentionTile(
-          attention, rootMapping.lookupOrNull(attention.getQuery()),
-          rootMapping.lookupOrNull(attention.getKey()),
-          rootMapping.lookupOrNull(attention.getValue()),
-          rootMapping.lookupOrNull(attention.getScale()), mappedMask, offsets,
-          sizes, builder);
+          attention,
+          rootOperands[attention.getQueryMutable().getOperandNumber()],
+          rootOperands[attention.getKeyMutable().getOperandNumber()],
+          rootOperands[attention.getValueMutable().getOperandNumber()],
+          rootOperands[attention.getScaleMutable().getOperandNumber()],
+          mappedMask, offsets, sizes, builder);
       if (mlir::failed(state))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "flash_attention spatial tile cannot form online state IR");
-      if (mlir::failed(applyCompactSupportTiles()))
+      if (mlir::failed(materializeOperandTiles(operandTiles)))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
             "flash_attention compact support tile replacement failed");
-      eraseDeadCompactSupportWrappers();
+      if (mlir::failed(finishOperandTiles(operandTiles)))
+        return mlir::failure();
       mlir::FailureOr<mlir::Value> finalized =
           materializeOnlineAttentionFinalize(attention, *state, builder);
       llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
@@ -2494,20 +2508,22 @@ struct GroupBuilder {
           attention.getMask() ? rootMapping.lookupOrNull(attention.getMask())
                               : mlir::Value{};
       auto state = materializeOnlineAttentionTile(
-          attention, rootMapping.lookupOrNull(attention.getQuery()),
-          rootMapping.lookupOrNull(attention.getKey()),
-          rootMapping.lookupOrNull(attention.getValue()),
-          rootMapping.lookupOrNull(attention.getScale()), mappedMask, offsets,
-          sizes, builder);
+          attention,
+          rootOperands[attention.getQueryMutable().getOperandNumber()],
+          rootOperands[attention.getKeyMutable().getOperandNumber()],
+          rootOperands[attention.getValueMutable().getOperandNumber()],
+          rootOperands[attention.getScaleMutable().getOperandNumber()],
+          mappedMask, offsets, sizes, builder);
       if (mlir::failed(state))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
             "flash_decoding contribution cannot form online state IR");
-      if (mlir::failed(applyCompactSupportTiles()))
+      if (mlir::failed(materializeOperandTiles(operandTiles)))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
             "flash_decoding compact support tile replacement failed");
-      eraseDeadCompactSupportWrappers();
+      if (mlir::failed(finishOperandTiles(operandTiles)))
+        return mlir::failure();
       auto stateValue = [&](CoupledReductionComponentKind kind) -> mlir::Value {
         switch (kind) {
         case CoupledReductionComponentKind::Maximum:
@@ -2544,6 +2560,11 @@ struct GroupBuilder {
     }
 
     mlir::Operation *adapter = builder.clone(*sourceRoot, rootMapping);
+    // IRMapping maps values, but distinct uses of the same value can have
+    // different selected demands. Preserve each operand's actual adapter.
+    for (auto [index, operand] : llvm::enumerate(rootOperands))
+      if (operand)
+        adapter->setOperand(index, operand);
     if (standardContribution) {
       if (requiresWideContractionState(adapter)) {
         auto wide = materializeContractionState(
@@ -2565,10 +2586,11 @@ struct GroupBuilder {
           adapter->erase();
         return mlir::failure();
       }
-      if (mlir::failed(applyCompactSupportTiles()))
+      if (mlir::failed(
+              materializeOperandTiles(operandTiles, partial->partialValues)))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
-            failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
-            "partial reduction compact support tile replacement failed");
+            failure, SpatialRegionMaterializationFailureKind::Unsupported,
+            "partial reduction operand tile cannot be materialized");
       if (llvm::any_of(partial->partialOperations,
                        [](mlir::Operation *operation) {
                          return !operation ||
@@ -2620,7 +2642,8 @@ struct GroupBuilder {
       }
       if (adapter->use_empty())
         adapter->erase();
-      eraseDeadCompactSupportWrappers();
+      if (mlir::failed(finishOperandTiles(operandTiles)))
+        return mlir::failure();
       for (mlir::Operation *placeholder :
            llvm::reverse(temporaryInitPlaceholders)) {
         for (mlir::Operation *user :
@@ -2648,10 +2671,10 @@ struct GroupBuilder {
         adapter->erase();
       return mlir::failure();
     }
-    if (mlir::failed(applyCompactSupportTiles()))
+    if (mlir::failed(materializeOperandTiles(operandTiles, tiled->tiledValues)))
       return fail<llvm::SmallVector<mlir::Value, 2>>(
-          failure, SpatialRegionMaterializationFailureKind::CompilerFailure,
-          "spatial compact support tile replacement failed");
+          failure, SpatialRegionMaterializationFailureKind::Unsupported,
+          "spatial operand tile cannot be materialized");
 
     llvm::SmallVector<mlir::Value, 2> fullResults;
     fullResults.reserve(tiled->tiledValues.size());
@@ -2675,7 +2698,8 @@ struct GroupBuilder {
     }
     if (adapter->use_empty())
       adapter->erase();
-    eraseDeadCompactSupportWrappers();
+    if (mlir::failed(finishOperandTiles(operandTiles)))
+      return mlir::failure();
     executionResults.emplace(execution, fullResults);
     return fullResults;
   }
