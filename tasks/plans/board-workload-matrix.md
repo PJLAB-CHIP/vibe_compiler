@@ -116,7 +116,14 @@ DDR规划与target地址换算共用证明。1024/1025/1031行的双batch、256�
 aligned端点但step=1、非整字节row stride和partial-byte目的端均保持拒绝。受影响四个组件及六项正式模型exact通过，
 14项DMA/DDR/target地址lit通过，canonical增量构建及no-op通过。
 新一轮S1024默认8/42耗时482.177秒，13个actual容量拒绝、29个unsupported、0 accepted；原DDR写回已推进到动态/非连续SPM BOOL copy。
-S1025及五项block/GEMM保护仍在本轮验证，尚不签完整ViT或共用改动板端资格。
+S1025耗时432.359秒，仍为5个actual容量拒绝、37个unsupported；其DDR BOOL view具有1025-bit行stride，不能由整字节descriptor表达。
+继续将同一对齐证明接入连续动态SPM copy，并将两端整字节strided copy的共同inner span显式物化为原GatherScatter循环；
+六组DDR/SPM双向、双batch及主尾块的逐byte coverage/guard通过，动态和strided SPM已到target LLVM，两个packed lit通过。
+四个受影响组件、六项正式模型exact及canonical增量/no-op再次通过。最终S1024耗时486.460秒，仍为13个容量拒绝、29个unsupported；
+部分动态BOOL view的copy证明及非连续mask的select仍未闭合，不能把通用可证明情形通过写成整块通过。
+五项block/GEMM均从本轮原source构包/no-card并各三次实卡全输出通过；最终compiler重编包与本轮实测包逐byte相同。
+两种block与先前decode搬运修复包相同，三组GEMM与前一接受包相同，设备时间见统一板测记录。
+下一步先从失败candidate的actual view/alias来源和mask转换边界继续收口；ViT两项仍无完整package，保持未完成。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

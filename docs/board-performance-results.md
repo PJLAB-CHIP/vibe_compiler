@@ -2113,3 +2113,25 @@ SystemC执行target call及模型completion，不执行板端ELF、真实PMU/cac
 
 按用户要求撤掉本轮额外诊断拼接及专项测试，清理临时CRT日志副本、生成/检查/运行脚手架和重复汇总；
 原有正确性校验及通用修复保留。清理后canonical完整增量构建、Ninja no-op、44项runtime/CLI测试通过。
+
+## 2026-09-17：BOOL搬运修改的block与GEMM保护
+
+BOOL归约及整字节DDR/SPM view搬运修改后，五项保护case重新生成原source、输入、独立PyTorch reference及package，
+均通过strict no-card，并逐case串行执行三次实卡。沿用原cosine与relative L2合同，全部输出通过，执行及清理正常。
+本轮准备阶段产生的reference在输入逐byte核对后用于同轮设备比较，没有使用历史raw作为expected。
+最终compiler重新构包与本轮实际执行包的全部文件相同；两种block与此前decode搬运修复包相同，
+三组GEMM与此前已接受的broadcast修复包相同。
+
+| Case | 三次设备耗时（ms） | 中位（ms） | cosine | relative L2 |
+| --- | --- | --- | --- | --- |
+| LLaMA block FP16 | 9.384 / 9.299 / 9.343 | 9.343 | 0.9999998116 | 0.000614143 |
+| LLaMA block BF16 | 9.113 / 9.157 / 9.271 | 9.157 | 0.9999879965 | 0.004899749 |
+| GEMM4096³ FP16 | 6.853 / 6.877 / 6.754 | 6.853 | 0.9999999981 | 0.000061893 |
+| GEMM4096³ BF16 | 6.899 / 6.766 / 7.021 | 6.899 | 0.9999999874 | 0.000158845 |
+| GEMM4097³ FP16 | 8.585 / 8.486 / 8.673 | 8.585 | 0.9999999981 | 0.000062562 |
+
+这些结果补齐共用修改的保护证据，不将包未变化的计时差异归因为BOOL优化，不替换原最好基线。
+本轮compiler SHA256为`5df1698e7a64c3e2e50466595ef9ebd1933e54e89235a53c424582b0a586412d`，
+runtime仍为SDK 5.7.0.0524.01 / API 1400。完整命令、manifest身份、三次计时和逐输出数值在
+`build/test/vit-current/protection/*-board/`的`command.json`、`board-*.log`与`numeric-audit-*.json`。
+此处仅签保护case；当时原ViT S1024/1025仍无完整package，后续导出修正单独验收。

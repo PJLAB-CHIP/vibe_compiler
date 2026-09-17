@@ -2,6 +2,7 @@
 
 #include "Internal.h"
 
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/OperationSupport.h"
@@ -97,7 +98,8 @@ mlir::FailureOr<MovementEndpoint> resolveMovementEndpoint(mlir::Value value) {
 // A complete packed destination allocation owns its final padding byte. An
 // aligned contiguous source view can therefore be copied as physical bytes;
 // partial packed destinations still require a bit-preserving route.
-static bool isContiguousByteAlignedPackedView(mlir::MemRefType type) {
+static bool isContiguousByteAlignedPackedView(mlir::Value value) {
+  auto type = mlir::cast<mlir::MemRefType>(value.getType());
   auto memory = getWaferMemoryAttr(type);
   if (!memory || memory.getLayout() != MemLayout::Tensor ||
       !type.hasStaticShape() || !type.getElementType().isInteger(1))
@@ -105,7 +107,7 @@ static bool isContiguousByteAlignedPackedView(mlir::MemRefType type) {
   llvm::SmallVector<int64_t> strides;
   int64_t offset;
   if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
-      mlir::ShapedType::isDynamic(offset) || offset < 0 || offset % 8)
+      mlir::failed(memory_planning::detail::proveByteAlignedPackedView(value)))
     return false;
   int64_t expected = 1;
   for (int64_t dim = type.getRank(); dim-- > 0;) {
@@ -122,8 +124,8 @@ static bool canCopyPackedBytes(mlir::Value source, mlir::Value destination) {
   auto src = mlir::dyn_cast<mlir::MemRefType>(source.getType());
   auto dst = mlir::dyn_cast<mlir::MemRefType>(destination.getType());
   if (!src || !dst || src.getShape() != dst.getShape() ||
-      !isContiguousByteAlignedPackedView(src) ||
-      !isContiguousByteAlignedPackedView(dst))
+      !isContiguousByteAlignedPackedView(source) ||
+      !isContiguousByteAlignedPackedView(destination))
     return false;
   if (dst.getNumElements() % 8 == 0)
     return true;
@@ -153,6 +155,58 @@ static bool canCopyPackedBytes(mlir::Value source, mlir::Value destination) {
   return allocation && allocation.getType().getShape() == dst.getShape() &&
          mlir::succeeded(mlir::getStridesAndOffset(dst, strides, offset)) &&
          offset == 0;
+}
+
+static mlir::FailureOr<MovementDescriptorPair>
+getPackedCopyDescriptors(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                         mlir::Value source, mlir::Value destination) {
+  auto src = mlir::cast<mlir::MemRefType>(source.getType());
+  auto dst = mlir::cast<mlir::MemRefType>(destination.getType());
+  if (canCopyPackedBytes(source, destination)) {
+    auto descriptor = getContiguousDescriptor(rewriter, op, dst);
+    if (mlir::failed(descriptor))
+      return mlir::failure();
+    return MovementDescriptorPair{*descriptor, *descriptor};
+  }
+  using analysis::TransferRealizability;
+  if (src.getShape() != dst.getShape() ||
+      mlir::failed(TransferRealizability::provePackedByteRows(src)) ||
+      mlir::failed(TransferRealizability::provePackedByteRows(dst)) ||
+      mlir::failed(
+          memory_planning::detail::proveByteAlignedPackedView(source)) ||
+      mlir::failed(
+          memory_planning::detail::proveByteAlignedPackedView(destination)))
+    return mlir::failure();
+  auto identity = analysis::IndexRelation::identity(dst.getShape());
+  if (!identity.isExact() ||
+      mlir::failed(TransferRealizability::proveMappedTransfer(
+          src, dst, dst.getShape(), *identity.get(), *identity.get())))
+    return mlir::failure();
+  auto read =
+      getStridedTensorDescriptor(rewriter, op, src, "packed copy source");
+  auto write =
+      getStridedTensorDescriptor(rewriter, op, dst, "packed copy destination");
+  if (mlir::failed(read) || mlir::failed(write) ||
+      read->byteCount != write->byteCount)
+    return mlir::failure();
+  // Identical logical shapes make the shorter contiguous suffix divide the
+  // longer one. Preserve row-major order while exposing that suffix as a loop.
+  int64_t inner = std::min(read->innerBytes, write->innerBytes);
+  for (auto *descriptor : {&*read, &*write}) {
+    if (descriptor->innerBytes == inner)
+      continue;
+    if (inner <= 0 || descriptor->innerBytes % inner ||
+        descriptor->iterations[2] != 1)
+      return mlir::failure();
+    for (unsigned i = 2; i > 0; --i) {
+      descriptor->strides[i] = descriptor->strides[i - 1];
+      descriptor->iterations[i] = descriptor->iterations[i - 1];
+    }
+    descriptor->strides[0] = inner;
+    descriptor->iterations[0] = descriptor->innerBytes / inner;
+    descriptor->innerBytes = inner;
+  }
+  return MovementDescriptorPair{*read, *write};
 }
 
 class TileLoadLowering : public mlir::OpRewritePattern<StorageLoadOp> {
@@ -426,12 +480,12 @@ public:
     if (!sourceType || !destType)
       return failPattern(rewriter, op,
                          "tile.copy_into lowering requires memref types");
-    if (canCopyPackedBytes(op.getSource(), op.getDest())) {
-      auto descriptor = getContiguousDescriptor(rewriter, op, destType);
-      if (mlir::failed(descriptor))
-        return mlir::failure();
+    if (auto descriptors = getPackedCopyDescriptors(
+            rewriter, op, op.getSource(), op.getDest());
+        mlir::succeeded(descriptors)) {
       auto copy = createGatherScatter(rewriter, op.getLoc(), op.getSource(),
-                                      op.getDest(), *descriptor, *descriptor);
+                                      op.getDest(), descriptors->source,
+                                      descriptors->dest);
       if (bufferRecorder)
         bufferRecorder->recordLoweredOperation(op, copy);
       rewriter.eraseOp(op);
@@ -611,12 +665,12 @@ public:
       }
     } else if (sourceMemory.getSpace() == MemorySpace::SPM &&
                destMemory.getSpace() == MemorySpace::SPM) {
-      if (canCopyPackedBytes(op.getSource(), op.getTarget())) {
-        auto descriptor = getContiguousDescriptor(rewriter, op, destType);
-        if (mlir::failed(descriptor))
-          return mlir::failure();
+      if (auto descriptors = getPackedCopyDescriptors(
+              rewriter, op, op.getSource(), op.getTarget());
+          mlir::succeeded(descriptors)) {
         record(createGatherScatter(rewriter, op.getLoc(), op.getSource(),
-                                   op.getTarget(), *descriptor, *descriptor));
+                                   op.getTarget(), descriptors->source,
+                                   descriptors->dest));
         rewriter.eraseOp(op);
         return mlir::success();
       }

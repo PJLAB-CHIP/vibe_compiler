@@ -2,6 +2,8 @@
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr %t/full.mlir | FileCheck %s --check-prefix=FULL
 // RUN: not wafer-opt --wafer-lower-tile-region-to-instr %t/partial.mlir 2>&1 | FileCheck %s --check-prefix=PARTIAL
 // RUN: not wafer-opt --wafer-lower-tile-region-to-instr %t/unaligned.mlir 2>&1 | FileCheck %s --check-prefix=UNALIGNED
+// RUN: wafer-opt --wafer-lower-tile-region-to-instr --wafer-lower-instr-to-target-llvm %t/dynamic.mlir | FileCheck %s --check-prefix=DYNAMIC
+// RUN: wafer-opt --wafer-lower-tile-region-to-instr --wafer-lower-instr-to-target-llvm %t/strided.mlir | FileCheck %s --check-prefix=STRIDED
 
 //--- full.mlir
 func.func @full_1024() {
@@ -125,3 +127,56 @@ func.func @unaligned() {
 }
 // UNALIGNED: failed to legalize operation 'wafer.tile.copy_into'
 
+//--- dynamic.mlir
+func.func @dynamic() {
+  wafer.tile.region() -> () {
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1x1x1024xi1, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>}
+      : memref<1x1x1040xi1, #wafer.memory<spm, tensor>>
+    %c0 = arith.constant 0 : index
+    %c8 = arith.constant 8 : index
+    %c17 = arith.constant 17 : index
+    scf.for %i = %c0 to %c17 step %c8 {
+      %view = memref.subview %dst[0, 0, %i] [1, 1, 1024] [1, 1, 1]
+        : memref<1x1x1040xi1, #wafer.memory<spm, tensor>>
+        to memref<1x1x1024xi1, strided<[1040, 1040, 1], offset: ?>, #wafer.memory<spm, tensor>>
+      memref.copy %src, %view : memref<1x1x1024xi1, #wafer.memory<spm, tensor>>
+        to memref<1x1x1024xi1, strided<[1040, 1040, 1], offset: ?>, #wafer.memory<spm, tensor>>
+      wafer.tile.copy_into %view into %src
+        : memref<1x1x1024xi1, strided<[1040, 1040, 1], offset: ?>, #wafer.memory<spm, tensor>>
+        into memref<1x1x1024xi1, #wafer.memory<spm, tensor>>
+    }
+    wafer.tile.yield
+  }
+  return
+}
+// DYNAMIC-LABEL: llvm.func @dynamic
+// DYNAMIC: llvm.udiv
+// DYNAMIC: llvm.call @wafer_tx81_gather_scatter
+// DYNAMIC: llvm.call @wafer_tx81_gather_scatter
+
+//--- strided.mlir
+func.func @strided() {
+  wafer.tile.region() -> () {
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<1x1025x512xi1, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<262144>}
+      : memref<1x1025x1024xi1, #wafer.memory<spm, tensor>>
+    %view = memref.subview %dst[0, 0, 512] [1, 1025, 512] [1, 1, 1]
+      : memref<1x1025x1024xi1, #wafer.memory<spm, tensor>>
+      to memref<1x1025x512xi1, strided<[1049600, 1024, 1], offset: 512>, #wafer.memory<spm, tensor>>
+    memref.copy %src, %view : memref<1x1025x512xi1, #wafer.memory<spm, tensor>>
+      to memref<1x1025x512xi1, strided<[1049600, 1024, 1], offset: 512>, #wafer.memory<spm, tensor>>
+    wafer.tile.copy_into %view into %src
+      : memref<1x1025x512xi1, strided<[1049600, 1024, 1], offset: 512>, #wafer.memory<spm, tensor>>
+      into memref<1x1025x512xi1, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// STRIDED-LABEL: llvm.func @strided
+// STRIDED: llvm.mlir.constant(65600 : i32)
+// STRIDED: llvm.mlir.constant(64 : i32)
+// STRIDED: llvm.call @wafer_tx81_gather_scatter
+// STRIDED: llvm.call @wafer_tx81_gather_scatter

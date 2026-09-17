@@ -115,7 +115,7 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 
 输出为实际Linalg select、FP16 min/max和compare SSA，直接交同一layout/One-Shot bufferization及Tile→Instr路径。
 所有临时存储和completion由下游current IR决定，不预测SPM容量，也不添加新的Instr或ABI形式。
-归约前后的BOOL publication copy复用既有packed-byte证明：仅Tensor布局、连续且静态byte-aligned的两端，
+归约前后的BOOL publication copy复用既有packed-byte证明：仅Tensor布局、连续且current SSA已证明byte-aligned的两端，
 目标必须整字节覆盖或拥有最后一个padding byte，才用单个按字节计数的SPM GatherScatter复制。
 不改变BOOL格式，不调用native BOOL Memset；部分字节写入及非对齐切片继续拒绝，不覆盖相邻谓词。
 完整连续BOOL allocation的fill显式采用physical footprint，按整字节I8路径包含它自己拥有的尾部unused bits；
@@ -143,6 +143,9 @@ CT traversal长度由encoding的valid与layout padding元素决定；BOOL末字�
 DDR各外层stride为整字节，再用原RDMA/WDMA的byte descriptor表达同一逻辑覆盖；不补写邻接bits。
 输出仍是原Instr DMA和memref view，直接消费者为同一DDR规划、completion和target LLVM；production driver与named lowering共用实现。
 不支持任意bit gather、partial-byte写入或未经证明的动态对齐，不增加ABI或猜测容量。
+同一整字节row证明也供SPM内identity copy使用：source/destination分别生成byte descriptor，将较大的连续run拆成
+共同inner span及显式descriptor循环后交原GatherScatter。每端保持原逻辑遍历顺序、实际view地址和完整byte count；
+目的端须证明injective，不补写holes。descriptor层数超出硬件表达能力时拒绝，不分配隐式临时buffer。
 
 动态bit offset的byte alignment由共享current-SSA模数查询证明；SCF IV同时消费lower bound和step。
 与pinned MLIR AffineExpr的known-divisor规则一致，加减取共同整除关系，乘常量传播因子；

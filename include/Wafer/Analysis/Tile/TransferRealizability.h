@@ -63,6 +63,10 @@ public:
                                              mlir::MemRefType destType,
                                              const IndexRelation &relation);
 
+  /// Prove whole-byte contiguous runs and outer strides for a packed Tensor
+  /// view. This proves relative geometry; base alignment still requires SSA.
+  static mlir::LogicalResult provePackedByteRows(mlir::MemRefType type);
+
   /// Proves an exact cross-space logical transfer whose physical element
   /// spans can be represented by root-relative mapped RDMA/WDMA descriptors.
   static mlir::LogicalResult proveMappedDma(mlir::MemRefType sourceType,

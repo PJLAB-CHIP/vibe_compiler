@@ -25,7 +25,8 @@ add_mlir_conversion_library(WaferTileToInstr
 )
 
 target_include_directories(obj.WaferTileToInstr PRIVATE
-  ${CMAKE_CURRENT_BINARY_DIR})
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ${PROJECT_SOURCE_DIR}/lib)
 
 add_mlir_conversion_library(WaferInstrToLLVM
   InstrToLLVM/ComputeTargetCallLowering.cpp

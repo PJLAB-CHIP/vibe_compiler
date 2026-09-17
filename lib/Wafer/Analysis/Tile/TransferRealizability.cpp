@@ -258,9 +258,17 @@ TransferRealizability::proveCompactDma(mlir::MemRefType sourceType,
       *sourceBits != *destBits)
     return mlir::failure();
   if (*sourceBits == 1)
-    return mlir::success(hasWholeBytePackedRows(sourceType) &&
-                         hasWholeBytePackedRows(destType));
+    return mlir::success(mlir::succeeded(provePackedByteRows(sourceType)) &&
+                         mlir::succeeded(provePackedByteRows(destType)));
   return mlir::success(*sourceBits % 8 == 0);
+}
+
+mlir::LogicalResult
+TransferRealizability::provePackedByteRows(mlir::MemRefType type) {
+  auto memory = getWaferMemoryAttr(type);
+  return mlir::success(memory && memory.getLayout() == MemLayout::Tensor &&
+                       type.getElementType().isInteger(1) &&
+                       hasWholeBytePackedRows(type));
 }
 
 mlir::LogicalResult
