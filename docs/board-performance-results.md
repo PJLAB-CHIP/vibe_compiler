@@ -2074,3 +2074,31 @@ AP在第一步首次执行记Tile1 fatal，并在第二步第二次执行记Tile
 先行TDMA fatal与后续Trace卡死的因果仍未知，不能宣称超时根因已经修复。当前保持主机定位，保护板测和后续第4—5项未推进。
 日志、原始归档digest、host exec序列及推断边界见
 [decode超时主机证据](data/board-performance/decode-timeout-host-20260917.json)。
+
+## 2026-09-17：decode两步完整主机模型与Trace静态审计
+
+继续从当前原始HF case重新生成source、FP16输入和reference，使用默认search 8/42及正式编译路径的
+test-only driver执行formal SystemC。两步完整输出及strict no-card均通过，合计wall为493.285秒；
+没有创建板端provider会话。两步各16份Tile dataflow、Instr及target LLVM，共96份文件与前轮保留产物逐byte相同；
+两步manifest、ELF及program data共6个文件也与前轮Primary package逐byte相同。
+
+| 步骤 | 实际模型命令数 / formal算术操作数 | hidden cosine / relative L2 | K / V输出元素数 |
+| --- | --- | --- | --- |
+| 1 | 22071 / 4604 | 0.9999997584 / 0.00069575 | 各4194304 |
+| 2 | 22927 / 4924 | 0.9999997455 / 0.00071381 | 各4198400 |
+
+每步覆盖16 Tile、17个SystemC线程和全部三个输出，没有使用managed-reference或oneDNN后端。
+第二步使用本轮CPU reference KV，不能将该结果写成model actual KV接续；此前普通实卡的actual KV验证独立保留。
+SystemC执行target call及模型completion，不执行板端ELF、真实PMU/cache或firmware；通过不能排除Trace硬件路径故障。
+
+对保留的失败第二步包补做当前strict no-card与只读审计：Count/Trace各231个不同参数区间无重叠，
+各16个profile buffer满足64-byte对齐。3440个静态GatherScatter的迭代数均为正，byte count均与内层长度及迭代积一致；
+其中2544个常量地址调用的源/目标包围区间不重叠，896个符号地址调用未由静态扫描证明。
+区间结果只覆盖当前no-card的参数offset，不能恢复故障时物理地址，也不能据此排除跨命令hazard。
+
+当前安装Kcore firmware的只读反汇编显示，执行kernel的main线程请求64 KiB栈；失败ELF各Tile body的
+立即数栈帧为1152—1216 bytes，profile wait为128 bytes。没有支持“只有1—2 KiB线程栈导致溢出”的证据，
+但单函数栈帧不是完整调用链和中断的栈上界，当前安装固件也不能替代故障现场加载身份。
+上述检查未定位到可确定修复的代码缺陷；Trace卡住的Tile/site/PC及先行TDMA fatal的因果仍未知，
+不修改同步、PMU配置或容差来绕过。完整命令、数值、artifact身份及证明边界见
+[decode主机模型与静态审计](data/board-performance/decode-timeout-model-20260917.json)。

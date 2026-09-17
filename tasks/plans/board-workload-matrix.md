@@ -92,6 +92,10 @@ StableHLO gather fixture仍期待`index_cast`，而当前前端保留i32，未�
 更早旧快包对照执行窗口内已出现LSU TDMA fatal，原host执行仍成功且数值通过；原始时间保留，但该会话健康资格不足，
 不继续把5.608/6.039 ms签为已闭合健康基线，也不以此重置性能目标。既有fatal与后续Trace卡死的因果尚未证明。
 后续先解决以上故障边界及诊断缺口，再做第3项保护和剩余匹配性能；第4项继续等待直接前置。
+继续完成当前原HF输入的两步formal SystemC及strict no-card，全部输出通过；96份Tile/Instr/target LLVM和
+6个Primary package文件与前轮保留产物逐byte一致。第二步使用新CPU reference KV，不能代签actual KV接续或Trace。
+Count/Trace参数区间、GS静态descriptor及安装固件栈检查未发现可确定修复的缺陷；物理地址、真实PMU/cache和
+故障site仍未闭合。具体证据与限制见统一性能记录；第3项状态不变，没有启动新的设备会话。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

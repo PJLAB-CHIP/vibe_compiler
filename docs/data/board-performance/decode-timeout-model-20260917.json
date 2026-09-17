@@ -1,0 +1,493 @@
+{
+  "scope": "第3项decode超时的离线排查与fresh完整SystemC验证；未运行真实设备",
+  "source_commit": "b7bd56f721c944d8a1b479daf26b5e73b14064a6",
+  "board_execution": false,
+  "run": {
+    "command": [
+      "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+      "-B",
+      "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "--case",
+      "attention-decode-kv-cache",
+      "--dtype",
+      "float16",
+      "--seed",
+      "20260803",
+      "--wafer-compile",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile-test",
+      "--wafer-run",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-run",
+      "--work-dir",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-decode-timeout-review-20260917/decode-target-model",
+      "--optimization-policy",
+      "search",
+      "--search-width",
+      "8",
+      "--search-trials",
+      "42",
+      "--compile-timing",
+      "--compile-timeout-seconds",
+      "1800",
+      "--no-card",
+      "--dump-compiler-ir",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-decode-timeout-review-20260917/model-compiler-ir",
+      "--target-model",
+      "--target-model-max-scalar-evaluations",
+      "50000000",
+      "--target-model-max-fused-multiply-adds",
+      "300000000",
+      "--target-model-max-movement-bytes",
+      "4294967296",
+      "--target-model-max-movement-segments",
+      "10000000"
+    ],
+    "compiler_sha256": "e782b7fc699feab1c9165a3267ff6a8934fcd7d8670a698b1899eed1e1bb506e",
+    "started_utc": "2026-09-17T06:58:23Z",
+    "board_execution": false,
+    "status": "passed",
+    "exit_code": 0,
+    "wall_seconds": 493.28476263500033
+  },
+  "environment": {
+    "WAFER_EXECUTE_HARDWARE_TESTS": "unset",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "PJRT_DEVICE": "CPU",
+    "OMP_NUM_THREADS": "80",
+    "PYTHONPATH": "build/python:test/Board/Support",
+    "TX8_DEPS_ROOT": "third_party/tx8_deps",
+    "PATH_prefix": [
+      "build/bin",
+      "build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/bin",
+      "third_party/host-tools/tools/bin"
+    ]
+  },
+  "steps": [
+    {
+      "step": 1,
+      "actual_ir_comparison": {
+        "tile-dataflow": {
+          "files": 16,
+          "byte_identical_to_retained": true,
+          "sorted_filename_sha256_map_digest": "6830827cbded4eec11684775b21968c90398be870010725de7fa45a4aca894ce"
+        },
+        "instruction": {
+          "files": 16,
+          "byte_identical_to_retained": true,
+          "sorted_filename_sha256_map_digest": "fa15cecb0ee2fa980ea0cb1255a7a5b2f249aab50acbacd0c01bfc1272ba5d4b"
+        },
+        "target-llvm": {
+          "files": 16,
+          "byte_identical_to_retained": true,
+          "sorted_filename_sha256_map_digest": "6a4f286258ef631e06fed009120cdfe71060abe9b564c9ecb2dd45a0ede746a9"
+        }
+      },
+      "package_byte_identical_to_retained_primary": true,
+      "package": {
+        "data/program-data.bin": "17c4784df4b744f6c7fdcb9ed020569fbb51f1dca528087d43161f96ba3cbe8d",
+        "manifest.json": "5c1d92ea1a5c84583333b81b2a58cd0e6a509c633353bef5cbfa0e3c37fe4837",
+        "modules/module_00000.so": "f00480775f9b1398025f1276605fb3d80d315ff0453cb501a1588e2c88c6ca7e"
+      },
+      "source_program": {
+        "constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "data/attention.k_proj.weight": "91d141638cb63fc8bfb88abf6089d17261d080d61966e90e1a25e0ba7c23b843",
+        "data/attention.o_proj.weight": "ae3dae03624df50cc219937b6c88f91fdef1c4224780073fe14ab58990ef8a74",
+        "data/attention.q_proj.weight": "5ab7330dee8daa330271a1c5e54046e9259f37e1cdb1c5e80569e609bc65da8e",
+        "data/attention.v_proj.weight": "32c7295e4b9ca1110e5f7e46ca1e997881c1117ef7c0dffa169d8562776f6f2c",
+        "data/rotary_cos": "0667eb3734d602182ae49ce0a128e898d3b4570373421f7d20d37ca003a5df96",
+        "data/rotary_sin": "9611a26774987676f7e9652461e026825edda2d15677ecd0f2626e7362f4346f",
+        "functions/forward.meta": "66b7a9ec010cf68327cb191a63a783694df117878c8b53ee39a4f4cddd10857b",
+        "functions/forward.stablehlo.bc": "fe86e498ecff10fb4e0b09aece9c93c189db16ce30056d09624b8b9ea4daa20a"
+      },
+      "fresh_payload_and_reference": {
+        "card_00_output_0.expected.f16.raw": "3c38e12f943ffe04be0d9d6718b30e084228dcad2b04d4dafc26a1247fa37f81",
+        "card_00_output_1.expected.f16.raw": "d865c0508dc064860bafc36ba1cee2d43fc5e07a57b57eff7556399af4dee9aa",
+        "card_00_output_2.expected.f16.raw": "03c7718a3657b60ecd6f843c6b5b7741ec0f6793c13d2c477570c89aedb53be0",
+        "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+        "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+        "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+        "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+      },
+      "model_execution": {
+        "tiles": 16,
+        "commands": 22071,
+        "systemc_threads": 17,
+        "final_delta": 1946,
+        "formal_operations": 4604,
+        "managed_reference_commands": 0,
+        "managed_reference_scalars": 0,
+        "onednn_operations": 0,
+        "onednn_matmuls": 0,
+        "onednn_reorders": 0,
+        "onednn_formal_fmas": 0,
+        "scheduler": "untimed-delta-worker-aware-ncc"
+      },
+      "numeric_statistics": [
+        {
+          "index": 0,
+          "launch_slot": 0,
+          "dtype": "f16",
+          "elements": 4096,
+          "exact": 1244,
+          "exact_fraction": 0.3037109375,
+          "mean_abs": 8.915725629776716e-06,
+          "p99_abs": 3.0517578125e-05,
+          "p999_abs": 3.814697265625e-05,
+          "max_abs": 4.57763671875e-05,
+          "mean_ulp": 3.5419921875,
+          "p99_ulp": 51,
+          "p999_ulp": 250,
+          "max_ulp": 329,
+          "elementwise_mismatches": 0,
+          "atol": 0.008,
+          "rtol": 0.006,
+          "cosine": 0.999999758409913,
+          "relative_l2": 0.0006957468035423283,
+          "comparison": "similarity",
+          "minimum_cosine": 0.9999,
+          "maximum_relative_l2": 0.01
+        },
+        {
+          "index": 1,
+          "launch_slot": 0,
+          "dtype": "f16",
+          "elements": 4194304,
+          "exact": 4194293,
+          "exact_fraction": 0.9999973773956299,
+          "mean_abs": 8.01492205937393e-11,
+          "p99_abs": 0,
+          "p999_abs": 0,
+          "max_abs": 6.103515625e-05,
+          "mean_ulp": 3.0994415283203125e-06,
+          "p99_ulp": 0,
+          "p999_ulp": 0,
+          "max_ulp": 2,
+          "elementwise_mismatches": 0,
+          "atol": 0.008,
+          "rtol": 0.006,
+          "cosine": 0.9999999999998861,
+          "relative_l2": 4.773257842641347e-07,
+          "comparison": "similarity",
+          "minimum_cosine": 0.9999,
+          "maximum_relative_l2": 0.01
+        },
+        {
+          "index": 2,
+          "launch_slot": 0,
+          "dtype": "f16",
+          "elements": 4194304,
+          "exact": 4194279,
+          "exact_fraction": 0.9999940395355225,
+          "mean_abs": 4.723688107333146e-11,
+          "p99_abs": 0,
+          "p999_abs": 0,
+          "max_abs": 6.103515625e-05,
+          "mean_ulp": 6.198883056640625e-06,
+          "p99_ulp": 0,
+          "p999_ulp": 0,
+          "max_ulp": 2,
+          "elementwise_mismatches": 0,
+          "atol": 0.008,
+          "rtol": 0.006,
+          "cosine": 0.9999999999999992,
+          "relative_l2": 3.8785119800513594e-08,
+          "comparison": "similarity",
+          "minimum_cosine": 0.9999,
+          "maximum_relative_l2": 0.01
+        }
+      ],
+      "strict_no_card": {
+        "case": "attention-decode-kv-cache",
+        "dtype": "float16",
+        "seed": 20260803,
+        "step": 1,
+        "optimization_policy": "search",
+        "source_export": "true",
+        "torch_eager_reference": "true",
+        "runtime_payload": "true",
+        "numeric_execution": "false",
+        "continuation_reference_reused": "true"
+      }
+    },
+    {
+      "step": 2,
+      "actual_ir_comparison": {
+        "tile-dataflow": {
+          "files": 16,
+          "byte_identical_to_retained": true,
+          "sorted_filename_sha256_map_digest": "836926593aadb0c58eca63f5b5c07426a1154ad6aa11c73f733cdb9f01a1ac33"
+        },
+        "instruction": {
+          "files": 16,
+          "byte_identical_to_retained": true,
+          "sorted_filename_sha256_map_digest": "cefa744f1f53729c366300d506d4944207d7b37d493c52696ad04fb4e9025e84"
+        },
+        "target-llvm": {
+          "files": 16,
+          "byte_identical_to_retained": true,
+          "sorted_filename_sha256_map_digest": "8cb90de614c4da7dce3a0e1e6443f51f0ee01ca82daddde05c2669b3f7a21ed0"
+        }
+      },
+      "package_byte_identical_to_retained_primary": true,
+      "package": {
+        "data/program-data.bin": "07cad4b61f30bda0ade9f84452cb71005013ea5386a84ddf9ed82e5521191338",
+        "manifest.json": "99b8759e39b439df5e7ea9a6ba0490ff62f933d478515b5d5ccde38ecf546c0e",
+        "modules/module_00000.so": "58843bd0d4c73748e586097cada889aad1c8edf2c17f07c61cbdfd5aef44cc9c"
+      },
+      "source_program": {
+        "constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "data/attention.k_proj.weight": "91d141638cb63fc8bfb88abf6089d17261d080d61966e90e1a25e0ba7c23b843",
+        "data/attention.o_proj.weight": "ae3dae03624df50cc219937b6c88f91fdef1c4224780073fe14ab58990ef8a74",
+        "data/attention.q_proj.weight": "5ab7330dee8daa330271a1c5e54046e9259f37e1cdb1c5e80569e609bc65da8e",
+        "data/attention.v_proj.weight": "32c7295e4b9ca1110e5f7e46ca1e997881c1117ef7c0dffa169d8562776f6f2c",
+        "data/rotary_cos": "9671ba743e711f3674620e0742a184ec859dc883efb6ddd0541ba473f1f2edd6",
+        "data/rotary_sin": "4f889edc4b481286ceda587814bd8775fbed1b74f08487e9020dba2e83093c50",
+        "functions/forward.meta": "e39acd6dd577de30d65a8ec02c47d4e53f09bf4113cc6f317532c7b7659a5f9f",
+        "functions/forward.stablehlo.bc": "76a69215d5dd5fa860a09c7df5588bcf6f05ff6e31366cd9978bc4edf9a5c380"
+      },
+      "fresh_payload_and_reference": {
+        "card_00_output_0.expected.f16.raw": "18df6689e679e49c1162e915deffab5f3e6e45f460ee0f69a426001ebe020c07",
+        "card_00_output_1.expected.f16.raw": "67300678fb31df135413f2f36480987037ee0231f68346657ebe6fba83862d44",
+        "card_00_output_2.expected.f16.raw": "d4150a03260bd71eb0e20c199baaa0ff7eb5734ae8f33580079da026037887a1",
+        "card_00_user_input_0.f16.raw": "720290da4654d41418b64ee61449cbb8c6612bb18ae6b69f4702678dd1e9a3ea",
+        "card_00_user_input_1.f16.raw": "d865c0508dc064860bafc36ba1cee2d43fc5e07a57b57eff7556399af4dee9aa",
+        "card_00_user_input_2.f16.raw": "03c7718a3657b60ecd6f843c6b5b7741ec0f6793c13d2c477570c89aedb53be0",
+        "card_00_user_input_3.f16.raw": "382e008e5bc647359ed6f41cb932f732b000a96c6048edd3cae85e65df04c175"
+      },
+      "model_execution": {
+        "tiles": 16,
+        "commands": 22927,
+        "systemc_threads": 17,
+        "final_delta": 1949,
+        "formal_operations": 4924,
+        "managed_reference_commands": 0,
+        "managed_reference_scalars": 0,
+        "onednn_operations": 0,
+        "onednn_matmuls": 0,
+        "onednn_reorders": 0,
+        "onednn_formal_fmas": 0,
+        "scheduler": "untimed-delta-worker-aware-ncc"
+      },
+      "numeric_statistics": [
+        {
+          "index": 0,
+          "launch_slot": 0,
+          "dtype": "f16",
+          "elements": 4096,
+          "exact": 1219,
+          "exact_fraction": 0.297607421875,
+          "mean_abs": 9.200695785693824e-06,
+          "p99_abs": 3.0517578125e-05,
+          "p999_abs": 4.57763671875e-05,
+          "max_abs": 4.57763671875e-05,
+          "mean_ulp": 3.8994140625,
+          "p99_ulp": 62,
+          "p999_ulp": 239,
+          "max_ulp": 378,
+          "elementwise_mismatches": 0,
+          "atol": 0.008,
+          "rtol": 0.006,
+          "cosine": 0.9999997455063631,
+          "relative_l2": 0.0007138130283433598,
+          "comparison": "similarity",
+          "minimum_cosine": 0.9999,
+          "maximum_relative_l2": 0.01
+        },
+        {
+          "index": 1,
+          "launch_slot": 0,
+          "dtype": "f16",
+          "elements": 4198400,
+          "exact": 4198391,
+          "exact_fraction": 0.9999978563262195,
+          "mean_abs": 2.9302588323267495e-11,
+          "p99_abs": 0,
+          "p999_abs": 0,
+          "max_abs": 3.0517578125e-05,
+          "mean_ulp": 7.145579268292683e-06,
+          "p99_ulp": 0,
+          "p999_ulp": 0,
+          "max_ulp": 16,
+          "elementwise_mismatches": 0,
+          "atol": 0.008,
+          "rtol": 0.006,
+          "cosine": 0.9999999999999798,
+          "relative_l2": 2.0123519027511904e-07,
+          "comparison": "similarity",
+          "minimum_cosine": 0.9999,
+          "maximum_relative_l2": 0.01
+        },
+        {
+          "index": 2,
+          "launch_slot": 0,
+          "dtype": "f16",
+          "elements": 4198400,
+          "exact": 4198383,
+          "exact_fraction": 0.9999959508384146,
+          "mean_abs": 4.060339273476019e-11,
+          "p99_abs": 0,
+          "p999_abs": 0,
+          "max_abs": 6.103515625e-05,
+          "mean_ulp": 4.28734756097561e-06,
+          "p99_ulp": 0,
+          "p999_ulp": 0,
+          "max_ulp": 2,
+          "elementwise_mismatches": 0,
+          "atol": 0.008,
+          "rtol": 0.006,
+          "cosine": 0.999999999999999,
+          "relative_l2": 4.501802308016145e-08,
+          "comparison": "similarity",
+          "minimum_cosine": 0.9999,
+          "maximum_relative_l2": 0.01
+        }
+      ],
+      "strict_no_card": {
+        "case": "attention-decode-kv-cache-continuation",
+        "dtype": "float16",
+        "seed": 20260803,
+        "step": 2,
+        "optimization_policy": "search",
+        "source_export": "true",
+        "torch_eager_reference": "true",
+        "runtime_payload": "true",
+        "numeric_execution": "false",
+        "continuation_reference_reused": "true"
+      }
+    }
+  ],
+  "static_audit": {
+    "scope": "Offline fault localization only; no device execution",
+    "firmware_sha256": "dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf",
+    "count": {
+      "manifest_sha256": "b21c2b736050e977c3f3355e5866af3fae669eac75e30fbeec0ccd8b0302447e",
+      "no_card_log_sha256": "592599a8de174d157ce892b740def30629baefcdfbb166273694f0a3ffd01510",
+      "unique_argument_ranges": 231,
+      "overlapping_distinct_ranges": 0,
+      "limit": "Audits current official no-card argument offsets, not historical physical allocation bases or pointer-row storage.",
+      "profile_buffer_count": 16,
+      "profile_buffer_bytes": [
+        832
+      ],
+      "all_profile_ranges_64_byte_aligned": true
+    },
+    "trace": {
+      "manifest_sha256": "03ec78a4506c47fe124b0b01b306c0fbf908b867d6d77bab769148477cfcac06",
+      "no_card_log_sha256": "0c2c2c0473e070a0bc3aed420a159ad07d9d9cfd79f0c3947bfa144f25ee6426",
+      "unique_argument_ranges": 231,
+      "overlapping_distinct_ranges": 0,
+      "limit": "Audits current official no-card argument offsets, not historical physical allocation bases or pointer-row storage.",
+      "profile_buffer_count": 16,
+      "profile_buffer_bytes": [
+        16777216
+      ],
+      "all_profile_ranges_64_byte_aligned": true
+    },
+    "gather_scatter": {
+      "tiles": 16,
+      "static_calls": 3440,
+      "positive_iterations_and_exact_byte_counts": 3440,
+      "literal_addresses_with_disjoint_source_destination_spans": 2544,
+      "symbolic_addresses_not_proven_by_this_scan": 896,
+      "maximum_literal_stride": 65536,
+      "limit": "Static descriptor audit only; does not model dynamic addresses, inter-command hazards or hardware execution."
+    },
+    "frames": {
+      "profile_wait_frames_bytes": {
+        "wafer_profile_wait_ncc_worker_completion.part.0.isra.0": 128
+      },
+      "maximum_single_immediate_frame_bytes": 1216,
+      "limit": "Immediate frame sizes are not a total stack bound; indirect calls, recursion and interrupt usage are not closed by this scan.",
+      "minimum_tile_body_frame_bytes": 1152,
+      "maximum_tile_body_frame_bytes": 1216
+    }
+  },
+  "installed_firmware_static_observations": {
+    "identity": "install kcore_fw.bin version info: kcore_fw_202605121715_f63c13.bin,md5:f70f75a24589709c082d910b2c5cfcf9\ninstall kcore_tufw info: md5:f0d0a6ee94c804460d444c728d84a9b8",
+    "main_thread_requested_stack_bytes": 65536,
+    "thread_wrapper_additional_bytes": 264,
+    "evidence_offsets": {
+      "stack_argument": "0x20558",
+      "thread_wrapper_call": "0x20574",
+      "rt_thread_create": "0x1a290",
+      "kernel_entry_indirect_call": "0x11ba0",
+      "module_loader_malloc_call": "0x1e212"
+    },
+    "limit": "当前安装固件的静态证据，不等于已恢复故障现场加载身份；单函数立即数栈帧不是完整调用链/中断栈上界。"
+  },
+  "limits": [
+    "当前test-only compiler调用正式编译路径和formal SystemC；两步IR及Primary package均与原保留产物逐byte相同。",
+    "第二步输入使用本轮CPU reference KV；本次不是model actual KV或设备actual KV接续验证。",
+    "SystemC覆盖target call的功能与模型completion，不执行板端ELF、真实PMU/cache、firmware或物理地址。",
+    "Count/Trace的strict no-card是旧失败包的主机审计；新生成产品为两步普通Primary。",
+    "未发现可确定修复的同步、descriptor或record重叠缺陷；卡住的Tile/site/PC和先行TDMA fatal的因果仍未知。",
+    "本次不是新的板端正确性、性能或恢复资格；第3项及保护case仍未完成。"
+  ],
+  "artifacts": [
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/target-model-run.json",
+      "bytes": 1440,
+      "sha256": "0d88b39c47b2e729d4c659ddbcb380ddd202c60b553696e8e8754b62d3d8b6a2"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/target-model-run.log",
+      "bytes": 8035409,
+      "sha256": "3e9df93ae6745af9e198b9007b387bba7609c191ee5e1b399b4873798d6a370c"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/audit_host.py",
+      "bytes": 6582,
+      "sha256": "0bb16a90d0c96bad79e5dc6e15f38cd677d7ef5855798cbe251855a1ecef9645"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/host-audit.json",
+      "bytes": 9822,
+      "sha256": "abe52535687bc6605a41256c47a08976a70f759d12bac71a5c1f0e328fccc248"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/step02-current-no-card.log",
+      "bytes": 93573,
+      "sha256": "7be260e5f69e7d80607dc1291d6c0becfdf6ef7ea45ebaa78c78c22fcd40f445"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/step02-count-no-card.log",
+      "bytes": 94352,
+      "sha256": "592599a8de174d157ce892b740def30629baefcdfbb166273694f0a3ffd01510"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/step02-trace-no-card.log",
+      "bytes": 94355,
+      "sha256": "0c2c2c0473e070a0bc3aed420a159ad07d9d9cfd79f0c3947bfa144f25ee6426"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/kcore-fw.bin",
+      "bytes": 246640,
+      "sha256": "dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/kcore-version.txt",
+      "bytes": 167,
+      "sha256": "30d30b726ef545460868e4680329b73309d46b8429ecb6807eea01457af71e4a"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/kcore-fw-disassembly.txt",
+      "bytes": 3674538,
+      "sha256": "0e311ae3085fe71421a82010f00e6aa3897df598ec8d71f709f50de7dd7a9b55"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/firmware-dynsym.json",
+      "bytes": 7128,
+      "sha256": "ff1a4f831ff6282f41a3c86fa2e7ed5f727e1b7ac77de726cd741d0a16b32c70"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/firmware-exports.json",
+      "bytes": 31475,
+      "sha256": "2c098b3f443d54ca75db6c513164fa0a2e5b7c87af13b069c6dd0cd25323c033"
+    },
+    {
+      "path": "build/test/board-decode-timeout-review-20260917/summarize_review.py",
+      "bytes": 6512,
+      "sha256": "2495b2f3ed06c37ff101f9092a5e12e522b1163fcd337b669fef240de0021b24"
+    }
+  ]
+}
