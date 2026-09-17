@@ -1442,7 +1442,32 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
     return invalid("profile trace event limit exceeds the trace capacity");
   auto invoke = [&](BoardProfileProtocolLaunch launch)
       -> llvm::Expected<BoardProfileProtocolObservation> {
-    return execute({launch});
+    auto observation = execute({launch});
+    if (observation)
+      return observation;
+    return llvm::handleErrors(
+        observation.takeError(),
+        [&](const BoardRuntimeError &error) -> llvm::Error {
+          llvm::StringRef capture;
+          switch (launch) {
+          case BoardProfileProtocolLaunch::Primary:
+            capture = "primary";
+            break;
+          case BoardProfileProtocolLaunch::Count:
+            capture = "count";
+            break;
+          case BoardProfileProtocolLaunch::Trace:
+            capture = "trace";
+            break;
+          }
+          return llvm::make_error<BoardRuntimeError>(
+              error.getStage(), error.getCardId(), error.getTileId(),
+              error.getLaunchSlot(), error.getEntry(),
+              (llvm::Twine("profile capture=") + capture + ": " +
+               error.getDetail())
+                  .str(),
+              error.getContextState());
+        });
   };
 
   llvm::Expected<BoardProfileProtocolObservation> primary =

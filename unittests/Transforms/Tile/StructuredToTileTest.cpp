@@ -5552,6 +5552,226 @@ TEST_F(StructuredToTileTest, DDRReshapeWindowsKeepExactCoordinatesAndAliases) {
       }
 }
 
+TEST_F(StructuredToTileTest, DDRSliceInsertionKeepsCompactBlockTransfers) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef element : {"f16", "bf16"})
+      for (unsigned mode : {0u, 1u, 2u}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << element.str() << "/" << mode);
+        // Both batches traverse multiple 128-row blocks and the actual tail.
+        // Mode 2 shares each source between compact and strided destinations.
+        const int64_t columns = mode == 0 ? 64 : 192;
+        auto type = [&](int64_t batches, int64_t rows, int64_t cols,
+                        llvm::StringRef space, llvm::StringRef layout = "") {
+          return "memref<" + std::to_string(batches) + "x" +
+                 std::to_string(rows) + "x" + std::to_string(cols) + "x" +
+                 element.str() + layout.str() + ", #wafer.memory<" +
+                 space.str() + ", tensor>>";
+        };
+        const auto ddr = type(2, extent, 128, "ddr");
+        const auto spm = type(2, extent, 128, "spm");
+        const auto destination = type(2, extent, columns, "spm");
+        const auto compact = type(2, extent, 64, "spm");
+        const auto tensor = "tensor<2x" + std::to_string(extent) + "x128x" +
+                            element.str() + ">";
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        os << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+              "func.func @entry(%input: "
+           << ddr
+           << ") { "
+              "%tensor = bufferization.to_tensor %input restrict : "
+           << ddr << " wafer.tile.region(%tensor : " << tensor
+           << ") -> () { "
+              "^bb0(%arg: "
+           << tensor
+           << "): "
+              "%source = bufferization.to_memref %arg : "
+           << spm << " %destination = memref.alloc() : " << destination;
+        if (mode == 2)
+          os << " %compact = memref.alloc() : " << compact;
+        os << " %c0 = arith.constant 0 : index "
+              "%c1 = arith.constant 1 : index "
+              "%c2 = arith.constant 2 : index "
+              "%step = arith.constant 128 : index "
+              "%end = arith.constant "
+           << extent / 128 * 128
+           << " : index "
+              "scf.for %batch = %c0 to %c2 step %c1 { ";
+        auto emit = [&](llvm::StringRef name, llvm::StringRef row,
+                        int64_t rows) {
+          auto view = [&](int64_t stride) {
+            return type(1, rows, 64, "spm",
+                        ", strided<[" + std::to_string(extent * stride) + ", " +
+                            std::to_string(stride) + ", 1], offset: ?>");
+          };
+          os << " %src_" << name << " = memref.subview %source[%batch, " << row
+             << ", 17] [1, " << rows << ", 64] [1, 1, 1] : " << spm << " to "
+             << view(128) << " %dst_" << name
+             << " = memref.subview %destination[%batch, " << row << ", "
+             << (mode == 0 ? 0 : 31) << "] [1, " << rows
+             << ", 64] [1, 1, 1] : " << destination << " to " << view(columns)
+             << " memref.copy %src_" << name << ", %dst_" << name << " : "
+             << view(128) << " to " << view(columns);
+          if (mode == 2)
+            os << " %compact_" << name << " = memref.subview %compact[%batch, "
+               << row << ", 0] [1, " << rows << ", 64] [1, 1, 1] : " << compact
+               << " to " << view(64) << " memref.copy %src_" << name
+               << ", %compact_" << name << " : " << view(128) << " to "
+               << view(64);
+        };
+        os << " scf.for %row = %c0 to %end step %step { ";
+        emit("main", "%row", 128);
+        os << " } ";
+        if (extent % 128)
+          emit("tail", std::to_string(extent / 128 * 128), extent % 128);
+        os << " } wafer.tile.yield } return } } }";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        StructuredMaterializationRelations relations;
+        rebuildCurrentBufferOwnerRelations(*module, relations);
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        unsigned direct = 0, staged = 0;
+        std::vector<unsigned> coverage(2 * extent * 64, 0);
+        module->walk([&](StorageLoadOp load) {
+          auto shape = mlir::cast<mlir::MemRefType>(load.getDest().getType());
+          EXPECT_EQ(shape.getDimSize(0), 1);
+          EXPECT_LE(shape.getDimSize(1), 128);
+          EXPECT_EQ(shape.getDimSize(2), 64);
+          auto sourceView =
+              load.getSource().getDefiningOp<mlir::memref::SubViewOp>();
+          ASSERT_TRUE(sourceView);
+          EXPECT_EQ(mlir::getConstantIntValue(sourceView.getMixedOffsets()[2]),
+                    17);
+          auto batch = mlir::cast<mlir::BlockArgument>(
+              mlir::cast<mlir::Value>(sourceView.getMixedOffsets()[0]));
+          auto batchLoop =
+              mlir::dyn_cast<mlir::scf::ForOp>(batch.getOwner()->getParentOp());
+          ASSERT_TRUE(batchLoop);
+          EXPECT_EQ(mlir::getConstantIntValue(batchLoop.getLowerBound()), 0);
+          EXPECT_EQ(mlir::getConstantIntValue(batchLoop.getUpperBound()), 2);
+          EXPECT_EQ(mlir::getConstantIntValue(batchLoop.getStep()), 1);
+          llvm::SmallVector<int64_t> starts;
+          if (auto row =
+                  mlir::getConstantIntValue(sourceView.getMixedOffsets()[1])) {
+            starts.push_back(*row);
+          } else {
+            auto loop = load->getParentOfType<mlir::scf::ForOp>();
+            ASSERT_TRUE(loop);
+            EXPECT_EQ(mlir::cast<mlir::Value>(sourceView.getMixedOffsets()[1]),
+                      loop.getInductionVar());
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getLowerBound()), 0);
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getUpperBound()),
+                      extent / 128 * 128);
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getStep()), 128);
+            for (int64_t row = 0; row < extent / 128 * 128; row += 128)
+              starts.push_back(row);
+          }
+          for (int64_t batch = 0; batch < 2; ++batch)
+            for (int64_t start : starts)
+              for (int64_t row = start; row < start + shape.getDimSize(1);
+                   ++row) {
+                ASSERT_GE(row, 0);
+                ASSERT_LT(row, extent);
+                for (int64_t column = 0; column < 64; ++column)
+                  ++coverage[(batch * extent + row) * 64 + column];
+              }
+          if (load.getDest().getDefiningOp<mlir::memref::AllocOp>()) {
+            ++staged;
+            EXPECT_TRUE(llvm::any_of(relations.buffers, [&](const auto &owner) {
+              return owner.buffer == load.getDest() && owner.owner;
+            }));
+          } else {
+            ++direct;
+            EXPECT_TRUE(
+                load.getDest().getDefiningOp<mlir::memref::SubViewOp>());
+          }
+        });
+        const unsigned blocks = 1 + (extent % 128 != 0);
+        const unsigned stridedBlocks = 1 + (extent % 128 > 1);
+        EXPECT_EQ(staged, mode == 0 ? 0u : stridedBlocks);
+        EXPECT_EQ(direct,
+                  (mode == 1 ? 0u : blocks) + (mode != 0 && extent % 128 == 1));
+        EXPECT_TRUE(llvm::all_of(coverage, [&](unsigned count) {
+          return count == (mode == 2 ? 2u : 1u);
+        }));
+        ASSERT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+        std::string detail;
+        auto tiles =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(tiles)) << detail;
+        auto &tile = tiles->front();
+        TileRegionToInstrLoweringSession session(*context);
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk(
+            [&](TileRegionOp region) { regions.push_back(region); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        EXPECT_EQ(countOps<InstrRDMAOp>(*tile.module),
+                  blocks * (mode == 2 ? 2 : 1));
+        EXPECT_EQ(countOps<InstrGatherScatterOp>(*tile.module),
+                  mode == 0 ? 0u : stridedBlocks);
+        tile.module->walk([&](InstrRDMAOp load) {
+          const auto shape =
+              mlir::cast<mlir::MemRefType>(load.getSource().getType());
+          EXPECT_EQ(load.getByteCount(), shape.getDimSize(1) * 128);
+          EXPECT_EQ(load.getInnerBytes(), 128);
+          EXPECT_EQ(load.getSrcIterations()[0], shape.getDimSize(1));
+          EXPECT_EQ(load.getSrcStrides()[0],
+                    shape.getDimSize(1) == 1 ? 0 : 256);
+        });
+        tile.module->walk([&](InstrGatherScatterOp copy) {
+          auto shape = mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+          EXPECT_EQ(copy.getByteCount(), shape.getDimSize(1) * 128);
+          EXPECT_EQ(copy.getInnerBytes(), 128);
+          EXPECT_EQ(copy.getSrcIterations()[0], shape.getDimSize(1));
+          EXPECT_EQ(copy.getDstIterations()[0], shape.getDimSize(1));
+          EXPECT_EQ(copy.getSrcStrides()[0],
+                    shape.getDimSize(1) == 1 ? 0 : 128);
+          EXPECT_EQ(copy.getDstStrides()[0],
+                    shape.getDimSize(1) == 1 ? 0 : 384);
+          unsigned producers = 0;
+          tile.module->walk([&](InstrRDMAOp load) {
+            producers += load.getDest() == copy.getSource();
+          });
+          EXPECT_EQ(producers, 1u);
+          auto destination =
+              copy.getDest().getDefiningOp<mlir::memref::SubViewOp>();
+          ASSERT_TRUE(destination);
+          EXPECT_EQ(mlir::getConstantIntValue(destination.getMixedOffsets()[2]),
+                    31);
+          // Enumerate the actual two-sided descriptor independently of the
+          // physical-relation planner. Every logical byte reaches its row.
+          std::set<int64_t> writes;
+          auto address = [&](int64_t byte, bool source) {
+            int64_t result = byte % copy.getInnerBytes();
+            byte /= copy.getInnerBytes();
+            auto counts =
+                source ? copy.getSrcIterations() : copy.getDstIterations();
+            auto strides = source ? copy.getSrcStrides() : copy.getDstStrides();
+            for (unsigned axis = 0; axis < 3; ++axis) {
+              result += byte % counts[axis] * strides[axis];
+              byte /= counts[axis];
+            }
+            return result + (source ? copy.getSrcOffset().value_or(0)
+                                    : copy.getDstOffset().value_or(0));
+          };
+          for (int64_t byte = 0; byte < shape.getDimSize(1) * 128; ++byte) {
+            EXPECT_EQ(address(byte, true), byte);
+            EXPECT_EQ(address(byte, false), byte / 128 * 384 + byte % 128);
+            EXPECT_TRUE(writes.insert(address(byte, false)).second);
+          }
+        });
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+      }
+}
+
 TEST_F(StructuredToTileTest, DDRSubviewLoadsPreserveDynamicExtentSSA) {
   for (int64_t extent : {1024, 1025, 1031})
     for (bool rankReduced : {false, true}) {

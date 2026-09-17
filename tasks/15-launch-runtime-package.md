@@ -365,6 +365,11 @@ Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor mate
 - activation/site map使用独立typed合同，不成为普通执行manifest字段；
 - stale/malformed profile在provider effect前失败。
 
+固定采集协议遇到`BoardRuntimeError`时，在detail中附加当前实际执行的Primary/Count/Trace边界，
+原typed stage、card/tile/slot/entry与context state原样传播；直接消费者是CLI故障诊断与隔离逻辑。
+不从耗时猜测失败capture，不追加launch或改变完成/清理协议。主机注入三处故障，分别检查准确capture、
+全部typed字段、Usable/Poisoned状态、无后续调用且不发布measurement；非runtime错误保持原类型。
+
 Trace record采用16 MiB/Tile的固定有界分配，Count仍为最小record。容量由同一个ABI常量生成typed entry requirement、package和runtime
 检查。默认请求完整Trace：Count实测动态event数超过package容量时，在Trace launch前停止并报告Tile、实测数与容量。
 普通执行不携带这项分配；不承诺任意循环规模可完整采集。

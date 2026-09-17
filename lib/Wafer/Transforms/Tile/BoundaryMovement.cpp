@@ -7,6 +7,7 @@
 #include "GemmFinalization.h"
 #include "StructuredToTile.h"
 #include "TiledOutputStores.h"
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/IR/Topology/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/DirectDTE.h"
@@ -1840,8 +1841,9 @@ materializeInputViewLoad(mlir::Operation *view, mlir::Value ddrSource,
   } else {
     auto oldType = mlir::cast<mlir::MemRefType>(oldValue.getType());
     // A bufferized slice insertion already has its final block destination.
-    // Read directly into that view; allocating a staging row here would turn
-    // an indexed gather into per-row allocation and a redundant SPM copy.
+    // Read directly only when its SPM rows are contiguous. A strided block
+    // needs the existing compact load and SPM copy; direct DMA would expand
+    // it into one command per row. Contiguous indexed rows still avoid staging.
     for (mlir::Operation *user : llvm::make_early_inc_range(oldValue.getUsers())) {
       auto copy = mlir::dyn_cast<mlir::memref::CopyOp>(user);
       if (!copy || copy.getSource() != oldValue || copy.getTarget() == oldValue)
@@ -1853,6 +1855,12 @@ materializeInputViewLoad(mlir::Operation *view, mlir::Value ddrSource,
           destinationMemory.getSpace() != MemorySpace::SPM ||
           destinationMemory.getLayout() != MemLayout::Tensor ||
           sourceMemory.getLayout() != MemLayout::Tensor)
+        continue;
+      auto identity = analysis::IndexRelation::identity(destinationType.getShape());
+      if (!identity.isExact() ||
+          mlir::failed(analysis::TransferRealizability::proveCompactDma(
+              mlir::cast<mlir::MemRefType>(ddrView.getType()), destinationType,
+              *identity.get())))
         continue;
       rewriter.setInsertionPoint(copy);
       rewriter.create<StorageLoadOp>(copy.getLoc(), ddrView, copy.getTarget());

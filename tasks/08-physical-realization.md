@@ -151,6 +151,26 @@ whole-buffer use和已有静态payload重定位不能误走该路径。完整blo
 动态extent补充rank3、1024/1025/1031的普通及rank-reduced view，精确检查load源/目的shape、allocation size SSA和owner；
 现有静态main/tail矩阵继续完成Instr/SPM，动态形态的下游拒绝与compiler contract error区分。
 
+DDR view读取与bufferized slice insertion合并时，只有实际destination通过既有`proveCompactDma`证明SPM侧连续，
+才能把原load及copy合并为直接写入destination的`StorageLoadOp`。动态base offset由当前SSA view携带，
+不妨碍连续性；非单位行之间存在空隙则保留原选中窗口的紧凑SPM allocation/load及后续copy，
+由既有GatherScatter处理目的stride。不能为减少一条逻辑copy而将一次块读取展开成逐行RDMA。
+此规则在boundary materialization中执行，输入是已bufferize的实际view/copy及已选layout，输出是显式Tile load、
+allocation和copy；直接下游仍为唯一Tile→Instr、completion、SPM规划和target实现。新allocation使用原有typed owner重建，
+容量只由这些实际IR决定；本项不修改tile size、route、布局、融合、算术、completion或搜索预算。
+
+该选择参考[MLIR One-Shot Bufferization](https://mlir.llvm.org/docs/Bufferization/)的destination复用与copy权衡，
+并以pinned Tensor `InsertSliceOpInterface`和MemRef subview实现确认当前alias/stride语义；
+Wafer的直接DMA额外要求SPM端连续，复用已有physical proof，不新增shape公式或后端暂存选择。
+完成条件为以下机制矩阵、原decode实际两步全输出/KV前缀及matched性能恢复，并通过既定block/大GEMM保护。
+
+| DDR view到slice destination | exact输出及结构 | 直接下游witness |
+| --- | --- | --- |
+| rank3+ FP16/BF16，1024/1025/1031，按128行形成多块/尾部，destination有行间空隙 | 每块一次紧凑load后显式copy；独立坐标逐byte覆盖；RDMA数量按块而非行增长 | actual RDMA/GS的SSA消费者、owner、completion与SPM offsets |
+| 同规模，完整连续行及动态offset，另含单行rank-reduced输入 | 直接写原destination，无新增staging/copy；保留索引gather的连续行读取 | actual RDMA地址、原destination观察者和既有gather回归 |
+| 同一source view的多个copy/其它只读use | 每个直接写入独立证明，剩余uses共享原紧凑load；无丢失读取或额外写入 | source use-def、destination不重叠及完整数值 |
+| 当前shape或stride不足以证明compact | 不合并load/copy，不猜测目标布局；动态extent仍遵循原typed下游边界 | verifier-valid输入保持原物化路径 |
+
 当上述current view链包含`memref.collapse_shape`或`memref.expand_shape`时，metadata操作本身不是全buffer读取。
 本stage从既有DDR source type及原reassociation重算DDR view，继续向同一SSA树的局部subview传递需求；
 不能先载入全buffer再reshape。依据[MLIR MemRef语义](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefcollapse_shape-memrefcollapseshapeop)，

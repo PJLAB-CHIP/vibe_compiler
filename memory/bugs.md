@@ -2121,3 +2121,12 @@
 - 修复边界：U8/U16/U32/I64/U64原样DMA在CRT使用INT8 packet，count和每层stride同时按字节计算；保留Tensor dtype及所有位模式。
 - 防复发：执行真实CRT的packet构造，用独立寄存器格式解释检查两种方向、全部格式及多层stride的字节数；原实现必须失败。
   embedding还须经fresh source/package/no-card及实卡逐元素比较，host模型的逻辑copy不能代签SDK packet正确性。
+
+## 消除copy前必须证明DMA的实际目标连续性
+
+- 根因：bufferized slice insertion的destination虽然逻辑shape与源相同，实际SPM行间可能存在空隙。
+  将compact load及SPM copy合并成直接load，会让仅支持DDR侧stride的DMA展开为逐行小命令；局部tiling改变后尤其明显。
+- 修复边界：boundary materializer只在actual source/destination通过既有compact DMA证明时合并；否则保留原紧凑窗口load及显式copy，
+  后者由既有GatherScatter实现。allocation、owner和lifetime继续在实际IR中形成，由唯一SPM planner验证。
+- 防复发：连续/有空隙/共享source分别覆盖FP16/BF16、1024/1025/1031、多块及单行尾部，逐byte检查实际RDMA/GS坐标与无重叠；
+  性能验证同时检查静态小命令数、实际动态命令和普通设备耗时，不能用减少逻辑copy数量替代实际成本。

@@ -783,6 +783,56 @@ TEST(WaferProfileCollectionTest, FirstLaunchErrorStopsEveryLaterCall) {
 }
 
 TEST(WaferProfileCollectionTest,
+     RuntimeFailureIdentifiesCaptureAndPreservesTypedContext) {
+  using wafer::CardId;
+  using wafer::TileId;
+  using namespace wafer::runtime;
+  const char *captures[] = {"primary", "count", "trace"};
+  // Single-fault protocol injection; tensor sizes do not affect this boundary.
+  for (size_t failureIndex : {size_t(0), size_t(1), size_t(2)})
+    for (auto state : {BoardRuntimeContextState::Usable,
+                       BoardRuntimeContextState::Poisoned}) {
+      size_t calls = 0;
+      bool consumed = false;
+      auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
+          /*traceCapacity=*/8,
+          [&](const BoardProfileProtocolStep &step)
+              -> llvm::Expected<BoardProfileProtocolObservation> {
+            if (calls++ == failureIndex)
+              return llvm::make_error<BoardRuntimeError>(
+                  BoardRuntimeStage::Completion, CardId{0}, TileId{15},
+                  LaunchSlotId{13}, EntryId{7}, "injected deadline", state);
+            return validObservation(step);
+          },
+          [&](llvm::ArrayRef<
+              wafer::runtime::cli::BoardProfileMeasurementSample>) {
+            consumed = true;
+            return llvm::Error::success();
+          });
+      ASSERT_FALSE(static_cast<bool>(result));
+      EXPECT_EQ(calls, failureIndex + 1);
+      EXPECT_FALSE(consumed);
+      bool handled = false;
+      auto unhandled = llvm::handleErrors(
+          result.takeError(), [&](const BoardRuntimeError &error) {
+            handled = true;
+            EXPECT_EQ(error.getStage(), BoardRuntimeStage::Completion);
+            EXPECT_EQ(error.getCardId(), CardId{0});
+            EXPECT_EQ(error.getTileId(), TileId{15});
+            EXPECT_EQ(error.getLaunchSlot(), LaunchSlotId{13});
+            EXPECT_EQ(error.getEntry(), EntryId{7});
+            EXPECT_EQ(error.getContextState(), state);
+            EXPECT_EQ(error.getDetail(), std::string("profile capture=") +
+                                             captures[failureIndex] +
+                                             ": injected deadline");
+          });
+      EXPECT_FALSE(static_cast<bool>(unhandled));
+      llvm::consumeError(std::move(unhandled));
+      EXPECT_TRUE(handled);
+    }
+}
+
+TEST(WaferProfileCollectionTest,
      PrimaryHostGateFailureDestroysLocalSessionAndMakesNoLaterLaunch) {
   struct LocalSession {
     explicit LocalSession(bool &destroyed) : destroyed(destroyed) {}

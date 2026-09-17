@@ -1994,3 +1994,49 @@ FP16普通三次9.897/9.935/9.750 ms，中位9.897 ms；BF16三次9.747/9.822/9.
 
 第2项根因、通用机制及五配置保护闭合，继续第3项decode性能恢复。版本、原始图关联、全部numeric audit、
 各次时间及产物digest见[漏置换修复证据](data/board-performance/broadcast-permutation-20260917.json)。
+
+## 2026-09-17：decode非连续目标的逐行DMA修复
+
+同一runtime、runner及设备会话下，用本轮新生成的HF输入/reference比较保留的同源快包、融合退化包与当前修复包。
+三者均核对原始source；两步使用本轮实际KV接续，检查全部hidden/K/V及原KV前缀。
+更早catalog包因program data缺失且source不同在host拒绝，没有launch，未作为匹配基线。
+当前修复前重新编译的两步Primary package与融合对照逐byte一致，排除未使用当前代码的疑问。
+
+| 版本 | 第1步三次普通耗时（ms） | 第1步中位 | 第2步三次普通耗时（ms） | 第2步中位 |
+| --- | --- | ---: | --- | ---: |
+| 原同源快包 | 12.543 / 5.477 / 5.608 | 5.608 | 6.039 / 38.088 / 5.896 | 6.039 |
+| 融合退化包 | 25.987 / 25.795 / 25.831 | 25.831 | 33.898 / 33.787 / 33.804 | 33.804 |
+| compact load修复 | 6.589 / 6.519 / 6.553 | 6.553 | 6.453 / 6.471 / 6.452 | 6.453 |
+
+保留全部样本，包括旧包的两个高耗时，不删除异常值后重新定义基线。修复版两步均通过完整输出及KV前缀，
+hidden cosine分别为0.999999759772/0.999999745138，relative L2为0.000693838/0.000714561。
+普通耗时较退化包下降74.6%/80.9%，但仍高于匹配快包，因此不签发第3项性能恢复。
+
+根因在08号boundary materialization：bufferized cache slice的SPM destination行间有空隙，原优化仍将load/copy合并成
+直接`StorageLoadOp`。DMA只支持DDR侧stride，实际`[1,1,512,64]`窗口写入末维128的carrier时，块搬运拆成512条128-byte RDMA。
+通用修复复用既有`proveCompactDma`，只有actual destination连续时直接写入；其余保留既有compact SPM load及显式copy，
+由GatherScatter承担目标stride。没有按模型名/固定shape特判，不改tile size、route、算术、dtype、融合、completion或search 8/42。
+
+第一步16 Tile静态Instr中RDMA由17560降至1656，其中128-byte RDMA site由15518降至30；GatherScatter由2944变为2976，
+NCC join保持775，计算及转换数量不变。实际完整Trace中，最慢Tile15的RDMA调用由12572降至328，
+其RDMA site累计34,526,994→1,082,469 cycles，entry为54,747,575→6,922,835 cycles。
+修复后该Tile的GatherScatter占2,721,846 cycles，是剩余热点之一；Trace cycles用于局部归因，不替代表中普通执行时间。
+修复前第二步完整Trace也通过；修复后第二步没有有效Trace，不用第一步数据代签它。
+
+18组FP16/BF16×1024/1025/1031×连续/有空隙/共享source机制覆盖多块、单行及七行尾部，检查逐byte对应、无重叠、
+实际RDMA/GS消费者、owner、completion与SPM规划。609项Conversion/Transforms/Planning测试通过；定向lit三项通过，
+`lower-stablehlo-gather-inputs.mlir`仍因当前前端保留i32而fixture期待`index_cast`失败。该命令不运行本次修改的boundary stage，
+未将其记为通过。canonical完整增量构建及后续Ninja no-op通过。
+
+随后修复版第一步Primary→Count→Trace及完整输出通过，Primary为6.606 ms；第二步发生60000 ms completion超时，context poisoned。
+批次立即停止，没有retry/reset/power操作，后续保护队列在前置失败处退出，未启动保护launch。
+失败步骤的Primary包、全部runtime输入及reference与刚通过的普通执行逐byte一致。原collector失败时清理staging，且错误未标注
+Primary/Count/Trace；因此本次具体失败capture和根因均为unknown，不能断言是Trace或此前完整LM超时的同一原因。
+现已补充typed `BoardRuntimeError`的实际capture诊断，保留原stage、拓扑ID及context状态；六组故障注入与136项runtime/CLI测试通过，
+canonical构建及no-op通过。新诊断仅完成主机验证，失败会话使用的是修补前runner，不声称已修复设备超时。
+
+两种dtype block、三组大GEMM和1024/1031 embedding均已由当前source fresh构包/no-card。
+三组GEMM的manifest、ELF及每组16份target LLVM与前一接受版本相同；两种block的产物有变化，静态RDMA减少。
+这些静态结果不代签新版本的完整数值和性能保护。设备恢复后继续第3项保护、故障定位及剩余性能差异，第4—5项不跳过前置。
+全部版本、普通样本、21份numeric audit、profile摘要及产物digest见
+[decode块读取修复证据](data/board-performance/decode-compact-load-20260917.json)。

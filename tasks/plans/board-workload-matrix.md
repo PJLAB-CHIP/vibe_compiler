@@ -71,6 +71,22 @@ cosine=0.9999998849514737、relative L2=0.00047986558407937883，解释了原cos
 融合block两种dtype及三组大GEMM各三次保护通过。五个当前source重新构包的ELF、manifest及各16份target LLVM
 均与前一接受版本完全一致，完整数值通过。第2项完成，进入第3项；具体性能与证据汇入统一记录。
 
+第3项同会话匹配复现：原同源包两步各三次中位5.608/6.039 ms，融合包25.831/33.804 ms，完整输出及实际KV接续均通过。
+更早catalog包缺program data且source不同，在host拒绝，未launch；不把该包当成当前匹配对照。
+当前源码重新构建的两步Primary package与融合对照逐byte一致。第一步完整Trace显示最慢Tile的12572条RDMA调用
+累计占本地entry约63%；actual boundary load把有行间空隙的目标切片直接交给RDMA，展开大量128-byte命令。
+08号已补通用compact destination证明及覆盖矩阵；修复只在连续性已证明时合并load/copy，否则保留紧凑窗口及显式SPM copy。
+18组逐byte/主尾块机制、609项受影响component、canonical完整构建及no-op通过；定向lit三项通过，一项未改动的
+StableHLO gather fixture仍期待`index_cast`，而当前前端保留i32，未记为通过。
+修复后两步普通执行各三次中位6.553/6.453 ms，全输出及原KV前缀通过；与匹配快包仍有差距，不签发性能恢复。
+第一步完整profile通过，最慢Tile动态RDMA由12572降至328；第二步发生新的60000 ms completion超时，批次立即停止。
+该步包、输入和reference与刚通过的普通执行逐byte相同；原runner未给出Primary/Count/Trace故障边界，失败staging已清理，
+本次具体capture及根因保持unknown。15号补充typed runtime错误的capture诊断，136项runtime/CLI测试通过，
+但该诊断尚未用于新的实卡会话，不以此声称修复超时。
+两种dtype block、三组大GEMM及两组embedding均已fresh构包/no-card；保护队列在profile失败时退出，没有启动保护板测。
+大GEMM的manifest/ELF/target LLVM与前一接受版相同，block产物有变化，均不以静态结果代签本轮性能保护。
+恢复后从第3项继续：先保留带capture诊断的失败证据，完成保护和decode剩余匹配差异，再进入第4项。
+
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
 source→默认8/42 search→verified package→fresh no-card→串行设备执行及完整输出比较。
