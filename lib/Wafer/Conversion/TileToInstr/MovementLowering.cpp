@@ -426,6 +426,17 @@ public:
     if (!sourceType || !destType)
       return failPattern(rewriter, op,
                          "tile.copy_into lowering requires memref types");
+    if (canCopyPackedBytes(op.getSource(), op.getDest())) {
+      auto descriptor = getContiguousDescriptor(rewriter, op, destType);
+      if (mlir::failed(descriptor))
+        return mlir::failure();
+      auto copy = createGatherScatter(rewriter, op.getLoc(), op.getSource(),
+                                      op.getDest(), *descriptor, *descriptor);
+      if (bufferRecorder)
+        bufferRecorder->recordLoweredOperation(op, copy);
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
     analysis::IndexRelationResult relation =
         analysis::IndexRelation::identity(destType.getShape());
     if (!relation.isExact())
@@ -600,6 +611,15 @@ public:
       }
     } else if (sourceMemory.getSpace() == MemorySpace::SPM &&
                destMemory.getSpace() == MemorySpace::SPM) {
+      if (canCopyPackedBytes(op.getSource(), op.getTarget())) {
+        auto descriptor = getContiguousDescriptor(rewriter, op, destType);
+        if (mlir::failed(descriptor))
+          return mlir::failure();
+        record(createGatherScatter(rewriter, op.getLoc(), op.getSource(),
+                                   op.getTarget(), *descriptor, *descriptor));
+        rewriter.eraseOp(op);
+        return mlir::success();
+      }
       auto descriptors = descriptorCache->getOrCreate(
           rewriter, op, source->getType(), destination->getType(),
           destType.getShape(), source->viewToBase, destination->viewToBase,

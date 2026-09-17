@@ -14,10 +14,11 @@ evaluateFormalReduceStep(const FormalReduceOperation &operation,
                          RawLogicalValue accumulator, RawLogicalValue input) {
   if (llvm::Error error = validateFormalReduceOperation(operation))
     return std::move(error);
-  llvm::Expected<RawLogicalValue> canonicalAccumulator = validateOperand(
-      accumulator, LogicalFormat::F32, "native reduction accumulator");
+  const LogicalFormat format = operation.input.getFormat();
+  llvm::Expected<RawLogicalValue> canonicalAccumulator =
+      validateOperand(accumulator, format, "native reduction accumulator");
   llvm::Expected<RawLogicalValue> canonicalInput =
-      validateOperand(input, LogicalFormat::F32, "native reduction input");
+      validateOperand(input, format, "native reduction input");
   if (!canonicalAccumulator)
     return canonicalAccumulator.takeError();
   if (!canonicalInput)
@@ -37,11 +38,11 @@ evaluateFormalReduceStep(const FormalReduceOperation &operation,
       accumulatorClass->valueClass == LogicalValueClass::SignalingNaN ||
       inputClass->valueClass == LogicalValueClass::SignalingNaN;
   const LogicalFormatDescriptor &descriptor =
-      *findLogicalFormatDescriptor(LogicalFormat::F32);
+      *findLogicalFormatDescriptor(format);
   if (isNaNClass(accumulatorClass->valueClass) ||
       isNaNClass(inputClass->valueClass))
-    return finishRawResult(LogicalFormat::F32,
-                           canonicalPositiveQuietNaNBits(descriptor), flags);
+    return finishRawResult(format, canonicalPositiveQuietNaNBits(descriptor),
+                           flags);
 
   llvm::APFloat result = decodeFloat(*canonicalAccumulator);
   llvm::APFloat inputValue = decodeFloat(*canonicalInput);
@@ -55,14 +56,14 @@ evaluateFormalReduceStep(const FormalReduceOperation &operation,
     result = llvm::minimum(result, inputValue);
   }
   if (result.isNaN())
-    return finishRawResult(LogicalFormat::F32,
-                           canonicalPositiveQuietNaNBits(descriptor), flags);
-  std::optional<uint64_t> bits = encodeFloat(result, LogicalFormat::F32);
+    return finishRawResult(format, canonicalPositiveQuietNaNBits(descriptor),
+                           flags);
+  std::optional<uint64_t> bits = encodeFloat(result, format);
   if (!bits)
     return formalError(FormalNumericErrorCode::InvalidResultEncoding,
                        "APFloat native reduction result has an unexpected "
                        "width");
-  return finishRawResult(LogicalFormat::F32, *bits, flags);
+  return finishRawResult(format, *bits, flags);
 }
 
 } // namespace wafer

@@ -373,12 +373,16 @@ executeReduce(const FormalReduceOperation &reduce,
 
   const uint64_t outputCount = reduce.destination.getElementCount();
   FormalTensorNumericResult result;
-  uint64_t identity =
-      reduce.operation == TargetReduceOperation::Max   ? UINT64_C(0xff800000)
-      : reduce.operation == TargetReduceOperation::Min ? UINT64_C(0x7f800000)
-                                                       : UINT64_C(0);
+  const LogicalFormat format = reduce.destination.getFormat();
+  uint64_t identity = 0;
+  if (reduce.operation != TargetReduceOperation::Sum) {
+    auto infinity =
+        llvm::APFloat::getInf(*formal_detail::getFloatSemantics(format),
+                              reduce.operation == TargetReduceOperation::Max);
+    identity = *formal_detail::encodeFloat(infinity, format);
+  }
   result.values.assign(static_cast<size_t>(outputCount),
-                       RawLogicalValue{LogicalFormat::F32, identity});
+                       RawLogicalValue{format, identity});
   llvm::SmallVector<bool, 4> reduced(inputShape.size(), false);
   for (size_t dimension : reducedDimensions)
     reduced[dimension] = true;

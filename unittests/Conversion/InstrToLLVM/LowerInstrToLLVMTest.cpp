@@ -1020,10 +1020,10 @@ TEST(LowerInstrToTargetLLVMTest, DescriptorReuseDoesNotCacheUnsupportedCopies) {
         %token = arith.constant false
         %unused = wafer.tile.region(%token : i1) -> (i1) {
         ^bb0(%done: i1):
-          %a = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
-          %b = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
-          memref.copy %a, %b : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
-                           to memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
+          %a = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
+          %b = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
+          memref.copy %a, %b : memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
+                           to memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
           wafer.tile.yield %done : i1
         }
         return

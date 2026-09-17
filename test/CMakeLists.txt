@@ -890,6 +890,23 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
           TIMEOUT 900)
       endforeach()
     endforeach()
+    foreach(_boolean_extent IN ITEMS 1024 1025 1031)
+      foreach(_boolean_kind IN ITEMS all any)
+        set(_boolean_test "wafer-runtime-target-model-boolean-${_boolean_kind}-${_boolean_extent}-no-card")
+        add_test(NAME ${_boolean_test}
+          COMMAND ${WAFER_PYTHON_COMMAND}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Board/Support/wafer_target_model_source_runner.py
+            --wafer-compile $<TARGET_FILE:wafer-compile-test>
+            --case boolean-${_boolean_kind} --extent ${_boolean_extent}
+            --optimization-policy search
+            --work-dir ${CMAKE_CURRENT_BINARY_DIR}/${_boolean_test})
+        set_tests_properties(${_boolean_test} PROPERTIES
+          ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/Board/Support;TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_STABLEHLO_TRANSLATE=$<TARGET_FILE:stablehlo-translate>"
+          LABELS "runtime;no-card;source;target-model;numeric-model"
+          PROCESSORS 4
+          TIMEOUT 900)
+      endforeach()
+    endforeach()
     foreach(_division_extent IN ITEMS 1024 1025 1031)
       foreach(_division_policy IN ITEMS none search)
         set(_division_test "wafer-runtime-target-model-division-${_division_extent}-${_division_policy}-no-card")

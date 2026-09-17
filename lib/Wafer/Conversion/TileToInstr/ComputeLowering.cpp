@@ -172,8 +172,15 @@ struct FillLowering : mlir::OpRewritePattern<ComputeFillOp> {
       --suffix;
     }
     if (suffix == 0) {
+      auto domain = op.getFillDomainAttr();
+      // This allocation owns the unused bits of its final byte. The target
+      // implements packed BOOL fills as whole-byte I8 memset operations.
+      if (type.getElementType().isInteger(1) &&
+          op.getDest().getDefiningOp<mlir::memref::AllocOp>())
+        domain = FillDomainAttr::get(rewriter.getContext(),
+                                     FillDomain::PhysicalFootprint);
       rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue(),
-                                               op.getFillDomainAttr());
+                                               domain);
       return mlir::success();
     }
 

@@ -324,8 +324,13 @@ IndexRelationQueryResult PhysicalAccessRelation::hasSamePhysicalTraversal(
   // destination ordinal that the instruction can read. Exact ordinal
   // equivalence over the valid iteration domain separately proves that the
   // corresponding logical elements line up.
-  if (physicalLayout.getPhysicalElementCount() <
-      other.physicalLayout.getPhysicalElementCount())
+  // Byte rounding in a packed allocation is not part of the CT traversal.
+  // Use the encoding's valid plus padding elements, as target lowering does,
+  // rather than treating unused bits in its last byte as additional work.
+  if (physicalLayout.getValidElementCount() +
+          physicalLayout.getPaddingElementCount() <
+      other.physicalLayout.getValidElementCount() +
+          other.physicalLayout.getPaddingElementCount())
     return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
   IndexRelationQueryResult materialized = materializePhysicalRelations();
   if (!materialized.isProvenTrue())

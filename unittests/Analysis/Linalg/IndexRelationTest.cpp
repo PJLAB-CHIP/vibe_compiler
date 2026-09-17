@@ -542,6 +542,8 @@ TEST(PhysicalAccessRelationTest,
       f16Tensor, f32Tensor, shape, *identity.get(), *identity.get())));
   EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
       i1Tensor, f32Tensor, shape, *identity.get(), *identity.get())));
+  EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
+      f32Tensor, i1Tensor, shape, *identity.get(), *identity.get())));
   EXPECT_TRUE(mlir::failed(TransferRealizability::provePhysicalTraversal(
       f16NCx, f32NCx, shape, *identity.get(), *identity.get())));
   EXPECT_TRUE(mlir::failed(TransferRealizability::provePhysicalTraversal(

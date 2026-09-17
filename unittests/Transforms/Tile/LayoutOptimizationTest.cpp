@@ -8,6 +8,7 @@
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
+#include "Wafer/Transforms/Tile/BooleanReduction.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LoopSubsetState.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -556,6 +557,147 @@ module {
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
+
+TEST_F(LayoutOptimizationTest, BooleanReductionsPreserveInitAndReachInstr) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool all : {false, true})
+      for (bool initial : {false, true}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(all);
+        SCOPED_TRACE(initial);
+        const std::string shape = "2x" + std::to_string(extent);
+        const std::string input = "tensor<" + shape + "x64xf16>";
+        const std::string bits = "tensor<" + shape + "x64xi1>";
+        const std::string reduced = "tensor<" + shape + "x1xi1>";
+        const std::string output = "tensor<" + shape + "x1xf16>";
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+           << "#row = affine_map<(b,m,k)->(b,m,0)>\n"
+           << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+           << "func.func @entry(%x: " << input << ") { "
+           << "%r = wafer.tile.region(%x : " << input << ") -> (" << output
+           << ") { ^bb0(%a: " << input << "): "
+           << "%z = arith.constant 0.0 : f16 "
+           << "%one = arith.constant 1.0 : f16 "
+           << "%init = arith.constant " << (initial ? "true" : "false")
+           << " %e = tensor.empty() : " << bits
+           << " %p = linalg.generic {indexing_maps = [#id,#id], "
+              "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+           << "ins(%a : " << input << ") outs(%e : " << bits << ") { "
+           << "^bb1(%v: f16, %old: i1): %c = arith.cmpf ogt, %v, %z : f16 "
+           << "linalg.yield %c : i1 } -> " << bits
+           << " %re = tensor.empty() : " << reduced
+           << " %ri = linalg.fill ins(%init : i1) outs(%re : " << reduced
+           << ") -> " << reduced
+           << " %rr = linalg.generic {indexing_maps = [#id,#row], "
+              "iterator_types = [\"parallel\",\"parallel\",\"reduction\"]} "
+           << "ins(%p : " << bits << ") outs(%ri : " << reduced << ") { "
+           << "^bb2(%v: i1, %old: i1): %c = arith." << (all ? "andi" : "ori")
+           << " %v, %old : i1 "
+           << "linalg.yield %c : i1 } -> " << reduced
+           << " %oe = tensor.empty() : " << output
+           << " %o = linalg.generic {indexing_maps = [#id,#id], "
+              "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+           << "ins(%rr : " << reduced << ") outs(%oe : " << output << ") { "
+           << "^bb3(%v: i1, %old: f16): %s = arith.select %v, %one, %z : f16 "
+           << "linalg.yield %s : f16 } -> " << output
+           << " wafer.tile.yield %o : " << output << " } return } } }";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        auto relations = outputRelation(*module);
+        ASSERT_TRUE(
+            mlir::succeeded(lowerBooleanReductions(*module, relations)));
+        EXPECT_EQ(countOps<mlir::arith::AndIOp>(*module), 0u);
+        EXPECT_EQ(countOps<mlir::arith::OrIOp>(*module), 0u);
+        EXPECT_EQ(countOps<mlir::arith::MinimumFOp>(*module), all ? 1u : 0u);
+        EXPECT_EQ(countOps<mlir::arith::MaximumFOp>(*module), all ? 0u : 1u);
+        unsigned reductions = 0;
+        module->walk([&](mlir::linalg::GenericOp op) {
+          if (!op.getNumReductionLoops())
+            return;
+          ++reductions;
+          EXPECT_EQ(op.getIndexingMapsArray().back().getResult(2),
+                    mlir::getAffineConstantExpr(0, context.get()));
+          auto fill =
+              op.getDpsInits().front().getDefiningOp<mlir::linalg::FillOp>();
+          ASSERT_TRUE(fill);
+          auto constant = fill.getDpsInputs()
+                              .front()
+                              .getDefiningOp<mlir::arith::ConstantOp>();
+          ASSERT_TRUE(constant);
+          EXPECT_EQ(mlir::cast<mlir::FloatAttr>(constant.getValue())
+                        .getValueAsDouble(),
+                    initial ? 1.0 : 0.0);
+        });
+        EXPECT_EQ(reductions, 1u);
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        std::string detail;
+        auto standalone =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+        ASSERT_EQ(standalone->size(), 1u);
+        auto &tile = standalone->front();
+        TileRegionToInstrLoweringSession session(*context);
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        EXPECT_GT(countOps<InstrBit2FpOp>(*tile.module), 0u);
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+      }
+}
+
+TEST_F(LayoutOptimizationTest, BooleanReductionLeavesOtherCombinersUnchanged) {
+  for (unsigned form = 0; form < 4; ++form) {
+    SCOPED_TRACE(form);
+    const std::string element = form == 1 ? "i32" : "i1";
+    const std::string extent = form == 2 ? "?" : "1025";
+    const std::string input = "tensor<2x" + extent + "x64x" + element + ">";
+    const std::string output = "tensor<2x" + extent + "x1x" + element + ">";
+    const std::string combine = form == 0 ? "xori" : "andi";
+    std::string text;
+    llvm::raw_string_ostream ir(text);
+    ir << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+       << "#row = affine_map<(b,m,k)->(b,m,0)>\n"
+       << "module { func.func @entry(%x: " << input << ", %init: " << output
+       << ") { %r = wafer.tile.region(%x, %init : " << input << ", " << output
+       << ") -> (" << output << ") { ^bb0(%a: " << input << ", %i: " << output
+       << "): "
+       << "%rr = linalg.generic {indexing_maps = [#id,#row], "
+          "iterator_types = [\"parallel\",\"parallel\",\"reduction\"]} "
+       << "ins(%a : " << input << ") outs(%i : " << output << ") { "
+       << "^bb1(%v: " << element << ", %old: " << element << "): "
+       << "%c = arith." << combine << " %v, %old : " << element;
+    if (form == 3)
+      ir << " %d = arith.ori %c, %v : " << element;
+    ir << " linalg.yield %" << (form == 3 ? "d" : "c") << " : " << element
+       << " } -> " << output << " wafer.tile.yield %rr : " << output
+       << " } return } }";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    auto before = countOps<mlir::linalg::GenericOp>(*module);
+    auto relations = outputRelation(*module);
+    ASSERT_TRUE(mlir::succeeded(lowerBooleanReductions(*module, relations)));
+    EXPECT_EQ(countOps<mlir::linalg::GenericOp>(*module), before);
+    EXPECT_EQ(countOps<mlir::arith::SelectOp>(*module), 0u);
+    EXPECT_EQ(countOps<mlir::arith::MinimumFOp>(*module), 0u);
+    EXPECT_EQ(countOps<mlir::arith::MaximumFOp>(*module), 0u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
 
 TEST_F(LayoutOptimizationTest, ConstantViewsBecomeExplicitSelectedSPMReads) {
   for (int64_t extent : {1024, 1025, 1031})

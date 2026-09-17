@@ -1,6 +1,7 @@
 //===- LayoutOptimization.cpp - Current layout/bufferization -----------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "BooleanReduction.h"
 #include "GatherLowering.h"
 #include "LoopSubsetState.h"
 
@@ -1924,6 +1925,10 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
 
   if (mlir::failed(lowerTensorGathers(module, relations))) {
     result.detail = "selected gather row materialization failed";
+    return result;
+  }
+  if (mlir::failed(lowerBooleanReductions(module, relations))) {
+    result.detail = "boolean reduction representation failed";
     return result;
   }
   if (mlir::failed(normalizeLoopSubsetState(module, relations))) {

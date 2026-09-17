@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wafer-compile", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add", "row-max", "division"), default="add")
+    parser.add_argument("--case", choices=("add", "score-rounding", "broadcast-add", "row-max", "division", "boolean-all", "boolean-any"), default="add")
     parser.add_argument("--extent", type=int, choices=(1024, 1025, 1031), default=1024)
     parser.add_argument("--optimization-policy", choices=("none", "search"), default="none")
     return parser.parse_args()
@@ -126,6 +126,34 @@ def write_case(
     }}) {{dimensions = array<i64: 2>}} : ({wide_type}, tensor<f32>) -> tensor<2x{extent}xf32>
     %result = stablehlo.reshape %maximum : (tensor<2x{extent}xf32>) -> {output_type}
 """
+    elif case in ("boolean-all", "boolean-any"):
+        output_type = f"tensor<2x{extent}x1xf16>"
+        all_values = case == "boolean-all"
+        lhs = np.full(shape, 1 if all_values else -1, dtype=DTYPE)
+        rhs = np.zeros(shape, dtype=DTYPE)
+        rows = np.arange(2 * extent).reshape(2, extent)
+        lhs[rows % 4 == 0] = 1
+        lhs[rows % 4 == 1] = -1
+        lhs[:, :, 0][rows % 4 == 2] *= -1
+        lhs[:, :, -1][rows % 4 == 3] *= -1
+        reference_reduce = np.all if all_values else np.any
+        expected = reference_reduce(lhs > rhs, axis=2, keepdims=True).astype(DTYPE)
+        boolean_type = f"tensor<2x{extent}x64xi1>"
+        row_type = f"tensor<2x{extent}xi1>"
+        predicate_type = f"tensor<2x{extent}x1xi1>"
+        body = f"""
+    %predicate = stablehlo.compare GT, %lhs, %rhs : ({input_type}, {rhs_type}) -> {boolean_type}
+    %init = stablehlo.constant dense<{str(all_values).lower()}> : tensor<i1>
+    %reduced = "stablehlo.reduce"(%predicate, %init) ({{
+      ^bb0(%value: tensor<i1>, %acc: tensor<i1>):
+        %next = stablehlo.{'and' if all_values else 'or'} %value, %acc : tensor<i1>
+        stablehlo.return %next : tensor<i1>
+    }}) {{dimensions = array<i64: 2>}} : ({boolean_type}, tensor<i1>) -> {row_type}
+    %rows = stablehlo.reshape %reduced : ({row_type}) -> {predicate_type}
+    %one = stablehlo.constant dense<1.0> : {output_type}
+    %zero = stablehlo.constant dense<0.0> : {output_type}
+    %result = stablehlo.select %rows, %one, %zero : {predicate_type}, {output_type}
+"""
     elif case == "broadcast-add":
         output_type = input_type
         lhs = ((values % 37 - 18) / 32).astype(DTYPE)
@@ -175,7 +203,7 @@ def main() -> int:
         raise RuntimeError("explicit shared-DDR qualification requires none")
     source, input_lhs, input_rhs, expected = write_case(args.work_dir, args.case, args.extent)
     extra = []
-    if args.case in ("broadcast-add", "division"):
+    if args.case in ("broadcast-add", "division", "boolean-all", "boolean-any"):
         extra = ["--dump-compiler-ir", str(args.work_dir / "compiler-ir")]
         if args.case == "broadcast-add":
             extra.append("--test-communication-candidate=shared-ddr")
@@ -217,6 +245,15 @@ def main() -> int:
         raise RuntimeError("target-model source omitted StableHLO bytecode")
     if (source / "functions" / "forward.mlir").exists():
         raise RuntimeError("target-model source retained staging MLIR text")
+    if args.case in ("boolean-all", "boolean-any"):
+        modules = list((args.work_dir / "compiler-ir" / "instruction").glob("*.mlir"))
+        if len(modules) != 16:
+            raise RuntimeError("boolean reduction omitted actual Instr modules")
+        kind = "min" if args.case == "boolean-all" else "max"
+        for module in modules:
+            ir = module.read_text()
+            if f"wafer.instr.reduce <{kind}>" not in ir or "wafer.instr.bit2fp" not in ir:
+                raise RuntimeError("boolean reduction did not reach numeric reduction on every Tile")
     if args.case == "division":
         modules = list((args.work_dir / "compiler-ir" / "instruction").glob("*.mlir"))
         if len(modules) != 16:
@@ -241,7 +278,7 @@ def main() -> int:
             if "iter_args(" in ir:
                 raise RuntimeError("pointwise outputs still retain loop-carried collection buffers")
     result_shape = ([16, 16, 32, args.extent] if args.case == "broadcast-add"
-                    else [2, args.extent, 1] if args.case == "row-max"
+                    else [2, args.extent, 1] if args.case in ("row-max", "boolean-all", "boolean-any")
                     else [2, args.extent, 64])
     print(
         "target-model source vertical passed: shape="

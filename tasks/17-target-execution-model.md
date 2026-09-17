@@ -205,9 +205,11 @@ formal lane拥有确定的dtype arithmetic、rounding、NaN/Inf/signed-zero、co
 family接收typed target operation/format/parameter；实现未覆盖的组合在任何memory write或flags merge前分类拒绝，不以稀疏policy row、
 wildcard selector或digest resolution决定控制流。
 
-F32 native reduction的formal数学子集包括sum/max/min。Sum保持原逐步RNE加法；max/min复用LLVM APFloat的IEEE maximum/minimum语义，
-分别从负/正无穷初始化，传播canonical NaN、累计signaling-NaN invalid并区分正负零。其它dtype和未支持CT轴仍明确拒绝。
-既有managed-reference lane对非NaN F32的sum/max/min使用同一逻辑遍历与identity，包含无穷和正负零；NaN仍在任何写入前拒绝。
+Native reduction的formal数学子集包括F32 sum和F16/BF16/F32 max/min。Sum保持原逐步RNE加法；max/min复用LLVM APFloat的IEEE maximum/minimum语义，
+分别从原format的负/正无穷初始化，传播canonical NaN、累计signaling-NaN invalid并区分正负零。其它dtype、低精度sum和未支持CT轴仍明确拒绝。
+既有managed-reference lane对同一非NaN子集使用相同逻辑遍历与identity，包含无穷和正负零；低精度极值通过精确扩宽比较后写回原format，NaN仍在任何写入前拒绝。
+输入是actual typed Reduce，输出是同format数学结果，直接供SystemC完整输出验证；不改变被测Instr或推断硬件舍入。
+FP16/BF16极值补齐1024/1025/1031的0/1、负值、正负零、无穷和NaN；实际布尔归约纵向以FP16内部0/1要求exact，低精度sum仍typed拒绝。
 该扩展用于主机数学验证，不签发硬件位级或性能资格，也不改变被测Instr。覆盖rank3/4、1024/1025/1031、负值、无穷、零、NaN、
 多归约维度、padding和工作预算，并通过真实source到SystemC的输出比较；大模型沿既有显式managed-reference入口执行。
 
@@ -299,7 +301,7 @@ Native控制流白名单允许i32与F32之间的等宽bitcast，以承接mapped 
 pointer reinterpretation或浮点control flow。逐bit检查正负零、普通值、Infinity和NaN payload，经16个Tile的实际host JIT转回同一原始字段。
 
 Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是精确扩宽；写回复用共享`convertTargetScalar`的F32→BF16 nearest-even规则，
-不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约继续保持原F32 sum/max/min合同，NaN和其它原不支持域仍typed拒绝。
+不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约消费5.2节同一数学子集，NaN和其它原不支持域仍typed拒绝。
 覆盖rank3 1024/1025/1031、正负零、subnormal、普通值、最大有限数与舍入边界，对照formal完整codeword；全LM继续使用原比较合同。
 
 ### Formal GEMM 的独立输出并行

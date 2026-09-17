@@ -379,12 +379,15 @@ executeReduce(const FormalReduceOperation &command,
   if ((command.operation != TargetReduceOperation::Sum &&
        command.operation != TargetReduceOperation::Max &&
        command.operation != TargetReduceOperation::Min) ||
-      command.input.getFormat() != LogicalFormat::F32 ||
-      command.destination.getFormat() != LogicalFormat::F32 ||
+      (command.input.getFormat() != LogicalFormat::F16 &&
+       command.input.getFormat() != LogicalFormat::BF16 &&
+       command.input.getFormat() != LogicalFormat::F32) ||
+      command.destination.getFormat() != command.input.getFormat() ||
+      (command.operation == TargetReduceOperation::Sum &&
+       command.input.getFormat() != LogicalFormat::F32) ||
       inputs.size() != 1 ||
       inputs.front().size() != command.input.getElementCount())
-    return referenceError(
-        "reduce is outside the native F32 sum/max/min domain");
+    return referenceError("reduce requires F32 sum or F16/BF16/F32 max/min");
   const llvm::ArrayRef<uint64_t> inputShape = command.input.getShape();
   const std::vector<size_t> reducedDimensions =
       getTargetReduceLogicalDimensions(command.dimension, inputShape.size());
@@ -440,8 +443,12 @@ executeReduce(const FormalReduceOperation &command,
 
   std::vector<RawLogicalValue> result;
   result.reserve(accumulators.size());
-  for (float value : accumulators)
-    result.push_back({LogicalFormat::F32, floatToBits(value)});
+  for (float value : accumulators) {
+    auto encoded = encodeNonNaN(value, command.destination.getFormat());
+    if (!encoded)
+      return encoded.takeError();
+    result.push_back(*encoded);
+  }
   return result;
 }
 

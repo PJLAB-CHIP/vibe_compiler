@@ -12,7 +12,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 ### 当前授权顺序与性能保护
 
-用户要求严格依次完成下列1—5项，完成当前项后再进入下一项，不跳项或以中间结果结束。
+原授权顺序为下列1—5项；用户随后明确暂缓第3项剩余TDMA定位及decode性能，转入第4项。
+第3项仍保留未完成，第4项闭合后推进第5项，不以中间结果结束。
 它们继续归入同一个`board-testing`，不是五个独立队列项。
 
 | 顺序 | 输入与工作边界 | 完成条件及直接下游 |
@@ -42,7 +43,7 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 用户确认重启后，三个BF16拆分边界及完整LM均通过；同一软件/包继续检查FP16→BF16次序，完整输出也通过，
 两次BF16完整capture逐byte相同。新会话的完整LM依次为BF16 75.915001、FP16 75.117996、BF16 74.524002 ms。
 原超时本轮未复现，根因仍未知，没有修改编译器/runtime或声称修复；该事件继续保留审计。
-随后完成第2项未融合图数值根因及保护回归，当前进入第3项decode性能恢复，第4—5项保持顺序等待。
+随后完成第2项未融合图数值根因及保护回归；第3项剩余工作按用户要求暂缓，当前转入第4项。
 两种dtype的16 Tile dataflow/Instr在显式统一dtype及conversion枚举后完全相同，launch/entry/resource描述一致；
 LLVM target call差异仅为对应format与conversion入口，不能据此推定BF16不支持或同步根因。
 
@@ -91,7 +92,7 @@ StableHLO gather fixture仍期待`index_cast`，而当前前端保留i32，未�
 具体卡死site/Tile、原始触发原因仍未知。Count与Trace的ELF相同，差异为运行配置/record及PMU和记录动作，不能据此猜测同步修复。
 更早旧快包对照执行窗口内已出现LSU TDMA fatal，原host执行仍成功且数值通过；原始时间保留，但该会话健康资格不足，
 不继续把5.608/6.039 ms签为已闭合健康基线，也不以此重置性能目标。既有fatal与后续Trace卡死的因果尚未证明。
-后续先解决以上故障边界及诊断缺口，再做第3项保护和剩余匹配性能；第4项继续等待直接前置。
+当时计划先解决故障边界再做第3项保护；当前调度已按用户要求转入第4项，见文首。
 继续完成当前原HF输入的两步formal SystemC及strict no-card，全部输出通过；96份Tile/Instr/target LLVM和
 6个Primary package文件与前轮保留产物逐byte一致。第二步使用新CPU reference KV，不能代签actual KV接续或Trace。
 Count/Trace参数区间、GS静态descriptor及安装固件栈检查未发现可确定修复的缺陷；物理地址、真实PMU/cache和
@@ -100,6 +101,15 @@ Count/Trace参数区间、GS静态descriptor及安装固件栈检查未发现可
 用户授权直接上板后，诊断版及未加日志的原包各完成两步Primary/Count/Trace；全部输出、actual KV接续和旧前缀exact通过，
 未发生timeout或驱动异常。原包两步普通设备单样本为6.580/7.162 ms，旧故障未复现，性能恢复及保护回归仍待闭合。
 按用户要求撤掉本轮额外错误信息拼接、专项测试、临时CRT日志副本和重复检查脚本，保留原有正确性校验、占用检查与异常即停。
+
+第4项从原始torchvision EncoderBlock重测ViT S1024/1025。通用布尔AND/OR归约在selected layout前精确编码为FP16 0/1 min/max，
+恢复i1后继续保留safe-softmax保护分支；同时复用现有packed-byte证明支持连续SPM copy，并区分CT元素数和BOOL末字节unused bits。
+完整连续BOOL allocation的fill显式使用已有physical-footprint I8路径。正式source→16 Tile TargetCall模型的AND/OR与
+1024/1025/1031六项已全部exact；12组init/combiner的layout→Instr→actual SPM检查通过。
+ViT S1024重新编译已越过原BOOL布局失败；默认42个候选中5个进入actual SPM并被容量拒绝，其余37个止于分块BOOL DDR写回。
+尚无完整ViT package或本轮板端资格，继续补当前BOOL搬运边界，不以机制通过代签完整模型。
+本段修复已通过受影响analysis/transforms/conversion/reference/backend组件、六项正式模型数值和canonical完整增量构建/no-op。
+Tile-to-Instr lit为25/26；剩余`ncc-workers`仍是既有`cmpi ne`与`eq + select`结构期望差异，未修改或记为通过。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

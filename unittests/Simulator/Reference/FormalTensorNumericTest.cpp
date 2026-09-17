@@ -593,61 +593,89 @@ TEST(FormalTensorNumericTest, ReciprocalProductPreservesExplicitTwoStepValues) {
     }
 }
 
-TEST(FormalTensorNumericTest, F32ExtremaPreserveIdentityZerosNaNsAndTail) {
+TEST(FormalTensorNumericTest, FloatExtremaPreserveIdentityZerosNaNsAndTail) {
   // Scalar special values are embedded in realistic rank-4 reductions.
-  for (uint64_t extent : {1024u, 1025u, 1031u})
-    for (auto kind : {TargetReduceOperation::Max, TargetReduceOperation::Min})
-      for (bool signaling : {false, true}) {
-        SCOPED_TRACE(extent);
-        SCOPED_TRACE(static_cast<unsigned>(kind));
-        SCOPED_TRACE(signaling);
-        auto input = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                                {1, 1, 4, extent});
-        auto output = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                                 {1, 1, 4, 1});
-        auto operation = llvm::cantFail(createFormalReduceOperation(
-            kind, input, output, TargetReduceDimension::Trailing0));
-        std::vector<RawLogicalValue> values(
-            4 * extent, {LogicalFormat::F32, UINT64_C(0xbf800000)});
-        for (uint64_t column = 0; column < extent; ++column) {
-          values[extent + column].bits = UINT64_C(0x3f800000);
-          values[2 * extent + column].bits =
-              column % 2 ? UINT64_C(0x80000000) : 0;
-        }
-        values[extent - 1].bits = UINT64_C(0xff800000);
-        values[2 * extent - 1].bits = UINT64_C(0x7f800000);
-        values.back().bits =
-            signaling ? UINT64_C(0x7fa12345) : UINT64_C(0xffc12345);
-        std::array<llvm::ArrayRef<RawLogicalValue>, 1> inputs{values};
-        FormalNumericExecutionContext context;
-        auto result = executeFormalTensorNumeric(
-            context, operation, inputs,
-            FormalNumericWorkBudget::create(4 * extent, 0));
-        ASSERT_TRUE(static_cast<bool>(result))
-            << llvm::toString(result.takeError());
-        std::array<uint64_t, 4> expected =
-            kind == TargetReduceOperation::Max
-                ? std::array<uint64_t, 4>{UINT64_C(0xbf800000),
-                                          UINT64_C(0x7f800000), 0,
-                                          UINT64_C(0x7fc00000)}
-                : std::array<uint64_t, 4>{
-                      UINT64_C(0xff800000), UINT64_C(0x3f800000),
-                      UINT64_C(0x80000000), UINT64_C(0x7fc00000)};
-        ASSERT_EQ(result->values.size(), expected.size());
-        for (size_t i = 0; i < expected.size(); ++i)
-          EXPECT_EQ(result->values[i].bits, expected[i]);
-        EXPECT_EQ(result->flags.invalid, signaling);
-        EXPECT_FALSE(result->flags.inexact || result->flags.overflow ||
-                     result->flags.underflow || result->flags.divByZero);
-        FormalNumericExecutionContext rejectedContext;
-        EXPECT_NE(
-            expectError(executeFormalTensorNumeric(
+  for (LogicalFormat format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32}) {
+    SCOPED_TRACE(static_cast<unsigned>(format));
+    const bool half = format == LogicalFormat::F16;
+    const bool single = format == LogicalFormat::F32;
+    const uint64_t sign = single ? 0x80000000 : 0x8000;
+    const uint64_t one = single ? 0x3f800000 : half ? 0x3c00 : 0x3f80;
+    const uint64_t infinity = single ? 0x7f800000 : half ? 0x7c00 : 0x7f80;
+    const uint64_t quiet = single ? 0x400000 : half ? 0x200 : 0x40;
+    for (uint64_t extent : {1024u, 1025u, 1031u})
+      for (auto kind : {TargetReduceOperation::Max, TargetReduceOperation::Min})
+        for (bool signaling : {false, true}) {
+          SCOPED_TRACE(extent);
+          SCOPED_TRACE(static_cast<unsigned>(kind));
+          SCOPED_TRACE(signaling);
+          auto input =
+              makeTensor(format, PhysicalTensorLayout::NCx, {1, 1, 4, extent});
+          auto output =
+              makeTensor(format, PhysicalTensorLayout::NCx, {1, 1, 4, 1});
+          auto operation = llvm::cantFail(createFormalReduceOperation(
+              kind, input, output, TargetReduceDimension::Trailing0));
+          std::vector<RawLogicalValue> values(4 * extent, {format, sign | one});
+          for (uint64_t column = 0; column < extent; ++column) {
+            values[extent + column].bits = one;
+            values[2 * extent + column].bits = column % 2 ? sign : 0;
+          }
+          values[extent - 1].bits = (sign | infinity);
+          values[2 * extent - 1].bits = infinity;
+          values.back().bits =
+              signaling ? (infinity | 1) : (sign | infinity | quiet | 1);
+          std::array<llvm::ArrayRef<RawLogicalValue>, 1> inputs{values};
+          FormalNumericExecutionContext context;
+          auto result = executeFormalTensorNumeric(
+              context, operation, inputs,
+              FormalNumericWorkBudget::create(4 * extent, 0));
+          ASSERT_TRUE(static_cast<bool>(result))
+              << llvm::toString(result.takeError());
+          std::array<uint64_t, 4> expected =
+              kind == TargetReduceOperation::Max
+                  ? std::array<uint64_t, 4>{(sign | one), infinity, 0,
+                                            (infinity | quiet)}
+                  : std::array<uint64_t, 4>{(sign | infinity), one, sign,
+                                            (infinity | quiet)};
+          ASSERT_EQ(result->values.size(), expected.size());
+          for (size_t i = 0; i < expected.size(); ++i)
+            EXPECT_EQ(result->values[i].bits, expected[i]);
+          EXPECT_EQ(result->flags.invalid, signaling);
+          EXPECT_FALSE(result->flags.inexact || result->flags.overflow ||
+                       result->flags.underflow || result->flags.divByZero);
+          FormalNumericExecutionContext rejectedContext;
+          EXPECT_NE(expectError(
+                        executeFormalTensorNumeric(
                             rejectedContext, operation, inputs,
                             FormalNumericWorkBudget::create(4 * extent - 1, 0)))
-                .find("scalar-work-budget"),
-            std::string::npos);
-        EXPECT_FALSE(rejectedContext.getAggregateFlags().any());
-      }
+                        .find("scalar-work-budget"),
+                    std::string::npos);
+          EXPECT_FALSE(rejectedContext.getAggregateFlags().any());
+        }
+  }
+}
+
+TEST(FormalTensorNumericTest, LowPrecisionSumRemainsUnsupported) {
+  for (auto format : {LogicalFormat::F16, LogicalFormat::BF16}) {
+    auto input =
+        makeTensor(format, PhysicalTensorLayout::NCx, {1, 1, 1025, 64});
+    auto output =
+        makeTensor(format, PhysicalTensorLayout::NCx, {1, 1, 1025, 1});
+    auto operation = llvm::cantFail(
+        createFormalReduceOperation(TargetReduceOperation::Sum, input, output,
+                                    TargetReduceDimension::Trailing0));
+    std::vector<RawLogicalValue> values(1025 * 64, {format, 0});
+    std::array<llvm::ArrayRef<RawLogicalValue>, 1> inputs{values};
+    FormalNumericExecutionContext context;
+    EXPECT_NE(
+        expectError(executeFormalTensorNumeric(
+                        context, operation, inputs,
+                        FormalNumericWorkBudget::create(values.size(), 0)))
+            .find("requires F32 sum"),
+        std::string::npos);
+    EXPECT_FALSE(context.getAggregateFlags().any());
+  }
 }
 
 TEST(FormalTensorNumericTest, F32ExtremaReduceMultipleAxesAtRealisticScale) {

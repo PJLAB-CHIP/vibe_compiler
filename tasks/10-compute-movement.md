@@ -106,6 +106,36 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 
 ## 4. Compute Contracts
 
+### 布尔归约的精确表示
+
+输入为selected TileRegion中tensor形式的静态Linalg AND/OR归约，scalar combiner只有一个`arith.andi`或`arith.ori`，
+输入、init和结果均为i1。布局查询前将false/true精确表示为FP16的0/1，保留原indexing maps、iterator顺序及init，
+分别用minimum/maximum归约，再以非零比较恢复i1结果。中间值只能为0或1，因此没有浮点舍入、NaN或归约重排问题。
+这属于目标表示合法化，不是普通纯图等价搜索；不修改原浮点计算，不删除softmax保护分支，不假定BOOL可按字节搬运。
+
+输出为实际Linalg select、FP16 min/max和compare SSA，直接交同一layout/One-Shot bufferization及Tile→Instr路径。
+所有临时存储和completion由下游current IR决定，不预测SPM容量，也不添加新的Instr或ABI形式。
+归约前后的BOOL publication copy复用既有packed-byte证明：仅Tensor布局、连续且静态byte-aligned的两端，
+目标必须整字节覆盖或拥有最后一个padding byte，才用单个按字节计数的SPM GatherScatter复制。
+不改变BOOL格式，不调用native BOOL Memset；部分字节写入及非对齐切片继续拒绝，不覆盖相邻谓词。
+完整连续BOOL allocation的fill显式采用physical footprint，按整字节I8路径包含它自己拥有的尾部unused bits；
+不能把这一规则用于共享尾字节的view。
+CT traversal长度由encoding的valid与layout padding元素决定；BOOL末字节用于分配的unused bits不属于计算元素，
+不得因按字节上取整而拒绝相同logical traversal的浮点比较输出。保留真实blocked padding和轴顺序的证明。
+与[MLIR Linalg的标准payload归约](https://mlir.llvm.org/docs/Dialects/Linalg/)相比，本目标的归约指令要求整字节数值类型；
+这里利用布尔真值域选择精确的0/1表示，沿用[Arith select/minimum/maximum语义](https://mlir.llvm.org/docs/Dialects/ArithOps/)。
+具体builder和DPS接口以pinned MLIR源码确认。
+
+完成条件与覆盖矩阵：
+
+| 输入等价类 | 结构与边界 | exact输出 / 直接下游 |
+| --- | --- | --- |
+| rank3以上AND/OR，1024/1025/1031，true/false及非identity init | 多Tile、分块和tail，保留原归约轴及输出投影 | BOOL结果逐bit相同，正式layout→Instr→SPM及TargetCall模型 |
+| 输入谓词来自浮点比较；归约结果被select消费 | 源数据全满足、单个不满足、首尾边界，AND/OR对称 | 只增加0/1内部表示，外部dtype/结果及保护分支保持 |
+| 连续BOOL完整buffer与整字节view copy | byte-aligned、独占末尾padding；不满足条件的partial-byte/view | exact复制及guard保持；不满足证明的movement仍拒绝 |
+| 非布尔、复合combiner、非静态shape或非tensor形式 | 不属于本规则 | 保持原IR及既有typed失败，不猜测combiner |
+| 原ViT S1024/1025 | 完整source→package/no-card与独立PyTorch实卡全输出 | 保持原相似度合同；LLaMA block、大GEMM不受该规则影响，最终共享改动仍按保护门禁验证 |
+
 ### 2-D Pooling
 
 - 输入：已bufferize的current Linalg pooling/generic，scalar body为浮点maximum/minimum/add，indexing maps明确表达两个

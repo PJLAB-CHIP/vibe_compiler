@@ -115,69 +115,76 @@ TEST(ManagedReferenceTargetModelTest,
 }
 
 TEST(ManagedReferenceTargetModelTest,
-     F32ExtremaMatchFormalIncludingZerosAndPadding) {
+     FloatExtremaMatchFormalIncludingZerosAndPadding) {
   auto backend = makeBackend();
-  for (uint64_t extent : {1024u, 1025u, 1031u})
-    for (auto kind : {TargetReduceOperation::Max, TargetReduceOperation::Min}) {
-      SCOPED_TRACE(extent);
-      SCOPED_TRACE(static_cast<unsigned>(kind));
-      auto input = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                              {1, 1, 3, extent});
-      auto output = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx,
-                               {1, 1, 3, 1});
-      auto operation = llvm::cantFail(createFormalReduceOperation(
-          kind, input, output, TargetReduceDimension::Trailing0));
-      std::vector<RawLogicalValue> values(
-          3 * extent, {LogicalFormat::F32, UINT64_C(0xbf800000)});
-      for (uint64_t i = 0; i < extent; ++i) {
-        values[extent + i].bits = UINT64_C(0x3f800000);
-        values[2 * extent + i].bits = i % 2 ? UINT64_C(0x80000000) : 0;
-      }
-      values[extent - 1].bits = UINT64_C(0xff800000);
-      values[2 * extent - 1].bits = UINT64_C(0x7f800000);
-      TargetModelReduceRequest request{
-          operation, {{makeStorage(input, values)}, makeTemplate(output)}};
-      auto result = backend->execute(
-          request, FormalNumericWorkBudget::create(3 * extent, 0));
-      ASSERT_TRUE(static_cast<bool>(result))
-          << llvm::toString(result.takeError());
-      std::vector<RawLogicalValue> expected =
-          kind == TargetReduceOperation::Max
-              ? std::vector<RawLogicalValue>{{LogicalFormat::F32,
-                                              UINT64_C(0xbf800000)},
-                                             {LogicalFormat::F32,
-                                              UINT64_C(0x7f800000)},
-                                             {LogicalFormat::F32, 0}}
-              : std::vector<RawLogicalValue>{
-                    {LogicalFormat::F32, UINT64_C(0xff800000)},
-                    {LogicalFormat::F32, UINT64_C(0x3f800000)},
-                    {LogicalFormat::F32, UINT64_C(0x80000000)}};
-      EXPECT_EQ(result->destination.storage,
-                makeStorage(output, expected).storage);
-      FormalNumericExecutionContext context;
-      std::vector<llvm::ArrayRef<RawLogicalValue>> inputs{values};
-      auto formal = llvm::cantFail(executeFormalTensorNumeric(
-          context, operation, inputs,
-          FormalNumericWorkBudget::create(3 * extent, 0)));
-      auto actual = unpack(*result);
-      ASSERT_EQ(actual.size(), formal.values.size());
-      for (size_t i = 0; i < actual.size(); ++i)
-        EXPECT_EQ(actual[i].bits, formal.values[i].bits);
-      EXPECT_NE(
-          expectError(backend->execute(request, FormalNumericWorkBudget::create(
+  for (LogicalFormat format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32}) {
+    SCOPED_TRACE(static_cast<unsigned>(format));
+    const bool half = format == LogicalFormat::F16;
+    const bool single = format == LogicalFormat::F32;
+    const uint64_t sign = single ? 0x80000000 : 0x8000;
+    const uint64_t one = single ? 0x3f800000 : half ? 0x3c00 : 0x3f80;
+    const uint64_t infinity = single ? 0x7f800000 : half ? 0x7c00 : 0x7f80;
+    for (uint64_t extent : {1024u, 1025u, 1031u})
+      for (auto kind :
+           {TargetReduceOperation::Max, TargetReduceOperation::Min}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(static_cast<unsigned>(kind));
+        auto input =
+            makeTensor(format, PhysicalTensorLayout::NCx, {1, 1, 3, extent});
+        auto output =
+            makeTensor(format, PhysicalTensorLayout::NCx, {1, 1, 3, 1});
+        auto operation = llvm::cantFail(createFormalReduceOperation(
+            kind, input, output, TargetReduceDimension::Trailing0));
+        std::vector<RawLogicalValue> values(3 * extent, {format, (sign | one)});
+        for (uint64_t i = 0; i < extent; ++i) {
+          values[extent + i].bits = one;
+          values[2 * extent + i].bits = i % 2 ? sign : 0;
+        }
+        values[extent - 1].bits = (sign | infinity);
+        values[2 * extent - 1].bits = infinity;
+        TargetModelReduceRequest request{
+            operation, {{makeStorage(input, values)}, makeTemplate(output)}};
+        auto result = backend->execute(
+            request, FormalNumericWorkBudget::create(3 * extent, 0));
+        ASSERT_TRUE(static_cast<bool>(result))
+            << llvm::toString(result.takeError());
+        std::vector<RawLogicalValue> expected =
+            kind == TargetReduceOperation::Max
+                ? std::vector<RawLogicalValue>{{format, (sign | one)},
+                                               {format, infinity},
+                                               {format, 0}}
+                : std::vector<RawLogicalValue>{{format, (sign | infinity)},
+                                               {format, one},
+                                               {format, sign}};
+        EXPECT_EQ(result->destination.storage,
+                  makeStorage(output, expected).storage);
+        FormalNumericExecutionContext context;
+        std::vector<llvm::ArrayRef<RawLogicalValue>> inputs{values};
+        auto formal = llvm::cantFail(executeFormalTensorNumeric(
+            context, operation, inputs,
+            FormalNumericWorkBudget::create(3 * extent, 0)));
+        auto actual = unpack(*result);
+        ASSERT_EQ(actual.size(), formal.values.size());
+        for (size_t i = 0; i < actual.size(); ++i)
+          EXPECT_EQ(actual[i].bits, formal.values[i].bits);
+        EXPECT_NE(expectError(
+                      backend->execute(request, FormalNumericWorkBudget::create(
                                                     3 * extent - 1, 0)))
-              .find("budget"),
-          std::string::npos);
-      auto destinationBefore = request.tensors.destinationTemplate.storage;
-      values.back().bits = UINT64_C(0x7fc12345);
-      request.tensors.inputs.front() = makeStorage(input, values);
-      EXPECT_NE(
-          expectError(backend->execute(request, FormalNumericWorkBudget::create(
+                      .find("budget"),
+                  std::string::npos);
+        auto destinationBefore = request.tensors.destinationTemplate.storage;
+        values.back().bits = infinity | 1;
+        request.tensors.inputs.front() = makeStorage(input, values);
+        EXPECT_NE(expectError(
+                      backend->execute(request, FormalNumericWorkBudget::create(
                                                     3 * extent, 0)))
-              .find("NaN"),
-          std::string::npos);
-      EXPECT_EQ(request.tensors.destinationTemplate.storage, destinationBefore);
-    }
+                      .find("NaN"),
+                  std::string::npos);
+        EXPECT_EQ(request.tensors.destinationTemplate.storage,
+                  destinationBefore);
+      }
+  }
 }
 
 TEST(ManagedReferenceTargetModelTest,

@@ -89,11 +89,12 @@ validateFormalReduceOperation(const FormalReduceOperation &operation) {
   if ((operation.operation != TargetReduceOperation::Sum &&
        operation.operation != TargetReduceOperation::Max &&
        operation.operation != TargetReduceOperation::Min) ||
-      operation.input.getFormat() != LogicalFormat::F32 ||
-      operation.destination.getFormat() != LogicalFormat::F32)
-    return formalError(
-        FormalNumericErrorCode::UnsupportedOperation,
-        "reduction is outside the formal F32 sum/max/min subset");
+      !isFormalFloat(operation.input.getFormat()) ||
+      operation.destination.getFormat() != operation.input.getFormat() ||
+      (operation.operation == TargetReduceOperation::Sum &&
+       operation.input.getFormat() != LogicalFormat::F32))
+    return formalError(FormalNumericErrorCode::UnsupportedOperation,
+                       "reduction requires F32 sum or F16/BF16/F32 max/min");
   return llvm::Error::success();
 }
 
