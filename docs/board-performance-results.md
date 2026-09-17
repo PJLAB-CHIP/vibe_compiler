@@ -2135,3 +2135,17 @@ BOOL归约及整字节DDR/SPM view搬运修改后，五项保护case重新生成
 runtime仍为SDK 5.7.0.0524.01 / API 1400。完整命令、manifest身份、三次计时和逐输出数值在
 `build/test/vit-current/protection/*-board/`的`command.json`、`board-*.log`与`numeric-audit-*.json`。
 此处仅签保护case；当时原ViT S1024/1025仍无完整package，后续导出修正单独验收。
+
+## 2026-09-17：ViT导出移除safe-softmax保护链
+
+按用户要求在直接XLA抓图入口接入pinned导出器已有的`aten._safe_softmax → torch.softmax`映射。
+原torchvision EncoderBlock S1024/1025重新导出后不再包含该BOOL保护链，现有pipeline均形成一个Flash Attention。
+完整导出图经XLA执行，对未修改的原PyTorch reference，cosine分别为0.9999999781680936/0.9999999778989800，
+relative L2为0.0002089591/0.0002102428，均通过原相似度合同。全负无穷行使用普通softmax语义，见02号合同。
+前端产品gate的12组新增softmax/attention及原回归通过，canonical完整增量构建和no-op通过。
+五项block/GEMM重新导出的source与上一节本轮保护source逐byte相同。
+
+两项正式8/42编译均完成42次actual尝试，全部SPM容量拒绝、unsupported=0、accepted=0，没有生成package。
+这消除了当前source的BOOL lowering阻塞，但未签完整ViT no-card或实卡通过，也没有设备性能成绩。
+原始导出、完整主机数值及编译输出在`build/test/vit-current/`的`vit-*-softmax/`、
+`vit-softmax-source-check.log`和`vit-*-softmax.log`。

@@ -128,7 +128,11 @@ S1025耗时432.359秒，仍为5个actual容量拒绝、37个unsupported；其DDR
 直接抓图前端只补同一decomposition，不扩展attention IR；前端完整回归及新增6组softmax/6组attention导出、XLA数值和source verifier通过。
 原ViT S1024/1025的新source均无BOOL保护链，经现有pipeline均形成一个Flash Attention；完整XLA输出对原PyTorch reference
 cosine分别为0.9999999781680936/0.9999999778989800，relative L2为0.0002089591/0.0002102428。
-五项保护case重新导出的完整source与上述实卡版本逐byte一致。ViT完整8/42编译结果继续按实际package/no-card及板测验收。
+五项保护case重新导出的完整source与上述实卡版本逐byte一致。ViT完整8/42编译现已结束：两项均实际尝试42个candidate，
+全部由actual SPM容量拒绝，accepted=0、unsupported=0、indeterminate=0；S1024容量反馈生成21项refinement、另21项无新refinement，
+S1025分别为24/18。该预算内没有找到可行candidate，不表示模型不存在合法切分；未生成package，尚未进入no-card或板端。
+编译期间一次主机调用栈落在`TemporalProposals::appendCapacityDirection`，只用于定位耗时边界，不据单次栈声称停滞根因。
+下一步针对actual容量demand与分块反馈继续定位，不再为这个ViT source扩展safe-softmax保护链的后端表示。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
