@@ -435,13 +435,11 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
             .concat(" requires static byte-addressable tensor")
             .str());
 
-  if (info->bitPackedElement) {
-    if (info->compactBytes <= 0 || info->physicalBytes != info->compactBytes)
+  if (info->bitPackedElement && info->physicalBytes == info->compactBytes) {
+    if (info->compactBytes <= 0)
       return failFailureOr<MovementDescriptor>(
           rewriter, op,
-          llvm::Twine(role)
-              .concat(" requires contiguous bitpacked tensor")
-              .str());
+          llvm::Twine(role).concat(" has an empty packed tensor").str());
     MovementDescriptor descriptor;
     descriptor.byteCount = info->compactBytes;
     descriptor.innerBytes = info->compactBytes;
@@ -496,7 +494,10 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
     }
 
     std::optional<int64_t> strideBytes =
-        checkedMulI64(dimStride, info->elementBytes);
+        info->bitPackedElement
+            ? (dimStride % 8 == 0 ? std::optional<int64_t>(dimStride / 8)
+                                  : std::nullopt)
+            : checkedMulI64(dimStride, info->elementBytes);
     if (!strideBytes)
       return failFailureOr<MovementDescriptor>(
           rewriter, op,
@@ -529,7 +530,10 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   }
 
   std::optional<int64_t> innerBytes =
-      checkedMulI64(innerElements, info->elementBytes);
+      info->bitPackedElement
+          ? (innerElements % 8 == 0 ? std::optional<int64_t>(innerElements / 8)
+                                    : std::nullopt)
+          : checkedMulI64(innerElements, info->elementBytes);
   if (!innerBytes)
     return failFailureOr<MovementDescriptor>(
         rewriter, op,

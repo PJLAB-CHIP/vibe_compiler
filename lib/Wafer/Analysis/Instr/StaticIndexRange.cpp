@@ -7,6 +7,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -566,6 +568,72 @@ private:
   llvm::DenseMap<mlir::Value, Constraint> unsignedConstraints;
 };
 
+class IndexRemainderEvaluator {
+public:
+  std::optional<uint64_t> evaluate(mlir::Value value, uint64_t modulus) {
+    if (!value || !value.getType().isIndex() || !llvm::isPowerOf2_64(modulus))
+      return std::nullopt;
+    if (modulus == 1)
+      return 0;
+    auto key = std::make_pair(value, modulus);
+    if (auto found = cache.find(key); found != cache.end())
+      return found->second;
+    if (!active.insert(key).second)
+      return std::nullopt;
+    auto result = evaluateImpl(value, modulus);
+    active.erase(key);
+    cache.try_emplace(key, result);
+    return result;
+  }
+
+private:
+  std::optional<uint64_t> evaluateImpl(mlir::Value value, uint64_t modulus) {
+    const uint64_t mask = modulus - 1;
+    if (auto constant = mlir::getConstantIntValue(value))
+      return static_cast<uint64_t>(*constant) & mask;
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      auto *owner = argument.getOwner()->getParentOp();
+      if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(owner)) {
+        if (value == loop.getInductionVar() &&
+            evaluate(loop.getStep(), modulus) == std::optional<uint64_t>(0))
+          return evaluate(loop.getLowerBound(), modulus);
+      }
+      if (auto region = mlir::dyn_cast<TileRegionOp>(owner))
+        return evaluate(region.getInputs()[argument.getArgNumber()], modulus);
+    }
+    auto *op = value.getDefiningOp();
+    if (!op || op->getNumOperands() != 2)
+      return std::nullopt;
+    auto lhs = evaluate(op->getOperand(0), modulus);
+    auto rhs = evaluate(op->getOperand(1), modulus);
+    if (mlir::isa<mlir::arith::MulIOp>(op)) {
+      if (lhs && rhs)
+        return (*lhs * *rhs) & mask;
+      auto factor = lhs ? lhs : rhs;
+      if (!factor)
+        return std::nullopt;
+      auto varying = lhs ? op->getOperand(1) : op->getOperand(0);
+      auto reduced = evaluate(varying, modulus / std::gcd(*factor, modulus));
+      return reduced ? std::optional<uint64_t>((*factor * *reduced) & mask)
+                     : std::nullopt;
+    }
+    if (!lhs || !rhs)
+      return std::nullopt;
+    if (mlir::isa<mlir::arith::AddIOp>(op))
+      return (*lhs + *rhs) & mask;
+    if (mlir::isa<mlir::arith::SubIOp>(op))
+      return (*lhs - *rhs) & mask;
+    if (mlir::isa<mlir::arith::MinSIOp, mlir::arith::MaxSIOp,
+                  mlir::arith::MinUIOp, mlir::arith::MaxUIOp>(op) &&
+        lhs == rhs)
+      return lhs;
+    return std::nullopt;
+  }
+  llvm::DenseMap<std::pair<mlir::Value, uint64_t>, std::optional<uint64_t>>
+      cache;
+  llvm::DenseSet<std::pair<mlir::Value, uint64_t>> active;
+};
+
 } // namespace
 
 StaticIndexRangeResult
@@ -575,6 +643,53 @@ evaluateNonNegativeStaticIndexRange(mlir::Value value, mlir::Operation *use) {
   if (result.succeeded() && !result.range.empty && result.range.min < 0)
     result.failure = StaticIndexRangeFailureKind::NegativeRange;
   return result;
+}
+
+std::optional<uint64_t> getKnownIndexRemainder(mlir::Value value,
+                                               uint64_t modulus) {
+  return IndexRemainderEvaluator().evaluate(value, modulus);
+}
+
+mlir::LogicalResult proveByteAlignedPackedView(mlir::Value view) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(view.getType());
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset;
+  if (!type || !type.getElementType().isInteger(1) ||
+      mlir::failed(mlir::getStridesAndOffset(type, strides, offset)))
+    return mlir::failure();
+  if (!mlir::ShapedType::isDynamic(offset))
+    return mlir::success(offset >= 0 && offset % 8 == 0);
+  if (auto cast = view.getDefiningOp<mlir::memref::CastOp>())
+    return proveByteAlignedPackedView(cast.getSource());
+  if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(view)) {
+    if (auto region =
+            mlir::dyn_cast<TileRegionOp>(argument.getOwner()->getParentOp()))
+      return proveByteAlignedPackedView(
+          region.getInputs()[argument.getArgNumber()]);
+  }
+  auto subview = view.getDefiningOp<mlir::memref::SubViewOp>();
+  if (!subview ||
+      mlir::failed(proveByteAlignedPackedView(subview.getSource())) ||
+      mlir::failed(
+          mlir::getStridesAndOffset(subview.getSourceType(), strides, offset)))
+    return mlir::failure();
+  IndexRemainderEvaluator evaluator;
+  uint64_t remainder = 0;
+  for (auto [index, stride] :
+       llvm::zip_equal(subview.getMixedOffsets(), strides)) {
+    if (mlir::ShapedType::isDynamic(stride) || stride < 0)
+      return mlir::failure();
+    if (auto constant = mlir::getConstantIntValue(index)) {
+      remainder = (remainder + static_cast<uint64_t>(*constant) * stride) % 8;
+      continue;
+    }
+    uint64_t modulus = 8 / std::gcd(static_cast<uint64_t>(stride), uint64_t(8));
+    auto part = evaluator.evaluate(mlir::cast<mlir::Value>(index), modulus);
+    if (!part)
+      return mlir::failure();
+    remainder = (remainder + *part * stride) % 8;
+  }
+  return mlir::success(remainder == 0);
 }
 
 } // namespace wafer::memory_planning::detail

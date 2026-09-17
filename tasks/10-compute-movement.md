@@ -136,6 +136,23 @@ CT traversal长度由encoding的valid与layout padding元素决定；BOOL末字�
 | 非布尔、复合combiner、非静态shape或非tensor形式 | 不属于本规则 | 保持原IR及既有typed失败，不猜测combiner |
 | 原ViT S1024/1025 | 完整source→package/no-card与独立PyTorch实卡全输出 | 保持原相似度合同；LLaMA block、大GEMM不受该规则影响，最终共享改动仍按保护门禁验证 |
 
+### Packed BOOL的分块DMA
+
+输入是actual Tile load/store或bufferization copy，SPM端连续、DDR端为Tensor布局的静态shape/stride BOOL view；
+地址可由current SSA的常量、SCF induction、加减乘和显式view产生。职责是证明每个DMA连续片段均为整字节、
+DDR各外层stride为整字节，再用原RDMA/WDMA的byte descriptor表达同一逻辑覆盖；不补写邻接bits。
+输出仍是原Instr DMA和memref view，直接消费者为同一DDR规划、completion和target LLVM；production driver与named lowering共用实现。
+不支持任意bit gather、partial-byte写入或未经证明的动态对齐，不增加ABI或猜测容量。
+
+动态bit offset的byte alignment由共享current-SSA模数查询证明；SCF IV同时消费lower bound和step。
+与pinned MLIR AffineExpr的known-divisor规则一致，加减取共同整除关系，乘常量传播因子；
+pinned SCF ValueBounds尚未计入step，不能仅用min/max端点都对齐替代整条动态序列的证明。
+DDR规划和target地址降低消费同一对齐事实，offset仍来自原SSA；已证明整除后才将bit displacement除以8。
+
+完成矩阵：rank3/4的1024/1025/1031行、整字节K主块与tail，静态/动态aligned offset、多个descriptor循环及嵌套view，
+逐byte枚举source/destination覆盖并检查holes/guard；未知或不整除offset、非整字节run拒绝。正式源图的BOOL分块经
+Instr、DDR/SPM规划及SystemC exact后，原ViT完整package/no-card与实卡验证才闭合本边界。
+
 ### 2-D Pooling
 
 - 输入：已bufferize的current Linalg pooling/generic，scalar body为浮点maximum/minimum/add，indexing maps明确表达两个

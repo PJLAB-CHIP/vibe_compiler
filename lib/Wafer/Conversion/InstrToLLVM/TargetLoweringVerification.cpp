@@ -42,6 +42,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <vector>
 
@@ -281,33 +282,42 @@ analyzeTensorSubviewAddressing(mlir::memref::SubViewOp subviewOp) {
 
   std::optional<WaferPhysicalTensorInfo> sourceInfo =
       computeWaferPhysicalTensorInfo(sourceType);
-  if (!sourceInfo || sourceInfo->bitPackedElement ||
-      sourceInfo->elementBytes <= 0)
+  if (!sourceInfo || sourceInfo->elementBytes <= 0)
     return subviewOp.emitError()
            << "unsupported_target_address: dynamic tensor subview "
               "requires a byte-addressable element type";
 
-  // The converted source address already contains its own (possibly dynamic)
-  // layout offset. Only this subview's relative offsets belong in the delta.
+  // The source address already includes its own view offset. Packed
+  // offsets are divided only after current SSA proves byte alignment.
+  const bool packed = sourceInfo->bitPackedElement;
   TensorSubviewAddress plan;
+  int64_t staticUnits = 0;
   for (auto [offset, sourceStride] :
        llvm::zip_equal(staticOffsets, sourceStrides)) {
-    int64_t byteStride = 0;
-    if (!checkedMul(sourceStride, sourceInfo->elementBytes, byteStride))
+    int64_t scaledStride = 0;
+    if (!checkedMul(sourceStride, packed ? 1 : sourceInfo->elementBytes,
+                    scaledStride))
       return subviewOp.emitError()
-             << "target_address_overflow: dynamic tensor subview byte "
-                "stride overflows int64";
+             << "target_address_overflow: dynamic tensor subview stride "
+                "overflows int64";
     if (mlir::ShapedType::isDynamic(offset)) {
-      plan.dynamicByteStrides.push_back(byteStride);
+      int64_t factor = packed ? std::gcd(scaledStride, int64_t(8)) : 1;
+      ByteStride stride{scaledStride / factor, packed ? 8 / factor : 1};
+      plan.dynamicByteStrides.push_back(stride);
       continue;
     }
-    int64_t byteOffset = 0;
-    if (!checkedMul(offset, byteStride, byteOffset) ||
-        !checkedAdd(plan.staticByteOffset, byteOffset, plan.staticByteOffset))
+    int64_t scaledOffset = 0;
+    if (!checkedMul(offset, scaledStride, scaledOffset) ||
+        !checkedAdd(staticUnits, scaledOffset, staticUnits))
       return subviewOp.emitError()
              << "target_address_overflow: dynamic tensor subview static "
-                "byte offset overflows int64";
+                "offset overflows int64";
   }
+  if (packed && staticUnits % 8)
+    return subviewOp.emitError()
+           << "unsupported_target_address: packed static subview offset "
+              "requires byte alignment";
+  plan.staticByteOffset = packed ? staticUnits / 8 : staticUnits;
   if (plan.dynamicByteStrides.size() != subviewOp.getOffsets().size())
     return subviewOp.emitError()
            << "unsupported_target_address: dynamic tensor subview offset "
@@ -380,6 +390,22 @@ verifyDynamicTensorSubviewBounds(mlir::memref::SubViewOp subviewOp) {
   if (mlir::failed(plan))
     return mlir::failure();
 
+  if (subviewOp.getType().getElementType().isInteger(1)) {
+    if (mlir::failed(
+            memory_planning::detail::proveByteAlignedPackedView(subviewOp)))
+      return subviewOp.emitError()
+             << "unsupported_target_address: packed subview byte alignment "
+                "is not proven from current SSA";
+    for (auto [offset, stride] :
+         llvm::zip_equal(subviewOp.getOffsets(), plan->dynamicByteStrides))
+      if (stride.denominator > 1 &&
+          memory_planning::detail::getKnownIndexRemainder(
+              offset, stride.denominator) != std::optional<uint64_t>(0))
+        return subviewOp.emitError()
+               << "unsupported_target_address: dynamic packed subview term "
+                  "requires proven byte divisibility";
+  }
+
   llvm::ArrayRef<int64_t> sourceShape = subviewOp.getSourceType().getShape();
   llvm::ArrayRef<int64_t> offsets = subviewOp.getStaticOffsets();
   llvm::ArrayRef<int64_t> sizes = subviewOp.getStaticSizes();
@@ -408,7 +434,8 @@ verifyDynamicTensorSubviewBounds(mlir::memref::SubViewOp subviewOp) {
       minimum = dynamicRanges[dynamicIndex].min;
       maximum = dynamicRanges[dynamicIndex].max;
       int64_t dynamicByteOffset = 0;
-      if (!checkedMul(maximum, plan->dynamicByteStrides[dynamicIndex],
+      const auto &stride = plan->dynamicByteStrides[dynamicIndex];
+      if (!checkedMul(maximum / stride.denominator, stride.numerator,
                       dynamicByteOffset) ||
           !checkedAdd(maximumDynamicByteOffset, dynamicByteOffset,
                       maximumDynamicByteOffset))

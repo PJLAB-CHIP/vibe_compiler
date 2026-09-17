@@ -5,8 +5,10 @@
 
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Support/LogicalResult.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace wafer::memory_planning::detail {
 
@@ -50,6 +52,16 @@ struct StaticIndexRangeResult {
 StaticIndexRangeResult
 evaluateNonNegativeStaticIndexRange(mlir::Value value,
                                     mlir::Operation *use = nullptr);
+
+/// Exact remainder for a power-of-two modulus, when current index SSA proves
+/// one. Unknown expressions return nullopt; interval endpoints alone never
+/// prove divisibility of all dynamic values.
+std::optional<uint64_t> getKnownIndexRemainder(mlir::Value value,
+                                               uint64_t modulus);
+
+/// Proves byte alignment of an actual packed memref view, including each
+/// dynamic subview term and its source. Failure means unproven alignment.
+mlir::LogicalResult proveByteAlignedPackedView(mlir::Value view);
 
 } // namespace wafer::memory_planning::detail
 

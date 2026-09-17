@@ -356,11 +356,17 @@ struct TargetSubViewOpLowering
                << "unsupported_target_address: dynamic tensor subview "
                   "offset must lower to i64";
       mlir::Value dynamicBytes = offset;
-      if (byteStride != 1) {
+      if (byteStride.denominator != 1) {
+        auto divisor = rewriter.create<mlir::LLVM::ConstantOp>(
+            subviewOp.getLoc(), i64Type, byteStride.denominator);
+        dynamicBytes = rewriter.create<mlir::LLVM::UDivOp>(
+            subviewOp.getLoc(), dynamicBytes, divisor);
+      }
+      if (byteStride.numerator != 1) {
         mlir::Value stride = rewriter.create<mlir::LLVM::ConstantOp>(
-            subviewOp.getLoc(), i64Type, byteStride);
+            subviewOp.getLoc(), i64Type, byteStride.numerator);
         dynamicBytes = rewriter.create<mlir::LLVM::MulOp>(subviewOp.getLoc(),
-                                                          offset, stride);
+                                                          dynamicBytes, stride);
       }
       address = rewriter.create<mlir::LLVM::AddOp>(subviewOp.getLoc(), address,
                                                    dynamicBytes);

@@ -73,6 +73,36 @@ static mlir::LogicalResult proveByteAddressableElementTransfer(
       sourceLayout.getElementBitWidth() == destLayout.getElementBitWidth());
 }
 
+// Proves only relative byte geometry. Actual view-base alignment is checked
+// from SSA by the shared packed-view proof before target address emission.
+static bool hasWholeBytePackedRows(mlir::MemRefType type) {
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset;
+  if (!type.hasStaticShape() ||
+      mlir::failed(mlir::getStridesAndOffset(type, strides, offset)))
+    return false;
+  int64_t inner = 1;
+  bool strided = false;
+  for (int64_t axis = type.getRank(); axis-- > 0;) {
+    int64_t extent = type.getDimSize(axis);
+    if (extent <= 0 || strides[axis] < 0 ||
+        mlir::ShapedType::isDynamic(strides[axis]))
+      return false;
+    if (extent == 1)
+      continue;
+    if (!strided && strides[axis] == inner) {
+      if (inner > std::numeric_limits<int64_t>::max() / extent)
+        return false;
+      inner *= extent;
+      continue;
+    }
+    strided = true;
+    if (strides[axis] % 8)
+      return false;
+  }
+  return inner % 8 == 0;
+}
+
 } // namespace
 
 mlir::LogicalResult TransferRealizability::proveMappedTransfer(
@@ -224,9 +254,13 @@ TransferRealizability::proveCompactDma(mlir::MemRefType sourceType,
       sourceEncoding.getPhysicalElementBitWidth(sourceType);
   mlir::FailureOr<int64_t> destBits =
       destEncoding.getPhysicalElementBitWidth(destType);
-  return mlir::success(mlir::succeeded(sourceBits) &&
-                       mlir::succeeded(destBits) && *sourceBits > 0 &&
-                       *sourceBits % 8 == 0 && *sourceBits == *destBits);
+  if (mlir::failed(sourceBits) || mlir::failed(destBits) || *sourceBits <= 0 ||
+      *sourceBits != *destBits)
+    return mlir::failure();
+  if (*sourceBits == 1)
+    return mlir::success(hasWholeBytePackedRows(sourceType) &&
+                         hasWholeBytePackedRows(destType));
+  return mlir::success(*sourceBits % 8 == 0);
 }
 
 mlir::LogicalResult

@@ -106,10 +106,17 @@ Count/Trace参数区间、GS静态descriptor及安装固件栈检查未发现可
 恢复i1后继续保留safe-softmax保护分支；同时复用现有packed-byte证明支持连续SPM copy，并区分CT元素数和BOOL末字节unused bits。
 完整连续BOOL allocation的fill显式使用已有physical-footprint I8路径。正式source→16 Tile TargetCall模型的AND/OR与
 1024/1025/1031六项已全部exact；12组init/combiner的layout→Instr→actual SPM检查通过。
-ViT S1024重新编译已越过原BOOL布局失败；默认42个候选中5个进入actual SPM并被容量拒绝，其余37个止于分块BOOL DDR写回。
+ViT S1024/1025重新编译已越过原BOOL布局失败；两者默认42个候选中各5个进入actual SPM并被容量拒绝，其余37个止于分块BOOL DDR写回。
 尚无完整ViT package或本轮板端资格，继续补当前BOOL搬运边界，不以机制通过代签完整模型。
 本段修复已通过受影响analysis/transforms/conversion/reference/backend组件、六项正式模型数值和canonical完整增量构建/no-op。
 Tile-to-Instr lit为25/26；剩余`ncc-workers`仍是既有`cmpi ne`与`eq + select`结构期望差异，未修改或记为通过。
+
+分块BOOL的整字节DDR stride现复用原RDMA/WDMA descriptor；动态view从current SSA证明lower bound/step及字节整除，
+DDR规划与target地址换算共用证明。1024/1025/1031行的双batch、256行主块和1/7行tail已逐byte检查读写覆盖、无重叠及邻接guard；
+aligned端点但step=1、非整字节row stride和partial-byte目的端均保持拒绝。受影响四个组件及六项正式模型exact通过，
+14项DMA/DDR/target地址lit通过，canonical增量构建及no-op通过。
+新一轮S1024默认8/42耗时482.177秒，13个actual容量拒绝、29个unsupported、0 accepted；原DDR写回已推进到动态/非连续SPM BOOL copy。
+S1025及五项block/GEMM保护仍在本轮验证，尚不签完整ViT或共用改动板端资格。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

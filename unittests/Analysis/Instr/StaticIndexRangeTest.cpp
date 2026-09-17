@@ -43,6 +43,50 @@ protected:
   mlir::MLIRContext context;
 };
 
+TEST_F(StaticIndexRangeTest, PackedAlignmentUsesEveryInductionValue) {
+  for (int64_t step : {1, 8}) {
+    auto text = llvm::formatv(R"mlir(module {{
+      func.func @check(%unknown: index, %source: memref<1x1x1040xi1>) {{
+        %c0 = arith.constant 0 : index
+        %c2 = arith.constant 2 : index
+        %c8 = arith.constant 8 : index
+        %end = arith.constant 17 : index
+        %step = arith.constant {0} : index
+        %aligned = arith.muli %unknown, %c8 : index
+        scf.for %i = %c0 to %end step %step {{
+          %twice = arith.muli %i, %c2 : index
+          %view = memref.subview %source[0, 0, %i] [1, 1, 1024] [1, 1, 1]
+            : memref<1x1x1040xi1> to memref<1x1x1024xi1, strided<[1040, 1040, 1], offset: ?>>
+        }
+        return
+      }
+    })mlir",
+                              step)
+                    .str();
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(module);
+    mlir::scf::ForOp loop;
+    module->walk([&](mlir::scf::ForOp op) { loop = op; });
+    ASSERT_TRUE(loop);
+    auto bounds = evaluateNonNegativeStaticIndexRange(loop.getInductionVar());
+    ASSERT_TRUE(bounds.succeeded());
+    // Both endpoints are aligned even for step=1; this is insufficient.
+    EXPECT_EQ(bounds.range.min, 0);
+    EXPECT_EQ(bounds.range.max, 16);
+    EXPECT_EQ(getKnownIndexRemainder(loop.getInductionVar(), 8),
+              step == 8 ? std::optional<uint64_t>(0) : std::nullopt);
+    module->walk([&](mlir::memref::SubViewOp view) {
+      EXPECT_EQ(mlir::succeeded(proveByteAlignedPackedView(view)), step == 8);
+    });
+    module->walk([&](mlir::arith::MulIOp multiply) {
+      if (!multiply->getParentOfType<mlir::scf::ForOp>()) {
+        EXPECT_EQ(getKnownIndexRemainder(multiply, 8),
+                  std::optional<uint64_t>(0));
+      }
+    });
+  }
+}
+
 TEST_F(StaticIndexRangeTest, ProvesClampedRuntimeLoadsWithoutReadingContents) {
   for (int64_t rows : {1024, 1025, 1031})
     for (unsigned width : {32u, 64u}) {

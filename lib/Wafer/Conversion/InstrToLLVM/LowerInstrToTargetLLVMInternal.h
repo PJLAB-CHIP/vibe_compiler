@@ -43,9 +43,14 @@ struct DirectDTEEndpointDomain {
   llvm::SmallVector<TileId, 16> availableTileIds;
 };
 
+struct ByteStride {
+  int64_t numerator = 0;
+  int64_t denominator = 1;
+};
+
 struct TensorSubviewAddress {
   int64_t staticByteOffset = 0;
-  llvm::SmallVector<int64_t, 4> dynamicByteStrides;
+  llvm::SmallVector<ByteStride, 4> dynamicByteStrides;
 };
 
 bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result);
