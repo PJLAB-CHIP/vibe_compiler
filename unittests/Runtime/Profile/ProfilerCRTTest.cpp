@@ -59,9 +59,9 @@ enum {
 void executeProfiledProgram(uint32_t iterations) {
   for (uint32_t i = 0; i < iterations; ++i) {
     wafer_tx81_profile_site_begin(7);
-    EXPECT_EQ(
-        wafer_profile_execute_ncc(nullptr, 0, WAFER_TX81_PROFILER_ENGINE_RDMA),
-        17u);
+    EXPECT_EQ(wafer_profile_execute_ncc(
+                  nullptr, 0, WAFER_TX81_PROFILER_ENGINE_RDMA, TsmExecute),
+              17u);
     EXPECT_EQ(wafer_profile_wait_ncc_worker_completion(0), 1u);
     wafer_profile_direct_dte_begin(WAFER_DIRECT_DTE_SEND_EVENT,
                                    WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE);
@@ -165,6 +165,50 @@ TEST(ProfilerCRTTest, CountExecutesTheSameProgramWithoutStoredEvents) {
     EXPECT_EQ(decoded->header.next_sequence, iterations * 9u);
     EXPECT_TRUE(decoded->events.empty());
   }
+}
+
+TEST(ProfilerCRTTest,
+     SelectedIssuerIsPreservedAcrossCaptureModesAndTraceLimit) {
+  auto issue = +[](void *instruction) -> uint64_t {
+    return ++*static_cast<uint64_t *>(instruction);
+  };
+  wafer_profile_header = nullptr;
+  uint64_t emitted = 0;
+  EXPECT_EQ(wafer_profile_execute_ncc(&emitted, 0,
+                                      WAFER_TX81_PROFILER_ENGINE_NE, issue),
+            1u);
+  for (auto kind : {wafer::runtime::Tx81ProfilerCaptureKind::Count,
+                    wafer::runtime::Tx81ProfilerCaptureKind::Trace})
+    for (uint32_t iterations : {1024u, 1025u, 1031u}) {
+      constexpr size_t bytes = 896; // One-event prefix; issue must continue.
+      auto image = wafer::runtime::buildTx81ProfilerLaunchImage(
+          bytes, 0, kind,
+          kind == wafer::runtime::Tx81ProfilerCaptureKind::Trace ? 1 : 0);
+      ASSERT_TRUE(static_cast<bool>(image))
+          << llvm::toString(image.takeError());
+      std::unique_ptr<void, decltype(&std::free)> storage(
+          std::aligned_alloc(64, bytes), &std::free);
+      ASSERT_TRUE(storage);
+      std::memcpy(storage.get(), image->data(), bytes);
+      emitted = issueCalls = 0;
+      wafer_tx81_profile_entry_begin_from_config(
+          reinterpret_cast<uint64_t>(storage.get()));
+      for (uint32_t i = 0; i < iterations; ++i) {
+        wafer_tx81_profile_site_begin(7);
+        EXPECT_EQ(wafer_profile_execute_ncc(
+                      &emitted, 0, WAFER_TX81_PROFILER_ENGINE_NE, issue),
+                  i + 1u);
+        wafer_tx81_profile_site_end(7);
+      }
+      wafer_tx81_profile_entry_end();
+      EXPECT_EQ(emitted, iterations);
+      EXPECT_EQ(issueCalls,
+                0u); // A selected issuer must never become TsmExecute.
+      auto decoded = wafer::runtime::decodeTx81ProfilerRecord(
+          llvm::ArrayRef(static_cast<const uint8_t *>(storage.get()), bytes));
+      ASSERT_TRUE(static_cast<bool>(decoded))
+          << llvm::toString(decoded.takeError());
+    }
 }
 
 TEST(ProfilerCRTTest, UnrecordedDTEStillRequiresItsMatchingEnd) {

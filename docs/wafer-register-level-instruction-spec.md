@@ -79,7 +79,8 @@ void __AddVV(void *src0, void *src1, void *dst,
 但当前checkout没有这些定义，`op_fw_sim_if`的host CMake也只建立include-only INTERFACE target。附带instruction、
 common-util和Kcore archive都是RISC-V object，不能直接形成x86 wrapper/packet model。
 
-当前repo CRT实际使用per-op `TsmNew*`取得method table，填写栈上`Tsm*Instr`，调用`TsmExecute`后再`TsmDelete*`；它不调用
+当前repo CRT使用per-op `TsmNew*`取得method table并填写栈上`Tsm*Instr`；GEMM由Wafer CRT按独立operand范围直接发射NE寄存器，
+其余普通指令调用`TsmExecute`，随后释放method table。它不调用
 operator-table入口`initTsmOpPointer_cmodel`。因此仅取得该initializer不足以host化当前CRT。只有tasks/17定义的external
 authorization/spec gate通过后，才可由许可兼容provider或经确认允许的独立规范实现host Tsm operator；此时`TsmExecute`
 必须在返回前完成decode或复制异步所需字段，绝不能保存caller栈指针。这种packet只证明其明确provenance下的CRT/builder路径，直到与RISC-V archive
@@ -697,6 +698,18 @@ typedef struct TsmNeInstr {
 | `EnableRelu/EnableLeakyRelu` | activation enable |
 
 GEMM packet 的寄存器字段和 wrapper 写入关系静态可见，但这不能推出 dtype、psum、batch、transpose 或 attention graph 的 production 合法组合；这些组合与诊断由 `tasks/11` 定义，command mapping 由 `tasks/14` 定义。
+
+#### GEMM executor的range计算边界
+
+pinned `libinstr_tx81.a`中`__execute_ne`的GEMM分支在执行时重算`srca_end/srcw_end/psum_end/out_end`。
+静态反汇编和实际RISC-V指令的主机MMIO回放确认：该分支以`input_format`的element bytes计算全部四个range，
+没有分别使用`output_format`与`inpsum_format`。例如M16/K384/N43、batch1、F16/BF16输入时，
+F32 output/psum的Cx physical footprint为4096B，SDK实际只声明2048B；单独修改执行前的packet end会被覆盖。
+源码中setter分别接收三个format不能证明最终range正确。
+
+当前Wafer GEMM CRT仍用SDK setter组织shape/format，但最终由唯一GEMM issuer按实际存储orientation、各operand dtype
+和逐batch 256B padding写完整NE寄存器，control最后发射；普通与profile共用issuer。公开ABI及合法组合由14号设计拥有。
+该修复没有新增wait或证明某个queue时序；SDK少报range与整包TDMA timeout的直接因果仍为`unknown`。
 
 ### NE register 范围与 layout 观察
 

@@ -601,16 +601,17 @@ static uint32_t wafer_profile_worker_metadata(uint32_t inter_type) {
 }
 
 static uint64_t wafer_profile_execute_ncc(void *instruction,
-                                          uint32_t inter_type, uint8_t engine) {
+                                          uint32_t inter_type, uint8_t engine,
+                                          uint64_t (*issue)(void *)) {
   if (wafer_profile_header == NULL)
-    return TsmExecute(instruction);
+    return issue(instruction);
   if ((wafer_profile_header->flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) !=
       0U) {
     ++wafer_profile_header->next_sequence;
-    return TsmExecute(instruction);
+    return issue(instruction);
   }
   if (!wafer_profile_is_trace_capture())
-    return TsmExecute(instruction);
+    return issue(instruction);
 
   wafer_profile_observe_ncc_activity();
   uint32_t metadata = wafer_profile_worker_metadata(inter_type);
@@ -639,7 +640,7 @@ static uint64_t wafer_profile_execute_ncc(void *instruction,
   if (engine < WAFER_PROFILE_NCC_ENGINE_COUNT)
     wafer_profile_latest_engine_events[engine] = event_index;
   uint64_t operation_begin_cycle = wafer_profile_cycle();
-  uint64_t raw_return = TsmExecute(instruction);
+  uint64_t raw_return = issue(instruction);
   uint64_t operation_end_cycle = wafer_profile_cycle();
   if (event_index != UINT32_MAX &&
       event_index < wafer_profile_header->event_count) {

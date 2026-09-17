@@ -983,16 +983,17 @@ def check_ncc_worker_command_abi(
         "worker << WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT",
     ]:
         require_contains(worker_helper, needle, "NCC packet worker encoding")
-    for engine in ["ct", "ne", "rdma", "wdma", "td"]:
+    for engine in ["ct", "ne", "rdma", "wdma", "td", "gemm"]:
         execute = function_body(source_text, f"wafer_execute_{engine}")
+        issuer = "wafer_issue_gemm" if engine == "gemm" else "TsmExecute"
         require_in_order(
             execute,
-            ["wafer_set_ncc_worker(&instr->inter_type, worker)", "TsmExecute"],
+            ["wafer_set_ncc_worker(&instr->inter_type, worker)", issuer],
             f"{engine.upper()} exact-worker issue",
         )
 
     if re.search(
-        r"wafer_execute_(?:ct|ne|rdma|wdma|td)\s*\(\s*&instr\s*\)",
+        r"wafer_execute_(?:ct|ne|rdma|wdma|td|gemm)\s*\(\s*&instr\s*\)",
         source_text,
     ):
         fail("runtime CRT retains worker-less NCC issue sites")
@@ -1201,6 +1202,7 @@ def check_gemm_conv(source_text: str) -> None:
             "gemm->DisableRelu(&instr)",
             "gemm->DisableLeakyRelu(&instr)",
             "gemm->AddOutput",
+            "wafer_execute_gemm(&instr, worker)",
         ]
     require_in_order(
         gemm,

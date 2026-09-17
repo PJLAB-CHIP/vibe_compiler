@@ -748,12 +748,125 @@ static bool wafer_set_ncc_worker(uint32_t *inter_type, uint32_t worker) {
   return true;
 }
 
+/* The callers have verified Cx/NCx GEMM storage. Alignment is per matrix,
+ * before multiplying by batch, and uses that operand's element width. */
+static uint64_t wafer_gemm_matrix_bytes(uint32_t rows, uint32_t columns,
+                                        uint32_t batch, uint32_t format) {
+  uint32_t block = format == Fmt_INT8 || format == Fmt_UINT8 ? 128U : 64U;
+  uint32_t tail = columns % block;
+  uint32_t aligned_tail = tail == 0U ? 0U : 4U;
+  while (aligned_tail < tail)
+    aligned_tail *= 2U;
+  uint64_t bytes = (uint64_t)rows * (columns - tail + aligned_tail) *
+                   wafer_format_bytes(format);
+  return ((bytes + 255U) & ~UINT64_C(255)) * batch;
+}
+
+static void wafer_write_ne_register(uint64_t base, uint32_t offset,
+                                    uint64_t value) {
+  *(volatile uint64_t *)(uintptr_t)(base + offset) = value;
+}
+
+/* TsmExecute recomputes GEMM output/psum ends using the input width. Emit
+ * the final registers here so mixed-format ranges cannot be overwritten.
+ * This is an issue operation only; completion stays with the caller. */
+static uint64_t wafer_issue_gemm(void *instruction) {
+  TsmNeInstr *instr = (TsmNeInstr *)instruction;
+  Ncc_NE_GR_Param_Regs *p = &instr->param;
+  const Ncc_NE_GR_Ctl_Regs *c = &instr->ctrl;
+  uint32_t worker =
+      (instr->inter_type & WAFER_TX81_NCC_WORKER_INTER_TYPE_MASK) >>
+      WAFER_TX81_NCC_WORKER_INTER_TYPE_SHIFT;
+  uint64_t base = UINT64_C(0x1000000) + ((uint64_t)worker << 20U);
+  p->srca_end = p->src_a +
+                wafer_gemm_matrix_bytes(p->gemm_l_trs ? p->gemm_k : p->gemm_m,
+                                        p->gemm_l_trs ? p->gemm_m : p->gemm_k,
+                                        p->gemm_lb, c->input_format) -
+                1U;
+  /* A set RHS hardware bit denotes semantic NN storage [K,N]. */
+  p->srcw_end = p->src_w +
+                wafer_gemm_matrix_bytes(p->gemm_r_trs ? p->gemm_k : p->gemm_n,
+                                        p->gemm_r_trs ? p->gemm_n : p->gemm_k,
+                                        p->gemm_rb, c->input_format) -
+                1U;
+  p->out_end = p->out +
+               wafer_gemm_matrix_bytes(p->gemm_m, p->gemm_n, p->gemm_lb,
+                                       c->output_format) -
+               1U;
+  p->psum_end =
+      c->inpsum_en ? p->psum +
+                         wafer_gemm_matrix_bytes(p->gemm_m, p->gemm_n,
+                                                 p->gemm_lb, c->inpsum_format) -
+                         1U
+                   : 0U;
+
+  wafer_write_ne_register(base, GR_NE_SRC_A_ADDR, p->src_a);
+  wafer_write_ne_register(base, GR_NE_SRC_W_ADDR, p->src_w);
+  wafer_write_ne_register(base, GR_NE_PSUM_ADDR, p->psum);
+  wafer_write_ne_register(base, GR_NE_BIAS_ADDR, p->bias);
+  wafer_write_ne_register(base, GR_NE_SCALE_P_ADDR, p->scale_p);
+  wafer_write_ne_register(base, GR_NE_SCALE_N_ADDR, p->scale_n);
+  wafer_write_ne_register(base, GR_NE_OUT_ADDR, p->out);
+  wafer_write_ne_register(base, GR_NE_SRC0_TFR_ADDR, p->tfr_0);
+  wafer_write_ne_register(base, GR_NE_SRC1_OUT_TFR_ADDR, p->tfr_1);
+  wafer_write_ne_register(base, GR_NE_PDR_ADDR, p->pdr);
+  wafer_write_ne_register(base, GR_NE_UNPDR_ADDR, p->unpdr);
+  wafer_write_ne_register(base, GR_NE_SWR_ADDR, p->swr);
+  wafer_write_ne_register(base, GR_NE_DILATION_ADDR, p->dilation);
+  wafer_write_ne_register(base, GR_NE_GEMM_LB_ADDR, p->gemm_lb);
+  wafer_write_ne_register(base, GR_NE_GEMM_RB_ADDR, p->gemm_rb);
+  wafer_write_ne_register(base, GR_NE_GEMM_N_ADDR, p->gemm_n);
+  wafer_write_ne_register(base, GR_NE_GEMM_M_ADDR, p->gemm_m);
+  wafer_write_ne_register(base, GR_NE_GEMM_K_ADDR, p->gemm_k);
+  wafer_write_ne_register(base, GR_NE_GEMM_L_TRS_ADDR, p->gemm_l_trs);
+  wafer_write_ne_register(base, GR_NE_GEMM_R_TRS_ADDR, p->gemm_r_trs);
+  wafer_write_ne_register(base, GR_NE_QUANT_ADDR,
+                          ((uint64_t)p->quant_zp_cur << 32U) |
+                              ((uint64_t)p->quant_reserved << 24U) |
+                              ((uint64_t)p->quant_zp_pre << 16U) |
+                              ((uint64_t)p->quant_q1 << 8U) | p->quant_q0);
+  wafer_write_ne_register(base, GR_NE_SPARSE_INDEX_ADDR, p->sparse_index);
+  wafer_write_ne_register(base, GR_NE_SRCA_END, p->srca_end);
+  wafer_write_ne_register(base, GR_NE_SRCW_END, p->srcw_end);
+  wafer_write_ne_register(base, GR_NE_PSUM_END, p->psum_end);
+  wafer_write_ne_register(base, GR_NE_BIAS_END, p->bias_end);
+  wafer_write_ne_register(base, GR_NE_SCALE_P_END, p->scale_p_end);
+  wafer_write_ne_register(base, GR_NE_SCALE_N_END, p->scale_n_end);
+  wafer_write_ne_register(base, GR_NE_OUT_END, p->out_end);
+  wafer_write_ne_register(base, GR_NE_SPARSE_INDEX_END, p->sparse_end);
+  wafer_write_ne_register(
+      base, GR_NE_CONTROL_ADDR,
+      ((uint64_t)(c->sparse_en & 1U) << 21U) | (UINT64_C(1) << 20U) |
+          ((uint64_t)(c->inpsum_format & 15U) << 16U) |
+          ((uint64_t)(c->output_format & 15U) << 12U) |
+          ((uint64_t)(c->input_format & 15U) << 8U) |
+          ((uint64_t)(c->inpsum_en & 1U) << 7U) |
+          ((uint64_t)(c->lrelu_en & 1U) << 6U) |
+          ((uint64_t)(c->relu_en & 1U) << 5U) |
+          ((uint64_t)(c->scale_en & 1U) << 4U) |
+          ((uint64_t)(c->bias_en & 1U) << 3U) |
+          ((uint64_t)(c->dilation_conv & 1U) << 2U) | (c->type & 3U));
+  return 1;
+}
+
+static void wafer_execute_gemm(TsmNeInstr *instr, uint32_t worker) {
+  if (!wafer_set_ncc_worker(&instr->inter_type, worker))
+    return;
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+  (void)wafer_profile_execute_ncc(instr, instr->inter_type,
+                                  WAFER_TX81_PROFILER_ENGINE_NE,
+                                  wafer_issue_gemm);
+#else
+  (void)wafer_issue_gemm(instr);
+#endif
+}
+
 static void wafer_execute_ct(CT_Param *instr, uint32_t worker) {
   if (!wafer_set_ncc_worker(&instr->inter_type, worker))
     return;
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
   (void)wafer_profile_execute_ncc(instr, instr->inter_type,
-                                  WAFER_TX81_PROFILER_ENGINE_CT);
+                                  WAFER_TX81_PROFILER_ENGINE_CT, TsmExecute);
 #else
   (void)TsmExecute(instr);
 #endif
@@ -763,7 +876,7 @@ static void wafer_execute_ne(TsmNeInstr *instr, uint32_t worker) {
     return;
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
   (void)wafer_profile_execute_ncc(instr, instr->inter_type,
-                                  WAFER_TX81_PROFILER_ENGINE_NE);
+                                  WAFER_TX81_PROFILER_ENGINE_NE, TsmExecute);
 #else
   (void)TsmExecute(instr);
 #endif
@@ -773,7 +886,7 @@ static void wafer_execute_rdma(TsmRdmaInstr *instr, uint32_t worker) {
     return;
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
   (void)wafer_profile_execute_ncc(instr, instr->inter_type,
-                                  WAFER_TX81_PROFILER_ENGINE_RDMA);
+                                  WAFER_TX81_PROFILER_ENGINE_RDMA, TsmExecute);
 #else
   (void)TsmExecute(instr);
 #endif
@@ -783,7 +896,7 @@ static void wafer_execute_wdma(TsmWdmaInstr *instr, uint32_t worker) {
     return;
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
   (void)wafer_profile_execute_ncc(instr, instr->inter_type,
-                                  WAFER_TX81_PROFILER_ENGINE_WDMA);
+                                  WAFER_TX81_PROFILER_ENGINE_WDMA, TsmExecute);
 #else
   (void)TsmExecute(instr);
 #endif
@@ -793,7 +906,7 @@ static void wafer_execute_td(TsmDataMoveInstr *instr, uint32_t worker) {
     return;
 #ifdef WAFER_TX81_PROFILE_TRACE_CRT
   (void)wafer_profile_execute_ncc(instr, instr->inter_type,
-                                  WAFER_TX81_PROFILER_ENGINE_TDMA);
+                                  WAFER_TX81_PROFILER_ENGINE_TDMA, TsmExecute);
 #else
   (void)TsmExecute(instr);
 #endif
@@ -1180,7 +1293,7 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint64_t psum,
   gemm->DisableRelu(&instr);
   gemm->DisableLeakyRelu(&instr);
   gemm->AddOutput(&instr, dst, wafer_format(output_format));
-  wafer_execute_ne(&instr, worker);
+  wafer_execute_gemm(&instr, worker);
   TsmDeleteGemm(gemm);
 }
 
@@ -1206,7 +1319,7 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
   gemm->DisableRelu(&instr);
   gemm->DisableLeakyRelu(&instr);
   gemm->AddOutput(&instr, dst, wafer_format(output_format));
-  wafer_execute_ne(&instr, worker);
+  wafer_execute_gemm(&instr, worker);
   TsmDeleteGemm(gemm);
 }
 

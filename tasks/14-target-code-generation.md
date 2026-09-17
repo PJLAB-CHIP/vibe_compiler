@@ -53,6 +53,28 @@ psum只读、destination独占写入，两者physical storage必须不重叠；�
 同址复用及bias/activation不隐式打开。本轮有限三段K实卡确认两种dtype的最终结果和两个partial回读/guard；oneDNN未取得psum资格，
 该形式由formal backend执行，不能忽略第三个输入沿用二输入资格。
 
+#### GEMM最终寄存器范围
+
+输入为上述verified GEMM CRT调用；本层在既有SDK setter填充`TsmNeInstr`后，独立完成GEMM的最终NE寄存器发射。
+输出为所选NCC worker窗口内的地址、shape、format、inclusive end与最后一次control写入；直接消费者是NE与NCC地址依赖检测。
+普通、Count与Trace执行同一个issuer，profile只包围发射，不重新解释packet。Conv等其它指令仍由各自既有issuer负责。
+
+每个operand的范围取其实际存储矩阵的行数、最后一维Cx对齐、该operand的element bytes及逐batch 256B padding。
+lhs/rhs的存储形状由现有orientation决定；RHS hardware bit先按既有反向编码解释。output与psum分别用各自format计算，
+不得沿用input element bytes；disabled psum的end为零。每条GEMM重新写全部NE参数及unused字段，control最后写入，
+不调用会重算这些end的SDK GEMM executor。geometry与地址合法性继续由current Instr/target verifier拥有。
+不改变公开ABI、算术dtype、分块、placement、completion或同步数量，也不扩展GEMM可接受的format与optional字段。
+
+| 覆盖 | exact输出 / failure边界 | 直接下游与完成条件 |
+| --- | --- | --- |
+| rank3 batch2、K1024/1025/1031、M/N tail；F16/BF16、NN/NT/TN/TT、同dtype/F32输出、有/无F32 psum | 捕获最终MMIO，逐字段核对四个地址范围、逐batch padding、shape、format、orientation、worker0/1/2与control-last；unused字段清零 | 两个public GEMM CRT入口执行同一issuer；现有非法dtype/alias/范围仍由target负例拒绝 |
+| M16/K384/N43的小型故障字段复现 | F32 output/psum范围为4096B，F16/BF16 output为2048B；这是寄存器缺陷的有界定位，真实规模覆盖见上一行 | 主机执行production issuer，不只检查setter参数或打印文本 |
+| 普通、Count、Trace及记录满后的执行 | 所选issuer恰好执行一次、参数及返回值保留；记录策略不改发射路径 | profiler组件与设备交叉编译/link；fresh source→package/no-card |
+| LLaMA block两种dtype与大GEMM保护 | 新CRT构包后核对实际ELF发射字段；完整数值及匹配性能分别验收 | 主机验证不代签板端；此次TDMA超时是否随修复消失由后续实卡判定 |
+
+本节完成条件为主机字段矩阵、profile、target/link及canonical完整增量构建闭合，再取得对应实卡资格；
+确认SDK范围计算缺陷不等于确认其为当前整包TDMA超时的直接根因。
+
 ### Tensor subview的相对地址
 
 输入为verified Instr中的 `memref.subview` 与已经转换的source首元素地址；输出为i64字节地址，直接消费者是
