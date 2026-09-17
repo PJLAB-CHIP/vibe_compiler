@@ -65,6 +65,10 @@ GEMM、卷积、attention等产品板测不归入通信实现的完成门禁。�
 - 不重复执行已经有结论且代码/环境未变化的板端case；host/no-card仅在对应实现变化或异常归因时重跑。
 - host build、unit、CTest、catalog与no-card默认使用 `nproc` 可用并行度；只有真实资源约束才降低并说明。
 - 真实device launch始终单进程、逐case、bounded timeout；首个timeout/device异常后停止，不自动retry/reset/power。
+- 每次launch前按AGENTS执行系统级占用检查，保留目标设备与检查时刻；busy时等待后重查，unknown不准入。
+  这属于板测执行纪律，不由no-card或仓库内互斥锁代签，也不改变runtime ABI。
+- 板端验收还须关联同一boot、目标设备和执行窗口内的驱动/固件异常；runtime success及output正确不能覆盖fatal事件。
+  有fatal的原始输出/计时仍保留审计，但不签发健康性能基线；故障触发点、清理失败和后续异常按实际时间分开记录。
 - 同一重启会话且软硬件身份未变时，只资格化一次；后续case复用move-only qualified session。
 - 默认板端数据类型为FP16/BF16；只有格式/ABI/转换/数值边界本身或真实source要求F32时才使用F32并记录理由。
 - 测试报告必须核对实际执行数量、skip/unsupported清单和feature配置；`ctest passed`本身不证明关键lit或source vertical执行。

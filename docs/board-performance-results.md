@@ -2040,3 +2040,37 @@ canonical构建及no-op通过。新诊断仅完成主机验证，失败会话使
 这些静态结果不代签新版本的完整数值和性能保护。设备恢复后继续第3项保护、故障定位及剩余性能差异，第4—5项不跳过前置。
 全部版本、普通样本、21份numeric audit、profile摘要及产物digest见
 [decode块读取修复证据](data/board-performance/decode-compact-load-20260917.json)。
+
+## 2026-09-17：decode超时的固件日志定位与健康资格修正
+
+用户再次确认重启后要求先定位原因再上板，并在每次使用前检查其它用户和容器的板卡占用；忙则等待。
+本轮只读上一boot journal、系统设备持有者和已落盘AP/Kcore/SCORE日志，没有创建provider会话或launch。
+系统检查使用完整权限核对实际设备号、PID、exe、UID和cgroup；发现的常驻日志服务经service身份核实后与计算任务区分。
+占用结果只描述检查时刻，不能替代下次launch前重查，也不能恢复上一会话完整的并发使用历史。
+
+故障进程的host exec时间为12:42:34.069。将其与AP执行序列及collector固定协议对齐后，最后三个kernel为：
+
+| 顺序与归因 | AP单调时间中的launch起点（秒） | 固件记录的完成结果 |
+| --- | ---: | --- |
+| Primary | 7069.647639 | 返回；AP 3857 us、Kcore 3762 us，随后卸载 |
+| Count | 7069.957423 | 返回；AP 3989 us、Kcore 3898 us，随后卸载 |
+| Trace | 7070.434687 | 持续未返回；约60秒后context销毁，AP报告60185279 us、Kcore time为0 |
+
+Capture名称是根据同一故障进程的时间、三个实际kernel记录及固定Primary→Count→Trace顺序作出的归因；
+不是重新读回了失败Trace。AP时间、Kcore时间与此前TX stream event计时不是同一度量，不替换普通性能样本。
+第三次执行的context开始销毁后才出现`0xf000008` AP resetting，再过约22秒出现`0xf000004` clean resource timeout，
+随后Kcore power-off超时。日志因此支持“Trace未完成→context清理失败”的顺序，不支持把AP reset倒推成最初的卡死原因。
+Wafer没有发起reset调用；此处是进程退出后驱动/固件的context清理行为。
+
+另一个新发现是旧快包对照期间已有底层错误：host在12:19:43记录`NPU LSU TDMA Timeout`，
+AP在第一步首次执行记Tile1 fatal，并在第二步第二次执行记Tile14/0/13/3/5 fatal；对应两个高耗时样本为12.543和38.088 ms。
+这些调用当时仍由runtime返回成功且全输出比较通过。原始数值和计时证据保留，
+但本会话不能继续签发健康性能基线，5.608/6.039 ms需要在健康会话重新验证；不删除高值，也不以此重置原性能目标。
+这也暴露板测检查遗漏：除runtime completion和数值外，必须逐case核对执行窗口内的驱动/固件异常，发现fatal即停止批次。
+
+离线核对确认Count/Trace使用同一个ELF，仅runtime配置、record容量/地址及采集动作不同；pinned
+`TsmWaitfinish_bywork`确为轮询`TsmGetCsrTaskstatus_bywork`直到1，与Trace等待的完成谓词一致。
+没有发现可据此修改同步或SDK接口的确定证据。现有日志没有保留卡住的Tile/site/PC，
+先行TDMA fatal与后续Trace卡死的因果仍未知，不能宣称超时根因已经修复。当前保持主机定位，保护板测和后续第4—5项未推进。
+日志、原始归档digest、host exec序列及推断边界见
+[decode超时主机证据](data/board-performance/decode-timeout-host-20260917.json)。

@@ -138,6 +138,13 @@ ctest --preset default -j"$(nproc)"
 - 比较none/search时两次fresh parse/import，各自拥有ProgramData、IR、output和package；source identity只证明输入一致。
 - 无卡阶段生成package、host expected和runner；真实设备只在明确任务中单进程逐case运行。Timeout或设备异常后停止批次，
   不自动retry、reset或power cycle。
+- 占用检查先对实际设备节点使用有全系统可见权限的`fuser -v`，再以`/proc/<pid>/fd`的字符设备号、exe、UID和cgroup核对持有者。
+  不能只搜进程名或只看当前用户；不同容器仍可能持有同一设备。日志服务的设备FD不等于计算任务，但不能仅凭名称将其忽略。
+  计算占用存在时等待并重查，权限或身份不明时保持unknown；每次launch前重新确认，检查结果不构成全系统排他租约。
+- Runtime成功与完整数值通过后仍检查该次执行窗口的驱动/固件错误事件。LSU TDMA fatal、XID或AP异常是设备故障，
+  不能因为host completion成功继续批次或签发健康性能基线。事件必须与boot、PCI设备和执行时间关联。
+- 故障后优先只读保留上一boot的kernel journal、已落盘固件日志和runner执行时间。固件单调时间与host墙钟分别记录，
+  用明确事件和实际协议顺序对齐；AP reset若发生在host超时退出后的context清理阶段，不能倒推成最初的卡死原因。
 - 历史raw/log只用于审计。代码、package或environment改变后，仅使用本轮新build、新launch和新output形成结论。
 
 ## 文本与提交检查

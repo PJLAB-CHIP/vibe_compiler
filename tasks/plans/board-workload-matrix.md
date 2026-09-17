@@ -81,11 +81,17 @@ StableHLO gather fixture仍期待`index_cast`，而当前前端保留i32，未�
 修复后两步普通执行各三次中位6.553/6.453 ms，全输出及原KV前缀通过；与匹配快包仍有差距，不签发性能恢复。
 第一步完整profile通过，最慢Tile动态RDMA由12572降至328；第二步发生新的60000 ms completion超时，批次立即停止。
 该步包、输入和reference与刚通过的普通执行逐byte相同；原runner未给出Primary/Count/Trace故障边界，失败staging已清理，
-本次具体capture及根因保持unknown。15号补充typed runtime错误的capture诊断，136项runtime/CLI测试通过，
+当时仅凭runner日志无法确认capture；随后固件日志归因见下，根因仍未知。15号补充typed runtime错误的capture诊断，136项runtime/CLI测试通过，
 但该诊断尚未用于新的实卡会话，不以此声称修复超时。
 两种dtype block、三组大GEMM及两组embedding均已fresh构包/no-card；保护队列在profile失败时退出，没有启动保护板测。
 大GEMM的manifest/ELF/target LLVM与前一接受版相同，block产物有变化，均不以静态结果代签本轮性能保护。
-恢复后从第3项继续：先保留带capture诊断的失败证据，完成保护和decode剩余匹配差异，再进入第4项。
+用户再次确认重启后要求先定位原因再上板，并在每次launch前检查其它用户/容器的用卡情况；忙则等待，身份或权限不明不视为空闲。
+本轮只读上一boot journal与已落盘固件日志，没有发起设备执行。故障进程内最后三次固件kernel记录与固定Primary→Count→Trace顺序对齐：
+前两次完成并卸载，第三次超过60秒未完成，随后context销毁触发AP reset和资源清理超时。由此将失败capture收窄到Trace，
+具体卡死site/Tile、原始触发原因仍未知。Count与Trace的ELF相同，差异为运行配置/record及PMU和记录动作，不能据此猜测同步修复。
+更早旧快包对照执行窗口内已出现LSU TDMA fatal，原host执行仍成功且数值通过；原始时间保留，但该会话健康资格不足，
+不继续把5.608/6.039 ms签为已闭合健康基线，也不以此重置性能目标。既有fatal与后续Trace卡死的因果尚未证明。
+后续先解决以上故障边界及诊断缺口，再做第3项保护和剩余匹配性能；第4项继续等待直接前置。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

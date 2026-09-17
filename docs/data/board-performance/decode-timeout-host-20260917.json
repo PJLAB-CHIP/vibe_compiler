@@ -1,0 +1,1070 @@
+{
+  "scope": "第3项decode completion超时的主机只读定位；按用户要求先定位，未执行新的板测",
+  "recovery": {
+    "user_confirmed": true,
+    "current_boot_id": "17fc74e7-3f84-4f90-8ced-1926b1289a62",
+    "failed_boot_id": "1874bfa2-2b7c-4257-9353-6d82cf973b86",
+    "current_provider_calls": 0,
+    "current_launches": 0
+  },
+  "observed": {
+    "host_device_faults": [
+      "2026-09-17T12:19:43+0800 ubuntu kernel: accel 0000:3b:00.0: rpu=0 pid=14454 xid=12 category=XID_NPU_ERROR eid=\"0x0D00C005\" detail=\"NPU LSU TDMA Timeout\" action=\"RESET_BM\"",
+      "2026-09-17T12:43:42+0800 ubuntu kernel: accel 0000:3b:00.0: rpu=0 pid=14454 xid=14 category=XID_AP_ERROR eid=\"0x0F000008\" detail=\"AP Application Processor (AP) Is Resetting\" action=\"IGNORE\"",
+      "2026-09-17T12:44:04+0800 ubuntu kernel: accel 0000:3b:00.0: rpu=0 pid=14454 xid=14 category=XID_AP_ERROR eid=\"0x0F000004\" detail=\"AP Clean Resource Timeout\" action=\"IGNORE\"",
+      "2026-09-17T12:44:04+0800 ubuntu kernel: accel 0000:3b:00.0: fw[score1.tufw] kiq power off fw cost: 50ms, r = 0",
+      "2026-09-17T12:44:04+0800 ubuntu kernel: accel 0000:3b:00.0: fw[score0.tufw] kiq power off fw cost: 50ms, r = 0",
+      "2026-09-17T12:44:07+0800 ubuntu kernel: accel 0000:3b:00.0: fw[kcore.tufw] kiq power off fw cost: 3000ms, r = -110",
+      "2026-09-17T12:44:07+0800 ubuntu kernel: accel 0000:3b:00.0: stop kcore failed, r = -110",
+      "2026-09-17T12:44:07+0800 ubuntu kernel: accel 0000:3b:00.0: Killing user process pid = 14651, task_name = npu_pull_ep_log",
+      "2026-09-17T12:44:07+0800 ubuntu kernel: accel 0000:3b:00.0: failed to fini ctx[2]: -110",
+      "2026-09-17T12:44:07+0800 ubuntu kernel: accel 0000:3b:00.0: kiq exception, check ap log first",
+      "2026-09-17T12:44:07+0800 ubuntu kernel: accel 0000:3b:00.0: Reject fini ctx KIQ, please check KIQ and KCQ channel if blocked!",
+      "2026-09-17T12:50:31+0800 ubuntu kernel: accel 0000:3b:00.0: rpu=0 pid=14454 xid=14 category=XID_AP_ERROR eid=\"0x0F000003\" detail=\"AP Power-Off Error\" action=\"RESET_BM\""
+    ],
+    "firmware_tdma_fatals": [
+      "[5691.557343]3[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!",
+      "[5705.233897]3[RAS-FE]lsu tdma timeout from Tile-14, need to reset chip!!!",
+      "[5705.240663]3[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!",
+      "[5705.247335]3[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!",
+      "[5705.254077]3[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!",
+      "[5705.260815]3[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+    ],
+    "failed_process_firmware_tail": [
+      "[7069.445557]6[avs]: already exit idle moderface",
+      "[7069.647580]6npu-manage: tx_kernel_load_module time: 2452 us",
+      "[7069.647602]6npu-manage: kcore heap usage percent:1",
+      "[7069.647608]6npu-manage: module count:1",
+      "[7069.647639]6npu-manage: kernel_task_address:1f6080800 load_address:2db110000 [x:16 y:1 z:1][hash:0x87b69c5cd02dc34d]",
+      "[7069.651473]6npu-manage: tx_kernel_launch_triton AP time: 3857 us, kcore time: 3762",
+      "[7069.666983]6npu-manage: tx_kernel_unload_module time: 102 us",
+      "[7069.957373]6npu-manage: tx_kernel_load_module time: 3130 us",
+      "[7069.957389]6npu-manage: kcore heap usage percent:1",
+      "[7069.957395]6npu-manage: module count:1",
+      "[7069.957423]6npu-manage: kernel_task_address:1f6081800 load_address:2db138000 [x:16 y:1 z:1][hash:0x69cbf1a2982b8542]",
+      "[7069.961391]6npu-manage: tx_kernel_launch_triton AP time: 3989 us, kcore time: 3898",
+      "[7069.981343]6npu-manage: tx_kernel_unload_module time: 113 us",
+      "[7070.434639]6npu-manage: tx_kernel_load_module time: 3169 us",
+      "[7070.434654]6npu-manage: kcore heap usage percent:1",
+      "[7070.434660]6npu-manage: module count:1",
+      "[7070.434687]6npu-manage: kernel_task_address:1f6082000 load_address:2eb138000 [x:16 y:1 z:1][hash:0xb40c6cd93e00b0b6]",
+      "[7130.569715]6context 2 enter low power interface",
+      "[7130.569750]6activate low power interface",
+      "[7130.569757]6[avs]: Not enable idle mode, do nothing",
+      "[7130.619864]6start to destroy device context with id: 2",
+      "[7130.619946]3npu-manage: tx_kernel_launch_triton err_code: 0x0, 0xf000008",
+      "[7130.626683]3npu-manage: err_code: 0x0, 0xf000008",
+      "[7130.631308]3npu-manage: EID: 0xf000008",
+      "[7130.635064]6npu-manage: tx_kernel_launch_triton AP time: 60185279 us, kcore time: 0",
+      "[7130.635127]6insert irq_type[fw queue irq] wptr[0x8] rptr[0x7]",
+      "[7130.635138]6trigger vector[0] msix, count: 1, irq empty: 1",
+      "[7152.604022]6npu-manage: tx_npu_reset timer_callback expired",
+      "[7152.604057]6npu-manage: tx_npu_reset cleaning resource",
+      "[7152.604075]3npu-manage: tx_npu_reset err_code: 0x0, 0xf000004",
+      "[7152.609893]6insert irq_type[fw queue irq] wptr[0x9] rptr[0x8]",
+      "[7152.609909]6trigger vector[0] msix, count: 1, irq empty: 1",
+      "[7152.610142]6npu-manage: tx_npu_reset time: 21984119 us err_code:f000004",
+      "[7152.633660]6stub: tsm_kiq_handle_rvcore() rvcore power off",
+      "[7152.633668]6[avs]: already exit idle mode",
+      "[7152.634444]6npu-manage: rvcore_power_off core end. kiq_core:3",
+      "[7152.634464]6[avs]: Not enable idle mode, do nothing",
+      "[7152.683827]6stub: tsm_kiq_handle_rvcore() rvcore power off",
+      "[7152.683830]6[avs]: already exit idle mode",
+      "[7152.683837]6npu-manage: rvcore_power_off begin. kiq_core:2",
+      "[7152.684553]6npu-manage: rvcore_power_off core end. kiq_core:2",
+      "[7152.684567]6[avs]: Not enable idle mode, do nothing",
+      "[7152.734002]6stub: tsm_kiq_handle_rvcore() rvcore power off",
+      "[7152.734005]6[avs]: already exit idle mode",
+      "[7152.734010]6npu-manage: rvcore_power_off begin. kiq_core:1"
+    ],
+    "modules": {
+      "primary": {
+        "module_digest": "sha256:58843bd0d4c73748e586097cada889aad1c8edf2c17f07c61cbdfd5aef44cc9c",
+        "launch": {
+          "kind": "kernel",
+          "form": "grid",
+          "entry_abi": "tile-row-pointer-table",
+          "phases": [
+            "main"
+          ]
+        }
+      },
+      "count": {
+        "module_digest": "sha256:8bf20d0c2b82757925fc83dd6b8656422d94e7bf8a1221a349b02ae6ff1040c8",
+        "launch": {
+          "kind": "kernel",
+          "form": "grid",
+          "entry_abi": "tile-row-pointer-table",
+          "phases": [
+            "main"
+          ]
+        }
+      },
+      "trace": {
+        "module_digest": "sha256:8bf20d0c2b82757925fc83dd6b8656422d94e7bf8a1221a349b02ae6ff1040c8",
+        "launch": {
+          "kind": "kernel",
+          "form": "grid",
+          "entry_abi": "tile-row-pointer-table",
+          "phases": [
+            "main"
+          ]
+        }
+      }
+    }
+  },
+  "inferences": [
+    {
+      "conclusion": "故障capture为Trace；Primary与Count先完成并卸载。",
+      "basis": "故障runner独立进程的时间与AP末尾三个load/launch记录对齐；固定协议仅Primary→Count→Trace，前两次kernel返回，第三次在60185279 us后因context销毁中断；没有声称取得丢失的Trace record。"
+    },
+    {
+      "conclusion": "AP reset/clean-resource-timeout位于kernel未完成及host deadline之后的context销毁阶段，不能作为原始卡死原因。",
+      "basis": "AP日志先load/launch，约60秒后enter low power/start destroy context，再产生0xf000008，约22秒后0xf000004；Wafer错误路径无provider reset调用。"
+    },
+    {
+      "conclusion": "原同源快包的两个高耗时样本与先行LSU TDMA fatal窗口对应；该会话健康资格不足。",
+      "basis": "audit记录旧快包两步三次执行时间，AP分别在第一步首次和第二步第二次kernel内记fatal；原样保留12.543/38.088 ms及其它样本，不删除异常值、不重置原性能目标。"
+    }
+  ],
+  "unknown": [
+    "Trace具体卡住的Tile、site或PC",
+    "先行LSU TDMA fatal与后续Trace卡死的因果",
+    "此前会话其它计算进程的完整设备占用历史",
+    "非健康会话中的性能能否在干净会话稳定重现"
+  ],
+  "host_review": {
+    "count_trace_same_elf": true,
+    "ordinary_input_and_package_parity": "见decode-compact-load-20260917.json的23项逐byte核对",
+    "wait_api": "pinned TsmWaitfinish_bywork的反汇编为重复TsmGetCsrTaskstatus_bywork直到1，与Trace的完成谓词一致；不能据此证明硬件等待成功。",
+    "profiler_loops": "PMU稳定读取重试有界；Trace worker completion仍等待真实done。未用盲目join、timeout放宽或关闭采集掩盖故障。",
+    "missing_failure_evidence": "完整Trace失败前未发布、staging清理；Kcore/SCORE已落盘日志未给出该次卡死PC。"
+  },
+  "occupancy_policy": "每次launch前系统级读取所有用户/容器设备持有者；计算占用存在就等待，unknown不当空闲；不杀他人进程；日志服务须核实exe/UID/cgroup身份。",
+  "evidence_files": [
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/FABRIC_MANAGER_2026_9_17_10_45_18.log",
+      "bytes": 1086,
+      "sha256": "078b569a31f19dc44d3a8c46dacfc88e339bff712fb934eabbfa1a41be4f1b87"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/FABRIC_MANAGER_2026_9_17_10_45_18.txt",
+      "bytes": 1086,
+      "sha256": "078b569a31f19dc44d3a8c46dacfc88e339bff712fb934eabbfa1a41be4f1b87"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE0_2026_9_17_10_45_18.log",
+      "bytes": 112122,
+      "sha256": "3b0135a5a0eab63ef0784ae5e6915f3978262ec7fa1cf2630fbf047f8c693309"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE0_2026_9_17_10_45_18.txt",
+      "bytes": 110914,
+      "sha256": "faf3d41b578990abe2199c0724a8ca4c500b9c0a4113c81c33605d8048cac6b0"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE1_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "b6f5c7906e0b086761edd0f922c67c540399026c2bcc748042d925463c9831cc"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE1_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "4fc9561c12b374080d46707e51b35c5bd7dac52d5653d31299787d416106bcb9"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE2_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "b3776dcbf07b14490b6f86b14273fb7e21ef52d8ce777278ba06d5896b463baf"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE2_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "ab0492d9f69efb5f284af23b035babda497e14b7961af25691917c7081f100cb"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE3_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "f875443b7295e8cc8d465f334db79eba2ab2f3ab18620cd241c9b83d06e9bd25"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE3_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "f87dc975d5ea167ff901c69c55c6636ceb3659bd16c7e694ffb2c5235693aa22"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE4_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "ed2fbdc6056151b0ad3987cf56f2ae8eb047e693e9735b715832bbd263a9bde7"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE4_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "bcacbbce3ef8ccae8e9fb10ab066ddc6a9c23b35fd532964a13bf880b9bcd9d7"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE5_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "bf7a5a623f22785c0eac3eec035f7423ded3b5d77186e56ace290cba91e45991"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE5_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "f9fa165d3a8f9f8f141c48cb589b77341726a614f9d9fe15cc562d4f440ed680"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE6_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "2fa62d1756d198226e3f73ebbbdb0e07ee756ff47880c36cc2376b4ac1bc5884"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE6_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "0bab01ac95af8ce4e04e7d2c2c80aef3de21535cd7aeb89bfe94c5dfebc6344f"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE7_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "bfb9723b728d196965a5ac08055dffb06ec0a277ecb05c36921c17e91307acfd"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE7_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "d1bf39d416933f87eca1eb65dd9157a4647aa7c6dfdcde9e375815ce976befc0"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE8_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "8ff57a550db357b1ddef1c344082840b14a6b3ae02176f0db8ee641675881ffb"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE8_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "e035ebcdb9c11b59614e09808ca8042f9d0e37c13244b9dd885c4804736f25c5"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE9_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "sha256": "e6b5c2390de82c47e99c83c3fcc26e2cedca153a5af3a720272be20bc19852ce"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORE9_2026_9_17_10_45_18.txt",
+      "bytes": 104689,
+      "sha256": "78250d60e27baa969967868e28fa085f4239ee6f1a52d9e69493935cfa2fbcbe"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREA_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "sha256": "b982cec16e47fc6258a83918e988a17f9d0fda6a5da1138ad6fecf254e42ba6b"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREA_2026_9_17_10_45_18.txt",
+      "bytes": 104900,
+      "sha256": "ccbede78c2257ebb46537e40c9550182c1e4aad2c3129e3fa84e2053e4a5f11b"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREB_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "sha256": "2682aa076d668f97585ab97db22aaa5b87dbee7a966266c207437ed1c4783b29"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREB_2026_9_17_10_45_18.txt",
+      "bytes": 104900,
+      "sha256": "e1cdc36fb1640ea3ba3b1ed90f2dffe3facc32d72c1fcff6cf5f32f7b9f5eaf9"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREC_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "sha256": "13e605baefe2fe54e26aad81093459da48e0dd72d0ef90fb9be8057b9ff1ead6"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREC_2026_9_17_10_45_18.txt",
+      "bytes": 104900,
+      "sha256": "b6e3b934742ef83d038c96ec45662f72e342db968a6f86e7453ef6db5fff7570"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORED_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "sha256": "9bc7dd61eb460c66e3d33d91cacccb86116d14f3f2b7beda1e824fd9dbe213f5"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCORED_2026_9_17_10_45_18.txt",
+      "bytes": 104900,
+      "sha256": "cdc8016aab1d1bda737a9270cacdf0d172f999f7545665df4bd5a13a721d553d"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREE_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "sha256": "fbafc342e573deb61cad389210324f6f5863de07579da208c1e9a469c91f97c3"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREE_2026_9_17_10_45_18.txt",
+      "bytes": 104900,
+      "sha256": "4314f377545cee9d577674655f0ebb22c90bcde8e75a2910407575e6677e8040"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREF_2026_9_17_10_45_18.log",
+      "bytes": 105908,
+      "sha256": "25f928ca87797a54ce9e5d31eff7ade17632583f2b3a8f545e3e4b1e41adf4e5"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KCOREF_2026_9_17_10_45_18.txt",
+      "bytes": 104836,
+      "sha256": "3ee68b67038e62d0bd3fd3555b937c14a5a4eda6215ce81476b4f5df25a4b14b"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KERNEL_2026_9_17_10_45_18.log",
+      "bytes": 343560,
+      "sha256": "d473b4f6b5a9498f3ea240a0951133c984f86e92757134bac363e81562225edf"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/KERNEL_2026_9_17_10_45_18.txt",
+      "bytes": 342978,
+      "sha256": "22441ca45bcbe9f5986fac8c8b91b08439648fc433e0d1c3079852bd89159c8a"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/NPUVS_2026_9_17_10_45_18.log",
+      "bytes": 186,
+      "sha256": "f6874acec7fd498eee56127327f9bfce643f9e9315670265c10f4edb9af8e7c2"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/NPUVS_2026_9_17_10_45_18.txt",
+      "bytes": 186,
+      "sha256": "f6874acec7fd498eee56127327f9bfce643f9e9315670265c10f4edb9af8e7c2"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE0-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "bf806c2d13702673449538bb52d3eb553bd8e0e72da39c8d92da5a90abce29c3"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE0-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "55f5b9db9238e0bf7491614ae642f5ab95a5765fa7a33bbf90b392f9bb563502"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE0-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "54429da3cd9dc49d9c370fd46499fdfa3234e47063e014eef9389572a544eacc"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE0-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "6ad81887502ee5ddf90fb08573a084c288bf12bf6d0213b99084a355f6e1ff19"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE1-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "3cd1f43f8e3873c26ec034c2635c01610ba3f2235d91c0696350f83e7af291dc"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE1-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "bf6e92fa8bfac99a7e51fb76413cf265453db3f0fe9092bb4c59d50a54fc0c32"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE1-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "24a13d072f46c964774df0cb288df3694c5df85d171b7718bad7cdf45e92857c"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE1-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "57ab317758d9bcd713551da99dadf4e916c78cdae854e4d5177d73e46b9154d2"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE2-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "3c69215150c6cf493aac1612baea22074eb9664ef78414caa8a746d9084a25ca"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE2-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "a6437b2b3c3b65fd8b69d3e74f32824d3913411d27005ffc9ad9cdf61c3d2b3c"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE2-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "2d4db899954644275dfad7d6705042dab8ee54271793d55e23515976aab8a48b"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE2-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "875a03e7dac0ff0680101dcb82c9052d8520c63c7559ca4d4dea172f8ac25453"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE3-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "543072dff8fe42bdb12e9287d34124a469affe7d408efed84f5df2729366cee3"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE3-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "6dfe4ec4cf6bf762f8a752541cb4b4a9d9d57b0dc0d8f0a473e3966dfa0a8b09"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE3-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "59fa5fbaf0f1e98b124c9ae2ef5703dd688ca2f57f3abbff77866c2859139799"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE3-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "2e33353a16b380942364b0de64b8d8d3aa38b8537a9e1d923cadd13c5e5d6477"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE4-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "50d2ac5c4a005a052031d27c51e07ea152518d8aeeecfec61d9a2aa0dfc6aab5"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE4-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "bac185cfe8f5472854948268294ffb46dfd30cf475c0ec05ba3ab5c62b4d5211"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE4-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "0d427463a435669bc9ac417db484e5a642a68603be5ff819175e3a7cf1789f82"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE4-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "16592a572386220f6e400f2077ee8bca400b3104b6cb1c0fbde3c2bd1da357e7"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE5-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "57e336a6073bdc28852fc465198d99636f398a3955402f78b75880b087022910"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE5-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "d8d16140d2d56f253820fce47f398f273f5269eeb19a0c34aab1dd463d2c2090"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE5-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "ac17fce724289d01193ed8965dcea4234d207472b2d7ea65e8ca56d67ecc1498"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE5-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "30a9c659462d19889d41d68393987e924bdf468d5ac14b9a1a0003268fe5d5ae"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE6-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "adbdc03710907598d71bc8c1ba958704a7791bd3f0d1bab5f47c200b6970ef23"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE6-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "7783a77013ec459ec89b39e7842353eb35ce35afd9a5913c16b21927550f020e"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE6-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "43deda8c38e31856647e203d140343bd81a89f198e8fe206fa36023722e03f9a"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE6-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "8394c7655dd0f2fc47b17a8da258fe909a9f7e8d381dfd695084da983940fdc1"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE7-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "ef281a7bc39c55978df9ab83c12c7a8fa2d204af6159b89a81c4bb520d12335d"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE7-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "64d9faf938c39d0b0ba0d8e5fb25d58343808dcf14732b0a84aa3db741d5e918"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE7-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "f53cfa559509600fe27e72e7e37ac048e244b03c183af589fa9c9d374f653b53"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE7-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "34a5cde67c3096031fa8824f22e35808c32f153082432858c4f33306d8a48287"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE8-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "cb8afbc016d0434f661aed19add7458c4d21d224274bb68243adf4ed96a3016a"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE8-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "a2ce6eb0e0053499011c00eef8320da4c551a16e32f40c31faa44855f7f4fc3f"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE8-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "e59fb403331cd7a20db63bc66de870b4f6be65e2eddb3256eeefd2b9631461ec"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE8-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "dc61baf825922b1ed1e8b3517f94d1144c4211ff873e1e3bee8bafcabecc7f3e"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE9-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "2f659e1428519d41d1f4c54c0e625cfa242d786295ba67ab72b0a2f6eb294ab8"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE9-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "7fec5d435cd2ba7479a42de25e56f292838e1a0db09aa32772f6de594a073a61"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE9-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "9037da0ef1c978f153a4fb7c5659b6e6e3efc57f2c147fcd36fbd088e610e6e6"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORE9-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "dfff184d9449dbeb8d283b79418c0863f51b7f23b6880d8dd61103650cc8eb44"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREA-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "ad2243905b08defbe39d5ac01461c092faab8d36efd1fd2d9a970a4dc4b07c96"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREA-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "13f0cecd3354df939f1ff716c63f0f51db6a6e28081dd426d5c24bd4c418aa85"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREA-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "bc4d3dee256228c529c0ec19ad849747a1ef1e21a93bcea0afcab6dd149678c8"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREA-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "a040ae10a55d23f2c324d3a911de8a5d262ed244cb4aea3dd175101fc3e3c9a7"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREB-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "af01b0cac07c893333c2e5e030ab0965a8a5c5d61b10c45cd0a7118e3b9540a2"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREB-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "32291b9ed64474413a3fc5f2104f1157f4ad09bd6ac9ffe6a30704d33b23b15d"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREB-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "dad6a39b630583792823bc81f58383fa9159fd62f3d738756f16a4da63d3d486"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREB-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "6e588b1399a27adb2971e26f9d381a40cbf20d41050f8d5227facf01fb61e7b8"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREC-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "92735f1703b175a46b1b47575d9996dcc58e4f27be1304fc90ff3a969db64d46"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREC-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "1252b5411e6a490fe61b9bf47f770c5765da2772ab73890bf2f17dfa8ad47c4f"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREC-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "d0785776517f23923b671e0908aff9f23b428568d1d85b104ca4eb6439f9cafc"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREC-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "b50a7e42695432645a4936238ce275b07614136e8a27b7da2f8bf7d832b55dd1"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORED-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "357e35e3228cd9516e8f457f2c6b6ba8e4a500ae11411a11f0c8235866da000c"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORED-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "dd5d335b07c3c5cecfdac9c1d934bf03c10079ae2024f4ad87cd0fbc51d77f4a"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORED-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "bc47717397f4e64c303c2a07eb63623e0e59aa295ebe6d193aa73fb0f327c17a"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCORED-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "6fd4685ec5a74e2877f66de6f43c49442438dea35eeea11e0fc6060f16726dc4"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREE-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "d3a3d266f946edfeaeb73cc0aedd21e225e6e58ffe44698a05cb895bf9d56e75"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREE-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "70d8c62f5180bd202b21ab190b04d9876603228ea9e8f137076d029af9a3fffc"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREE-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "41bf9a452832186bd61bcb9f817a00618c9c232601aab3de6487ebc9418cc8ad"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREE-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "4a064a67828602159f4abf740cc2f211e5205b85a232a97913960d63a0d93bb7"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREF-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "44c898f291a462cdc2660ec80bf9013c45427ae269132ead97f5d867c5b6a068"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREF-INSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "03cb6ada711936d93f5134bce53fbcf9321689cb32135e56baf1efe06bca895e"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREF-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "sha256": "aa665d255459fd6becf6dd5e38387a98d1cd693d266b6df13d6bc183ef241135"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/SCOREF-OUTSTREAM_2026_9_17_10_45_18.txt",
+      "bytes": 80,
+      "sha256": "d6cdd666ebe79b2dee35fd3b92837826775f8ae866047ce3bdc541e70a7c18e2"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/device-occupancy.json",
+      "bytes": 543,
+      "sha256": "1bb0692acef3b50bec35581e68949227ce3118e6cab06868b2a5d5a43b834c08"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/host-device-kernel.log",
+      "bytes": 1557,
+      "sha256": "9a01266f69d58408a9c5dd77bc509b913a33ed107fb613f30ccd617b935e9593"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/log-inventory.json",
+      "bytes": 19905,
+      "sha256": "0bdd929006b9c14e5ae3c97b20f1ce0636b32e4f6d3ee4c09325e353622edb98"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/recovered-device-kernel.log",
+      "bytes": 798,
+      "sha256": "ea373987dd2bb5555ebc2a0faa8c3e84cee5cfd2323aeb0dd64c24500b3831ea"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/runner-exec-timeline.json",
+      "bytes": 65272,
+      "sha256": "8eeaa1df2d51841b310aefeebeba1dd0287a31873256aaa5c17ea07f8ebd5dfa"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/task-status-disassembly.txt",
+      "bytes": 2136,
+      "sha256": "54150f801a95c2d25c4128dca2120fb01f69ff902b563a951313683609b222bf"
+    },
+    {
+      "path": "build/test/board-decode-timeout-host-20260917/trace-step-02-disassembly.txt",
+      "bytes": 8741687,
+      "sha256": "8ae80a2cb28a668c303d3ac4644d5b68322f4474797594da0cea226aca73722e"
+    }
+  ],
+  "log_archives": [
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/FABRIC_MANAGER_2026_9_17_10_45_18.tar.gz",
+      "sha256": "cb8554057d31b7e3ef3fb66856d33bf034304d606bcfdeec8a7ab98420b0d926",
+      "decoded": "build/test/board-decode-timeout-host-20260917/FABRIC_MANAGER_2026_9_17_10_45_18.log",
+      "bytes": 1086,
+      "decoded_sha256": "078b569a31f19dc44d3a8c46dacfc88e339bff712fb934eabbfa1a41be4f1b87"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE0_2026_9_17_10_45_18.tar.gz",
+      "sha256": "3135c0ecfc05d24f03cf884074d82d8cfa903448470bc758ce4285968630d145",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE0_2026_9_17_10_45_18.log",
+      "bytes": 112122,
+      "decoded_sha256": "3b0135a5a0eab63ef0784ae5e6915f3978262ec7fa1cf2630fbf047f8c693309"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE1_2026_9_17_10_45_18.tar.gz",
+      "sha256": "8c49d3067a86ee4b9daedce3f67bf2d8b789309782f4e93790aeea8c2c3884fa",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE1_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "b6f5c7906e0b086761edd0f922c67c540399026c2bcc748042d925463c9831cc"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE2_2026_9_17_10_45_18.tar.gz",
+      "sha256": "b67823df65d52ad338fe316a40f0f7b9061f1faa15e63cdeb51f22b3432facff",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE2_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "b3776dcbf07b14490b6f86b14273fb7e21ef52d8ce777278ba06d5896b463baf"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE3_2026_9_17_10_45_18.tar.gz",
+      "sha256": "06d7c8173725c4d3eef6b3cb9baaba7a0fd54efc2b8f6db4923edce618383dab",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE3_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "f875443b7295e8cc8d465f334db79eba2ab2f3ab18620cd241c9b83d06e9bd25"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE4_2026_9_17_10_45_18.tar.gz",
+      "sha256": "d778a7abbca3dc5c3f5fe1a4e9eeaf4edaaff486e9a468e68ee2ff23f30ef482",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE4_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "ed2fbdc6056151b0ad3987cf56f2ae8eb047e693e9735b715832bbd263a9bde7"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE5_2026_9_17_10_45_18.tar.gz",
+      "sha256": "93174eac88044b1d96d0bfc332a168ff250cd430a357139ed5d3a08b6d0ff905",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE5_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "bf7a5a623f22785c0eac3eec035f7423ded3b5d77186e56ace290cba91e45991"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE6_2026_9_17_10_45_18.tar.gz",
+      "sha256": "1391adff44b373149a340df20676fdace1a8894818ab2e4a25c7c379f2a7ee05",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE6_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "2fa62d1756d198226e3f73ebbbdb0e07ee756ff47880c36cc2376b4ac1bc5884"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE7_2026_9_17_10_45_18.tar.gz",
+      "sha256": "c05175bbd3c682af34ca44fbffe9a249f2d9d427f89fdd3c0254fa4fbb1ed642",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE7_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "bfb9723b728d196965a5ac08055dffb06ec0a277ecb05c36921c17e91307acfd"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE8_2026_9_17_10_45_18.tar.gz",
+      "sha256": "eb0ff2678bb7909eb082bd7ee7286d300ba34493a612bf836a42e91b28d62b61",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE8_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "8ff57a550db357b1ddef1c344082840b14a6b3ae02176f0db8ee641675881ffb"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORE9_2026_9_17_10_45_18.tar.gz",
+      "sha256": "800bfe5edfb715000d500340c692a0f5d01c4876385991fb0a61aa8f2f392e6c",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORE9_2026_9_17_10_45_18.log",
+      "bytes": 105762,
+      "decoded_sha256": "e6b5c2390de82c47e99c83c3fcc26e2cedca153a5af3a720272be20bc19852ce"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCOREA_2026_9_17_10_45_18.tar.gz",
+      "sha256": "535cf741c0ba96f9959f3cc456391693015d558096768abef11a1d959c8432ed",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCOREA_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "decoded_sha256": "b982cec16e47fc6258a83918e988a17f9d0fda6a5da1138ad6fecf254e42ba6b"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCOREB_2026_9_17_10_45_18.tar.gz",
+      "sha256": "e4cbb608a963ee38ee00d2d9f78dc4b1dc0ccebf3f64e7e4a38ccc182950c079",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCOREB_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "decoded_sha256": "2682aa076d668f97585ab97db22aaa5b87dbee7a966266c207437ed1c4783b29"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCOREC_2026_9_17_10_45_18.tar.gz",
+      "sha256": "7c70295c0592e0b3bd84a405d493b2bbe1665ee5f1fec6bb00b78c02267f37bb",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCOREC_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "decoded_sha256": "13e605baefe2fe54e26aad81093459da48e0dd72d0ef90fb9be8057b9ff1ead6"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCORED_2026_9_17_10_45_18.tar.gz",
+      "sha256": "e8911caa986a6a5433dd4ca553f0694e9dc6120dc73b0180a128779c887d0f33",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCORED_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "decoded_sha256": "9bc7dd61eb460c66e3d33d91cacccb86116d14f3f2b7beda1e824fd9dbe213f5"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCOREE_2026_9_17_10_45_18.tar.gz",
+      "sha256": "666a25e6f43b9d05ab641d9d3e406411f72c14ce93761496983ab03f9c809918",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCOREE_2026_9_17_10_45_18.log",
+      "bytes": 105973,
+      "decoded_sha256": "fbafc342e573deb61cad389210324f6f5863de07579da208c1e9a469c91f97c3"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KCORE/KCOREF_2026_9_17_10_45_18.tar.gz",
+      "sha256": "0d60dfa3dea220f25ecbc8084adfd98d3ca8f999583e3342fff87772290b9aa2",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KCOREF_2026_9_17_10_45_18.log",
+      "bytes": 105908,
+      "decoded_sha256": "25f928ca87797a54ce9e5d31eff7ade17632583f2b3a8f545e3e4b1e41adf4e5"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/KERNEL_2026_9_17_10_45_18.tar.gz",
+      "sha256": "303f860930754b687d025215318d8f2efd3747f47f7bebda51436562a4ebb24c",
+      "decoded": "build/test/board-decode-timeout-host-20260917/KERNEL_2026_9_17_10_45_18.log",
+      "bytes": 343560,
+      "decoded_sha256": "d473b4f6b5a9498f3ea240a0951133c984f86e92757134bac363e81562225edf"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/NPUVS_2026_9_17_10_45_18.tar.gz",
+      "sha256": "36db0d97fe122eba0420e9d8df32e80ee92571dc16040c26f67505dbb3b601a0",
+      "decoded": "build/test/board-decode-timeout-host-20260917/NPUVS_2026_9_17_10_45_18.log",
+      "bytes": 186,
+      "decoded_sha256": "f6874acec7fd498eee56127327f9bfce643f9e9315670265c10f4edb9af8e7c2"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE0-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "8abc520e8e46719492b3c3cd10a376958bd9cb6e9539be16edcc4659c6e63b10",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE0-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "bf806c2d13702673449538bb52d3eb553bd8e0e72da39c8d92da5a90abce29c3"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE0-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "d422e9a5f5f2ef875b74046bfa6cb362f62729086bd5439940fb6309205afac5",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE0-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "54429da3cd9dc49d9c370fd46499fdfa3234e47063e014eef9389572a544eacc"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE1-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "b23a8bd78866b0b5099379e4bd091acc9cdd4dd77c96431d9d4040e3e4116aa8",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE1-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "3cd1f43f8e3873c26ec034c2635c01610ba3f2235d91c0696350f83e7af291dc"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE1-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "0631e1e816e63ba7d5d050018d12fe56ac6824a82aa6b8dd0c64c5aa1c112757",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE1-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "24a13d072f46c964774df0cb288df3694c5df85d171b7718bad7cdf45e92857c"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE2-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "f0aeb4d8de9971f7237bece33f30e063e2b92d85665ed85b9c833a1c475c2ddb",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE2-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "3c69215150c6cf493aac1612baea22074eb9664ef78414caa8a746d9084a25ca"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE2-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "99a916cdfc2c88cb1b569e4d942619a3cd46cb1360f98e5d5b7b5f45d15f9121",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE2-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "2d4db899954644275dfad7d6705042dab8ee54271793d55e23515976aab8a48b"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE3-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "33d0d65ac31a5c29c061436b69b61ca578f36012ad4f9d295f2b934e4911c26c",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE3-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "543072dff8fe42bdb12e9287d34124a469affe7d408efed84f5df2729366cee3"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE3-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "a102bae910cd9b2f97b63f612708078b478cdd17e29eae27910a561a099d2b94",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE3-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "59fa5fbaf0f1e98b124c9ae2ef5703dd688ca2f57f3abbff77866c2859139799"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE4-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "c296c919871e26d8547af7b915b07728f53e22364c317618803044304d05ef04",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE4-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "50d2ac5c4a005a052031d27c51e07ea152518d8aeeecfec61d9a2aa0dfc6aab5"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE4-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "c99875e5fe6fb02a68cecc6068e9f13357b5f7d97453080780ca774d3905a59c",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE4-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "0d427463a435669bc9ac417db484e5a642a68603be5ff819175e3a7cf1789f82"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE5-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "584b7879f1399137d6844e8274cd7c1c7fb9192d14794b80351af1d03a299ba0",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE5-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "57e336a6073bdc28852fc465198d99636f398a3955402f78b75880b087022910"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE5-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "3b10624899c95ba45256189a7cb01b1be17152e59c0a633b1ea383eb47abfd4d",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE5-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "ac17fce724289d01193ed8965dcea4234d207472b2d7ea65e8ca56d67ecc1498"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE6-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "10ae1cffd85d2e64e068c0b9321538c6c7c6c52bee46acc2df2d58b8e0c0be5f",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE6-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "adbdc03710907598d71bc8c1ba958704a7791bd3f0d1bab5f47c200b6970ef23"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE6-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "fb25dc9964819f2bf8f319d3e80242cbccfaccdeb76ba9259b1438460f44215e",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE6-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "43deda8c38e31856647e203d140343bd81a89f198e8fe206fa36023722e03f9a"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE7-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "059825380ffe083e49a40db086e825b39df228d0801943bf5fab58257c3dfe91",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE7-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "ef281a7bc39c55978df9ab83c12c7a8fa2d204af6159b89a81c4bb520d12335d"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE7-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "ddfc74ce0876dfddfe5a1f410c516df0730ddea914ef7ad6ab8a83e41f9044bd",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE7-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "f53cfa559509600fe27e72e7e37ac048e244b03c183af589fa9c9d374f653b53"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE8-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "81b4a8d8a009a7d2b5b11a5c1819a648ce9e5ce16b0f3612af4e0fd7a7ee15a9",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE8-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "cb8afbc016d0434f661aed19add7458c4d21d224274bb68243adf4ed96a3016a"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE8-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "26967305c164912333ad2b5340948ab340dc17c050bcd1c6b9d364d7b027299a",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE8-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "e59fb403331cd7a20db63bc66de870b4f6be65e2eddb3256eeefd2b9631461ec"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE9-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "94d468ad333fd88e67d667d71fdae05ffbb7985ec903dec84f31f99fd6739c42",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE9-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "2f659e1428519d41d1f4c54c0e625cfa242d786295ba67ab72b0a2f6eb294ab8"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORE9-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "658f71c1b328f714c1e58cf060f51d72692d9a36f4ffc7f4754b00a739210df3",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORE9-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "9037da0ef1c978f153a4fb7c5659b6e6e3efc57f2c147fcd36fbd088e610e6e6"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREA-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "64f8aa2b6d62b58f9b5d43262c628838ecd492b317833842c54341174d3c9758",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREA-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "ad2243905b08defbe39d5ac01461c092faab8d36efd1fd2d9a970a4dc4b07c96"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREA-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "e9338cda14c8af3588137359fccabf551b7ae0711061980c0e46e91354b607a8",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREA-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "bc4d3dee256228c529c0ec19ad849747a1ef1e21a93bcea0afcab6dd149678c8"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREB-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "606c541c0d9916ead82e76d0c3392c96f0d084a500b9bc2fed64a38cfdbd0d1d",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREB-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "af01b0cac07c893333c2e5e030ab0965a8a5c5d61b10c45cd0a7118e3b9540a2"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREB-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "a3f45017cafb8b032cac42e91871b3d95d1f50cc14ec89962a8a68226f56b220",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREB-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "dad6a39b630583792823bc81f58383fa9159fd62f3d738756f16a4da63d3d486"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREC-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "d6475570f60adf2f1d7b3ef9af20170c04bde1713dac8e72f72f2f8050bf8a00",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREC-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "92735f1703b175a46b1b47575d9996dcc58e4f27be1304fc90ff3a969db64d46"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREC-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "4a8e100fb766b418479ca2974eb11cd814e09896e042b851dcd86221339b4faa",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREC-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "d0785776517f23923b671e0908aff9f23b428568d1d85b104ca4eb6439f9cafc"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORED-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "4e258f739c6696e3f7007a3ccbe5b2fe5e6e79c01bfe82f864cc44da3ce8c105",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORED-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "357e35e3228cd9516e8f457f2c6b6ba8e4a500ae11411a11f0c8235866da000c"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCORED-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "40a0e6c6ae654c19f9e30f5403aa8eb2ae9ea2f8c9c8e69ae5d6d8c4249d0c38",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCORED-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "bc47717397f4e64c303c2a07eb63623e0e59aa295ebe6d193aa73fb0f327c17a"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREE-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "5c2cc6628c1d261885962da3167fba70bc9605194c851e62a33829ffb1edcd22",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREE-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "d3a3d266f946edfeaeb73cc0aedd21e225e6e58ffe44698a05cb895bf9d56e75"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREE-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "aa83495528b8df2cb1d54abc51c3b6b72445644bd5c4c927c0096880cdaaf09c",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREE-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "41bf9a452832186bd61bcb9f817a00618c9c232601aab3de6487ebc9418cc8ad"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREF-INSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "05fc5e905311f9fceb2a5b12ea1d3dddcca0d2215749f8a998bf33ec5d6c96dd",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREF-INSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "44c898f291a462cdc2660ec80bf9013c45427ae269132ead97f5d867c5b6a068"
+    },
+    {
+      "archive": "/var/npu_ep_log/0000:3b:00.0/SCORE/SCOREF-OUTSTREAM_2026_9_17_10_45_18.tar.gz",
+      "sha256": "5f20754146d61d04dc90c0ef8cbc6af8999b24dfacc846ea39e872c5bb454b9a",
+      "decoded": "build/test/board-decode-timeout-host-20260917/SCOREF-OUTSTREAM_2026_9_17_10_45_18.log",
+      "bytes": 81,
+      "decoded_sha256": "aa665d255459fd6becf6dd5e38387a98d1cd693d266b6df13d6bc183ef241135"
+    }
+  ],
+  "occupancy_observation": {
+    "observed_utc": "2026-09-17T06:36:20.242554Z",
+    "boot_id": "17fc74e7-3f84-4f90-8ced-1926b1289a62",
+    "device": "/dev/accel/dev-0",
+    "holders": [
+      {
+        "pid": 1623,
+        "uid": 0,
+        "executable": "/usr/bin/npu_pull_ep_log",
+        "fds": [
+          "3"
+        ],
+        "role": "verified-system-log-service",
+        "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service"
+      }
+    ],
+    "unreadable_pids": [],
+    "provider_calls": 0,
+    "scope": "host file-descriptor snapshot, not an exclusive lease or a board health test"
+  }
+}

@@ -69,6 +69,9 @@ Wafer compiler、runtime、工具、文档和测试共同演进。任何修改�
 - 有板端要求的任务先达到`board-ready`：在无卡环境准备完整case、输入、reference、runner和`ExecutablePackage`，并通过本轮no-card。
   `board-ready`不是`done`；只有本轮真实板测通过才可标`done`。
 - 真实设备始终单进程、逐case运行，只运行当前任务指定case。同一设备会话且软硬件身份未变时只确认一次环境。
+- 每次上板前做系统级只读占用检查，覆盖其它用户和容器的设备进程；有人使用就等待，空闲后重新检查再运行。
+  仓库内互斥锁不能代替占用检查；权限不足或用途不明不当作空闲。常驻管理/日志服务须核对真实身份后与计算任务区分，
+  不终止他人进程或服务来取得设备。
 - 普通纵向默认FP16或BF16；F32只用于F32格式、ABI、转换、数值边界或真实输入要求，并记录原因。上板前核对输入、descriptor、
   payload和expected的dtype一致。
 - 每个case只执行必要的增量构建、单次launch、timeout、结果/guard检查和正常清理。timeout或设备异常后停止批次，
