@@ -96,6 +96,9 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
         return output, mean.to(input.dtype), rstd.to(input.dtype)
 
     decompositions[native_layer_norm] = cpu_layer_norm_results
+    # Match pinned PyTorch/XLA's StableHLO export decomposition. The source
+    # contract uses ordinary softmax, including NaN for an all-negative-inf row.
+    decompositions[torch.ops.aten._safe_softmax.default] = torch.softmax
     average_pools = (
         torch.ops.aten.avg_pool2d.default,
         torch.ops.aten._adaptive_avg_pool2d.default,

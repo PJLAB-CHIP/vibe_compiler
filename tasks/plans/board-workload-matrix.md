@@ -123,7 +123,12 @@ S1025耗时432.359秒，仍为5个actual容量拒绝、37个unsupported；其DDR
 部分动态BOOL view的copy证明及非连续mask的select仍未闭合，不能把通用可证明情形通过写成整块通过。
 五项block/GEMM均从本轮原source构包/no-card并各三次实卡全输出通过；最终compiler重编包与本轮实测包逐byte相同。
 两种block与先前decode搬运修复包相同，三组GEMM与前一接受包相同，设备时间见统一板测记录。
-下一步先从失败candidate的actual view/alias来源和mask转换边界继续收口；ViT两项仍无完整package，保持未完成。
+随后用户要求在导出时直接去掉safe-softmax保护分支。02号source合同现按pinned PyTorch/XLA已有规则，
+将typed `aten._safe_softmax`映射为普通`torch.softmax`；全负无穷行按普通softmax处理，原module/reference及显式mask不改。
+直接抓图前端只补同一decomposition，不扩展attention IR；前端完整回归及新增6组softmax/6组attention导出、XLA数值和source verifier通过。
+原ViT S1024/1025的新source均无BOOL保护链，经现有pipeline均形成一个Flash Attention；完整XLA输出对原PyTorch reference
+cosine分别为0.9999999781680936/0.9999999778989800，relative L2为0.0002089591/0.0002102428。
+五项保护case重新导出的完整source与上述实卡版本逐byte一致。ViT完整8/42编译结果继续按实际package/no-card及板测验收。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

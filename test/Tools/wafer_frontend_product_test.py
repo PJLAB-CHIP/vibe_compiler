@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 from unittest import mock
 
 import numpy as np
@@ -481,6 +482,77 @@ def check_silu_precision(output_root: pathlib.Path) -> None:
     print("silu_opmath: cases=6 final_narrowing=true")
 
 
+def check_softmax_export(output_root: pathlib.Path) -> None:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "Board" / "PyTorch"))
+    import wafer_pytorch_board_common as comparison
+
+    class Softmax(torch.nn.Module):
+        def __init__(self, output_dtype):
+            super().__init__()
+            self.output_dtype = output_dtype
+
+        def forward(self, value):
+            return torch.ops.aten._safe_softmax.default(
+                value, -1, dtype=self.output_dtype)
+
+    class Attention(torch.nn.Module):
+        def forward(self, query, key, value, mask=None):
+            return torch.nn.functional.scaled_dot_product_attention(
+                query, key, value, attn_mask=mask)
+
+    generator = torch.Generator().manual_seed(431)
+    for dtype, extent in ((torch.float16, 1024), (torch.bfloat16, 1025),
+                          (torch.float32, 1031)):
+        for output_dtype in (None, torch.float32):
+            model = Softmax(output_dtype).eval()
+            values = torch.randn((2, 3, extent), generator=generator).to(dtype)
+            values[..., :17] = -torch.inf
+            directory = output_root / f"softmax-{dtype}-{output_dtype}"
+            export_pytorch_program(model, (values,), directory)
+            text = subprocess.check_output([
+                os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                str(directory / "functions/forward.stablehlo.bc"),
+            ], text=True)
+            if "xi1>" in text or "tensor<i1>" in text or "stablehlo.select" in text:
+                raise RuntimeError("safe-softmax boolean guard survived export")
+            actual, = run_exported_graph(directory, (values,))
+            torch.testing.assert_close(actual, model(values))
+            # The requested source policy is ordinary softmax for this row,
+            # rather than the extra all-negative-inf-to-zero behavior.
+            special = values.clone()
+            special[0, 0, :] = -torch.inf
+            actual, = run_exported_graph(directory, (special,))
+            expected = torch.softmax(special, -1, dtype=output_dtype)
+            torch.testing.assert_close(actual, expected, equal_nan=True)
+
+        query = torch.randn((1, 2, 8, 16), generator=generator).to(dtype) * .125
+        key = torch.randn((1, 2, extent, 16), generator=generator).to(dtype) * .125
+        value = torch.randn((1, 2, extent, 16), generator=generator).to(dtype)
+        for masked in (False, True):
+            inputs = (query, key, value)
+            if masked:
+                mask = torch.zeros((1, 1, 8, extent), dtype=dtype)
+                mask[..., :17] = -torch.inf
+                inputs += (mask,)
+            model = Attention().eval()
+            before = tuple(tensor.clone() for tensor in inputs)
+            directory = output_root / f"softmax-attention-{dtype}-{masked}"
+            export_pytorch_program(model, inputs, directory)
+            text = subprocess.check_output([
+                os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                str(directory / "functions/forward.stablehlo.bc"),
+            ], text=True)
+            if "xi1>" in text or "tensor<i1>" in text:
+                raise RuntimeError("attention export retained a boolean softmax guard")
+            actual, = run_exported_graph(directory, inputs)
+            comparison.assert_tensor_matches(
+                actual, model(*inputs), policy=comparison.make_similarity_policy(dtype),
+                context=f"exported attention {dtype} masked={masked}")
+            for tensor, original in zip(inputs, before):
+                torch.testing.assert_close(tensor, original, rtol=0, atol=0)
+    print("softmax_export: direct=6 attention=6 mask_preserved=true all_inf=ordinary_softmax")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=pathlib.Path, required=True)
@@ -508,6 +580,7 @@ def main() -> None:
     check_composite_precision(args.output_root)
     check_pooling_precision(args.output_root)
     check_silu_precision(args.output_root)
+    check_softmax_export(args.output_root)
     check_direct_xla(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")

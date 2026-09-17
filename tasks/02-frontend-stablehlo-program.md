@@ -224,6 +224,24 @@ FP32，convolution和bias加法在FP32完成，整个算子结果再转换回原
 完成条件为带/不带bias、FP16/BF16/F32、参数state与真实规模tail的export/verifier验证，以及原组合case完整PyTorch验收；
 具体矩阵与本轮实卡证据由统一board-testing计划拥有。
 
+### 2.4 Safe-softmax 的导出表示
+
+输入是原始module直接XLA抓图时的typed `aten._safe_softmax`调用。按用户指定的导出策略，复用pinned
+PyTorch/XLA `stablehlo._run_decompositions`的同一映射，将该调用交给`torch.softmax`，保留dim、dtype和
+普通softmax的opmath；不生成额外的`eq(-Inf) → all → where`。输出是普通StableHLO softmax图，直接交既有
+source verifier及05号attention识别；唯一用户入口仍为`export_pytorch_program`。
+
+这是明确的source语义选择：全为负无穷的行按普通softmax产生NaN，不保留`_safe_softmax`额外归零行为。
+不删除模型显式编写的mask、比较或select，不修改原module、参数、输入及CPU reference，不改已有portable source，
+不扩展attention IR或按模型名分派。普通有限输入及每行有有限值的masked输入与原算子比较；全负无穷行只验证
+上述普通softmax合同，不能声称与原safe-softmax等价。
+
+完成矩阵：rank3/4、1024/1025/1031、FP16/BF16/F32、显式dim/dtype及attention调用，检查导出无额外布尔归约、
+原mask保留、完整XLA数值及caller state不变；原ViT S1024/1025重新导出后进入当前正式compiler。
+导出或局部attention识别通过不代签完整package/no-card或板端完成。
+映射依据为[PyTorch/XLA 2.5官方导出器](https://github.com/pytorch/xla/blob/v2.5.0/torch_xla/stablehlo.py)，
+实际接口以本仓pinned源码确认。
+
 ## 3. Frontend Verification
 
 ### 3.1 IR 与 function boundary
