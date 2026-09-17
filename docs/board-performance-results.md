@@ -1927,3 +1927,23 @@ launch/entry/resource结构一致。LLVM target call只存在相应format和conv
 embedding至final norm的CPU输出与head输入逐byte一致，恢复后embedding按exact、两个计算边界按原相似度合同检查。
 这些拆分会改变编译选择：独立head选择`M16/K1024/N500`，完整LM head为`M16/K512/N250`；
 故局部通过不能代签完整candidate。设备恢复前只准备主机产物，当前第一项未完成，后续项按既定顺序等待。
+
+## 2026-09-17：重启后的完整LM与故障边界复验
+
+用户确认重启后核对新boot、相同compiler/runner/runtime，canonical增量构建为Ninja no-op。
+先逐个检查三个原HF拆分边界，再运行完整BF16 LM及连续FP16→BF16；每次重新生成source、输入/reference，
+与prepared source逐文件核对并通过fresh no-card，未修改代码、包、超时或数值门限。
+
+| 串行执行边界 | 设备耗时（ms） | cosine | relative L2 | 完整输出结果 |
+| --- | ---: | ---: | ---: | --- |
+| BF16 embedding | 0.786 | exact | exact | 65536元素逐点完全相同 |
+| BF16独立LM head | 3.910 | 0.999999988388 | 0.000152440 | 512000 logits通过 |
+| BF16 embedding至final norm | 72.952003 | 0.999965120939 | 0.008352138 | 65536元素通过 |
+| BF16完整LM | 75.915001 | 0.999962212763 | 0.008693354 | 512000 logits通过 |
+| FP16完整LM | 75.117996 | 0.999999370087 | 0.001122423 | 512000 logits通过，与重启前成功capture逐byte一致 |
+| 紧接FP16的BF16完整LM | 74.524002 | 0.999962212763 | 0.008693354 | 512000 logits通过，与本会话前次BF16 capture逐byte一致 |
+
+六次均正常completion/readback/cleanup，没有设备超时。原BF16失败包在新会话两次通过，FP16→BF16次序也未复现超时；
+该事件根因仍为unknown，不由重启恢复反推软件/硬件根因，也不声称已有代码修复。第1项的当前包完整重测已闭合，
+后续按顺序定位未融合图数值问题。这些样本不构成跨compiler版本的性能消融。
+身份、原包关联、fresh输入和全输出数值见[恢复会话证据](data/board-performance/full-lm-recovery-20260917.json)。

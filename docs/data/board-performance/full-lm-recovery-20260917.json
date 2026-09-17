@@ -1,0 +1,864 @@
+{
+  "date": "2026-09-17",
+  "scope": "Ordered task 1, new device session after user-confirmed reboot",
+  "identity": {
+    "compiler": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+    "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+    "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "commit": "c482d54d",
+    "boot_id": "846bacdd-2ff9-4280-8567-9310b30fa20b",
+    "parallelism": 80,
+    "canonical_build": "passed; subsequent Ninja no-op",
+    "resnet_extent": 224,
+    "source_revision": "clean committed source",
+    "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+    "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+    "previous_boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+    "user_confirmed_recovery": true
+  },
+  "canonical_build": "Ninja no-op",
+  "software_changed": false,
+  "diagnostics": [
+    {
+      "boundary": "embedding",
+      "result": {
+        "boundary": "embedding",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-single-layer-embedding-diagnostic",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-embedding-diagnostic-bfloat16-prepare",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timeout-seconds",
+          "1800",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "identity": {
+          "compiler": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+          "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+          "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "commit": "c482d54d",
+          "boot_id": "846bacdd-2ff9-4280-8567-9310b30fa20b",
+          "parallelism": 80,
+          "canonical_build": "passed; subsequent Ninja no-op",
+          "resnet_extent": 224,
+          "source_revision": "clean committed source",
+          "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+          "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "previous_boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+          "user_confirmed_recovery": true
+        },
+        "started_utc": "2026-09-17T02:12:14Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 18.615838009000015,
+        "audits": [
+          {
+            "case": "llama-single-layer-embedding-diagnostic",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "cc58de5fb33fb48d35c72a4f8355283027303750a7947f259e5937cc7d71343b",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.0,
+              "atol": 0.0,
+              "equal_nan": false,
+              "min_cosine": null,
+              "max_relative_l2": null
+            },
+            "inputs": {
+              "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=786000"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board.json",
+        "sha256": "be3ef6b53c4531d4cbf428c175fffa7bae515894bbddf09da981e5c9941371fd",
+        "bytes": 3155
+      },
+      "combined_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board.log",
+        "sha256": "ba649ce6a21fc90c34db5d426e9c9b352337dbd2dcd974549c4aacd4ef52263a",
+        "bytes": 7056
+      },
+      "board_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board/board-01.log",
+        "sha256": "ea61a4a40155602b2db76dd92795fca5e9ed33964b335e9333c635c120d37e27",
+        "bytes": 3912
+      },
+      "source_metadata": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board/source-program/functions/forward.meta",
+        "sha256": "71a7335021eb8ec84c16293d9f7123418dcd19452142d068d5c33b21fc6624a1",
+        "bytes": 490
+      },
+      "payloads": [
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+          "sha256": "15bc86ed849dad99710b1b04f6927180d41114f0a25f81ff8f9c2def80204cfc",
+          "bytes": 131072
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "15bc86ed849dad99710b1b04f6927180d41114f0a25f81ff8f9c2def80204cfc",
+          "bytes": 131072
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-embedding-diagnostic-bfloat16-board/raw/card_00_user_input_0.i64.raw",
+          "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+          "bytes": 128
+        }
+      ]
+    },
+    {
+      "boundary": "head",
+      "result": {
+        "boundary": "head",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-single-layer-head-diagnostic",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-head-diagnostic-bfloat16-prepare",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timeout-seconds",
+          "1800",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "identity": {
+          "compiler": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+          "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+          "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "commit": "c482d54d",
+          "boot_id": "846bacdd-2ff9-4280-8567-9310b30fa20b",
+          "parallelism": 80,
+          "canonical_build": "passed; subsequent Ninja no-op",
+          "resnet_extent": 224,
+          "source_revision": "clean committed source",
+          "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+          "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "previous_boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+          "user_confirmed_recovery": true
+        },
+        "started_utc": "2026-09-17T02:12:47Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 18.488364628,
+        "audits": [
+          {
+            "case": "llama-single-layer-head-diagnostic",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "5e110a1806e87353037039083d4b5263de74fdd95660f91ba4c1077821d3d2db",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "456ee85649a2595c6e84683215a0742473bc4a67ab8b8b014f619bf1a76c7d37"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 512000,
+                "max_abs_error": 0.03125,
+                "cosine_similarity": 0.9999999883884287,
+                "relative_l2_error": 0.0001524403769622334,
+                "elementwise_mismatches": 143,
+                "mean_abs_error": 4.37603727914393e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3910000"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board.json",
+        "sha256": "5dc887fb48a34fabe9776b3d1d343f509f28cb982c6a254545dc02093dc6a258",
+        "bytes": 3334
+      },
+      "combined_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board.log",
+        "sha256": "624b979b6f701a2edb0bc82354dcd0e94cdef07ffea3d9e5fa6e940d56d0bac0",
+        "bytes": 7495
+      },
+      "board_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board/board-01.log",
+        "sha256": "a9d33218db17902b3904dcbe56a887a35ddb2e45f1cf544b2295d038d6c03c49",
+        "bytes": 3912
+      },
+      "source_metadata": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board/source-program/functions/forward.meta",
+        "sha256": "bff20b738fafd1fb9a772be5d529034be95eee10e5d6115b8c4bccbf31ae7fd4",
+        "bytes": 500
+      },
+      "payloads": [
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+          "sha256": "b1c38216791daace4a85221fac3adf1ba8672b8a4c20c8728f3a8f41f0f62ff3",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-head-diagnostic-bfloat16-board/raw/card_00_user_input_0.bf16.raw",
+          "sha256": "456ee85649a2595c6e84683215a0742473bc4a67ab8b8b014f619bf1a76c7d37",
+          "bytes": 131072
+        }
+      ]
+    },
+    {
+      "boundary": "model",
+      "result": {
+        "boundary": "model",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-single-layer-model-diagnostic",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-single-layer-model-diagnostic-bfloat16-prepare",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timeout-seconds",
+          "1800",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "identity": {
+          "compiler": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+          "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+          "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "commit": "c482d54d",
+          "boot_id": "846bacdd-2ff9-4280-8567-9310b30fa20b",
+          "parallelism": 80,
+          "canonical_build": "passed; subsequent Ninja no-op",
+          "resnet_extent": 224,
+          "source_revision": "clean committed source",
+          "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+          "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "previous_boot_id": "7eaae077-c03b-4992-a7f0-29d81c4b19c7",
+          "user_confirmed_recovery": true
+        },
+        "started_utc": "2026-09-17T02:13:27Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 34.013914818000046,
+        "audits": [
+          {
+            "case": "llama-single-layer-model-diagnostic",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "6cdddb81deb31caf7853ce08d1ad561a9b28054322bbb41c7da70490ffce1b0e",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.046875,
+                "cosine_similarity": 0.9999651209391482,
+                "relative_l2_error": 0.008352138293818185,
+                "elementwise_mismatches": 32303,
+                "mean_abs_error": 0.005803188338177279
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=72952003"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board.json",
+        "sha256": "53ad3e362ca5cb4c9a9e3a45ff579bb0b221cdd9bb2c4ca9f2924dc2eedd9219",
+        "bytes": 3345
+      },
+      "combined_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board.log",
+        "sha256": "325be92ec32cc9e944e0c1f40c0d3538f440ca4347c17001df33d8a89f9eca71",
+        "bytes": 7507
+      },
+      "board_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board/board-01.log",
+        "sha256": "3d8b0e74dd9a4506df535ade7c5034904c14cdf64ce23400c007cb7ee1e7bdac",
+        "bytes": 3908
+      },
+      "source_metadata": {
+        "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board/source-program/functions/forward.meta",
+        "sha256": "7a43b0a7a0f5317e5d05f0126b6d84791515a3f7aaf0a3a0b9c1bd4ecaada355",
+        "bytes": 2480
+      },
+      "payloads": [
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+          "sha256": "90cf3d6ad90c4ffe5acbb3952b170c312e01fb2ef6c955cee08040103342601f",
+          "bytes": 131072
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "456ee85649a2595c6e84683215a0742473bc4a67ab8b8b014f619bf1a76c7d37",
+          "bytes": 131072
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-single-layer-model-diagnostic-bfloat16-board/raw/card_00_user_input_0.i64.raw",
+          "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+          "bytes": 128
+        }
+      ]
+    }
+  ],
+  "complete_lm": [
+    {
+      "result": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "bfloat16",
+        "mode": "board",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "started_utc": "2026-09-17T02:14:15Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 48.671398773999954,
+        "audits": [
+          {
+            "case": "llama-2-7b-single-layer-lm-16",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "cd9fb97fc3cf350813a783b7f9796ae6a7f08fdfbbab7a0179fc66ee4b05e30f",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 512000,
+                "max_abs_error": 0.0625,
+                "cosine_similarity": 0.9999622127631932,
+                "relative_l2_error": 0.008693353974721119,
+                "elementwise_mismatches": 303631,
+                "mean_abs_error": 0.007981131306645694
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=75915001"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board.json",
+        "sha256": "9103522e399e20219157f940ed82c0ab63c93a4a37dea1b39d8588eb60f2829a",
+        "bytes": 2888
+      },
+      "combined_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board.log",
+        "sha256": "a91ed0971a864af594eeffc267214925a232c1e4ae50100c13264ffe1a0c6e9b",
+        "bytes": 4696
+      },
+      "board_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board/board-01.log",
+        "sha256": "e3bd922e65b8cb43467498c1eaa339c0dcda0778fff2ba152ba28fe2e61ab96a",
+        "bytes": 3900
+      },
+      "source_metadata": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board/source-program/functions/forward.meta",
+        "sha256": "8202ff3b9edccd7eff6993bece709120b77d7d3711a8d21ce2af27020929569d",
+        "bytes": 2692
+      },
+      "payloads": [
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+          "sha256": "b5c3cf5fd4ccda11952dcdde06700fcc90ad02bad61f9d78a94ab44705669ea4",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board/raw/card_00_user_input_0.i64.raw",
+          "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+          "bytes": 128
+        }
+      ]
+    },
+    {
+      "result": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "float16",
+        "mode": "board",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "float16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-float16-prepare",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "started_utc": "2026-09-17T02:15:32Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 53.993430579000005,
+        "audits": [
+          {
+            "case": "llama-2-7b-single-layer-lm-16",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "11057f6ce131f9b20ccd2346c8c12a425c8ae20c6207d08f558205b140be004e",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "torch.float16",
+                "elements": 512000,
+                "max_abs_error": 0.0078125,
+                "cosine_similarity": 0.9999993700873144,
+                "relative_l2_error": 0.0011224230004539396,
+                "elementwise_mismatches": 277,
+                "mean_abs_error": 0.0010353457215242089
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=75117996"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board.json",
+        "sha256": "af8114d436f45c7d27c912cefc027ea082dc2138eb59c30953e1562bb651093b",
+        "bytes": 2885
+      },
+      "combined_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board.log",
+        "sha256": "dfe95d4320057601920f237eaef69e527ffc7cf81682ffc9e5333cf19d93e93d",
+        "bytes": 4693
+      },
+      "board_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board/board-01.log",
+        "sha256": "537f36cae54afbe02fb7c4becfe5c7ab5589051587be23d53696583467b19102",
+        "bytes": 3898
+      },
+      "source_metadata": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board/source-program/functions/forward.meta",
+        "sha256": "aad972e0a923dd4a32f68f01298677f4fa0873f945b9b6cf7c9c2d7c3bcc8d58",
+        "bytes": 2677
+      },
+      "payloads": [
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board/raw/card_00_output_0.capture.f16.raw",
+          "sha256": "7ab42a6fd45b42d0b49ab2fd9fbad78e99a2e75410cbe78eec854155bbd7d2d9",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board/raw/card_00_output_0.expected.f16.raw",
+          "sha256": "26840afc3c4c88303ee8b9286fe049979f690ce995e9c7e6b0798107a2a6d4a6",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-float16-board/raw/card_00_user_input_0.i64.raw",
+          "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+          "bytes": 128
+        }
+      ]
+    },
+    {
+      "result": {
+        "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+        "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+        "case": "llama-2-7b-single-layer-lm",
+        "dtype": "bfloat16",
+        "mode": "board",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "llama-2-7b-single-layer-lm",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260803",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16",
+          "--optimization-policy",
+          "search",
+          "--search-width",
+          "8",
+          "--search-trials",
+          "42",
+          "--compile-timing",
+          "--compile-timeout-seconds",
+          "1800",
+          "--prepared-work-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-general-regression-20260917/llama-2-7b-single-layer-lm-bfloat16-prepare",
+          "--device-timing",
+          "--repeat",
+          "1",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000"
+        ],
+        "started_utc": "2026-09-17T02:16:53Z",
+        "status": "passed",
+        "exit_code": 0,
+        "wall_seconds": 44.300387419,
+        "audits": [
+          {
+            "case": "llama-2-7b-single-layer-lm-16",
+            "step": 1,
+            "policy": "search",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "cd9fb97fc3cf350813a783b7f9796ae6a7f08fdfbbab7a0179fc66ee4b05e30f",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.i64.raw": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 512000,
+                "max_abs_error": 0.0625,
+                "cosine_similarity": 0.9999622127631932,
+                "relative_l2_error": 0.008693353974721119,
+                "elementwise_mismatches": 303631,
+                "mean_abs_error": 0.007981131306645694
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=74524002"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16.json",
+        "sha256": "a9ac7a012eb57c38591e47cf9d358c1a21a84e00e1bd0491233efd8cfa7410a3",
+        "bytes": 2893
+      },
+      "combined_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16.log",
+        "sha256": "02a861ee3116c34380c1d4dff87883f73047a74052e092ce97ad7f33f900d90b",
+        "bytes": 4707
+      },
+      "board_log": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16/board-01.log",
+        "sha256": "5af31fe49b755b6e0da637518ca7d6f213262e3e587dc90d6ce0721fa1d36b37",
+        "bytes": 3911
+      },
+      "source_metadata": {
+        "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16/source-program/functions/forward.meta",
+        "sha256": "8202ff3b9edccd7eff6993bece709120b77d7d3711a8d21ce2af27020929569d",
+        "bytes": 2692
+      },
+      "payloads": [
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16/raw/card_00_output_0.capture.bf16.raw",
+          "sha256": "b5c3cf5fd4ccda11952dcdde06700fcc90ad02bad61f9d78a94ab44705669ea4",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16/raw/card_00_output_0.expected.bf16.raw",
+          "sha256": "e42fabc9f7994e8872b54e30212e1e92de04bd650abac45a2250da999383bedb",
+          "bytes": 1024000
+        },
+        {
+          "path": "build/test/board-lm-recovery-20260917/llama-2-7b-single-layer-lm-bfloat16-board-after-fp16/raw/card_00_user_input_0.i64.raw",
+          "sha256": "5ab13b8050dd2646e55fe95df16ef22b5f38fa55fe9eac7cbcab848851cabcaf",
+          "bytes": 128
+        }
+      ]
+    }
+  ],
+  "timeout_root_cause": "unknown; software unchanged and failed package now completed twice after reboot; no code fix claimed",
+  "current_full_bf16_package_passed_after_recovery": true,
+  "fp16_complete_output_identical_across_boots": true,
+  "bf16_complete_outputs_identical_within_recovered_session": true,
+  "original_timeout_reproduced": false,
+  "ordered_task_1_retest_complete": true
+}
