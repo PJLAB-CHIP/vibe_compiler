@@ -2102,3 +2102,14 @@ SystemC执行target call及模型completion，不执行板端ELF、真实PMU/cac
 上述检查未定位到可确定修复的代码缺陷；Trace卡住的Tile/site/PC及先行TDMA fatal的因果仍未知，
 不修改同步、PMU配置或容差来绕过。完整命令、数值、artifact身份及证明边界见
 [decode主机模型与静态审计](data/board-performance/decode-timeout-model-20260917.json)。
+
+## 2026-09-17：decode两步Trace实卡复测通过
+
+用户授权直接复测后，先运行带分阶段日志的诊断版，再运行未加日志的原包；两轮各两步Primary/Count/Trace均完成。
+每轮重新生成HF输入/reference，全部输出及actual KV接续通过，旧KV前缀exact；执行窗口未见驱动异常，旧超时未复现。
+原包两步普通设备耗时为6.580/7.162 ms，hidden cosine分别为0.9999997598/0.9999997451。
+这些是单样本，不签发匹配性能恢复；历史超时根因仍未知。原始结果保留在
+`build/test/board-trace-control-20260917/board/step_01`及`step_02`的`numeric-audit-01.json`和`board-01.log`。
+
+按用户要求撤掉本轮额外诊断拼接及专项测试，清理临时CRT日志副本、生成/检查/运行脚手架和重复汇总；
+原有正确性校验及通用修复保留。清理后canonical完整增量构建、Ninja no-op、44项runtime/CLI测试通过。

@@ -95,7 +95,11 @@ StableHLO gather fixture仍期待`index_cast`，而当前前端保留i32，未�
 继续完成当前原HF输入的两步formal SystemC及strict no-card，全部输出通过；96份Tile/Instr/target LLVM和
 6个Primary package文件与前轮保留产物逐byte一致。第二步使用新CPU reference KV，不能代签actual KV接续或Trace。
 Count/Trace参数区间、GS静态descriptor及安装固件栈检查未发现可确定修复的缺陷；物理地址、真实PMU/cache和
-故障site仍未闭合。具体证据与限制见统一性能记录；第3项状态不变，没有启动新的设备会话。
+故障site仍未闭合。上述为主机排查阶段，随后实卡复测如下。
+
+用户授权直接上板后，诊断版及未加日志的原包各完成两步Primary/Count/Trace；全部输出、actual KV接续和旧前缀exact通过，
+未发生timeout或驱动异常。原包两步普通设备单样本为6.580/7.162 ms，旧故障未复现，性能恢复及保护回归仍待闭合。
+按用户要求撤掉本轮额外错误信息拼接、专项测试、临时CRT日志副本和重复检查脚本，保留原有正确性校验、占用检查与异常即停。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责
