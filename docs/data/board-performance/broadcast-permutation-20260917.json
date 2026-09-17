@@ -1,0 +1,2659 @@
+{
+  "date": "2026-09-17",
+  "scope": "顺序第2项：broadcast实际relation修复，冻结未融合上游/当前正式后端与当前source-to-package保护回归",
+  "identity": {
+    "compiler": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+    "runner": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+    "runtime": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "commit": "c7bdfef8f26db872e4e4f576be19b8ed2e58bff5",
+    "boot_id": "1874bfa2-2b7c-4257-9353-6d82cf973b86",
+    "parallelism": 80,
+    "canonical_build": "passed; subsequent Ninja no-op",
+    "resnet_extent": 224,
+    "source_revision": "c7bdfef8 + actual broadcast relation metadata-view fix",
+    "crt_sha256": "8bc187fcb9a263a790cd79137243e27b4e05859eedeb13431a1af816dfbccdb1",
+    "compiler_path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+    "previous_boot_id": "846bacdd-2ff9-4280-8567-9310b30fa20b",
+    "user_confirmed_recovery": true,
+    "purpose": "broadcast actual relation fix, current compiler",
+    "frozen_upstream_compiler": "df665196241a7fa411cea87284d3d5811d7f844d8ddb53955e1532e3a655b751",
+    "diagnostic_replay_helper_sha256": "64dfb020169bccf7747b2bdc0907e1cfbc81851fa2452202ab4e142e0aeb1921",
+    "diagnostic_replay_source_sha256": "2f0fcc3cc5354c7dffd8f070bcab29b89f806ae15a695745b361fa01ab8de134"
+  },
+  "root_cause": {
+    "owner": "MoveBroadcastLowering",
+    "input_shape": [
+      2,
+      16,
+      128
+    ],
+    "output_shape": [
+      1,
+      16,
+      2,
+      128
+    ],
+    "dimensions": [
+      2,
+      1,
+      3
+    ],
+    "incorrect_behavior": "shape-only reshape proof erased the nonunit-axis permutation",
+    "fix": "proveMetadataView consumes actual broadcast destination-to-source relation",
+    "cpu_counterfactual": {
+      "correct_vs_expected": {
+        "cosine": 0.9999999999999999,
+        "relative_l2": 0.0,
+        "max_abs": 0.0
+      },
+      "wrong_view_vs_actual": {
+        "cosine": 0.9999998849514737,
+        "relative_l2": 0.00047986558407937883,
+        "max_abs": 0.0009765625
+      },
+      "wrong_view_vs_expected": {
+        "cosine": 0.5732861764745008,
+        "relative_l2": 0.9227411407869307,
+        "max_abs": 1.35333251953125
+      }
+    },
+    "failure_replay": {
+      "compiler_sha256": "b321823ad68a57b486b1525f3c6a9379497ea00e6cf9a70a223afad6d3d426ed",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "board",
+      "frozen_artifact_compiler": "df665196241a7fa411cea87284d3d5811d7f844d8ddb53955e1532e3a655b751",
+      "qualification": false,
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-unfused-diagnosis-20260917/llama-2-7b-block-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T02:20:33Z",
+      "status": "needs-review",
+      "exit_code": 1,
+      "wall_seconds": 25.948729874000037,
+      "audits": []
+    }
+  },
+  "validation": {
+    "component_tests_passed": 594,
+    "mapped_byte_matrix_cases": 30,
+    "verifier_lit_passed": 2,
+    "tile_to_instr_lit": {
+      "passed": 24,
+      "failed": 1,
+      "failure": "unchanged ncc-workers fixture expects cmpi ne, current completion emits cmpi eq; fixture contains no broadcast"
+    },
+    "canonical_build": "passed; subsequent Ninja no-op"
+  },
+  "package_parity": {
+    "float16": {
+      "changed_manifest_fields": [
+        "modules"
+      ],
+      "program_data_equal": true
+    },
+    "bfloat16": {
+      "changed_manifest_fields": [
+        "modules"
+      ],
+      "program_data_equal": true
+    }
+  },
+  "cases": [
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/unfused-bfloat16-package",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T03:55:07Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 20.884789042999728,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "87404bc27e7e71e034f718d0e10b8f75e38677a5c51780138d8079b573cdd400",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65536,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999953053677435,
+              "relative_l2_error": 0.0030641870934046767,
+              "elementwise_mismatches": 10,
+              "mean_abs_error": 0.00036640091275330633
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=8789000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        8.789
+      ],
+      "median_device_elapsed_ms": 8.789,
+      "upstream": "frozen actual Tile dataflow"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare",
+        "--device-timing",
+        "--repeat",
+        "3",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T03:55:59Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 32.27613777500028,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "cac6a47c11f03f7c79e74f91a96229a5844ac6cc1b8d52d71de452b22921514a",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65536,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999879965260843,
+              "relative_l2_error": 0.004899748790239562,
+              "elementwise_mismatches": 51,
+              "mean_abs_error": 0.0007326925697270781
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9747000"
+          ]
+        },
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "cac6a47c11f03f7c79e74f91a96229a5844ac6cc1b8d52d71de452b22921514a",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65536,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999879965260843,
+              "relative_l2_error": 0.004899748790239562,
+              "elementwise_mismatches": 51,
+              "mean_abs_error": 0.0007326925697270781
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9822000"
+          ]
+        },
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "cac6a47c11f03f7c79e74f91a96229a5844ac6cc1b8d52d71de452b22921514a",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65536,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999879965260843,
+              "relative_l2_error": 0.004899748790239562,
+              "elementwise_mismatches": 51,
+              "mean_abs_error": 0.0007326925697270781
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9928000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        9.747,
+        9.822,
+        9.928
+      ],
+      "median_device_elapsed_ms": 9.822,
+      "upstream": "fresh original PyTorch source"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "3",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T03:56:48Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 36.46699934999924,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998115787115,
+              "relative_l2_error": 0.0006141426009450267,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 9.299789235228673e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9897000"
+          ]
+        },
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998115787115,
+              "relative_l2_error": 0.0006141426009450267,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 9.299789235228673e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9935000"
+          ]
+        },
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998115787115,
+              "relative_l2_error": 0.0006141426009450267,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 9.299789235228673e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9750000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        9.897,
+        9.935,
+        9.75
+      ],
+      "median_device_elapsed_ms": 9.897,
+      "upstream": "fresh original PyTorch source"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/unfused-float16-package",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T03:54:21Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 26.379659650000576,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "eaf7589abc695c44d531450e014b7ff4a379d64ff15458095907f7fa5e18b85e",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998866155352,
+              "relative_l2_error": 0.0004763423575170532,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 6.570903497049585e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=8765000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        8.765
+      ],
+      "median_device_elapsed_ms": 8.765,
+      "upstream": "frozen actual Tile dataflow"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-block",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "1",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T03:47:53Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 27.906340717999683,
+      "audits": [
+        {
+          "case": "llama-2-7b-block",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.002,
+            "atol": 0.004,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                16,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 65536,
+              "max_abs_error": 0.0009765625,
+              "cosine_similarity": 0.9999998115787115,
+              "relative_l2_error": 0.0006141426009450267,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 9.299789235228673e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=9967000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        9.967
+      ],
+      "median_device_elapsed_ms": 9.967,
+      "upstream": "fresh original PyTorch source"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "single-card-gemm-4096",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-prepare",
+        "--device-timing",
+        "--repeat",
+        "3",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T04:08:46Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 9.86695511400012,
+      "audits": [
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "40b6423a852f31470a5f53da2a49aaea7499427c86b1ef15cf9bfd43780d422c",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+            "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 1.0,
+              "cosine_similarity": 0.9999999873937028,
+              "relative_l2_error": 0.00015884460990067264,
+              "elementwise_mismatches": 1310,
+              "mean_abs_error": 0.00024054590936373188
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6933000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "40b6423a852f31470a5f53da2a49aaea7499427c86b1ef15cf9bfd43780d422c",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+            "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 1.0,
+              "cosine_similarity": 0.9999999873937028,
+              "relative_l2_error": 0.00015884460990067264,
+              "elementwise_mismatches": 1310,
+              "mean_abs_error": 0.00024054590936373188
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6793000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "40b6423a852f31470a5f53da2a49aaea7499427c86b1ef15cf9bfd43780d422c",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+            "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 1.0,
+              "cosine_similarity": 0.9999999873937028,
+              "relative_l2_error": 0.00015884460990067264,
+              "elementwise_mismatches": 1310,
+              "mean_abs_error": 0.00024054590936373188
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6854000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        6.933,
+        6.793,
+        6.854
+      ],
+      "median_device_elapsed_ms": 6.854,
+      "upstream": "fresh original PyTorch source"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "single-card-gemm-4096",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "3",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T03:57:40Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 622.9606408069994,
+      "audits": [
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "c9a5165f34b736113061edbfa0343e5f66f8b77d869c6d536be857735c46d0f9",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+            "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 16777216,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980989868,
+              "relative_l2_error": 6.18928546096879e-05,
+              "elementwise_mismatches": 29626,
+              "mean_abs_error": 0.00030439076586930014
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6895000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "c9a5165f34b736113061edbfa0343e5f66f8b77d869c6d536be857735c46d0f9",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+            "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 16777216,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980989868,
+              "relative_l2_error": 6.18928546096879e-05,
+              "elementwise_mismatches": 29626,
+              "mean_abs_error": 0.00030439076586930014
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6704000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "c9a5165f34b736113061edbfa0343e5f66f8b77d869c6d536be857735c46d0f9",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+            "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 16777216,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980989868,
+              "relative_l2_error": 6.18928546096879e-05,
+              "elementwise_mismatches": 29626,
+              "mean_abs_error": 0.00030439076586930014
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6778000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        6.895,
+        6.704,
+        6.778
+      ],
+      "median_device_elapsed_ms": 6.778,
+      "upstream": "fresh original PyTorch source"
+    },
+    {
+      "compiler_sha256": "791e83e1c2ef59ab038e077e2e2a69d67b036ad90a8faf472fb45cfd6f939569",
+      "runner_sha256": "a3575580a4b0842ecefcb30a36f791111a67b4143c2806733f2d4aace4c1c036",
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "mode": "board",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "single-card-gemm-tail-4097",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board",
+        "--optimization-policy",
+        "search",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "1800",
+        "--prepared-work-dir",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-prepare",
+        "--device-timing",
+        "--repeat",
+        "3",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000"
+      ],
+      "started_utc": "2026-09-17T04:09:19Z",
+      "status": "passed",
+      "exit_code": 0,
+      "wall_seconds": 338.0164745359998,
+      "audits": [
+        {
+          "case": "single-card-gemm-m4097-k4097-n4097",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "64088ac5c19fd0db4cd00b498ce47f6a95547fa7033ea4613a4a909f92ccd14d",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "3a919ad8845c73b2a15a7c68de55534d58e85f799902ee628d38987ec5c1470f",
+            "card_00_user_input_1.f16.raw": "c6e6dd086a7e934aa2aa54336d13f5e8b5ff5970bc4432265ba61c28232b558f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4097,
+                4097
+              ],
+              "dtype": "torch.float16",
+              "elements": 16785409,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980578864,
+              "relative_l2_error": 6.256246309311977e-05,
+              "elementwise_mismatches": 29461,
+              "mean_abs_error": 0.00030822417685369484
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=8600000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4097-k4097-n4097",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "64088ac5c19fd0db4cd00b498ce47f6a95547fa7033ea4613a4a909f92ccd14d",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "3a919ad8845c73b2a15a7c68de55534d58e85f799902ee628d38987ec5c1470f",
+            "card_00_user_input_1.f16.raw": "c6e6dd086a7e934aa2aa54336d13f5e8b5ff5970bc4432265ba61c28232b558f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4097,
+                4097
+              ],
+              "dtype": "torch.float16",
+              "elements": 16785409,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980578864,
+              "relative_l2_error": 6.256246309311977e-05,
+              "elementwise_mismatches": 29461,
+              "mean_abs_error": 0.00030822417685369484
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=8461000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4097-k4097-n4097",
+          "step": 1,
+          "policy": "search",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "64088ac5c19fd0db4cd00b498ce47f6a95547fa7033ea4613a4a909f92ccd14d",
+          "comparison_passed": true,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "3a919ad8845c73b2a15a7c68de55534d58e85f799902ee628d38987ec5c1470f",
+            "card_00_user_input_1.f16.raw": "c6e6dd086a7e934aa2aa54336d13f5e8b5ff5970bc4432265ba61c28232b558f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4097,
+                4097
+              ],
+              "dtype": "torch.float16",
+              "elements": 16785409,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980578864,
+              "relative_l2_error": 6.256246309311977e-05,
+              "elementwise_mismatches": 29461,
+              "mean_abs_error": 0.00030822417685369484
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=8419000"
+          ]
+        }
+      ],
+      "device_elapsed_ms": [
+        8.6,
+        8.461,
+        8.419
+      ],
+      "median_device_elapsed_ms": 8.461,
+      "upstream": "fresh original PyTorch source"
+    }
+  ],
+  "protected_package_parity": [
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "current": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare",
+      "baseline": "build/test/board-attention-fusion-20260917/llama-2-7b-block-float16-prepare",
+      "equal": {
+        "package/manifest.json": true,
+        "package/modules/module_00000.so": true,
+        "all_16_target_llvm": true
+      },
+      "manifest_sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09",
+      "elf_sha256": "fd3ea1b4f32d911acee3412804bcf09b6d1b65abd2d8cc9359c3fa50b06d6e42"
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "current": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare",
+      "baseline": "build/test/board-attention-fusion-20260917/llama-2-7b-block-bfloat16-prepare",
+      "equal": {
+        "package/manifest.json": true,
+        "package/modules/module_00000.so": true,
+        "all_16_target_llvm": true
+      },
+      "manifest_sha256": "cac6a47c11f03f7c79e74f91a96229a5844ac6cc1b8d52d71de452b22921514a",
+      "elf_sha256": "354db5d505d0b8033f5f661e0c3ed624c98b7fb5e087fe40bcaa276852aa0413"
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "current": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-prepare",
+      "baseline": "build/test/board-performance-20260917-reuse/single-card-gemm-4096-float16-prepare",
+      "equal": {
+        "package/manifest.json": true,
+        "package/modules/module_00000.so": true,
+        "all_16_target_llvm": true
+      },
+      "manifest_sha256": "c9a5165f34b736113061edbfa0343e5f66f8b77d869c6d536be857735c46d0f9",
+      "elf_sha256": "2c2b1c110694b06d0cdee72b80454647eb8e128721197dfe557b91e23e9fc51b"
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "current": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-prepare",
+      "baseline": "build/test/board-performance-20260917-reuse/single-card-gemm-4096-bfloat16-prepare",
+      "equal": {
+        "package/manifest.json": true,
+        "package/modules/module_00000.so": true,
+        "all_16_target_llvm": true
+      },
+      "manifest_sha256": "40b6423a852f31470a5f53da2a49aaea7499427c86b1ef15cf9bfd43780d422c",
+      "elf_sha256": "1e2c5be4e541bbae8fecc4a8ac88859d210ebe75d2229aac9c697f1f3be32c57"
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "current": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-prepare",
+      "baseline": "build/test/board-performance-20260917-reuse/single-card-gemm-tail-4097-float16-prepare",
+      "equal": {
+        "package/manifest.json": true,
+        "package/modules/module_00000.so": true,
+        "all_16_target_llvm": true
+      },
+      "manifest_sha256": "64088ac5c19fd0db4cd00b498ce47f6a95547fa7033ea4613a4a909f92ccd14d",
+      "elf_sha256": "a1521d5d6d477d602538402c6046757d1cb214d990e31a21255eaacab5ea16e1"
+    }
+  ],
+  "source_parity": [
+    {
+      "dtype": "float16",
+      "fresh_source_equals_frozen_original": true,
+      "files": {
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "functions/forward.stablehlo.bc": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75",
+        "functions/forward.meta": "9961bcd0e32dd27272f858b02b7067ca2f0d341cd4f9c13cd0cad40dd34072e0",
+        "data/decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "data/decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "data/decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "data/rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "data/decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "data/decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "data/decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "data/rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "data/decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343"
+      }
+    },
+    {
+      "dtype": "bfloat16",
+      "fresh_source_equals_frozen_original": true,
+      "files": {
+        "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "constants/1": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "functions/forward.stablehlo.bc": "b92166417e5ef82297a0566517b4c368f9f21fc3251cac0ffbce1c480a529a74",
+        "functions/forward.meta": "08676c1da2ba0df3064de1b66ae0bda03c5d2d8ff6483051b89bbf4d7404acbe",
+        "data/decoder_layer.mlp.down_proj.weight": "6cfc2c99c78c0694fcda2e66865c2a7d6a3edf2bb3a793e664e85a87ccf25c01",
+        "data/decoder_layer.self_attn.q_proj.weight": "e4af72b2f7db3b900b6ab65571bc890004ff8102bae0f8f669219d09d8c476e0",
+        "data/decoder_layer.self_attn.k_proj.weight": "d07574255d2e3f0473fa095027697dc786f3fabe55b632c43bd76134d783e51b",
+        "data/rotary_sin": "345d8f8dbdac52f54f2538ea5d52cbf8153af7d48879e876f450f1fa15deb399",
+        "data/causal_mask": "bd81d80d7c61eca3951b2937e3e3219e0e3b378b875e88c8c22727a8f3004ad1",
+        "data/decoder_layer.mlp.gate_proj.weight": "f766bebe4ab992da97d6656af02bb256c96e3f08e4f4defac839bbf3a9c27b8e",
+        "data/decoder_layer.post_attention_layernorm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "data/decoder_layer.mlp.up_proj.weight": "16162222f7bde09323c2605614ebdcee56a47007caaa35870a635a203a80d8bf",
+        "data/decoder_layer.self_attn.o_proj.weight": "6d952b3e6c88935c9780694fdac30210e30c65cb92c9b4f82d3905b832ee7a03",
+        "data/decoder_layer.input_layernorm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "data/rotary_cos": "0b694d49581c7176db5bbd3bed96490e8d6d3802834941d527b262369f7499d9",
+        "data/decoder_layer.self_attn.v_proj.weight": "1ab43ca0b034366aa519bf0785ed8596d77e9173d023b7c31aee42cd4f6fc2bd"
+      }
+    }
+  ],
+  "frozen_failure": {
+    "float16": {
+      "compiler_sha256": "df665196241a7fa411cea87284d3d5811d7f844d8ddb53955e1532e3a655b751",
+      "prepared": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare"
+    },
+    "bfloat16": {
+      "compiler_sha256": "df665196241a7fa411cea87284d3d5811d7f844d8ddb53955e1532e3a655b751",
+      "prepared": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "build/test/board-broadcast-fix-20260917/collect_evidence.py",
+      "bytes": 3578,
+      "sha256": "490053e056656fc15c0ca8d38bb693734b72eef4834e15bfd7ec56d42048015c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/identity.json",
+      "bytes": 1168,
+      "sha256": "dd8cca7c3c8cd9ae6516b3fe7682277ff74b578a195f72af80c578034f24aaee"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/board-01.log",
+      "bytes": 3890,
+      "sha256": "5c7904f53feb317f1929c6c3f7dfe6c2b134a083c7e3634dd84768ebfa76e193"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/board-02.log",
+      "bytes": 3890,
+      "sha256": "00be744261dd79092dcaab08a611c6bf25226afd6c76003c471c45542bd17ebf"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/board-03.log",
+      "bytes": 3890,
+      "sha256": "a67eab8efa5a0975bf1a5d12f6ce14a44d285b1f84d37a6f4e17bab71ab93369"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/command.json",
+      "bytes": 919,
+      "sha256": "4a13ae7132c44ba5de3a1b2f0ff0ae8e2ee01538e4dd1380a77297de1fa0a3e5"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/numeric-audit-01.json",
+      "bytes": 943,
+      "sha256": "254decb8440521cb58f35a4b516e9cee90ed1a58c814ac08a42cc90f2c254cf1"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/numeric-audit-02.json",
+      "bytes": 943,
+      "sha256": "ecc627ae9e07f037b56fdbc1555fe6113208782c00002063d9774b69d27c46bc"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/numeric-audit-03.json",
+      "bytes": 943,
+      "sha256": "7681d60f26a0f6c4375ebdf51d09965cfb5bbd7ce7b318040720ce7acaa1e6a7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+      "bytes": 131072,
+      "sha256": "178e19390f2eeb909b613ae1aeb79933797a4c9358f178f22f530b426bd57d52"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+      "bytes": 131072,
+      "sha256": "b7c363a850849fa06ade77493f077092ca51e07ee1df5d34479d2238b148763a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board/raw/card_00_user_input_0.bf16.raw",
+      "bytes": 131072,
+      "sha256": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused/board-01.log",
+      "bytes": 3898,
+      "sha256": "41b8dda01d5ea3c9eb17b98a37effbd86e22df5a74bf046e3fda05388c6c9b66"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused/command.json",
+      "bytes": 926,
+      "sha256": "ea4e7c48127ccdb7d890ba757eb5608307cbffc57f2df08aa46744d82f30e3d0"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused/numeric-audit-01.json",
+      "bytes": 945,
+      "sha256": "082751b71578addcaad793ea2822baa208fd5d82ebc02a9e65136e7a9a37570e"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused/raw/card_00_output_0.capture.bf16.raw",
+      "bytes": 131072,
+      "sha256": "4dea526f16a445dd578269771e40c11e168dc69ce93027472477f7387e8db905"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused/raw/card_00_output_0.expected.bf16.raw",
+      "bytes": 131072,
+      "sha256": "b7c363a850849fa06ade77493f077092ca51e07ee1df5d34479d2238b148763a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused/raw/card_00_user_input_0.bf16.raw",
+      "bytes": 131072,
+      "sha256": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused.json",
+      "bytes": 2831,
+      "sha256": "699a28593185e21e378c3bc39f7e30999d2de035b7d8a807ca58f398f2e74e35"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board-unfused.log",
+      "bytes": 4663,
+      "sha256": "6fa132b5b0801dcd2848b788887b76b3eb8733d516b3eb749a11d320e72ca917"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board.json",
+      "bytes": 2829,
+      "sha256": "0ee07542c2a98bc8bb28df21ec49534557a1c5e1d3098dffa107feef823a380b"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-board.log",
+      "bytes": 13328,
+      "sha256": "aaad16c2a7ffdf2c8aee0a9f3edf15339cbb7b9d79d38950983816ee4a1d3eff"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare/package/manifest.json",
+      "bytes": 678148,
+      "sha256": "cac6a47c11f03f7c79e74f91a96229a5844ac6cc1b8d52d71de452b22921514a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare/package/modules/module_00000.so",
+      "bytes": 748536,
+      "sha256": "354db5d505d0b8033f5f661e0c3ed624c98b7fb5e087fe40bcaa276852aa0413"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare-unfused-gate.json",
+      "bytes": 1481,
+      "sha256": "359082ff5ee2f3bab366693a1bf8ed3d7cdfc65a40db2b1f31345f3f23746f35"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare-unfused-gate.log",
+      "bytes": 277411,
+      "sha256": "0f08391a70e1fc7c3ad761245f2c077b8028915de8fbee1271ffb6cad23b6664"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare.json",
+      "bytes": 1342,
+      "sha256": "4f6cb6db9422bdc0ceebcf0f112184954e387b4d8cdd7e3726f50f472fbac144"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-bfloat16-prepare.log",
+      "bytes": 7959445,
+      "sha256": "0abce15aa27f4588407a1d08361d1b42e21745888d0a8d621a6bf994f6774c84"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board/board-01.log",
+      "bytes": 3888,
+      "sha256": "1fed7776c435a1e419f54659eec1f928a7cc749f3b0e3ba268c4ed9db126c2a3"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board/command.json",
+      "bytes": 914,
+      "sha256": "6a816b6f17c4cd44940b35c1f3369ade11468b367ed4909480b7cc4613369fe9"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board/numeric-audit-01.json",
+      "bytes": 944,
+      "sha256": "2b6da0209f879b4afe59b04039f20b85eccfce7304990a7b5b6432a33956fb1e"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board/raw/card_00_output_0.capture.f16.raw",
+      "bytes": 131072,
+      "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board/raw/card_00_output_0.expected.f16.raw",
+      "bytes": 131072,
+      "sha256": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board/raw/card_00_user_input_0.f16.raw",
+      "bytes": 131072,
+      "sha256": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/board-01.log",
+      "bytes": 3896,
+      "sha256": "fa4e480a2d5dace2d8e22dc18d3303ea090f8c111dc0f327b44dc6ab66bb7d2b"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/board-02.log",
+      "bytes": 3896,
+      "sha256": "a573f20963b44e8c460c9c26167a10bc87edf967685caca3ea0e9ff094b73a81"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/board-03.log",
+      "bytes": 3896,
+      "sha256": "8559d6d577e4b8cdedc750d0bcab6b21b19bacab6c8d247ec561f2895f71ba4b"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/command.json",
+      "bytes": 930,
+      "sha256": "d251ab25a773054a783bcbce41787afb8d13a917ab72b637b30f504333595fca"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/numeric-audit-01.json",
+      "bytes": 944,
+      "sha256": "c9c05eb437f4df95a283be46387560b545cfe4576ee2729fdbcef6cfd472cdd7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/numeric-audit-02.json",
+      "bytes": 944,
+      "sha256": "232b06f25e937fe0d9c75d6a875d15cb7c5a4374e60cb64e1eb48f823e67ca31"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/numeric-audit-03.json",
+      "bytes": 944,
+      "sha256": "a0dc71932b7b22ab270fd16ccc9e018f3b95e63861998d1c8c0080b8135d80a0"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/raw/card_00_output_0.capture.f16.raw",
+      "bytes": 131072,
+      "sha256": "98a19a270d3e8f25fa5a6caf96cc721a9e0d2124af91a875903432555da7102a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/raw/card_00_output_0.expected.f16.raw",
+      "bytes": 131072,
+      "sha256": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats/raw/card_00_user_input_0.f16.raw",
+      "bytes": 131072,
+      "sha256": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats.json",
+      "bytes": 2834,
+      "sha256": "5b27cb18068dd3e70f68494a8628b8fdf851c73dea618935e24e0871f253b4ff"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-repeats.log",
+      "bytes": 13351,
+      "sha256": "dc7ed6bca06246b420b54de8136bcf82ec10561272a33749d8377607ed0a3362"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused/board-01.log",
+      "bytes": 3896,
+      "sha256": "3860abfdf4aee65aa2ba33a0b3fd8dbb8da989e182572f8d94a2d1cd2636aad0"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused/command.json",
+      "bytes": 921,
+      "sha256": "19fdbc90148ae3af0559361026ddbc37186601b19519a159ae7555e29cf13cab"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused/numeric-audit-01.json",
+      "bytes": 944,
+      "sha256": "cbc4fadbbe68738797c7a93a39b61cd9b52095456562ad52d011f96eb342465a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused/raw/card_00_output_0.capture.f16.raw",
+      "bytes": 131072,
+      "sha256": "06f618b633b219f05eb97246aeebb056961467a840c43b4dff09a90673d57b49"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused/raw/card_00_output_0.expected.f16.raw",
+      "bytes": 131072,
+      "sha256": "8c27d15ee4c1fa40254dfeefe53496272301297b5c85da4eefa5cd5dbc27585d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused/raw/card_00_user_input_0.f16.raw",
+      "bytes": 131072,
+      "sha256": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused.json",
+      "bytes": 2826,
+      "sha256": "ef38b5116e6ca5dd67d14ab2662693ee2a45f61aa03e095d787e713e9b36f543"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board-unfused.log",
+      "bytes": 4664,
+      "sha256": "b7e31bc2f8326607d944b28017e703911701de6909898091cb45ca741ceaf4b6"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board.json",
+      "bytes": 2827,
+      "sha256": "260b2e14a1c50b1667694c331b31005c362696ae1404e242add1ac2a202d21b9"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-board.log",
+      "bytes": 4657,
+      "sha256": "798daec11912c8845b55ef23045cff88ee07110fae3cb63db2a7c5f945d6ad8e"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare/package/manifest.json",
+      "bytes": 678120,
+      "sha256": "6700180dd5cd28e9c67045f9d15cd4ffc79d145e3466af40efe1260dd8e24d09"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare/package/modules/module_00000.so",
+      "bytes": 748536,
+      "sha256": "fd3ea1b4f32d911acee3412804bcf09b6d1b65abd2d8cc9359c3fa50b06d6e42"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare-unfused-gate.json",
+      "bytes": 1476,
+      "sha256": "a551885e9860b6851de747d4120f476099224393f9885061038bef823828816c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare-unfused-gate.log",
+      "bytes": 277412,
+      "sha256": "8e2fe0bb6e95ba99b7d16ebceeae794d8555a6657f83c2bbb07979ff2022c249"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare.json",
+      "bytes": 1338,
+      "sha256": "b2adcad807cc82300ba5877a490b23ab434c8aee7b9c53ba682f43b2d67a16e7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/llama-2-7b-block-float16-prepare.log",
+      "bytes": 7949756,
+      "sha256": "ba9b719b4988d5ec603db919810e65d53c5594a6cd6221a208ee60e00ccfbfdd"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/protected-package-parity.json",
+      "bytes": 2902,
+      "sha256": "b3843c70a5a2fa830c42d8da801e1592b3e3893eca865457cd8a6b773c7d93f1"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/run_case.py",
+      "bytes": 4023,
+      "sha256": "2504fa0b0a5f824bd936b06ae45d0a5c87ba475145ece56f207c1de5e31c7cbe"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/board-01.log",
+      "bytes": 3902,
+      "sha256": "138f338bb7d58a29d0c4bf6c65a4caf4b24d8f898f0ab856a5cc0b714f1de56b"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/board-02.log",
+      "bytes": 3902,
+      "sha256": "40f1c6ef7776c947b4747c92c667196a4e308a29b62af9ca1dfa2070cafe36dd"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/board-03.log",
+      "bytes": 3902,
+      "sha256": "41d63f86a5d089c5f464e408c6096e16a6088fc28f8d713f8b287e3da084e174"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/command.json",
+      "bytes": 1103,
+      "sha256": "5176262402985903772be2abdf120ececd8207c14c3830d402f2edcd09b4e707"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/numeric-audit-01.json",
+      "bytes": 1070,
+      "sha256": "840adb4b4fa86630ca53fe4d4b112841eb89daa556a907bd57f2a951c12f0d90"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/numeric-audit-02.json",
+      "bytes": 1070,
+      "sha256": "20d3fa32b9183bf7e42d139a69c74cb9d0cb6c368a65879c11dfe0c2812766c5"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/numeric-audit-03.json",
+      "bytes": 1070,
+      "sha256": "615ccb304cd197eee3056b649ad6bf26995b25262696b5242ee4aa13dd216bca"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/raw/card_00_output_0.capture.bf16.raw",
+      "bytes": 33554432,
+      "sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/raw/card_00_output_0.expected.bf16.raw",
+      "bytes": 33554432,
+      "sha256": "a343b64034c52a00721ce0f03cf8bb24b532f1ebac9f23db3dd971dad77ddfa2"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/raw/card_00_user_input_0.bf16.raw",
+      "bytes": 33554432,
+      "sha256": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board/raw/card_00_user_input_1.bf16.raw",
+      "bytes": 33554432,
+      "sha256": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board.json",
+      "bytes": 2979,
+      "sha256": "eacd805fe770d7987b65419c0f550e787969433071274215147476cddfe5b1a6"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-board.log",
+      "bytes": 13468,
+      "sha256": "ce8e7af119911e40bf93bc97ea691696b94ffdf3e8b9ea3c1f5743adc4ffc9a1"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-prepare/package/manifest.json",
+      "bytes": 11424,
+      "sha256": "40b6423a852f31470a5f53da2a49aaea7499427c86b1ef15cf9bfd43780d422c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-prepare/package/modules/module_00000.so",
+      "bytes": 44016,
+      "sha256": "1e2c5be4e541bbae8fecc4a8ac88859d210ebe75d2229aac9c697f1f3be32c57"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-prepare.json",
+      "bytes": 1363,
+      "sha256": "82ca7ff2fe516bd12d6563d3ea9e4726a972acb3f17563342d5d92440591a9a9"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-bfloat16-prepare.log",
+      "bytes": 604709,
+      "sha256": "c872fa87e24c97a1b0ac051a76b2e5fce803f1b484b610aae350fce22e376f98"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/board-01.log",
+      "bytes": 3900,
+      "sha256": "caf1db75f9b26cdb88fb8bfc03a32a36625af7c17b5ca86375a25aacb3f2fb1f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/board-02.log",
+      "bytes": 3900,
+      "sha256": "9cf279cff7d80b90ac9f28db45c0f47eb98fb037a4183aa669be90a3f49c3eeb"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/board-03.log",
+      "bytes": 3900,
+      "sha256": "6490ccc5823e2b4ba8ea963ab33760d629cdf4ef288903b4bfac1ac4e102fb6f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/command.json",
+      "bytes": 1096,
+      "sha256": "3a71d90db4a1833e1fb60a8ab34c7706b333cbb1f0e2464b675908061a655ab4"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/numeric-audit-01.json",
+      "bytes": 1067,
+      "sha256": "0840eae79bd63228d7a3acc1afb0ef9e4e5ed1cea0f25e904e349ef88dc3594c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/numeric-audit-02.json",
+      "bytes": 1067,
+      "sha256": "e5007b6fe72a6db33f18d33ee3a67901f9209ba73d22e80f91f5c7b665bd1317"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/numeric-audit-03.json",
+      "bytes": 1067,
+      "sha256": "4d9dd0dccc7339615d94a1178a44ecc72a56ad6c0e0102ae4358e6e2bbf9384e"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/raw/card_00_output_0.capture.f16.raw",
+      "bytes": 33554432,
+      "sha256": "05db20354bae20976623b92d6dea8c9916b617324e9d1fcc6a1dad1e0993c55f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/raw/card_00_output_0.expected.f16.raw",
+      "bytes": 33554432,
+      "sha256": "c3c34fe11189049c4a0d3939d17a8d82980b939dd1e89050927f924ebe6161f3"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/raw/card_00_user_input_0.f16.raw",
+      "bytes": 33554432,
+      "sha256": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board/raw/card_00_user_input_1.f16.raw",
+      "bytes": 33554432,
+      "sha256": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board.json",
+      "bytes": 2973,
+      "sha256": "79352a08bc649cb1816dbb1d5df971cb4e9cad0bf9e7121d331b6536e4445bf7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-board.log",
+      "bytes": 13471,
+      "sha256": "933fb41b92cdc6314d293230d5a3ba5df9d94999100989aa715e77a254be0001"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-prepare/package/manifest.json",
+      "bytes": 11418,
+      "sha256": "c9a5165f34b736113061edbfa0343e5f66f8b77d869c6d536be857735c46d0f9"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-prepare/package/modules/module_00000.so",
+      "bytes": 44016,
+      "sha256": "2c2b1c110694b06d0cdee72b80454647eb8e128721197dfe557b91e23e9fc51b"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-prepare.json",
+      "bytes": 1353,
+      "sha256": "4fd36b8e5cdc93cae68acbafa46837992c63a7783c056dc84e6ca7207ef1ca28"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-4096-float16-prepare.log",
+      "bytes": 604694,
+      "sha256": "2746bf238f82a4b7ccece6a7cc2890dc11ff0f75344d7d1729352fc68b24f3e2"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/board-01.log",
+      "bytes": 3905,
+      "sha256": "e15c63915c0f42ffb70e65c0c920f1d5a7d94c7093e421408adc5e8b151a6a7d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/board-02.log",
+      "bytes": 3905,
+      "sha256": "6d070e95f47720219e94a75cbaa48eed52031ec9cfa332dde9e2ffd603de504d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/board-03.log",
+      "bytes": 3905,
+      "sha256": "5deba86bc896b6e6e6a0767a7b1aea623a4fbd2204186caff2440e37b33d6708"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/command.json",
+      "bytes": 1116,
+      "sha256": "3790e7619f01f249770119f7641019a538c4376de7629bfd2d6e31424e2a5043"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/numeric-audit-01.json",
+      "bytes": 1068,
+      "sha256": "2870aae0091c2c3c61f2b07b7299102a29ca0608d97e6716f410321289977720"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/numeric-audit-02.json",
+      "bytes": 1068,
+      "sha256": "3b57b484d9da86022718edfd06d21555b85b1c4d22190ef84db00377c9d26d18"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/numeric-audit-03.json",
+      "bytes": 1068,
+      "sha256": "32d7a9cab6496aa6287a5da603d74939463445e0bda1c2b4672fb805d5fca344"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/raw/card_00_output_0.capture.f16.raw",
+      "bytes": 33570818,
+      "sha256": "d5f65b2c1853476d15bd19700c6bf777780b0e44584bb2ad14e7b07bb7b427f4"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/raw/card_00_output_0.expected.f16.raw",
+      "bytes": 33570818,
+      "sha256": "d343cad53f7148c0a9fad1c728dc1f21f5d79eae1b7546adb1ad35b19384cee7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/raw/card_00_user_input_0.f16.raw",
+      "bytes": 33570818,
+      "sha256": "3a919ad8845c73b2a15a7c68de55534d58e85f799902ee628d38987ec5c1470f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board/raw/card_00_user_input_1.f16.raw",
+      "bytes": 33570818,
+      "sha256": "c6e6dd086a7e934aa2aa54336d13f5e8b5ff5970bc4432265ba61c28232b558f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board.json",
+      "bytes": 2994,
+      "sha256": "4aa8d45332d36e5c7b3f4f96e97d71f7f5fa927a451b51c94aa03eca14ce6d5f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-board.log",
+      "bytes": 13486,
+      "sha256": "1652f25acb507b071103a19068b3eaa5a5ebaba7e51e5c8d952f7da051cb133d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-prepare/package/manifest.json",
+      "bytes": 11418,
+      "sha256": "64088ac5c19fd0db4cd00b498ce47f6a95547fa7033ea4613a4a909f92ccd14d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-prepare/package/modules/module_00000.so",
+      "bytes": 56304,
+      "sha256": "a1521d5d6d477d602538402c6046757d1cb214d990e31a21255eaacab5ea16e1"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-prepare.json",
+      "bytes": 1378,
+      "sha256": "f99df7e3c175def9cb1efcef4f6e13c0d996960fba2f83130246e6333cc43b74"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/single-card-gemm-tail-4097-float16-prepare.log",
+      "bytes": 601837,
+      "sha256": "f75cf5af6dd97d5f34338b10e312e53576888d2ec70702f6b7cbb5722910b44a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00000.mlir",
+      "bytes": 566869,
+      "sha256": "ba7d6c22076869f810b73512d2737c3100f1891bdad5cd157dfe1d0fd965e282"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00001.mlir",
+      "bytes": 569999,
+      "sha256": "307f6e1a1443997276b8f415a2dfc0db92ed6b1d394b7620d902fdafb5a9dba8"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00002.mlir",
+      "bytes": 569999,
+      "sha256": "02adbaad3e0b2280570bc7503f6446782943faadfd4f0c0c2725d431c23fa21c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00003.mlir",
+      "bytes": 570048,
+      "sha256": "b0f27d7a8232d8c6e83256f3c66b2e1cc4c13bac66ecd3a1d1302ccff6e497fd"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00004.mlir",
+      "bytes": 570095,
+      "sha256": "e2f0271d0610a52765819b7153d3d76f48a3abccb75941ea8e57767e723df1e7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00005.mlir",
+      "bytes": 570103,
+      "sha256": "9192bda0381e95c8b214fc021d2695833cec82084393e5ad9546cd72b1e46129"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00006.mlir",
+      "bytes": 570103,
+      "sha256": "bc286a56ba318f9cf7394660ba784e9bcb87a20cfac4d6aab7e40b2f60ee6677"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00007.mlir",
+      "bytes": 570119,
+      "sha256": "6ee227e67adced700edb5ea26bd5c130935f9855cff96a302ee7d1e85a1bbde0"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00008.mlir",
+      "bytes": 570127,
+      "sha256": "d19fa684dd028bc17a58bb5c62af3092858d4c54f5505ef2a7fed94ba655eb29"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00009.mlir",
+      "bytes": 570127,
+      "sha256": "349938f64e94a98482423ccca8558f4c09a5cefc5747c90f34a0751185238af6"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00010.mlir",
+      "bytes": 570151,
+      "sha256": "ea6f335c64a2693562c366d8161347fd5cdfc217f29de6f9d1a885637dc5ca60"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00011.mlir",
+      "bytes": 570151,
+      "sha256": "7f6c28676b989b7d138b0bde90343c4f5e449b9aea4022574239b56291adbf08"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00012.mlir",
+      "bytes": 570151,
+      "sha256": "2d1e7b07ae62ad8a0a0a4aede330b80452cd3ede284755cb79eeff0cf18fddbc"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00013.mlir",
+      "bytes": 570166,
+      "sha256": "ccb7c6608578d9051f138e0eecf64a9c41937d72ceb6e3819296d7250885dada"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00014.mlir",
+      "bytes": 570166,
+      "sha256": "da2beb008017f8bd9689217b2450d3c6d1366722aafb1e2c0d54467838e9a14f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/instruction/tile_00015.mlir",
+      "bytes": 555572,
+      "sha256": "a8d871db04ed6fda66fdebf543a95b2205c25aaaf6bbd516b2691991ce4f7565"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/package/data/program-data.bin",
+      "bytes": 404775936,
+      "sha256": "82d8a24c6e679a4adafc0d55024d3b2471e3fa9b7c657d398d87c41cb0c3da32"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/package/manifest.json",
+      "bytes": 678148,
+      "sha256": "87404bc27e7e71e034f718d0e10b8f75e38677a5c51780138d8079b573cdd400"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/package/modules/module_00000.so",
+      "bytes": 682992,
+      "sha256": "3184fba6642ed7cc720c41eb41c01cf1d7d5a5b86017f0e9e27bd24bdc31df03"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00000.ll",
+      "bytes": 194524,
+      "sha256": "5d561d689e24ea2cc0343e61c7689ca07efc45a5743d99364246ae9769d88f80"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00001.ll",
+      "bytes": 195045,
+      "sha256": "6a96582ec8138c6f9dd62499e8c7b743bf5de7ea599c92d57c0a96760dbd68b0"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00002.ll",
+      "bytes": 195058,
+      "sha256": "be19054424176c7bb98f59f3737d90c8a9ec0a6cac6d0f9adb3ea0f051c98977"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00003.ll",
+      "bytes": 195059,
+      "sha256": "77d68bbfee9c3f213ab175b5e751906483901c2a349d3b1b21b9787e389bcc0f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00004.ll",
+      "bytes": 195069,
+      "sha256": "839925f126b8ce578ea0cacb094770db51d071cac65b24f92a69c6caa58484f1"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00005.ll",
+      "bytes": 195069,
+      "sha256": "b055ae8366380ff928f47b07f2b7c13557588572b9d9a66801cf39669229f011"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00006.ll",
+      "bytes": 195069,
+      "sha256": "5e0fb17f0376fdb82168c24797690e8e877971839c27febedf8d5b5b7e4b1719"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00007.ll",
+      "bytes": 195069,
+      "sha256": "1281ce3b6b5092ff33dcbd7b7abc0831659d0863585239b436ca83560d00a05f"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00008.ll",
+      "bytes": 195071,
+      "sha256": "a4b2788447c47e4dc999d4c5c3b9a063230437a0b7f12ddc9ae15bbad46bbe3d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00009.ll",
+      "bytes": 195071,
+      "sha256": "696fc5cbdd41879a75a757b64ba87c0425fdda1c0ccc404c4b6841cb71cae590"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00010.ll",
+      "bytes": 195073,
+      "sha256": "b9b721df2565ea0563c24940538568c0d96abb70bc4d14cb202480cb857efe8c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00011.ll",
+      "bytes": 195073,
+      "sha256": "227935e2f0043d2e2eca755c0e28ac8bcc0156276b78fc6b228d9e7b0f3bde0a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00012.ll",
+      "bytes": 195073,
+      "sha256": "247facb7b4015232e51b6db10f9a53f1944bd332c2c17776e686321efc841b7b"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00013.ll",
+      "bytes": 195074,
+      "sha256": "972b4f1327e6583f051f768a41334e3a0bc9da6ede8fae737b5c47204e56d552"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00014.ll",
+      "bytes": 195074,
+      "sha256": "b65b5165339647bf216c60ad4562facb20540c60510afb79803849a67ba813b7"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-bfloat16-package/target-llvm/tile_00015.ll",
+      "bytes": 192468,
+      "sha256": "f34f9817de81716296e887cd1f1570470bc9b7101e570cbaaa291ac6e2af9fda"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00000.mlir",
+      "bytes": 565123,
+      "sha256": "6465e03721ec48fdee2d0c28e058f5da69f3a3c5c9362e9fe8c6b8e5db08c741"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00001.mlir",
+      "bytes": 568253,
+      "sha256": "85edc6db854cde9a781d5a2174603943191c412022a2d1dd03976bcf0d1e7779"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00002.mlir",
+      "bytes": 568253,
+      "sha256": "2608a1bf35ba41155493db1810b9ba13b30a989920a1689a896e489567ed5ccd"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00003.mlir",
+      "bytes": 568302,
+      "sha256": "62874084b88e3718b769917ff20d5959aff474e4354b0b3fe7391ccc6329070d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00004.mlir",
+      "bytes": 568349,
+      "sha256": "82b71c47285de26bffc2aa8b2798ad15f943f46089bf087fe5a3b98e1938ddbf"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00005.mlir",
+      "bytes": 568357,
+      "sha256": "ecf2d7e70f354ea43494199ef0f2786b8cf6c07d503ecf0acba5344afd7f3144"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00006.mlir",
+      "bytes": 568357,
+      "sha256": "344eb6606e0e86a92c5e2ca8b5caad648e73a7a11ac87ca32b60c2a1f0f1cea8"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00007.mlir",
+      "bytes": 568373,
+      "sha256": "4f259e031d689540afb33c596fb89406812ece5aa2808c0836f2829d152e1b80"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00008.mlir",
+      "bytes": 568381,
+      "sha256": "ab82f2dc4fde4faba2159517af34e7e7ef407605a4c2c5547514b8633c7ca285"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00009.mlir",
+      "bytes": 568381,
+      "sha256": "e5d67b37ceba151e22881523c4f01293decc2cd342027b8abbad7b25d705eb30"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00010.mlir",
+      "bytes": 568405,
+      "sha256": "79e852b9c9d9ce7ecdb7a23c15a6735a5a4a43c19b870ab5b48be1ef4aefabf6"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00011.mlir",
+      "bytes": 568405,
+      "sha256": "781defe3235a493d4a8b7a1b4fc8180ec9a58f90c0db43e66a4a191bab7c5822"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00012.mlir",
+      "bytes": 568405,
+      "sha256": "9576621a9c79fbb7534082854fe57a800e3b48a3ea404d3cbfcaab1838cf500a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00013.mlir",
+      "bytes": 568420,
+      "sha256": "d05335b220510d1fbadde90bc505a7d07c50bc3607b743d582f39753cd458456"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00014.mlir",
+      "bytes": 568420,
+      "sha256": "5ea73292311370c8119d7a742114016a28a88f42ce8ec5878e0231b208a724f5"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/instruction/tile_00015.mlir",
+      "bytes": 553890,
+      "sha256": "f67162a3d0f33c0fa41f2be515362e65c139393eb142a75380f30db30f40103a"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/package/data/program-data.bin",
+      "bytes": 404775936,
+      "sha256": "19b6b824a3b97cc6671164e01335558f9ebc4418d80cb5163e27262f8a005d02"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/package/manifest.json",
+      "bytes": 678120,
+      "sha256": "eaf7589abc695c44d531450e014b7ff4a379d64ff15458095907f7fa5e18b85e"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/package/modules/module_00000.so",
+      "bytes": 682992,
+      "sha256": "662a8f32da43b129365a1e72cd7c3e0ccea72f0b7c23dc521992d97887e37a56"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00000.ll",
+      "bytes": 194446,
+      "sha256": "e6da3a2be2532caca6c9f67be72f3c877d6b5f39a7830ff6f4fdf19d3674f1cc"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00001.ll",
+      "bytes": 194967,
+      "sha256": "9ff9d6e7548a27ad4287d0cf78081519e63b0b9d443a5ee547cc4dfaf194c305"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00002.ll",
+      "bytes": 194980,
+      "sha256": "e0ff78978b9a085dd5ff4a7d1b94b968bd09f30d0a43fd7b55a8cb4dfa7c95e1"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00003.ll",
+      "bytes": 194981,
+      "sha256": "b35935d635cf6d3d03d14053539284328017a422eb1e1aa88378fda6975f195d"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00004.ll",
+      "bytes": 194991,
+      "sha256": "173a607fd071b09bc83ac6a0e2290f670e511b3b436e5ff9ea764afc1da0c5a8"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00005.ll",
+      "bytes": 194991,
+      "sha256": "909f9675369e8e69527b3e6caf215bad421fabc707a5b541b3e5004f6c491476"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00006.ll",
+      "bytes": 194991,
+      "sha256": "f81d04c52f8bccac7e77dd8b9d87f5c76f5fc53c3bacd8ee97614c76c6911b11"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00007.ll",
+      "bytes": 194991,
+      "sha256": "b19600c86ed91f2e8905a9e321ef1d31a59c18b984cf27462fd8fb51e0e375fb"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00008.ll",
+      "bytes": 194993,
+      "sha256": "78c82d2f7a815039ab98d8e16e1459dda23a0c070d5fb76281a5a3aee0a330cd"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00009.ll",
+      "bytes": 194993,
+      "sha256": "cc8a6c01f2e1a04ab5d161a3417b13490080ff046153897aa2251ea075e26a44"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00010.ll",
+      "bytes": 194995,
+      "sha256": "99c8d4cc5124eb516fe0c71c23ba7cd7b215ca04d1f9fd39fb69a191b05871d2"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00011.ll",
+      "bytes": 194995,
+      "sha256": "08e03f79c59ab72768d651b9fba1e670a1eb9d1b57fc0d1836996c79b7644b83"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00012.ll",
+      "bytes": 194995,
+      "sha256": "7bd286982bb5d0a7d0a35fa05c98a75fdd5a27ddefe2fe756689f62067300c22"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00013.ll",
+      "bytes": 194996,
+      "sha256": "d212f23468b5b33d9d4d2435608af07e2e18685f242de05715a661624b1e79a8"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00014.ll",
+      "bytes": 194996,
+      "sha256": "d423f850d2f43972b043c8016e1496905573b84b04ef132029a45f7e5a122fb8"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-float16-package/target-llvm/tile_00015.ll",
+      "bytes": 192390,
+      "sha256": "619f999b22bbbd1aca50cc3f7bb3f32ab8b6fd583c21605a8557f3115110ff8c"
+    },
+    {
+      "path": "build/test/board-broadcast-fix-20260917/unfused-package-parity.json",
+      "bytes": 218,
+      "sha256": "58c0c905e23e4add891cadab010dfe313dc9e44b4cd1d8426e249d98644d0926"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00000.mlir",
+      "bytes": 388694,
+      "sha256": "a514555ae3037daa626f2a1ab09323d51b04d8bfff9d031ac758e25dba3bd38e"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00001.mlir",
+      "bytes": 391764,
+      "sha256": "0e42918fa59c8ab73aba4d37b399a02cb743b6fdad6185e502519fa5d4c459c1"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00002.mlir",
+      "bytes": 391804,
+      "sha256": "dce9e38ce88a7099e0bf00acf1205cd85cdf6997d7c07b5f931fc628fdda8497"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00003.mlir",
+      "bytes": 391878,
+      "sha256": "9d446eb2ff99797a13817d0f5ef26686baa3b046fbdf5f6aec82d295241d465c"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00004.mlir",
+      "bytes": 391954,
+      "sha256": "6cd950b54a172bb5c88b1739c52c9cf3f8e7c835aee5acb7936d3bd913adef9c"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00005.mlir",
+      "bytes": 391987,
+      "sha256": "6f3bb6adce6dc016e50ee747a610f00a3f44f6d27831c9722109348ea08b0169"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00006.mlir",
+      "bytes": 391987,
+      "sha256": "7b6743f9ca93022fff90dab74c7874c06cbe519f67308fa4acaea9b063f51d08"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00007.mlir",
+      "bytes": 391987,
+      "sha256": "5975361d13229203925c8c5e1c708b7ae9a284a020c289730eaef20b84fa8b11"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00008.mlir",
+      "bytes": 392001,
+      "sha256": "e7533400f6d57d1c803827d16e5c95e0339b3fe4eacb45a504f9084aa1fc30d8"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00009.mlir",
+      "bytes": 392001,
+      "sha256": "49cc63ae224c30a4b9e1e36be13456a4c85493bedaaf0f5d7ccbf8f97afc7fb0"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00010.mlir",
+      "bytes": 392070,
+      "sha256": "7c979121b051fefef63274931e914b76f56533e379abda600b4067d86d8b8610"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00011.mlir",
+      "bytes": 392070,
+      "sha256": "e05b54862e53c314387e8da39409b151f1ccc71f9ba78714c505e7a5728c085b"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00012.mlir",
+      "bytes": 392070,
+      "sha256": "1df4a76cc47abe2b3d50c6afd1ce1c0aeea4986b3524335f5deffae0238428d5"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00013.mlir",
+      "bytes": 392070,
+      "sha256": "fdf89f1ad9f685d48f64fae94f8a79c8ad430cddedf0f157fa0f5838cb5dfb6d"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00014.mlir",
+      "bytes": 392070,
+      "sha256": "8eb2d3fdc771bdba18808da53da7c051fec63fed85c39f3a3ae837e0b0442d0a"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/compiler-ir/tile-dataflow/tile_00015.mlir",
+      "bytes": 391744,
+      "sha256": "760d081a290e7eec81c539011dd7211ecde6c0e700d29bd723cdcb746ca88e1c"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/package/manifest.json",
+      "bytes": 678148,
+      "sha256": "d452d0e973674e4da3387fff188658c8e12f11b6203f72089c48e1e6020135b8"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-bfloat16-prepare/package/modules/module_00000.so",
+      "bytes": 682992,
+      "sha256": "a13e47830d4b01f30eac4727ba246a6df6820a1d326d23d26e89e31443701dc1"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00000.mlir",
+      "bytes": 386726,
+      "sha256": "4af1f95ff4de77824881490c0a76362873571632580c239afadc17d1bfd85a30"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00001.mlir",
+      "bytes": 389796,
+      "sha256": "7849b2bb4c33f903372b30773246dae9565c1542b4c15905a267a3b089e162e3"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00002.mlir",
+      "bytes": 389836,
+      "sha256": "197b313d5b5ab7003d7dab199a7cf2a4081c66c3a432af0e3a99eef147f19378"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00003.mlir",
+      "bytes": 389910,
+      "sha256": "e04dc56c52f8b7d82484b3d800d636b37e61c1de70a35b91be126c0bf1ab26e3"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00004.mlir",
+      "bytes": 389986,
+      "sha256": "c1bb0cbd75adbcb089cfde01e81a0aeb37ea413db5d4b03df1b125b7b3c443f7"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00005.mlir",
+      "bytes": 390019,
+      "sha256": "02b2d85c7ad007f5708c0d4e6d2e0fcfa99df360efdde40d8b861389d99b7e07"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00006.mlir",
+      "bytes": 390019,
+      "sha256": "c5c3398372a87a5baa66f5c803396562b430c737ef6fdb132af614bdc4e014c9"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00007.mlir",
+      "bytes": 390019,
+      "sha256": "b8191f83c0b8c604f534d1544dd2b4bcb3c338302dcbdad4a4c3c42669a769ba"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00008.mlir",
+      "bytes": 390033,
+      "sha256": "5fc9ee422e6e42b998e2e8962919c1f7f23bf64f8069a191a6e7ae83df0eb2e3"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00009.mlir",
+      "bytes": 390033,
+      "sha256": "6d7c2e6f4f5baa25511ddf448381245b420c8a9e2f50bd81a04b01d59c3db119"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00010.mlir",
+      "bytes": 390102,
+      "sha256": "583b46228e319652eae441dddb156a92ae66f2bfedc72fad5e3e85095046722b"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00011.mlir",
+      "bytes": 390102,
+      "sha256": "a66660bd72560e65b67401f2b70dcc5fe879a1e231e0053bf62759ed2ccf21b8"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00012.mlir",
+      "bytes": 390102,
+      "sha256": "129a3511262263f4826ff126ca21e4909c269d21e3a3537f655c1d288b5ba35d"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00013.mlir",
+      "bytes": 390102,
+      "sha256": "d598b811603e6158deafdd9e42474651996d27222dc0ec0d0502456b629bea42"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00014.mlir",
+      "bytes": 390102,
+      "sha256": "448d294c8be0c73ba328b104df889efd0670ff57ccde69c68829a8dd4133c3f5"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/compiler-ir/tile-dataflow/tile_00015.mlir",
+      "bytes": 389795,
+      "sha256": "256d5a554cc38b7b7e2fc1ca24fc60b1d7a88cc150b3029bd22793931eea938a"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/package/manifest.json",
+      "bytes": 678120,
+      "sha256": "c601113af7ccea303127c5885a4ee81c2bb6b2de0d219f01eca5e225da812e1e"
+    },
+    {
+      "path": "build/test/board-performance-20260917-reuse/llama-2-7b-block-float16-prepare/package/modules/module_00000.so",
+      "bytes": 678896,
+      "sha256": "27b9fc806df54e8a08ed3ca75691b50d4226b2ed11aa3e4b2a4059c4079a2a50"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/broadcast-build.log",
+      "bytes": 2710,
+      "sha256": "1b0fc751faa38fa048d650db07080ddf9abbac6218719c79bf6b4b78f605c80f"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/broadcast-components.log",
+      "bytes": 650,
+      "sha256": "724402accdd298ca864a28d26bf2eda8fa13ea14461e6d212f54d8b5ff24d0c7"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/broadcast-final-noop.log",
+      "bytes": 63,
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/broadcast-final-unit.log",
+      "bytes": 687,
+      "sha256": "fedcb0f5a07916b3a011f8af63b4b04f34c2b32091b17de12b339fcb05377124"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/broadcast-lit.log",
+      "bytes": 5808,
+      "sha256": "cdb6ef7a2fadf9ad04462676477daf576a445163c5aedfdffcca49a0286ea1cf"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/broadcast-verifier-lit.log",
+      "bytes": 248,
+      "sha256": "a970f27f6df315f7ab629f59ff8dc77b40732dc2d5821e79dc4d042608937623"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/build_replay.py",
+      "bytes": 1210,
+      "sha256": "fc97e0e08029f53ba2d4ec118f4bcb75249e5c48afcc953a1541055fc7a61949"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/check_pv_reinterpret.py",
+      "bytes": 1810,
+      "sha256": "d0d3b91bcba819d4354a7094c71588c361fc15e12d547d0859f2df31e5e9fab9"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/pv-reinterpret-cpu.json",
+      "bytes": 390,
+      "sha256": "125ce8556609d24b1f8c58a87d74864b8bbd26c7659d33caef39b9882cbaabc4"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/replay-dataflow",
+      "bytes": 78031824,
+      "sha256": "64dfb020169bccf7747b2bdc0907e1cfbc81851fa2452202ab4e142e0aeb1921"
+    },
+    {
+      "path": "build/test/board-unfused-diagnosis-20260917/replay_dataflow.cpp",
+      "bytes": 8166,
+      "sha256": "2f0fcc3cc5354c7dffd8f070bcab29b89f806ae15a695745b361fa01ab8de134"
+    },
+    {
+      "path": "lib/Wafer/Conversion/TileToInstr/MovementLowering.cpp",
+      "bytes": 57161,
+      "sha256": "d1d5a14a9c0b7e4fe2c9ba2a0813e3767f00a50180f52b8ece453a4102ca9ed5"
+    },
+    {
+      "path": "test/Dialect/Wafer/Tile/Move/invalid-broadcast-dimensions.mlir",
+      "bytes": 1294,
+      "sha256": "64088532d4770d489c322d7932afe05614d17af22dac27b204ea8afafa17ae93"
+    },
+    {
+      "path": "unittests/Transforms/Tile/StructuredToTileTest.cpp",
+      "bytes": 302539,
+      "sha256": "6aee857b876bbd70de9ce591566c7e0a1fdacebd4a5afd18af52c3f80d715cab"
+    }
+  ]
+}

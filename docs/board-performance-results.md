@@ -1947,3 +1947,50 @@ embedding至final norm的CPU输出与head输入逐byte一致，恢复后embeddin
 该事件根因仍为unknown，不由重启恢复反推软件/硬件根因，也不声称已有代码修复。第1项的当前包完整重测已闭合，
 后续按顺序定位未融合图数值问题。这些样本不构成跨compiler版本的性能消融。
 身份、原包关联、fresh输入和全输出数值见[恢复会话证据](data/board-performance/full-lm-recovery-20260917.json)。
+
+## 2026-09-17：未融合图数值错误定位到broadcast遗漏轴置换
+
+冻结未融合candidate的FP16完整输出在新输入/reference下重放，仍为cosine=0.5732875219480722、
+relative L2=0.92273368731142991；设备正常完成，因此与此前完整LM的completion超时分开处理。
+原始actual Tile IR在PV输出处表达`[2,16,128] -> [1,16,2,128]`、`dimensions=[2,1,3]`，
+Tile-to-Instr却仅按等元素数和reshape物理映射生成连续reinterpret，遗漏head/sequence交换。
+将这一实际错误坐标变换作用于原始PyTorch模型的同一中间值，所得完整输出与板端错误输出
+cosine=0.9999998849514737、relative L2=0.00047986558407937883；原始CPU模型与fresh reference逐byte相同。
+
+通用修复只调整`MoveBroadcastLowering`：将current `dimensions`形成的实际relation交给已有
+`TransferRealizability::proveMetadataView`；证明不成立时由同一relation生成既有GatherScatter。
+不改变算术、dtype、融合策略、search预算、runtime ABI、completion规则或容差。
+30组FP16/BF16×1024/1025/1031×五种映射检查完整逐byte对应、无重叠、实际load/store消费者及completion/SPM；
+594项受影响component、2项movement verifier lit通过。Tile-to-Instr目录24/25项通过；未改动的
+`convert-tile-region-to-instr-ncc-workers.mlir`仍因期望`cmpi ne`而实际生成`cmpi eq`失败，
+该fixture不含broadcast，未将此项记为通过或夹带修改同步规则。canonical完整增量构建及后续Ninja no-op通过。
+
+为验证原故障而保留冻结的16份actual Tile dataflow，重新生成原HF source、参数、输入及CPU reference，
+严格核对source一致，再调用当前正式Tile-to-Instr、transfer cleanup、shared DDR completion、SPM/DDR、target及package实现。
+新旧manifest仅`modules`变化，program data逐byte一致，其余全部resource/entry/launch描述保持。
+这验证冻结上游candidate经过当前下游修复后的完整数值，不签发当前source search生成未融合candidate的资格；
+production仍采用已授权的attention融合，没有增加关闭融合的产品入口。
+
+| 冻结未融合图、当前修复后端 | 设备耗时（ms） | cosine | relative L2 | 完整65536输出 |
+| --- | ---: | ---: | ---: | --- |
+| FP16 | 8.765 | 0.999999886616 | 0.000476342 | 通过；原逐点诊断超差0 |
+| BF16 | 8.789 | 0.999995305368 | 0.003064187 | 通过；原逐点诊断超差10 |
+
+两种dtype均通过本轮完整no-card和正常completion/readback/cleanup。该结果闭合漏置换数值根因，
+不是放宽容差、改用融合绕过故障或新增转置/psum支持。诊断包的时间不替换production融合block的性能基线。
+
+当前source→默认8/42→package的融合block保护回归中，FP16/BF16的ELF、manifest和target LLVM均与修复前一致。
+FP16普通三次9.897/9.935/9.750 ms，中位9.897 ms；BF16三次9.747/9.822/9.928 ms，中位9.822 ms；
+全输出分别为cosine=0.999999811579、relative L2=0.000614143，以及cosine=0.999987996526、relative L2=0.004899749，
+均通过原合同。此前9.8215 ms及14.181 ms基线保留，不把当前时钟/采样差异归因于未改变的执行包。
+三组大GEMM也由当前source重新构包并通过fresh no-card，ELF、manifest及各16份target LLVM与前一接受版本完全一致。
+本轮串行三次完整输出均通过原合同：
+
+| 大GEMM保护 | 三次设备耗时（ms） | 中位（ms） | cosine | relative L2 |
+| --- | --- | ---: | ---: | ---: |
+| 4096³ FP16 | 6.895 / 6.704 / 6.778 | 6.778 | 0.999999998099 | 0.000061893 |
+| 4096³ BF16 | 6.933 / 6.793 / 6.854 | 6.854 | 0.999999987394 | 0.000158845 |
+| 4097³ FP16 | 8.600 / 8.461 / 8.419 | 8.461 | 0.999999998058 | 0.000062562 |
+
+第2项根因、通用机制及五配置保护闭合，继续第3项decode性能恢复。版本、原始图关联、全部numeric audit、
+各次时间及产物digest见[漏置换修复证据](data/board-performance/broadcast-permutation-20260917.json)。

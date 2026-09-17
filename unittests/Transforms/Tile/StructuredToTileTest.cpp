@@ -6078,6 +6078,132 @@ TEST_F(StructuredToTileTest,
         }
 }
 
+TEST_F(StructuredToTileTest, BroadcastLoweringPreservesEveryMappedByte) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef element : {"f16", "bf16"})
+      for (unsigned variant = 0; variant < 5; ++variant) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << element.str() << "/" << variant);
+        // Cover ordered unit insertion, unequal/equal nonunit permutations,
+        // a harmless unit-axis permutation, and actual replication.
+        llvm::SmallVector<int64_t> sourceShape{2, extent, 64};
+        llvm::SmallVector<int64_t> resultShape{1, extent, 2, 64};
+        llvm::SmallVector<int64_t> dimensions{2, 1, 3};
+        if (variant == 0) {
+          resultShape = {1, 2, extent, 64};
+          dimensions = {1, 2, 3};
+        } else if (variant == 2) {
+          sourceShape = {2, 2, extent};
+          resultShape = {1, 2, 2, extent};
+        } else if (variant == 3) {
+          sourceShape[0] = 1;
+          resultShape[2] = 1;
+        } else if (variant == 4) {
+          resultShape[0] = 2;
+        }
+        auto type = [&](llvm::ArrayRef<int64_t> shape, llvm::StringRef space) {
+          std::string text;
+          llvm::raw_string_ostream os(text);
+          os << "memref<";
+          for (int64_t size : shape)
+            os << size << "x";
+          os << element << ", #wafer.memory<" << space << ", tensor>>";
+          return text;
+        };
+        std::string in = type(sourceShape, "ddr");
+        std::string out = type(resultShape, "ddr");
+        std::string source = type(sourceShape, "spm");
+        std::string result = type(resultShape, "spm");
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        os << "module { func.func @entry(%input: " << in << ", %output: "
+           << out << ") {\nwafer.tile.region(%input, %output : " << in << ", "
+           << out << ") -> () { ^bb0(%in: " << in << ", %out: " << out
+           << "):\n%source = memref.alloc() : " << source
+           << "\nwafer.tile.load %in into %source : " << in << " into "
+           << source << "\n%result = wafer.tile.broadcast %source "
+           << "{dimensions = array<i64: " << dimensions[0] << ", "
+           << dimensions[1] << ", " << dimensions[2] << ">} : " << source
+           << " -> " << result << "\nwafer.tile.store %result, %out : "
+           << result << " -> " << out << "\nwafer.tile.yield\n}\nreturn\n}}";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        TileRegionOp region;
+        module->walk([&](TileRegionOp op) { region = op; });
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        const bool alias = variant == 0 || variant == 3;
+        EXPECT_EQ(countOps<mlir::memref::ReinterpretCastOp>(*module),
+                  alias ? 1u : 0u);
+        EXPECT_EQ(countOps<MoveBroadcastOp>(*module), 0u);
+        EXPECT_EQ(countOps<InstrRDMAOp>(*module), 1u);
+        EXPECT_EQ(countOps<InstrWDMAOp>(*module), 1u);
+        InstrRDMAOp load;
+        InstrWDMAOp store;
+        module->walk([&](InstrRDMAOp op) { load = op; });
+        module->walk([&](InstrWDMAOp op) { store = op; });
+        int64_t bytes = 2;
+        for (int64_t size : resultShape)
+          bytes *= size;
+        std::vector<int64_t> sourceByte(bytes, -1);
+        if (alias) {
+          EXPECT_EQ(countOps<InstrGatherScatterOp>(*module), 0u);
+          for (int64_t byte = 0; byte < bytes; ++byte)
+            sourceByte[byte] = byte;
+        } else {
+          EXPECT_GT(countOps<InstrGatherScatterOp>(*module), 0u);
+          module->walk([&](InstrGatherScatterOp move) {
+            EXPECT_EQ(move.getSource(), load.getDest());
+            EXPECT_EQ(move.getDest(), store.getSource());
+            ASSERT_FALSE(move.getSrcOffsetValue());
+            ASSERT_FALSE(move.getDstOffsetValue());
+            auto address = [&](int64_t ordinal, bool read) {
+              int64_t address = ordinal % move.getInnerBytes();
+              ordinal /= move.getInnerBytes();
+              auto counts = read ? move.getSrcIterations()
+                                 : move.getDstIterations();
+              auto strides = read ? move.getSrcStrides() : move.getDstStrides();
+              for (unsigned dim = 0; dim < 3; ++dim) {
+                address += (ordinal % counts[dim]) * strides[dim];
+                ordinal /= counts[dim];
+              }
+              return address + (read ? move.getSrcOffset().value_or(0)
+                                     : move.getDstOffset().value_or(0));
+            };
+            for (int64_t byte = 0;
+                 byte < static_cast<int64_t>(move.getByteCount()); ++byte) {
+              int64_t destination = address(byte, false);
+              ASSERT_GE(destination, 0);
+              ASSERT_LT(destination, bytes);
+              ASSERT_EQ(sourceByte[destination], -1);
+              sourceByte[destination] = address(byte, true);
+            }
+          });
+        }
+        // Independent logical coordinates, without using IndexRelation or
+        // descriptor planning: every output byte has exactly one producer.
+        for (int64_t byte = 0; byte < bytes; ++byte) {
+          int64_t ordinal = byte / 2;
+          llvm::SmallVector<int64_t> coordinates(resultShape.size());
+          for (int64_t dim = resultShape.size() - 1; dim >= 0; --dim) {
+            coordinates[dim] = ordinal % resultShape[dim];
+            ordinal /= resultShape[dim];
+          }
+          int64_t expected = 0;
+          for (unsigned dim = 0; dim < sourceShape.size(); ++dim)
+            expected = expected * sourceShape[dim] + coordinates[dimensions[dim]];
+          ASSERT_EQ(sourceByte[byte], expected * 2 + byte % 2);
+        }
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+      }
+}
+
 TEST_F(StructuredToTileTest, StridedSPMEndpointsPreserveEveryDMAAddress) {
   for (int64_t extent : {1024, 1025, 1031}) {
     for (llvm::StringRef element : {"f16", "bf16"}) {

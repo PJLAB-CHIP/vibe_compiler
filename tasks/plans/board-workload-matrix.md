@@ -42,7 +42,7 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 用户确认重启后，三个BF16拆分边界及完整LM均通过；同一软件/包继续检查FP16→BF16次序，完整输出也通过，
 两次BF16完整capture逐byte相同。新会话的完整LM依次为BF16 75.915001、FP16 75.117996、BF16 74.524002 ms。
 原超时本轮未复现，根因仍未知，没有修改编译器/runtime或声称修复；该事件继续保留审计。
-当前进入第2项未融合图数值根因，第3—5项保持顺序等待。
+随后完成第2项未融合图数值根因及保护回归，当前进入第3项decode性能恢复，第4—5项保持顺序等待。
 两种dtype的16 Tile dataflow/Instr在显式统一dtype及conversion枚举后完全相同，launch/entry/resource描述一致；
 LLVM target call差异仅为对应format与conversion入口，不能据此推定BF16不支持或同步根因。
 
@@ -53,6 +53,23 @@ LM head输入来自本轮CPU原模型的新hidden states，不读旧raw。
 这些诊断仅定位完整模型中的故障范围；它们改变了编译图边界，不能代签完整失败candidate或当作其根因证明。
 三个诊断边界现已完成本轮默认search构包、完整16 Tile no-card及新reference准备；参数与完整LM一致，
 CPU hidden→head的边界逐byte闭合。恢复后的三个诊断边界均实卡通过，结果和身份见统一性能记录。
+
+第2项先复现已保留的未融合失败candidate。输入为该次实际生成的Instr/target/ELF及其完整package，
+使用当前runner、新生成的原HF输入/reference，并严格核对source/参数与冻结包一致；历史raw仅供审计。
+这是冻结compiler版本的故障重放，不签当前compiler资格；当前production仍执行已授权的attention融合。
+先检查整图失败能否复现，再沿实际producer/consumer缩小首个分歧；拆分图改变候选选择时明确记录，
+不得以独立算子通过排除原candidate中的同类操作。根因确定后在对应编号设计补齐通用修复及覆盖矩阵，
+再由current compiler验证机制、完整图以及block/GEMM性能保护。
+
+第2项已定位到10号Tile-to-Instr broadcast：失败candidate在PV输出处具有
+`[2,16,128] -> [1,16,2,128]`、`dimensions=[2,1,3]`，lowering却用shape-only reshape证明生成连续reinterpret，
+丢失head/sequence轴交换。按该实际错误映射改动本轮原始CPU模型的对应中间值，所得完整输出与板端失败输出
+cosine=0.9999998849514737、relative L2=0.00047986558407937883，解释了原cosine=0.5732875的故障。
+修复复用已有`proveMetadataView`，输入改为actual broadcast relation；30组FP16/BF16、1024/1025/1031的
+独立逐byte覆盖/无重叠及completion/SPM检查已通过，三个受影响component通过。
+冻结actual Tile dataflow经当前正式lowering/target/package后，FP16/BF16已通过本轮完整实卡数值；
+融合block两种dtype及三组大GEMM各三次保护通过。五个当前source重新构包的ELF、manifest及各16份target LLVM
+均与前一接受版本完全一致，完整数值通过。第2项完成，进入第3项；具体性能与证据汇入统一记录。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

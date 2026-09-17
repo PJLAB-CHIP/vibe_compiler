@@ -1102,13 +1102,23 @@ public:
           mlir::getAffineDimExpr(resultDim, rewriter.getContext()));
     }
 
-    // A broadcast that only inserts unit dimensions is an exact reshape. Keep
-    // it as a metadata view when both physical layouts describe the same
-    // storage instead of manufacturing a gather/scatter movement.
+    analysis::IndexRelationResult sourceRelation =
+        analysis::IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(resultType.getRank(), 0, sourceResults,
+                                 rewriter.getContext()),
+            resultType.getShape(), sourceType.getShape());
+    analysis::IndexRelationResult destRelation =
+        analysis::IndexRelation::identity(resultType.getShape());
+    if (!sourceRelation.isExact() || !destRelation.isExact())
+      return failPattern(rewriter, op, "tile.broadcast relation is not exact");
+
+    // Equal element counts do not make a broadcast a reshape: dimensions may
+    // also permute nonunit axes. Prove the actual broadcast mapping before
+    // replacing movement with an alias.
     if (sourceType.getNumElements() == resultType.getNumElements() &&
         mlir::succeeded(
-            analysis::TransferRealizability::proveStaticReshapeMetadataView(
-                sourceType, resultType,
+            analysis::TransferRealizability::proveMetadataView(
+                sourceType, resultType, *sourceRelation.get(),
                 /*destinationMayWrite=*/true))) {
       llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
                                        resultType.getShape().end());
@@ -1123,15 +1133,6 @@ public:
       return mlir::success();
     }
 
-    analysis::IndexRelationResult sourceRelation =
-        analysis::IndexRelation::fromAffineMap(
-            mlir::AffineMap::get(resultType.getRank(), 0, sourceResults,
-                                 rewriter.getContext()),
-            resultType.getShape(), sourceType.getShape());
-    analysis::IndexRelationResult destRelation =
-        analysis::IndexRelation::identity(resultType.getShape());
-    if (!sourceRelation.isExact() || !destRelation.isExact())
-      return failPattern(rewriter, op, "tile.broadcast relation is not exact");
     mlir::FailureOr<llvm::SmallVector<MovementDescriptorPair>> descriptors =
         getRelationMovementDescriptors(
             rewriter, op, sourceType, resultType, resultType.getShape(),

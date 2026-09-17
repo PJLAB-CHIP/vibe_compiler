@@ -307,6 +307,25 @@ conversion按concrete typed op class使用DialectConversion/RewritePattern，生
 
 Descriptor planning是compute与movement lowering共用的request-local只读kernel。Tensor↔Cx/NCx的tail-free规则性映射按typed physical
 geometry压成至多三层descriptor，超出三层时只沿明确logical axis拆成有限commands；broadcast使用同一projected affine map。
+`tile.broadcast`即使元素数不变，也可能通过`dimensions`同时交换非单位轴。其metadata view必须使用该属性形成的
+destination-to-source `IndexRelation`，由`TransferRealizability::proveMetadataView`证明每个元素的physical address相同；
+不能用shape-only reshape证明替代broadcast语义。证明不成立时，同一relation进入既有GatherScatter descriptor物化。
+只有插入/移动单位轴且physical mapping确实不变的输入才保留零搬运路径；不改变算术、dtype、融合或搜索策略。
+该修复的输入是verified Tile broadcast和实际source/result memref，输出是正确alias或显式Instr movement，直接下游为
+completion、SPM规划和target lowering。完成条件包括以下机制矩阵与原始图数值/性能保护：
+
+| 输入等价类 | 结构分支与exact输出 | 直接下游witness |
+| --- | --- | --- |
+| rank3→4，FP16/BF16，1024/1025/1031；非单位轴交换，含相等extent轴 | 逐byte对应独立坐标置换；完整覆盖且无重复写；不得用连续reinterpret代替交换 | actual GatherScatter、DDR store、completion及SPM规划 |
+| 同规模，保序插入单位轴、仅单位轴换位 | physical mapping相同；metadata view，无额外GatherScatter | 原buffer的alias和实际store消费 |
+| 同规模，新增非单位轴复制 | exact broadcast重复读、destination无重叠完整覆盖 | 既有descriptor路径及规划 |
+| 错误/重复/越界dimensions或mapped extent不一致 | 原op verifier拒绝，不产生部分合法化结果 | typed verifier failure |
+| 原HF未融合失败candidate的actual Tile dataflow；原始PyTorch输入/reference | 本轮正常设备完成且完整输出符合原合同；冻结上游与current下游身份分别记录 | 相同正式Tile→Instr→target实现；融合block、大GEMM数值及匹配性能保护 |
+
+工程依据为[MLIR MemRef语义](https://mlir.llvm.org/docs/Dialects/MemRef/)及pinned `MemRefOps.td`：
+reinterpret只重建descriptor，transpose必须保留对应的轴/stride关系。本项复用已有physical relation证明与movement实现，
+不新增op、API或数值算法，也不通过关闭attention融合恢复诊断图。
+
 `memref.subview`的static offset/stride先形成从view logical index到base logical index的exact `IndexRelation`，再与base的
 `PhysicalLayoutRelation`组合；descriptor offset始终相对current base allocation。不能把Cx/NCx view的strided memref type解释成
 blocked physical stride，也不能从shape或loop ordinal猜测offset。只有physical byte offset对dynamic index可证明为线性式时才物化

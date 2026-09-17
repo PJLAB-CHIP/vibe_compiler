@@ -7,6 +7,17 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 等元素数broadcast不能直接当作reshape
+
+- 现象：独立算子数值正常，组合图在rank变化处发生大误差；元素数、dtype、buffer大小和完成状态均正确。
+- 根因：broadcast的dimension map同时包含非单位轴置换，只用source/result shape证明reshape会丢掉该置换。
+  连续reinterpret仍能通过类型检查，却改变元素的逻辑坐标。
+- 修复模式：把current op的实际destination-to-source relation交给已有physical metadata-view证明；只有每个元素地址相同
+  才保留alias，否则用同一relation物化movement。不能只检查元素数相等，或以相等轴长度推断轴交换无影响。
+- 防复发：rank变化同时覆盖非单位轴交换、相等extent轴交换、保序单位轴插入、仅单位轴换位和真正复制，
+  在1024/1025/1031上独立枚举实际descriptor的逐byte对应及destination无重叠完整覆盖，并推进completion/SPM和整图数值。
+  故障定位时可按actual IR中的错误坐标变换解释完整输出，但该CPU诊断不能代替修复后的实卡验证。
+
 ## 均匀常量必须先应用已选局部view再物化
 
 - 现象：compute已切成局部窗口，actual SPM仍出现完整张量的fill，继续缩小其它temporal参数不能降低该allocation。
