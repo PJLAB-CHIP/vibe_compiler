@@ -2143,3 +2143,23 @@
   不能通过放宽descriptor上限修复。既有完整函数参数SSA不等于创建完整SPM allocation。
 - 防复发：1024/1025/1031、4/16 Tile覆盖多层view、共享输入、不同operand map、无use参数、真实full-use及temporal主/尾部；
   检查exact coverage并推进至实际Instr/SPM。4096/4097大GEMM同时验证实际读取及descriptor路径。
+
+## GEMM setter的dtype正确不代表最终packet范围正确
+
+- pinned SDK的`__execute_ne`在发射时重算GEMM end，output/psum误用了input的element bytes；F16/BF16输入配F32
+  output/psum会少报范围。修改setter之后、`TsmExecute`之前的end会再次被覆盖。
+- 通用修复在CRT的最终GEMM issuer：按各operand dtype、实际存储orientation和逐batch padding计算inclusive end，
+  普通与profile执行同一issuer。输入范围也必须按实际转置后的存储矩阵计算。
+- 防复发测试捕获最终寄存器，覆盖混合dtype、主/尾部、batch、orientation和worker；只检查setter参数、IR dtype或数值输出不够。
+  该字段缺陷有主机证据，不能据此把未取得故障PC/packet的整包TDMA timeout归为同一根因。
+
+
+## 局部需求可切片不代表允许重复拼接
+
+- 根因：只证明subset覆盖正确就把多来源拼接放在每个读取点，会绕过原共享producer的all-use与循环不变性约束。
+  局部shape缩小仍可能增加动态搬运次数和总字节，尤其是需求相关循环外还存在不变的消费轴时。
+- 修复模式：从current SSA的全部读取和实际循环grid证明复用；局部拼接放在不变内层之外。
+  存在重叠需求、full-use、共享中间拼接，或不变外层包围相关轴而没有显式存储选择时，保留原共享值。
+  物化后由唯一actual SPM路径重新判断容量，不用窗口大小预测合法性，也不按算子名或归约轴名决定下沉。
+- 防复发：成对覆盖相关/不变轴的两种顺序、Independent/Joint和整除/尾块；检查动态拼接元素量、实际搬运字节及直接Instr/SPM。
+  完整模型必须另做数值和匹配性能保护，静态slice shape不能代替复用验证。

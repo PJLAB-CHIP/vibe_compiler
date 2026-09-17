@@ -15,6 +15,7 @@
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotModuleBufferize.h"
@@ -477,7 +478,6 @@ struct BoundaryWindowUsePlan {
   TileRegionOp consumer;
   unsigned inputIndex = 0;
   llvm::SmallVector<mlir::tensor::ExtractSliceOp, 2> extracts;
-  llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 2> relativeOffsets;
   bool remote = false;
 };
 
@@ -697,6 +697,42 @@ static mlir::LogicalResult elideBoundarySourceViews(
   return mlir::success();
 }
 
+static bool isOffsetWithinWindow(mlir::OpFoldResult offset, int64_t base,
+                                  int64_t size, int64_t extent) {
+  if (base < 0 || size <= 0 || size > extent)
+    return false;
+  if (auto constant = mlir::getConstantIntValue(offset))
+    return *constant >= base && *constant - base <= extent - size;
+  using mlir::ValueBoundsConstraintSet;
+  using mlir::presburger::BoundType;
+  // The pinned SCF bounds model omits the loop step. Add the last actual IV
+  // from the existing current-loop analysis, then let ValueBounds compose
+  // arbitrary supported index expressions above it.
+  auto stop = [](mlir::Value value, std::optional<int64_t> dimension,
+                 ValueBoundsConstraintSet &bounds) {
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+    if (dimension || !argument)
+      return false;
+    auto domain = analysis::getStaticLoopDomain(
+        argument.getOwner()->getParentOp());
+    if (!domain || value != domain->loop.getInductionVar())
+      return false;
+    int64_t last = domain->lower +
+                   ((domain->upper - domain->lower - 1) / domain->step) *
+                       domain->step;
+    bounds.bound(value) >= domain->lower;
+    bounds.bound(value) <= last;
+    return true;
+  };
+  ValueBoundsConstraintSet::Variable variable(offset);
+  auto lower = ValueBoundsConstraintSet::computeConstantBound(
+      BoundType::LB, variable, stop, /*closedUB=*/true);
+  auto upper = ValueBoundsConstraintSet::computeConstantBound(
+      BoundType::UB, variable, stop, /*closedUB=*/true);
+  return mlir::succeeded(lower) && mlir::succeeded(upper) && *lower >= base &&
+         *upper >= *lower && *upper - base <= extent - size;
+}
+
 static mlir::FailureOr<llvm::SmallVector<BoundaryWindowPlan, 8>>
 preflightBoundaryWindows(mlir::ModuleOp module,
                          StructuredMaterializationRelations &relations) {
@@ -766,29 +802,23 @@ preflightBoundaryWindows(mlir::ModuleOp module,
         consumerPlan.remote = remote;
         for (mlir::Operation *user : argument.getUsers()) {
           auto extract = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(user);
-          auto consumerOffsets =
-              extract ? getStaticValues(extract.getMixedOffsets())
-                      : std::nullopt;
           auto consumerSizes =
               extract ? getStaticValues(extract.getMixedSizes()) : std::nullopt;
           auto consumerStrides =
               extract ? getStaticValues(extract.getMixedStrides())
                       : std::nullopt;
-          if (!extract || extract.getSource() != argument || !consumerOffsets ||
+          if (!extract || extract.getSource() != argument ||
+              extract.getMixedOffsets().size() != offsets->size() ||
               !consumerSizes || !consumerStrides ||
-              consumerOffsets->size() != offsets->size() ||
               *consumerStrides != *strides)
             return false;
-          llvm::SmallVector<int64_t, 4> relative;
           for (auto [offset, size, base, extent] : llvm::zip_equal(
-                   *consumerOffsets, *consumerSizes, *offsets, *sizes)) {
-            if (offset < base || size <= 0 || size > extent ||
-                offset - base > extent - size)
+                   extract.getMixedOffsets(), *consumerSizes, *offsets,
+                   *sizes)) {
+            if (!isOffsetWithinWindow(offset, base, size, extent))
               return false;
-            relative.push_back(offset - base);
           }
           consumerPlan.extracts.push_back(extract);
-          consumerPlan.relativeOffsets.push_back(std::move(relative));
         }
         // An unused argument has no demand. Retarget its type together with
         // the actual input; it must not block other consumers' local windows.
@@ -864,12 +894,23 @@ static mlir::LogicalResult compactBoundaryWindows(
         use.consumer->setOperand(use.inputIndex, input);
         argument.setType(plan.piece.getType());
       });
-      for (auto [extract, relative] :
-           llvm::zip_equal(use.extracts, use.relativeOffsets)) {
-        llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
-        for (int64_t offset : relative)
-          offsets.push_back(rewriter.getIndexAttr(offset));
+      for (auto extract : use.extracts) {
         rewriter.setInsertionPoint(extract);
+        llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+        for (auto [offset, originOffset] : llvm::zip_equal(
+                 extract.getMixedOffsets(), plan.insert.getMixedOffsets())) {
+          int64_t base = *mlir::getConstantIntValue(originOffset);
+          if (auto constant = mlir::getConstantIntValue(offset))
+            offsets.push_back(rewriter.getIndexAttr(*constant - base));
+          else if (base == 0)
+            offsets.push_back(offset);
+          else {
+            auto origin = rewriter.create<mlir::arith::ConstantIndexOp>(
+                extract.getLoc(), base);
+            offsets.push_back(rewriter.createOrFold<mlir::arith::SubIOp>(
+                extract.getLoc(), mlir::cast<mlir::Value>(offset), origin));
+          }
+        }
         auto replacement = rewriter.create<mlir::tensor::ExtractSliceOp>(
             extract.getLoc(), extract.getType(), argument, offsets,
             extract.getMixedSizes(), extract.getMixedStrides());
@@ -928,15 +969,10 @@ preflightOutputPieces(StructuredMaterializationRelations &relations,
     if (auto insert = yielded.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
       auto empty = insert.getDest().getDefiningOp<mlir::tensor::EmptyOp>();
       // Only an insert into a fresh empty tensor is a structural publication
-      // shell that can be narrowed to its source piece. A temporal loop or
-      // peeled tail may yield an insert into an actual loop-carried result;
-      // that value is already the complete observable tensor and must remain
-      // intact for DPS binding.
-      if (!empty && !insert.getDest().getDefiningOp<mlir::scf::ForOp>()) {
-        detail = "observable insert_slice is neither one exact static output "
-                 "piece nor one temporal loop result";
-        return mlir::failure();
-      }
+      // shell that can be narrowed to its source piece. Every other result
+      // keeps its complete destination for DPS binding, including nested
+      // updates from peeling more than one loop axis. Its producer kind does
+      // not determine whether that current SSA tensor may be published.
       if (empty) {
         auto staticOffsets = getStaticValues(insert.getMixedOffsets());
         auto staticSizes = getStaticValues(insert.getMixedSizes());

@@ -209,9 +209,12 @@ struct TemporalConcatSegment {
   std::optional<mlir::OpResult> derivedProducer;
 };
 
-/// One current all-and-only static insert_slice assembly consumed by a single
-/// temporal traversal. The query result borrows all handles from the current
-/// unchanged TileRegion and is consumed by the immediate apply call.
+/// One current all-and-only static subset assembly consumed, possibly through
+/// transparent indexing views, by a temporal traversal or an actual subset
+/// read. Traversal fusion requires unique uses; an actual-subset query only
+/// proves coverage. Its materializer must separately prove all-use sharing
+/// and loop reuse before localizing. All handles borrow the current unchanged
+/// TileRegion and are consumed by the immediate apply call.
 struct TemporalConcatQueryResult {
   TemporalConcatQueryKind kind = TemporalConcatQueryKind::NotConcat;
   mlir::Value assembledValue;
@@ -225,8 +228,8 @@ struct TemporalConcatQueryResult {
   }
 };
 
-/// Recognizes a static, unit-stride, nonoverlapping insert_slice chain rooted
-/// in tensor.empty whose source rectangles exactly cover the assembled value.
+/// Recognizes static, unit-stride SubsetInsertionOpInterface writes whose
+/// nonoverlapping source rectangles exactly cover the assembled value.
 TemporalConcatQueryResult
 queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand);
 

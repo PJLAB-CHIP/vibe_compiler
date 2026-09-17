@@ -12,6 +12,18 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 ### 当前授权顺序与性能保护
 
+用户最新授权优先恢复局部拼接改动前的复用与性能：先修正拼接的全部读取/循环不变性约束，完成主机机制与fresh no-card；
+再验证完整LLaMA block FP16/BF16与三组大GEMM的数值及匹配性能；保护闭合后继续ViT S1024/1025构包和上板。
+暂缓TDMA专项定位，不以其尚未查明为由阻止主机修复，也不把性能恢复解释为TDMA根因已解决。
+主机对照同时检查实际搬运次数、总字节及重复读取，不能仅以局部shape变小验收；保留已确认的CRT dtype范围修正。
+ViT继续定位F32 GEMM输入的正式生成边界，不通过隐式降精度或改变模型/reference取得通过。
+
+本轮复用修复与五项保护已完成：原832项component及新增共享值保护用例、两项定向lit通过；五项各三次完整实卡数值通过，
+LLaMA两种dtype中位9.334/9.347 ms，大GEMM三项6.807/6.817/8.508 ms，原最好性能目标不变。
+修复后ViT S1024/1025各完成默认8/42搜索，均有4个通过actual SPM的候选，最终target拒绝F32 GEMM输入，仍无package。
+当前源图在attention前已将Q/K/V提升到F32，该边界不能由拼接或降低reference门槛修复。
+已向用户询问是否明确采用低精度attention导出方式；答复前保留原运算dtype。
+
 原授权顺序为下列1—5项；用户随后明确暂缓第3项剩余TDMA定位及decode性能，转入第4项。
 第3项仍保留未完成，第4项闭合后推进第5项，不以中间结果结束。
 它们继续归入同一个`board-testing`，不是五个独立队列项。
@@ -32,7 +44,7 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 | 性能保护矩阵 | 固定输入与完整输出 | 验收 |
 | --- | --- | --- |
-| HF decoder block S16 FP16/BF16 | hidden4096、原32 heads/MLP11008、65536输出 | 保留FP16已匹配9.8215 ms及更早14.181 ms对照；BF16先匹配复测9.955 ms单样本，不能将单样本冒充稳定基线 |
+| HF decoder block S16 FP16/BF16 | hidden4096、原32 heads/MLP11008、65536输出 | 按统一记录保留各自最好可复现成绩；最近健康保护的三次中位FP16 9.339 ms、BF16 9.371 ms作为匹配参考，不重置历史更快目标 |
 | 大GEMM 4096³ FP16/BF16、4097³ FP16 | 原始两份runtime矩阵、完整输出；尾块保持所有维度 | 改动前保留有效包与身份，共用planning/lowering修改后重新构包及上板；同环境重复比较，不能以block收益抵消GEMM退化 |
 | 通用根因机制 | rank≥3、主要轴1024/1025/1031；结构分支、typed failure和直接下游 | 修复前后重现同一根因，检查exact coverage/owner/demand/tail或completion；实现前在对应编号设计补齐本项具体矩阵 |
 
@@ -154,14 +166,32 @@ Driver三项直接保护和四个layout/bufferization lit再次通过；canonica
 GEMM4096 BF16第一次实卡全输出通过、设备耗时6.969 ms，第二次completion超时，批次已停止并等待恢复确认；
 没有重试、reset或继续其它case。详细身份及证据见统一性能记录。该单次结果不签三轮保护或性能恢复。
 随后用户明确要求检查Add：fresh FP16 Add构包/no-card通过，占用为空闲，单次上板返回`txStreamQuery 0x46000006`，
-未取得输出，设备侧保持待恢复。没有重新运行GEMM或其它模型。
+该次未取得输出并停止设备执行。用户随后确认重启；新会话fresh Add exact通过，五项block/GEMM各三次完整数值通过，
+无completion超时或txStreamQuery错误。设备中位数为block FP16/BF16 9.339/9.371 ms、
+GEMM4096 FP16/BF16 6.829/6.865 ms、GEMM4097 FP16 8.438 ms。此前异常根因仍未知，
+不以重启后通过声称根因已修复；本轮版本、输入和数值记录见统一性能文档。
 
-最终当前compiler从两项fresh ViT source各执行默认8/42搜索：S1024耗时716.524秒，S1025耗时743.469秒；
+此前局部需求版本从两项fresh ViT source各执行默认8/42搜索：S1024耗时716.524秒，S1025耗时743.469秒；
 两项均为41个actual SPM容量拒绝、1个局部operand物化unsupported、0 accepted、0 indeterminate。
 原4.5 MiB QKV view重建及无use参数阻止3 MiB producer窗口收缩的根因已由机制输入闭合，但剩余candidate仍有
 FFN/attention实际容量需求未缩到可行范围，另一个局部物化边界未闭合。完整ViT仍无package/no-card或实卡资格，
 不能把这次通用机制修复记为第4项完成。下一步沿当前candidate的actual allocation owner和所选窗口继续定位，
 保留unsupported与capacity区分，不调大预算掩盖局部物化失败。
+
+随后局部拼接及动态boundary窗口修改已使S1024/1025各有4个actual accepted；完整target仍拒绝F32 GEMM输入，
+尚无ViT package。此前五项实卡通过对应局部需求版本，不能代签这个新版本的保护。
+新版本LLaMA FP16在两次boot分别报告Tile7/Tile1 LSU TDMA timeout；最新boot的Add在故障之前exact通过、0.756 ms。
+用户要求先定位再重启，当前主机诊断已确认一个独立SDK缺陷：GEMM最终output/psum end错误沿用input的字节宽度。
+按14号合同改CRT最终issuer，逐operand dtype、orientation及batch计算范围，普通/Count/Trace共用发射；没有增加同步。
+2161组最终寄存器检查、93项Runtime测试和CRT/device-link lit通过；实际新ELF的主机回放确认F32范围由2048B修正为4096B。
+用户要求暂停整模型回归、先定位TDMA；完整数值及匹配性能仍须后续验收。
+当前TDMA故障未取得具体PC/packet，不能把已确认的GEMM范围缺陷直接记为其根因。记录见统一性能文档。
+用户再次确认重启后，已按单条TDMA→GEMM/psum局部链执行两项定向板测，均使用修正后的当前CRT；
+完整defined数据与guard分别14848B/13504B exact，无completion超时。两项保留故障片段SPM地址、stride与调用顺序，
+但不覆盖长循环、其它Tile或原DDR通知历史；该局部通过不代签整包修复或性能保护，下一步沿更长实际指令区间继续定位。
+随后用户要求直接检查完整block：保持原16份target LLVM、全部program data、输入及除ELF digest外的manifest不变，
+使用修正后CRT的FP16完整包单次上板，仍报告Tile1 LSU TDMA fatal并在60秒后completion超时；未取得输出或耗时。
+这确认GEMM范围修正不足以消除当前整包异常；设备执行已停止，继续主机侧按原计算阶段缩小故障范围。
 
 用户授权先完成算子/原模型回归与重点模型上板，ResNet18只验原始224输入，不补整网大图。
 输入为当前case、独立新生成的PyTorch输入/reference、当前compiler/runtime；统一runner负责

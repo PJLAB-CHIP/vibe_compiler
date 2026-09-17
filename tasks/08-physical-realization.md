@@ -72,6 +72,18 @@ post-attention bounded logical normalization
 边界窗口收缩只依据current SSA上的实际读取。重复输入或改写留下的无use Region argument没有tensor demand，
 不能阻止同一producer其它局部读取的收缩；改变carrier type时同步改变这些空参数的输入和类型，保持Region verifier有效。
 真实full-use仍保留完整值。覆盖1024/1025/1031、同Tile和跨Tile部分窗口、重复/空参数及非零offset，检查重定位坐标与实际buffer尺寸。
+Temporal局部化后，boundary consumer的subset offset可以是实际循环IV。窗口包含证明消费current SSA的
+`ValueBoundsOpInterface`及已有static loop domain的闭区间；pinned SCF bounds未计step时，由该domain补充最后一次IV。
+全部实际读取均落在producer已发布窗口内才收缩carrier，并在consumer原位置将offset减去窗口起点。
+未知或越界读取保留完整boundary；此证明不改变SPM合法性，也不预测未来slice。
+依据[MLIR ValueBounds](https://mlir.llvm.org/doxygen/classmlir_1_1ValueBoundsConstraintSet.html)的只读约束组合，
+具体API及SCF step限制以pinned源码为准。覆盖4/16 Tile的1024/1025/1031动态读，以及包含/越界的成对负例；
+检查重定位delta、carrier shape与直接下游actual allocation，不能只断言变换成功。
+
+Observable output的完整SSA结果按完整destination绑定，不根据其producer类别判断是否为合法的temporal结果。
+多轴主/尾块可能形成多层subset update；只要不符合已有的单个静态publication piece证明，就保留完整结果及其更新链，
+交给DPS/bufferization分析实际alias与写入。不能要求最外层update的destination必须直接由某一种loop op产生。
+覆盖1024/1025/1031与第二轴非整除tile的组合，检查完整输出覆盖、局部拼接及实际Instr/SPM。
 
 函数边界的memory space按当前FuncOp的symbol uses判定，每个函数的参数与结果共用同一个选择。该选择仅活于一次layout/bufferization调用；
 pinned One-Shot的FuncOp/CallOp转换保留函数身份和callee引用，改变的buffer类型不需要重新扫描symbol uses。跨候选或下一次调用重新判定。

@@ -2170,3 +2170,150 @@ runtime为SDK 5.7.0.0524.01 / API 1400。原始输入、package、no-card与第�
 构包/no-card通过，占用检查为空闲；单次上板completion查询返回`txStreamQuery 0x46000006`，context再次隔离，
 未取得输出，后续设备执行停止。此检查只证明Add也未正常完成，不推定具体硬件或固件根因。
 记录在`build/test/vit-current/add-current.log`及`final/add-current/`。
+
+## 2026-09-17：重启后的局部需求版本保护
+
+用户确认重启后，在新boot `8b9c79ae-7d63-4096-9969-c15e948176a4` 恢复验证。
+使用上一节compiler及package，每项重新导出原source、生成输入和独立PyTorch reference，source与package对应版本相同；
+fresh no-card通过。每次launch前均做全系统占用检查，只有已核实的日志服务；真实设备逐case串行执行。
+FP16 Add的16,384元素全输出exact，设备耗时0.793 ms。五项保护结果如下：
+
+| Case | 三次设备耗时 ms | 中位 ms | cosine | relative L2 |
+| --- | --- | --- | --- | --- |
+| LLaMA block FP16 | 9.304 / 9.339 / 9.353 | 9.339 | 0.999999811579 | 0.000614143 |
+| LLaMA block BF16 | 9.404 / 9.371 / 9.357 | 9.371 | 0.999987996526 | 0.004899749 |
+| GEMM4096 FP16 | 6.935 / 6.829 / 6.733 | 6.829 | 0.999999998099 | 0.000061893 |
+| GEMM4096 BF16 | 6.818 / 6.865 / 6.897 | 6.865 | 0.999999987394 | 0.000158845 |
+| GEMM4097 FP16 | 8.739 / 8.379 / 8.438 | 8.438 | 0.999999998058 | 0.000062562 |
+
+十五次完整输出均通过原相似度合同，未发生completion超时或txStreamQuery错误。
+BF16 block首批较上一轮9.157 ms中位高0.214 ms；随后同一设备会话相邻复测旧保护包与当前包，
+两者分别为9.404/9.270/9.321 ms和9.459/9.249/9.283 ms，中位9.321/9.283 ms，六次全输出均通过。
+这组匹配样本未见当前包变慢；历史9.157 ms仍保留，不把本轮样本改记为新的最好成绩。
+此前设备异常根因仍未知；这些结果只确认重启后当前五包正常执行，不代表ViT编译或实卡已通过。
+compiler SHA256仍为`fdb0802593fb1f288a8ea8a1cf116957bbb3aea5b355121536007c217013124b`，
+runtime仍为SDK 5.7.0.0524.01 / API 1400。
+本轮source、输入/reference、command.json、no-card、board日志及逐输出numeric audit位于
+`build/test/vit-current/recovered/`；逐case完整过程见同目录的`recovered-*.log`。
+
+
+## 2026-09-18：局部拼接版本TDMA故障与CRT GEMM范围修正
+
+后续局部拼接和动态boundary窗口版本改变LLaMA block的实际搬运与分块；三组大GEMM在CRT修复前仍与上一节包相同。
+新LLaMA FP16包在上一boot报告Tile7 LSU TDMA timeout。用户再次确认重启后，boot
+`f80ad584-b9e3-49dc-b984-cc5affa29e22`中，fresh FP16 Add全输出exact、耗时0.756 ms。
+随后按用户要求直接执行fresh no-card通过的同一新LLaMA包，launch前系统占用为空闲；
+固件在launch约5.34 ms后报告Tile1 `NPU LSU TDMA Timeout`，eid=`0x0D00C005`、action=`RESET_BM`。
+主机60秒completion超时后隔离context，未取得数值输出或有效性能。该boot的Add成功在故障之前，不代表故障后已恢复。
+
+故障compiler SHA256为`01a585dab6c8ec4c34d8eafe4f95e688ec17cee625d27860c81c1bb1d51f1600`；
+故障module SHA256为`1f4918d6b53066cbbd20964d22d4286f422e4c47eee70922bc6a3f46f518c4da`，
+program data SHA256为`19b6b824a3b97cc6671164e01335558f9ebc4418d80cb5163e27262f8a005d02`。
+runtime仍为SDK 5.7.0.0524.01 / API 1400。原始记录为`build/test/vit-current/reboot-direct-llama-float16.log`，
+Add记录为同目录`after-user-reboot-add.log`；新旧ELF和动态调用对照在`assembly-fault-comparison/`。
+
+主机执行实际故障ELF确认独立字段缺陷：pinned SDK的GEMM executor用input的element bytes同时计算output/psum end。
+M16/K384/N43、F16/BF16输入、F32输出/psum时，两者实际4096B，最终NE寄存器仅声明2048B。
+CRT现由唯一GEMM issuer按每个operand的dtype、实际orientation和逐batch padding写完整寄存器，control最后发射；
+普通与profile共用issuer，其它算子不变。2161组最终寄存器主机检查、93项Runtime测试和CRT/device-link lit已通过。
+新设备ELF的RISC-V主机回放确认F32 output/psum各4096B，FP16 output仍2048B；没有增加join/wait。
+
+当前故障的GatherScatter最终字段与调用参数相符；动态地址对照未发现仅因GEMM半范围而完全漏掉的NE/TDMA冲突。
+这些检查不模拟硬件queue与时序，日志也没有故障PC/packet，因此TDMA超时根因仍未闭合。
+用户要求暂停整模型回归、先定位TDMA；旧版本性能不代签新ELF，完整数值及匹配性能仍待验收。
+
+
+## 2026-09-18：TDMA与GEMM/psum局部链定向板测
+
+用户确认重启后，在boot `eb9b5405-9f15-42e6-942c-c72f6061d0a4`串行执行两项已完成主机准备的诊断。
+每次launch前均以root权限检查全系统设备FD，包括其它用户与容器；唯一持有者经exe/cgroup核实为固件日志服务。
+SDK仍为5.7.0.0524.01 / API 1400，libhpgr SHA256与前一记录一致。两项都使用新生成的输入及独立reference，
+当前CRT的GEMM output/psum范围修正生效，没有插入链内join或回放旧issuer。
+
+| 诊断 | 保留的故障片段 | 实卡结果 |
+| --- | --- | --- |
+| 单条GatherScatter | Tile1第4238条；16行FP32，每行172B，源步长256B、目标172B，原SPM地址 | 14848B有效数据和guard逐byte exact；正常completion/readback/cleanup |
+| GEMM/psum局部链 | Tile1第4233—4238条；lhs/rhs打包、psum打包、M16/K384/N43 GEMM、output→psum复用、紧凑输出 | 13504B defined数据和guard逐byte exact，包含三个688元素FP32结果副本；正常completion/readback/cleanup |
+
+执行窗口为北京时间01:25:52及01:26:13；两项均无host timeout/txStreamQuery错误。
+GEMM未定义padding及未写output尾部不参与比较；本轮未启用设备计时，不给出微内核性能结论。
+原始package、输入/reference、完整capture与board日志在
+`build/test/vit-current/assembly-fault-comparison/tdma-pair/{isolated,chain}/`。
+单条/局部链ELF SHA256分别为`1d0a5c9c19d86cf69368adcf3f12fb594d828be10d40e7938a9df9fe27f33a00`与
+`c015683fefd22115bb97119fe0aa77f0b104b17c10137a2c4dae844cde16269d`。
+
+这确认所选172B行搬运和局部GEMM/psum复用链在当前CRT下可正常执行；没有复现整包的数千条命令、
+其它Tile、原DDR地址及跨Tile通知历史，不能据此排除长序列/其它片段的问题，也不能直接认定GEMM范围修正解决了原TDMA超时。
+
+
+## 2026-09-18：CRT修正后的原完整block复测仍触发TDMA
+
+用户在上述两项局部通过后要求直接运行原完整block，验证GEMM范围修正是否消除故障。
+同一boot中重新确认系统设备占用为空闲，执行已完成fresh输入/PyTorch reference及no-card的FP16完整包一次。
+16份target LLVM与原故障包逐byte相同，全部program data、输入及除ELF digest外的manifest也相同；
+修正后ELF SHA256为`f7bb9b26fd0b49e0e1546657cef46d0d05afbb3ccd6fb6d658f40ad3675a8e36`。
+计算图、分块、SPM地址和调用顺序保持原样，只改变CRT发射实现。
+
+北京时间01:28:25再次报告Tile1 `NPU LSU TDMA Timeout`、eid=`0x0D00C005`、action=`RESET_BM`。
+固件任务发射记录为586.473470秒，`fatal_err=4096`为586.483621秒，相隔约10.15 ms；该间隔不是有效设备计算耗时。
+主机60秒completion deadline后将context标为poisoned/quarantined并退出，不再调用provider析构、retry或reset。
+后续FD/context关闭时驱动发生AP清理超时和kcore关闭失败；外层进程80秒deadline也超时。
+先行TDMA fatal与后续清理失败按时间分开记录，不用清理错误解释最初TDMA。
+没有生成output capture或有效设备耗时；设备批次停止，没有再次上板。
+
+这次受控比较证明GEMM output/psum范围修正不足以消除原完整block故障。
+两个局部case只确认所选参数和六指令链可执行，尚未覆盖实际长序列、其它搬运及跨Tile交互；具体故障packet仍未知。
+完整board命令、输入/reference、no-card产物、host日志与驱动/固件故障原文在
+`build/test/vit-current/crt-gemm-ranges/llama-2-7b-block-float16/`。
+
+
+## 2026-09-18：保留拼接复用后恢复LLaMA与大GEMM保护
+
+根因是局部拼接只验证片段覆盖，未验证实际全部读取及循环复用，因而把共享值重建到重复消费的循环内。
+当前修复读取actual subset及其SCF grid：不变内层之外只物化一次；不变外层包围相关轴、读取重叠、存在full-use或
+中间拼接仍有其它consumer时保留原共享值。计算、dtype及completion不变，原透明view、尾块及融合归约局部化继续通过。
+
+实际ELF的Tile1动态调用对照如下。主机回放只执行控制流/地址运算，算术调用被记录，DDR参数使用隔离的合成地址；
+它证明调用与搬运的差异，数值和耗时由后面的完整实卡单独验证。
+
+| 指标 | 之前健康版本 | 引入重复拼接的版本 | 复用修正后 |
+| --- | ---: | ---: | ---: |
+| 全部调用 | 2980 | 8699 | 2980 |
+| RDMA次数 | 610 | 3499 | 610 |
+| RDMA发出字节 | 27427444 | 31808628 | 27427444 |
+| WDMA次数 | 130 | 217 | 130 |
+| GatherScatter次数 | 1445 | 3859 | 1445 |
+| GEMM次数 | 342 | 550 | 342 |
+
+修正后的完整Tile1动态调用序列及参数与健康版本逐条相同；CRT仍保留按各operand dtype计算最终range的独立修复。
+原始source经当前正式search 8/42重新构包，两种LLaMA及三组大GEMM均完成fresh输入、原PyTorch reference与no-card。
+用户重启后的boot为`578e9bb2-b320-43cd-82fa-dcf171d91053`，runtime仍为SDK 5.7 / API1400；
+每次launch前检查全系统占用，15次真实执行逐case串行，全部完成readback与正常清理；对应驱动/固件窗口无新增异常。
+
+| case | 三次设备耗时 ms | 中位 ms | cosine | relative L2 |
+| --- | --- | ---: | ---: | ---: |
+| LLaMA block FP16 | 9.332 / 9.336 / 9.334 | 9.334 | 0.999999811579 | 0.000614143 |
+| LLaMA block BF16 | 9.347 / 9.428 / 9.189 | 9.347 | 0.999987996526 | 0.004899749 |
+| GEMM4096 FP16 | 6.926 / 6.807 / 6.786 | 6.807 | 0.999999998099 | 0.000061893 |
+| GEMM4096 BF16 | 7.088 / 6.817 / 6.802 | 6.817 | 0.999999987394 | 0.000158845 |
+| GEMM4097 FP16 | 8.679 / 8.508 / 8.485 | 8.508 | 0.999999998058 | 0.000062562 |
+
+所有结果比较完整输出，沿用原cosine/relative L2门槛。LLaMA恢复到前一健康版本的9.339/9.371 ms水平；
+大GEMM此前三项中位为6.829/6.865/8.438 ms，本轮处在同一性能范围，尾块本轮8.485—8.679 ms位于此前
+8.379—8.739 ms的样本区间内，不移动原最好可复现目标。此轮恢复不解释历史TDMA超时的内部机理。
+
+五个受影响component原832项测试及新增共享值保护用例、两项CRT/device-link lit通过；canonical完整增量构建及随后no-op通过。
+新增复用机制覆盖Independent/Joint、两种相关/不变轴顺序及1024/1025/1031，检查动态拼接元素总量并推进至实际Instr/SPM。
+最终或中间拼接值有observable输出的两类负例同样覆盖两种遍历及三个长度，确认共享拼接保留且不新增局部重建。
+LLaMA FP16正式编译wall=356.33 s、peak RSS=2378244 KiB；编译计时、pass/work counters与原始产物保存在本轮目录。
+compiler SHA256=`48b0cd52c7aac5346a50bd5158a94719093fc191e16bb812779e92f4c76ae220`；
+LLaMA FP16/BF16 module SHA256分别为`60ae52bd4761ecb211fd177fd72b02a80621032ccb5c538052867952adf0fcad`、
+`769a2b55e86df29bd4f1dc8d73dade3fb898d29ff5d55b39bb5bfed62a03f137`。
+证据在`build/test/assembly-reuse/`：`prepared/`保存正式package/IR，`ready/`与`ready-final/`保存本轮输入/reference、
+board日志及逐次完整数值；LLaMA最终capture另按原HF诊断容差重新核对，验收门槛始终未改。
+
+同一compiler继续编译ViT S1024/1025原始source，两项默认8/42搜索均有4个通过actual SPM的候选，最终在
+target-code-generation报`unsupported_target_instr: GEMM does not support f32 inputs`，没有生成package。
+两项主机编译wall分别793.26/846.98 s，peak RSS分别3479616/3496932 KiB；日志及source TensorProgram在
+本轮目录的两个ViT子目录。其Q/K/V在导出图中已提升到F32，TensorProgram形成的也是F32 Flash Attention；
+因此当前阻塞不是未融合，也不是全部候选无法容纳。采用低精度attention导出会改变数值语义，待明确授权后按原reference验收。

@@ -22,6 +22,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/raw_ostream.h"
@@ -2305,8 +2306,8 @@ module {
 }
 
 TEST_F(LayoutOptimizationTest,
-       NonPieceOutputFailsBeforeMutationRegardlessOfSolverBudget) {
-  constexpr llvm::StringLiteral malformed = R"mlir(
+       PartialTensorUpdatePublishesItsCompleteCurrentValue) {
+  constexpr llvm::StringLiteral input = R"mlir(
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @entry(%input: tensor<2x1025x64xf16>) {
@@ -2326,24 +2327,93 @@ module {
   }
 }
 )mlir";
-  auto module = parse(malformed);
+  auto module = parse(input);
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
-  std::string before;
-  llvm::raw_string_ostream beforeStream(before);
-  module->print(beforeStream);
-  beforeStream.flush();
-  LayoutOptimizationResult noBudget =
-      resolveCurrentLayoutsAndBufferize(*module, relations, /*workLimit=*/0);
-  EXPECT_EQ(noBudget.status, ExactPBQPStatus::NoSolution);
-  LayoutOptimizationResult unsupported =
+  auto result =
       resolveCurrentLayoutsAndBufferize(*module, relations);
-  EXPECT_EQ(unsupported.status, ExactPBQPStatus::NoSolution);
-  std::string after;
-  llvm::raw_string_ostream afterStream(after);
-  module->print(afterStream);
-  afterStream.flush();
-  EXPECT_EQ(after, before);
+  ASSERT_TRUE(result.succeeded()) << result.detail;
+  ASSERT_EQ(relations.structuralOutputs.size(), 1u);
+  auto output = relations.structuralOutputs.front().endpoint
+                    .getDefiningOp<mlir::memref::SubViewOp>();
+  ASSERT_TRUE(output);
+  EXPECT_EQ(output.getStaticOffsets(), (llvm::ArrayRef<int64_t>{0, 0, 0}));
+  EXPECT_EQ(output.getStaticSizes(), (llvm::ArrayRef<int64_t>{2, 1025, 64}));
+  EXPECT_EQ(result.statistics.outputDestinations, 1u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  EXPECT_TRUE(mlir::succeeded(
+      checkStructuredBufferRelationsCurrent(*module, relations)));
+}
+
+TEST_F(LayoutOptimizationTest, DynamicBoundaryReadsRequireWindowContainment) {
+  for (bool contained : {true, false}) {
+    SCOPED_TRACE(contained);
+    std::string text = R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2x2048x64xf16>) -> tensor<1x128x64xf16> {
+      %published = wafer.tile.region(%input : tensor<2x2048x64xf16>)
+          -> (tensor<2x2048x64xf16>) {
+      ^bb0(%local: tensor<2x2048x64xf16>):
+        %origin = arith.constant 512 : index
+        %piece = tensor.extract_slice %local[1, 512, 0] [1, 1024, 64] [1, 1, 1]
+          : tensor<2x2048x64xf16> to tensor<1x1024x64xf16>
+        %empty = tensor.empty() : tensor<2x2048x64xf16>
+        %full = tensor.insert_slice %piece into %empty[1, %origin, 0] [1, 1024, 64] [1, 1, 1]
+          : tensor<1x1024x64xf16> into tensor<2x2048x64xf16>
+        wafer.tile.yield %full : tensor<2x2048x64xf16>
+      }
+      %result = wafer.tile.region(%published : tensor<2x2048x64xf16>)
+          -> (tensor<1x128x64xf16>) {
+      ^bb0(%local: tensor<2x2048x64xf16>):
+        %lo = arith.constant 512 : index
+        %hi = arith.constant LIMIT : index
+        %step = arith.constant 128 : index
+        %empty = tensor.empty() : tensor<1x128x64xf16>
+        %last = scf.for %iv = %lo to %hi step %step iter_args(%state = %empty)
+            -> tensor<1x128x64xf16> {
+          %piece = tensor.extract_slice %local[1, %iv, 0] [1, 128, 64] [1, 1, 1]
+            : tensor<2x2048x64xf16> to tensor<1x128x64xf16>
+          scf.yield %piece : tensor<1x128x64xf16>
+        }
+        wafer.tile.yield %last : tensor<1x128x64xf16>
+      }
+      return %result : tensor<1x128x64xf16>
+    }
+  }
+}
+)mlir";
+    text.replace(text.find("LIMIT"), 5, contained ? "1536" : "1664");
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    StructuredMaterializationRelations relations;
+    auto result = prepareCurrentLayoutInput(*module, relations);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    llvm::SmallVector<TileRegionOp> regions;
+    module->walk([&](TileRegionOp region) { regions.push_back(region); });
+    ASSERT_EQ(regions.size(), 2u);
+    auto shape = mlir::cast<mlir::RankedTensorType>(regions[0].getResult(0).getType());
+    EXPECT_EQ(shape.getShape(), contained ? (llvm::ArrayRef<int64_t>{1, 1024, 64})
+                                         : (llvm::ArrayRef<int64_t>{2, 2048, 64}));
+    EXPECT_EQ(regions[1].getBody().getArgument(0).getType(), shape);
+    EXPECT_EQ(result.statistics.boundarySourceViewsElided, contained ? 1u : 0u);
+    unsigned dynamicReads = 0;
+    regions[1].walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource() != regions[1].getBody().getArgument(0))
+        return;
+      ++dynamicReads;
+      EXPECT_EQ(slice.getStaticOffsets()[0], contained ? 0 : 1);
+      EXPECT_EQ(slice.getStaticSizes(), (llvm::ArrayRef<int64_t>{1, 128, 64}));
+      auto offset = mlir::cast<mlir::Value>(slice.getMixedOffsets()[1]);
+      auto loop = slice->getParentOfType<mlir::scf::ForOp>();
+      auto delta = mlir::ValueBoundsConstraintSet::computeConstantDelta(
+          offset, loop.getInductionVar());
+      ASSERT_TRUE(mlir::succeeded(delta));
+      EXPECT_EQ(*delta, contained ? -512 : 0);
+    });
+    EXPECT_EQ(dynamicReads, 1u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
 }
 
 TEST_F(LayoutOptimizationTest,

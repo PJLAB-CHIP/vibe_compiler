@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
+#include "mlir/Dialect/Tensor/Transforms/SubsetInsertionOpInterfaceImpl.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
@@ -41,6 +42,7 @@ std::unique_ptr<mlir::MLIRContext> createContext() {
   wafer::registerWaferCoreDialects(registry);
   mlir::linalg::registerTilingInterfaceExternalModels(registry);
   mlir::tensor::registerTilingInterfaceExternalModels(registry);
+  mlir::tensor::registerSubsetOpInterfaceExternalModels(registry);
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;

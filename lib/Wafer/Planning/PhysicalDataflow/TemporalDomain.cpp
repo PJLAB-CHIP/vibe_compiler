@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/SubsetOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -862,38 +863,99 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
   TemporalConcatQueryResult result;
   result.consumerOperand = &consumerOperand;
   result.assembledValue = consumerOperand.get();
+  const bool actualSubset =
+      mlir::isa<mlir::SubsetExtractionOpInterface>(consumerOperand.getOwner());
+  auto view =
+      result.assembledValue.getDefiningOp<mlir::SubsetInsertionOpInterface>()
+          ? analysis::TensorViewIndexingResult{}
+          : analysis::deriveTensorViewIndexing(result.assembledValue);
+  if (view.isExact()) {
+    if (!view.indexing->source.getDefiningOp<mlir::SubsetInsertionOpInterface>())
+      return result;
+    // Keep the actual assembly as the demand boundary. The materializer
+    // projects generated subsets through this same interface relation before
+    // specializing segment crossings; a view is not a full-value demand.
+    if (!view.indexing->resultToSource.getProjectedAffineMap(
+            consumerOperand.getOwner()->getContext())) {
+      result.kind = TemporalConcatQueryKind::Unsupported;
+      result.detail = "assembly view has no affine subset translation";
+      return result;
+    }
+    auto type = mlir::cast<mlir::RankedTensorType>(result.assembledValue.getType());
+    auto dense = analysis::getTensorViewTileSource(
+        *view.indexing, type.getShape(),
+        {llvm::SmallVector<int64_t, 4>(type.getRank(), 0),
+         llvm::SmallVector<int64_t, 4>(type.getShape())});
+    if (!dense.isExact()) {
+      result.kind =
+          dense.status == analysis::IndexRelationStatus::Invalid
+              ? TemporalConcatQueryKind::BrokenContract
+          : dense.status == analysis::IndexRelationStatus::ResourceExhausted
+              ? TemporalConcatQueryKind::ResourceExhausted
+              : TemporalConcatQueryKind::Unsupported;
+      result.detail = dense.reason;
+      return result;
+    }
+    mlir::Value current = result.assembledValue;
+    while (current != view.indexing->source) {
+      if (!actualSubset && !current.hasOneUse()) {
+        result.kind = TemporalConcatQueryKind::NonUnique;
+        result.detail = "assembly view has another consumer";
+        return result;
+      }
+      auto step = analysis::deriveTensorResultIndexing(
+          mlir::cast<mlir::OpResult>(current));
+      const auto *source = step.indexing->getTransparentSource();
+      current = current.getDefiningOp()->getOperand(source->operand);
+    }
+    result.assembledValue = current;
+  } else if (view.status != analysis::TensorResultIndexingStatus::Unsupported) {
+    result.kind =
+        view.status == analysis::TensorResultIndexingStatus::BrokenContract
+            ? TemporalConcatQueryKind::BrokenContract
+            : TemporalConcatQueryKind::ResourceExhausted;
+    result.detail = view.detail;
+    return result;
+  }
   auto finalInsert =
-      consumerOperand.get().getDefiningOp<mlir::tensor::InsertSliceOp>();
+      result.assembledValue.getDefiningOp<mlir::SubsetInsertionOpInterface>();
   if (!finalInsert)
     return result;
   mlir::Operation *consumer = consumerOperand.getOwner();
   auto consumerDps =
       mlir::dyn_cast<mlir::DestinationStyleOpInterface>(consumer);
-  if (!consumer || !isTemporalCandidate(consumer) ||
+  if ((!actualSubset && !isTemporalCandidate(consumer)) ||
       (consumerDps && consumerDps.isDpsInit(&consumerOperand))) {
     result.kind = TemporalConcatQueryKind::NonUnique;
     result.detail = "insert assembly is not one temporal data operand";
     return result;
   }
   auto assembledType =
-      mlir::dyn_cast<mlir::RankedTensorType>(consumerOperand.get().getType());
+      mlir::dyn_cast<mlir::RankedTensorType>(result.assembledValue.getType());
   if (!assembledType || !assembledType.hasStaticShape()) {
     result.kind = TemporalConcatQueryKind::Unsupported;
     result.detail = "insert assembly requires a static ranked tensor";
     return result;
   }
 
-  mlir::Value current = consumerOperand.get();
+  mlir::Value current = result.assembledValue;
   llvm::SmallVector<TemporalConcatSegment, 4> reverseSegments;
   const analysis::IndexRelationLimits relationLimits;
-  while (auto insert = current.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+  while (auto insert =
+             current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
     if (reverseSegments.size() >= relationLimits.maxRectangularPieces) {
       result.kind = TemporalConcatQueryKind::ResourceExhausted;
       result.detail = "insert assembly exceeded its segment work bound";
       return result;
     }
-    if (!insert->hasOneUse() || !insert.hasUnitStride() ||
-        insert.getResultType() != assembledType) {
+    auto subset = mlir::cast<mlir::SubsetOpInterface>(insert.getOperation())
+                      .getAccessedHyperrectangularSlice();
+    if ((!actualSubset && !current.hasOneUse()) || mlir::failed(subset) ||
+        insert.getUpdatedDestination() != current ||
+        insert.getUpdatedDestination().getType() != assembledType ||
+        llvm::any_of(subset->getMixedStrides(), [](auto stride) {
+          return !mlir::isConstantIntValue(stride, 1);
+        })) {
       result.kind = TemporalConcatQueryKind::NonUnique;
       result.detail =
           "insert assembly chain is multi-use, strided, or type-inconsistent";
@@ -901,7 +963,7 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
     }
     llvm::SmallVector<int64_t, 4> offsets;
     llvm::SmallVector<int64_t, 4> sizes;
-    for (mlir::OpFoldResult offset : insert.getMixedOffsets()) {
+    for (mlir::OpFoldResult offset : subset->getMixedOffsets()) {
       std::optional<int64_t> value = mlir::getConstantIntValue(offset);
       if (!value) {
         result.kind = TemporalConcatQueryKind::Unsupported;
@@ -910,7 +972,7 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
       }
       offsets.push_back(*value);
     }
-    for (mlir::OpFoldResult size : insert.getMixedSizes()) {
+    for (mlir::OpFoldResult size : subset->getMixedSizes()) {
       std::optional<int64_t> value = mlir::getConstantIntValue(size);
       if (!value) {
         result.kind = TemporalConcatQueryKind::Unsupported;
@@ -920,7 +982,8 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
       sizes.push_back(*value);
     }
     auto sourceType =
-        mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
+        mlir::dyn_cast<mlir::RankedTensorType>(
+            insert.getSourceOperand().get().getType());
     if (!sourceType || !sourceType.hasStaticShape() ||
         offsets.size() != static_cast<size_t>(assembledType.getRank()) ||
         sizes.size() != static_cast<size_t>(assembledType.getRank()) ||
@@ -930,15 +993,16 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
       return result;
     }
     TemporalConcatSegment segment;
-    segment.source = insert.getSource();
+    segment.source = insert.getSourceOperand().get();
     segment.offsets = std::move(offsets);
     segment.sizes = std::move(sizes);
     if (auto sourceResult = mlir::dyn_cast<mlir::OpResult>(segment.source)) {
       mlir::Operation *sourceOwner = sourceResult.getOwner();
       std::optional<mlir::OpOperand *> sourceUse =
           getOnlyOperationUse(sourceOwner);
-      if (sourceUse && (*sourceUse)->getOwner() == insert.getOperation() &&
-          (*sourceUse)->getOperandNumber() == 0 &&
+      if (!actualSubset && sourceUse &&
+          (*sourceUse)->getOwner() == insert.getOperation() &&
+          *sourceUse == &insert.getSourceOperand() &&
           isTemporalCandidate(sourceOwner) &&
           !mlir::isa<mlir::tensor::PadOp>(sourceOwner) &&
           !mlir::isa<LinalgExtOnlineAttentionOp>(sourceOwner) &&
@@ -949,10 +1013,11 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
         segment.derivedProducer = sourceResult;
     }
     reverseSegments.push_back(std::move(segment));
-    current = insert.getDest();
+    current = insert.getDestinationOperand().get();
   }
-  if (!current.getDefiningOp<mlir::tensor::EmptyOp>() ||
-      reverseSegments.size() < 2) {
+  // Complete, nonoverlapping writes below make the previous destination's
+  // contents irrelevant. Its defining operation need not be tensor.empty.
+  if (reverseSegments.size() < 2) {
     result.kind = TemporalConcatQueryKind::NotConcat;
     result.detail.clear();
     return result;

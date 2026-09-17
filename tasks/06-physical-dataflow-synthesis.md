@@ -508,11 +508,29 @@ adapter移除后消除临时值。只有实际局部计算直接读取完整oper
 完整值有真实consumer时保留原值，只局部化部分读取；不把这种合法存活误判为过大占位。
 Bufferization只决定既有destination的alias/allocation，不负责重新发现上游局部需求。
 
+多来源拼接的局部化也须跨同一透明view链闭合：输入是current `SubsetInsertionOpInterface`表达的
+完整、无重叠、静态矩形覆盖及其透明view链；查询先由索引interface找到实际拼接值。
+消费者完成temporal tiling后，先将实际subset映射到该值，再沿已有分段边界物化局部拼接，随后交给原layout/Instr/SPM路径。
+满足下述复用证明时，不能因consumer与拼接之间隔着view而保留完整assembly。拼接的原destination不要求是某个具体op：
+完整覆盖证明成立时，其旧内容没有实际读取；不完整、重叠、strided或无法证明的view维持typed拒绝。
+计算producer融合仍要求唯一消费。拼接局部化还必须证明保留复用：从actual subset、SSA作用域及实际循环grid
+检查全部读取；存在其它真实full-use、中间拼接值的其它consumer、重叠需求或无法证明的重复读取时保留原共享拼接，
+不把结构上可切片当成融合授权。
+对需求不变的内层循环，局部拼接放在其外部；若不变循环包围需求相关循环，当前物化器没有跨迭代存储选择，保持原共享值。
+不同读取及各自循环实例必须可证明不重叠，main/tail分别检查；证明只决定是否改写，不参与SPM合法性。
+融合归约完成后须从actual subset重新执行同一局部化，不能只处理普通scope；rank-reduced读取先以单位轴证明恢复
+局部full-rank subset，再组合局部reshape。每次loop specialization后重新读取current IR，不复用失效的嵌套句柄。
+这项扩展不改变所选tile size、计算顺序、dtype、真实full-use及SPM准入，也不增加普通graph等价改写路径。
+
 | 输入等价类 | exact要求 | 下游witness |
 | --- | --- | --- |
 | rank3+，1024/1025/1031，slice→flatten→unflatten及多层view | whole-chain来源/坐标一致，非零offset、head/feature子集不扩大为完整tensor | spatial 4/16 Tile、actual layout/bufferization、Instr/SPM |
 | temporal 128等主块、1/7等tail，多block与动态IV | 每次读取恰为所选窗口，合计完整覆盖、无重叠；不用逐iteration展开 | temporal actual SCF→bufferization/Instr/SPM |
 | spatial后继续temporal，多个来源/consumer及共享full-use | 独立owner不合并，局部窗口不串用，真实full-use保留 | stage交接和实际allocation检查 |
+| 多来源拼接→透明view→实际temporal subset，1024/1025/1031 | 多块与tail精确覆盖，局部assembly随需求收缩；与直接读取拼接走同一接口路径 | temporal→layout/bufferization→Instr/SPM；原ViT source及block/GEMM保护 |
+| 融合归约内rank-reduced读取，128主块、384归约块跨512拼接边界 | 实际归约覆盖不变，无完整assembly，尾部静态、无条件拼接 | actual Instr/completion/SPM |
+| 1024/1025/1031拼接输入，需求相关/不变轴的两种循环顺序，Independent/Joint | 不变内层之外只拼接一次；不变外层不得引入逐consumer重建；full-use或重叠读取保留共享值 | actual SCF动态拼接元素量及layout/Instr/SPM；LLaMA两种dtype与三组大GEMM实卡性能保护 |
+| 1024/1025/1031，最终或中间拼接值同时作为observable输出，Independent/Joint | 原共享拼接只在循环外构造一次，局部consumer不得额外重建 | 两个结构输出及实际layout/Instr/SPM |
 | 均匀literal经reshape，局部image跨原来源行界，FP16/BF16/F32及负零 | 1024/1025/1031、4/16 Tile，局部常量位型、窗口coverage和主/尾部保持 | actual spatial→temporal→Instr/SPM，不因非矩形image重建完整常量 |
 | 无法证明的关系、非unit stride、非透明计算/effect边界 | 不猜测reshape或丢弃语义，保持typed结果；不伪造容量结论 | verifier及负例 |
 | 原始ViT与保护case | 相同source、dtype、默认预算及原数值合同 | fresh package/no-card，串行实卡及匹配性能 |
