@@ -508,6 +508,14 @@ adapter移除后消除临时值。只有实际局部计算直接读取完整oper
 完整值有真实consumer时保留原值，只局部化部分读取；不把这种合法存活误判为过大占位。
 Bufferization只决定既有destination的alias/allocation，不负责重新发现上游局部需求。
 
+若组合view的selected image不是单个矩形，spatial物化器使用当前exact fragment的有限矩形分解，
+经同一关系的preimage与实际请求相交，得到结果坐标中的局部pieces。先证明pieces恰好覆盖请求，
+再对每个piece证明来源矩形及row-major顺序；仅在这些证明完成后生成紧凑destination和相对offset的拼接。
+来源仍由原fragment/SSA拥有，不按shape恢复owner；无可用有限分解、存在holes或顺序无法证明时保持失败。
+这扩展同一selected-demand物化边界，不扩大请求、不重建完整view，也不改变temporal的全use复用约束。
+相比MLIR reshape slice helper按线性化坐标生成循环，已有exact fragments可直接给出有限局部块，
+再用既有normalizer合并同截面的相邻请求，避免按序列行逐元素展开。
+
 多来源拼接的局部化也须跨同一透明view链闭合：输入是current `SubsetInsertionOpInterface`表达的
 完整、无重叠、静态矩形覆盖及其透明view链；查询先由索引interface找到实际拼接值。
 消费者完成temporal tiling后，先将实际subset映射到该值，再沿已有分段边界物化局部拼接，随后交给原layout/Instr/SPM路径。
@@ -525,6 +533,7 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 | 输入等价类 | exact要求 | 下游witness |
 | --- | --- | --- |
 | rank3+，1024/1025/1031，slice→flatten→unflatten及多层view | whole-chain来源/坐标一致，非零offset、head/feature子集不扩大为完整tensor | spatial 4/16 Tile、actual layout/bufferization、Instr/SPM |
+| 同时切分展开后的两个轴，来源image为带间隔的多矩形，1024/1025/1031、4/16 Tile | 每段来源和结果坐标精确，全部元素只读一次、无holes/重复；原单矩形路径不变 | spatial后temporal主/尾块、actual layout/Instr/SPM；ViT正式构包及LLaMA/大GEMM保护 |
 | temporal 128等主块、1/7等tail，多block与动态IV | 每次读取恰为所选窗口，合计完整覆盖、无重叠；不用逐iteration展开 | temporal actual SCF→bufferization/Instr/SPM |
 | spatial后继续temporal，多个来源/consumer及共享full-use | 独立owner不合并，局部窗口不串用，真实full-use保留 | stage交接和实际allocation检查 |
 | 多来源拼接→透明view→实际temporal subset，1024/1025/1031 | 多块与tail精确覆盖，局部assembly随需求收缩；与直接读取拼接走同一接口路径 | temporal→layout/bufferization→Instr/SPM；原ViT source及block/GEMM保护 |

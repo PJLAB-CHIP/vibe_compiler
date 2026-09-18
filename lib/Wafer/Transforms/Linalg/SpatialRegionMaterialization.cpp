@@ -1601,6 +1601,85 @@ struct GroupBuilder {
     return result;
   }
 
+  struct ViewTilePiece {
+    analysis::StaticRectangularIndexSet result;
+    analysis::StaticRectangularIndexSet source;
+  };
+
+  mlir::FailureOr<llvm::SmallVector<ViewTilePiece, 4>> getViewTilePieces(
+      const analysis::TensorViewIndexing &indexing,
+      llvm::ArrayRef<int64_t> resultShape,
+      const analysis::StaticRectangularIndexSet &requested,
+      llvm::ArrayRef<DemandFragmentId> fragments) {
+    auto request = analysis::IndexRelation::staticRectangularDomain(
+        requested.offsets, requested.sizes);
+    if (!request.isExact())
+      return mlir::failure();
+    auto sourceSet = mlir::presburger::PresburgerSet::getEmpty(
+        mlir::presburger::PresburgerSpace::getSetSpace(
+            indexing.resultToSource.getSourceRank()));
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> rectangles;
+    for (const DemandFragmentId &fragment : fragments) {
+      bool matches = llvm::any_of(rootWorks, [&](const auto &work) {
+        return llvm::any_of(work.boundaries, [&](const auto &boundary) {
+          return boundary.id == fragment.source &&
+                 boundary.sourceValue == indexing.source;
+        });
+      });
+      if (!matches)
+        continue;
+      const auto *domain = findFragmentDomain(fragment);
+      if (!domain)
+        return mlir::failure();
+      auto normalized = analysis::normalizeFiniteExactIndexSet(*domain);
+      if (mlir::failed(normalized))
+        return mlir::failure();
+      llvm::append_range(rectangles, normalized->getBoxes());
+      for (const auto &box : normalized->getBoxes()) {
+        auto source = analysis::IndexRelation::staticRectangularDomain(
+            box.offsets, box.sizes);
+        if (!source.isExact())
+          return mlir::failure();
+        sourceSet.unionInPlace(*source.set);
+      }
+    }
+    // Coalesce in source coordinates: adjacent result rectangles can still
+    // have a gap between their source columns and must remain separate.
+    auto normalized = analysis::normalizeFiniteExactIndexSet(
+        {std::move(sourceSet), analysis::ExactIndexSetForm::BoxUnion, rectangles});
+    if (mlir::failed(normalized))
+      return mlir::failure();
+    auto covered = mlir::presburger::PresburgerSet::getEmpty(
+        request.set->getSpace());
+    llvm::SmallVector<ViewTilePiece, 4> pieces;
+    for (const auto &box : normalized->getBoxes()) {
+      auto sourceDomain = analysis::IndexRelation::staticRectangularDomain(
+          box.offsets, box.sizes);
+      if (!sourceDomain.isExact())
+        return mlir::failure();
+      auto result = indexing.resultToSource.preimage(*sourceDomain.set);
+      if (!result.isExact())
+        return mlir::failure();
+      *result.set = result.set->intersect(*request.set);
+      if (result.set->isIntegerEmpty())
+        continue;
+      auto rectangle = result.getExactStaticRectangularDomain();
+      if (!rectangle.isExact() ||
+          !covered.intersect(*result.set).isIntegerEmpty())
+        return mlir::failure();
+      auto source = analysis::getTensorViewTileSource(
+          indexing, resultShape, *rectangle.domain);
+      if (!source.isExact())
+        return mlir::failure();
+      covered.unionInPlace(*result.set);
+      pieces.push_back(
+          {std::move(*rectangle.domain), std::move(*source.domain)});
+    }
+    if (!covered.isEqual(*request.set))
+      return mlir::failure();
+    return pieces;
+  }
+
   mlir::FailureOr<mlir::Value> materializeCompactSupportTile(
       mlir::Value value, const analysis::StaticRectangularIndexSet &requested,
       llvm::ArrayRef<DemandFragmentId> fragments) {
@@ -1639,14 +1718,46 @@ struct GroupBuilder {
             .getResult();
       auto piece = analysis::getTensorViewTileSource(
           *indexing.indexing, type.getShape(), requested);
-      if (!piece.isExact())
+      if (piece.isExact()) {
+        auto source = materializeCompactSupportTile(indexing.indexing->source,
+                                                    *piece.domain, fragments);
+        if (mlir::failed(source))
+          return mlir::failure();
+        return reshapeStaticTensorTile(builder, value.getLoc(), *source,
+                                       compactType);
+      }
+      if (piece.status != analysis::IndexRelationStatus::Unsupported)
         return mlir::failure();
-      auto source = materializeCompactSupportTile(indexing.indexing->source,
-                                                  *piece.domain, fragments);
-      if (mlir::failed(source))
+      // Existing exact fragment rectangles supply the decomposition; a shape
+      // bounding box cannot stand in for the gaps in this selected image.
+      auto pieces = getViewTilePieces(*indexing.indexing, type.getShape(),
+                                     requested, fragments);
+      if (mlir::failed(pieces))
         return mlir::failure();
-      return reshapeStaticTensorTile(builder, value.getLoc(), *source,
-                                     compactType);
+      mlir::Value assembled = builder.create<mlir::tensor::EmptyOp>(
+          value.getLoc(), compactType.getShape(), compactType.getElementType(),
+          compactType.getEncoding());
+      for (const auto &selected : *pieces) {
+        auto source = materializeCompactSupportTile(
+            indexing.indexing->source, selected.source, fragments);
+        if (mlir::failed(source))
+          return mlir::failure();
+        auto tileType = mlir::RankedTensorType::get(
+            selected.result.sizes, type.getElementType(), type.getEncoding());
+        auto tile = reshapeStaticTensorTile(builder, value.getLoc(), *source,
+                                           tileType);
+        llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
+        for (auto [offset, origin, size] : llvm::zip_equal(
+                 selected.result.offsets, requested.offsets,
+                 selected.result.sizes)) {
+          offsets.push_back(builder.getIndexAttr(offset - origin));
+          sizes.push_back(builder.getIndexAttr(size));
+          strides.push_back(builder.getIndexAttr(1));
+        }
+        assembled = builder.create<mlir::tensor::InsertSliceOp>(
+            value.getLoc(), tile, assembled, offsets, sizes, strides);
+      }
+      return assembled;
     }
     if (indexing.status != analysis::TensorResultIndexingStatus::Unsupported)
       return mlir::failure();

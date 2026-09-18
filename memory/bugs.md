@@ -2137,6 +2137,9 @@
   失败后按原operand type拼装完整tensor，会让计算已经缩小而buffer重新膨胀。
 - 修复边界：由索引interface组合完整单来源关系，再证明所选窗口的exact image及局部顺序；spatial消费TilingInterface实际生成的subset，
   temporal消费当前slice及loop SSA。必要的collapse→expand只包含局部元素；局部请求失败不能转成完整请求。
+- 组合后的image也可能确实有间隔：同时切分展开后的两个轴时，不能把“非单矩形”直接等同于“不能物化”。
+  使用current exact fragment分解并反投影到所选窗口，证明无重叠的完整覆盖及每段局部顺序后拼接；在来源坐标合并相邻块，
+  不能因结果块相邻就跨越来源的holes。回归须检查最终拼接offset及全部来源读取覆盖，并实际进入Instr/SPM。
 - Region输入有两个独立陷阱：同一SSA的不同operand需求不能由value级IRMapping互相覆盖；无use的重复argument没有读取需求，
   不能阻止其它consumer的boundary compaction。同一producer endpoint共用一个输入，各use保留自己的subset。
 - 函数输入slice须留在消费Region内供layout分析读取。提前移到Region外会隐藏局部view，使后续出现完整DDR→NCX搬运和过多DMA descriptor；

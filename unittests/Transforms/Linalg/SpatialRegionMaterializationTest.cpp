@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 #include "TestSupport/CodeGen/ExecutableTestSupport.h"
+#include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPartitionPropagation.h"
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
@@ -298,6 +299,16 @@ materializeWithSpatialDomainPlan(
   SpatialDomainEvaluation evaluation = spatial.domain->evaluate(*dag, plan);
   if (!evaluation.isSatisfied()) {
     failureReason = "selected SpatialDomain plan was not satisfied";
+    if (evaluation.failure)
+      failureReason = evaluation.failure->detail;
+    else if (evaluation.demand)
+      std::visit(
+          [&](const auto &outcome) {
+            if constexpr (!std::is_same_v<std::decay_t<decltype(outcome)>,
+                                          wafer::analysis::ExactDemandProof>)
+              failureReason = outcome.detail;
+          },
+          *evaluation.demand);
     return mlir::failure();
   }
   const wafer::analysis::ExactDemandProof *proof =
@@ -1197,21 +1208,29 @@ TEST(SpatialRegionMaterializationTest,
   using namespace wafer;
   using namespace wafer::compiler::detail;
   for (int64_t extent : {1024, 1025, 1031})
-    for (int64_t parts : {4, 16}) {
-      SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(parts));
+    for (auto [parts, splitFeatures] :
+         {std::pair<int64_t, bool>{4, false}, {4, true},
+          {16, false}, {16, true}}) {
+      SCOPED_TRACE(std::to_string(extent) + ":" + std::to_string(parts) +
+                   ":" + std::to_string(splitFeatures));
+      // Two selected heads keep the nonrectangular tail demand inside the
+      // existing finite-piece analysis budget, as in the product source.
+      const int64_t columnsPerPart = splitFeatures ? 64 : 128;
+      const int64_t headCount = parts * columnsPerPart / 64;
+      const int64_t pieceColumns = splitFeatures ? 32 : 128;
       auto context = createContext();
       const std::string n = std::to_string(extent);
-      const std::string columns = std::to_string(parts * 128);
+      const std::string columns = std::to_string(parts * columnsPerPart);
       const std::string sourceType =
           "tensor<3x" + n + "x1x" + columns + "xf16>";
       const std::string selectedType =
           "tensor<1x" + n + "x1x" + columns + "xf16>";
       const std::string flatType =
-          "tensor<" + std::to_string(extent * parts * 128) + "xf16>";
+          "tensor<" + std::to_string(extent * parts * columnsPerPart) + "xf16>";
       const std::string viewType =
-          "tensor<" + n + "x" + std::to_string(parts * 2) + "x64xf16>";
+          "tensor<" + n + "x" + std::to_string(headCount) + "x64xf16>";
       const std::string outputType =
-          "tensor<1x" + std::to_string(parts * 2) + "x" + n + "x64xf16>";
+          "tensor<1x" + std::to_string(headCount) + "x" + n + "x64xf16>";
       std::string text;
       llvm::raw_string_ostream out(text);
       out << R"mlir(module {
@@ -1233,7 +1252,7 @@ TEST(SpatialRegionMaterializationTest,
           << "\n%flat = tensor.collapse_shape %selected [[0, 1, 2, 3]] : "
           << selectedType << " into " << flatType
           << "\n%view = tensor.expand_shape %flat [[0, 1, 2]] output_shape ["
-          << n << ", " << parts * 2 << ", 64] : " << flatType << " into "
+          << n << ", " << headCount << ", 64] : " << flatType << " into "
           << viewType << "\n%out = tensor.empty() : " << outputType << R"mlir(
   %consumer = linalg.generic {
       indexing_maps = [affine_map<(b, h, m, n) -> (m, h, n)>,
@@ -1250,17 +1269,32 @@ TEST(SpatialRegionMaterializationTest,
           mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
       ASSERT_TRUE(source);
       std::string detail;
+      auto dag = analyzeSingleTensorProgram(*source, detail);
+      ASSERT_TRUE(mlir::succeeded(dag)) << detail;
+      auto roots = SemanticRootAnalysis::create(*dag, &detail);
+      ASSERT_TRUE(mlir::succeeded(roots)) << detail;
+      auto *consumerOp = dag->getFunction()
+                             .getBody()
+                             .front()
+                             .getTerminator()
+                             ->getOperand(0)
+                             .getDefiningOp();
+      auto consumerKey = roots->find(consumerOp)->key;
       SpatialRegionMaterializationFailure materializationFailure;
       auto actual = materializeWithSpatialDomainPlan(
           *source,
           [&](const auto &, SpatialPlan &plan, std::string &) {
             ASSERT_EQ(plan.nodes.size(), 2u);
             for (auto &node : plan.nodes) {
+              bool consumer = node.root == consumerKey;
               for (auto &axis : node.axes) {
                 axis.scheme = IteratorPartitionScheme::BalancedParts;
                 axis.parameter = 1;
               }
-              node.axes[1].parameter = parts;
+              node.axes[1].parameter =
+                  splitFeatures && consumer ? parts / 2 : parts;
+              if (splitFeatures && consumer)
+                node.axes[3].parameter = 2;
               node.embedding.clear();
               for (int64_t tile = 0; tile < parts; ++tile)
                 node.embedding.push_back(TileId(tile));
@@ -1269,16 +1303,16 @@ TEST(SpatialRegionMaterializationTest,
           },
           materializationFailure, detail);
       ASSERT_TRUE(mlir::succeeded(actual)) << detail;
-      std::vector<unsigned> coverage(parts * extent);
+      std::vector<unsigned> coverage(parts * columnsPerPart / pieceColumns * extent);
       unsigned copies = 0;
       actual->module->walk([&](mlir::tensor::InsertSliceOp insert) {
         auto slice =
             insert.getSource().getDefiningOp<mlir::tensor::ExtractSliceOp>();
         if (!slice ||
             slice.getSourceType().getShape() !=
-                (llvm::ArrayRef<int64_t>{3, extent, 1, parts * 128}) ||
+                (llvm::ArrayRef<int64_t>{3, extent, 1, parts * columnsPerPart}) ||
             insert.getDestType().getShape() !=
-                (llvm::ArrayRef<int64_t>{1, extent, 1, 128}))
+                (llvm::ArrayRef<int64_t>{1, extent, 1, pieceColumns}))
           return;
         ++copies;
         auto offsets = slice.getStaticOffsets();
@@ -1287,21 +1321,56 @@ TEST(SpatialRegionMaterializationTest,
         EXPECT_EQ(offsets[2], 0);
         EXPECT_EQ(sizes[0], 1);
         EXPECT_EQ(sizes[2], 1);
-        EXPECT_EQ(sizes[3], 128);
+        EXPECT_EQ(sizes[3], pieceColumns);
         EXPECT_EQ(insert.getStaticOffsets(),
                   (llvm::ArrayRef<int64_t>{0, offsets[1], 0, 0}));
         EXPECT_EQ(insert.getStaticSizes(), sizes);
         ASSERT_GE(offsets[3], 0);
-        ASSERT_LT(offsets[3], parts * 128);
-        EXPECT_EQ(offsets[3] % 128, 0);
+        ASSERT_LT(offsets[3], parts * columnsPerPart);
+        EXPECT_EQ(offsets[3] % pieceColumns, 0);
         ASSERT_GE(offsets[1], 0);
         ASSERT_LE(offsets[1] + sizes[1], extent);
         for (int64_t row = offsets[1]; row < offsets[1] + sizes[1]; ++row)
-          ++coverage[(offsets[3] / 128) * extent + row];
+          ++coverage[(offsets[3] / pieceColumns) * extent + row];
       });
-      EXPECT_EQ(copies, parts * parts);
+      EXPECT_EQ(copies, parts * parts * columnsPerPart / pieceColumns);
       EXPECT_TRUE(
           llvm::all_of(coverage, [](unsigned count) { return count == 1; }));
+      if (splitFeatures) {
+        unsigned pieces = 0;
+        actual->module->walk([&](mlir::linalg::GenericOp consumer) {
+          auto output = mlir::cast<mlir::RankedTensorType>(
+              consumer.getResult(0).getType());
+          ASSERT_EQ(output.getShape(),
+                    (llvm::ArrayRef<int64_t>{1, 2, extent, 32}));
+          auto store = mlir::cast<mlir::tensor::InsertSliceOp>(
+              *consumer.getResult(0).getUsers().begin());
+          auto origin = store.getStaticOffsets();
+          mlir::Value assembly = consumer.getDpsInputs().front();
+          while (auto insert =
+                     assembly.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+            ++pieces;
+            auto offsets = insert.getStaticOffsets();
+            EXPECT_EQ(offsets[0], 0);
+            EXPECT_EQ(offsets[2], 0);
+            EXPECT_EQ(insert.getStaticSizes(),
+                      (llvm::ArrayRef<int64_t>{extent, 1, 32}));
+            auto view = analysis::deriveTensorViewIndexing(insert.getSource());
+            ASSERT_TRUE(view.isExact()) << view.detail;
+            mlir::Value source = view.indexing->source;
+            while (auto piece =
+                       source.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+              auto read = mlir::cast<mlir::tensor::ExtractSliceOp>(
+                  piece.getSource().getDefiningOp());
+              EXPECT_EQ(read.getStaticOffsets()[3],
+                        (origin[1] + offsets[1]) * 64 + origin[3]);
+              source = piece.getDest();
+            }
+            assembly = insert.getDest();
+          }
+        });
+        EXPECT_EQ(pieces, parts * 2);
+      }
       EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
           actual->module->getOperation(), actual->relations)));
       llvm::SmallVector<TileRegionOp, 16> regions;
@@ -1343,7 +1412,7 @@ TEST(SpatialRegionMaterializationTest,
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       actual->module->walk([&](mlir::memref::AllocOp allocation) {
         EXPECT_LT(allocation.getType().getNumElements(),
-                  3 * extent * parts * 128);
+                  3 * extent * parts * columnsPerPart);
       });
       EXPECT_TRUE(mlir::succeeded(mlir::verify(*actual->module)));
       auto compute =
@@ -1355,10 +1424,10 @@ TEST(SpatialRegionMaterializationTest,
       wafer::frontend::FrontendProgramVerificationResult program;
       program.numPartitions = 1;
       program.programUserInputCount = 1;
-      program.distributedInputs = {
-          wafer::compiler::testing::boundary(0, {3, extent, 1, parts * 128})};
+      program.distributedInputs = {wafer::compiler::testing::boundary(
+          0, {3, extent, 1, parts * columnsPerPart})};
       program.distributedOutputs = {
-          wafer::compiler::testing::boundary(0, {1, parts * 2, extent, 64})};
+          wafer::compiler::testing::boundary(0, {1, headCount, extent, 64})};
       wafer::compiler::ProgramDataHandoff data;
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);

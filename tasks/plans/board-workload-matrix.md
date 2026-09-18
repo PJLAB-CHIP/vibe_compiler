@@ -16,13 +16,16 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 再验证完整LLaMA block FP16/BF16与三组大GEMM的数值及匹配性能；保护闭合后继续ViT S1024/1025构包和上板。
 暂缓TDMA专项定位，不以其尚未查明为由阻止主机修复，也不把性能恢复解释为TDMA根因已解决。
 主机对照同时检查实际搬运次数、总字节及重复读取，不能仅以局部shape变小验收；保留已确认的CRT dtype范围修正。
-ViT继续定位F32 GEMM输入的正式生成边界，不通过隐式降精度或改变模型/reference取得通过。
+ViT按用户授权采用低精度attention导出，保留原PyTorch reference及验收标准，继续正式构包与实卡验证。
 
 本轮复用修复与五项保护已完成：原832项component及新增共享值保护用例、两项定向lit通过；五项各三次完整实卡数值通过，
 LLaMA两种dtype中位9.334/9.347 ms，大GEMM三项6.807/6.817/8.508 ms，原最好性能目标不变。
-修复后ViT S1024/1025各完成默认8/42搜索，均有4个通过actual SPM的候选，最终target拒绝F32 GEMM输入，仍无package。
-当前源图在attention前已将Q/K/V提升到F32，该边界不能由拼接或降低reference门槛修复。
-已向用户询问是否明确采用低精度attention导出方式；答复前保留原运算dtype。
+此前ViT S1024/1025默认8/42搜索各有4个通过actual SPM的候选，最终target拒绝原导出图中的F32 GEMM输入。
+用户已明确授权低精度attention导出，保留原PyTorch reference与验收标准；按02号合同在框架capture边界实施，
+两个完整ViT source/XLA数值已通过，低精度dot与F32 softmax同时保留。
+进一步修复06号空间物化对真实多矩形view image的拒绝后，两个尺寸均完成默认8/42构包、fresh no-card和各三次完整实卡，原数值门槛通过。
+五项保护重新构包/no-card通过，source及完整package与最新实卡恢复版本逐byte相同。
+ViT三次耗时与波动见统一性能记录；第4项现剩完整LM S1024/1025与4K prefill，之后继续原定性能收口。
 
 原授权顺序为下列1—5项；用户随后明确暂缓第3项剩余TDMA定位及decode性能，转入第4项。
 第3项仍保留未完成，第4项闭合后推进第5项，不以中间结果结束。
@@ -231,8 +234,9 @@ source→默认8/42 search→verified package→fresh no-card→串行设备执�
 输出完全相同；multihead-mask基线触发同一relation失效崩溃，当前不再崩溃但其旧attention形成断言仍失败；
 另一个未改动的Torch XLA workload corpus存在export digest不一致。它们的具体日志及身份与板测记录一起保留。
 
-本轮当前资格为48/53项实卡完整数值通过。剩余4K prefill已构包/no-card，但实际包的workspace合计64.0078125 GiB，
-在设备allocation/launch前被容量检查拒绝；ViT S1024/1025及完整LM S1024/1025仍在编译边界。
+当前记录版本的资格为50/53项实卡完整数值通过，ViT S1024/1025已在最新授权低精度attention路径完成。
+剩余4K prefill已构包/no-card，但实际包的workspace合计64.0078125 GiB，在设备allocation/launch前被容量检查拒绝；
+完整LM S1024/1025仍在编译边界。
 这些失败继续与性能退化一起收口，不以已通过子集或旧主机结果签发全矩阵完成。
 
 后续性能诊断已在同一5.7 runtime复现旧快block与退化包的差异，证据见统一板测记录。
@@ -250,7 +254,7 @@ HF prefill S1024/1025、FP16 decode两步也完成fresh source→package/no-card
 这一资格仅覆盖本轮融合配置；未融合试修的错误根因仍待定位，完整53项同版本资格没有签发。
 Decode是上述第3项的已知性能问题：首步本轮25.955999 ms，高于此前同runtime的5.638 ms样本；第二步33.933998 ms也未达历史最好。
 两步actual动态指令94,711/189,499，优先检查cache切片/搬运，再做匹配复验。不能用block提速抵消decode退化。
-模型快速后端的transpose/psum扩展仍排在实卡问题之后，原ViT/长LM等失败继续收口。所有版本与测量见统一板测记录。
+模型快速后端的transpose/psum扩展仍排在实卡问题之后；ViT已按上方最新检查点闭合，长LM等剩余失败继续收口。所有版本与测量见统一板测记录。
 
 ## 普通浮点case统一相似度验收（2026-09-17）
 

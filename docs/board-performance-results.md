@@ -2317,3 +2317,51 @@ target-code-generation报`unsupported_target_instr: GEMM does not support f32 in
 两项主机编译wall分别793.26/846.98 s，peak RSS分别3479616/3496932 KiB；日志及source TensorProgram在
 本轮目录的两个ViT子目录。其Q/K/V在导出图中已提升到F32，TensorProgram形成的也是F32 Flash Attention；
 因此当前阻塞不是未融合，也不是全部候选无法容纳。采用低精度attention导出会改变数值语义，待明确授权后按原reference验收。
+
+## 2026-09-18：ViT低精度attention导出
+
+用户明确授权FP16/BF16 attention导出，原PyTorch reference与相似度门槛保持不变。
+02号frontend在capture期间启用pinned PyTorch的低精度math SDPA选项并在退出时恢复调用方设置；
+普通softmax保留F32内部计算及结果dtype。初次直接降低所有中间值时，独立BF16 attention的relative L2为
+0.0132216，未通过0.01门槛；保留F32 softmax后相同输入降为0.00287917，没有修改reference或门槛。
+显式F32输入及F32 additive mask的提升不被隐式删除。
+
+完整frontend产品lit通过，包括新增18份真实export、9项完整XLA数值、boolean/additive mask、负scale、causal、
+rank3/4及1024/1025/1031；8项普通softmax覆盖显式结果dtype转换和全负无穷行。
+canonical完整增量构建及随后no-op通过。
+
+| 原始ViT case | 完整输出数 | XLA对原PyTorch cosine | relative L2 |
+| --- | ---: | ---: | ---: |
+| S1024 FP16 | 786432 | 0.9999999761694789 | 0.00021831429718 |
+| S1025 FP16 | 787200 | 0.9999999756694864 | 0.00022059257874 |
+
+两个真实source经当前正式pipeline均形成低精度Q/K/V的Flash Attention，score region显式保留F16→F32。
+低精度source进一步暴露空间物化的单矩形限制：所选窗口`1024×2×32`映射回`3×1024×1×768`时，
+每个head只有32列，两个head之间有32列间隔。原默认搜索两个尺寸各42次均在该边界unsupported，未进入SPM；
+不能将完整来源或bounding box作为局部请求的替代。06号物化器现使用current exact fragments提供有限分解，
+经preimage、请求交集及覆盖/顺序证明后构造紧凑结果；原单矩形和temporal共享复用路径不变。
+定向单候选主机编译已推进至actual Instr/SPM及完整ExecutablePackage。
+
+随后两个尺寸的默认8/42搜索均完成：各42次actual、2 accepted、40次exact容量拒绝，unsupported/indeterminate为0。
+完整runner的wall分别994.78/1035.63 s，peak RSS分别3520856/3778820 KiB；fresh source、原CPU reference、
+typed runtime payload及no-card通过。新主机回归覆盖单/多矩形、1024/1025/1031、4/16 Tile，检查来源元素读取一次、
+最终拼接坐标、temporal主/尾块及actual Instr/SPM；462项Transforms均通过，无skip/disabled，
+另有pipeline/public-link两项及layout/bufferization四项lit通过，最终canonical增量构建及Ninja no-op通过。
+
+同一已恢复boot与SDK 5.7/API1400下，六次launch前均检查全系统占用，按S1024→S1025逐case串行执行。
+每次完整输出、completion/readback与正常清理均通过；未放宽cosine≥0.9999、relative L2≤0.01。
+
+| ViT FP16 | 三次设备耗时 ms | 中位 ms | 完整输出cosine | relative L2 |
+| --- | --- | ---: | ---: | ---: |
+| S1024 | 35.228 / 42.625 / 50.151 | 42.625 | 0.9999999739749413 | 0.00022814906709 |
+| S1025 | 42.463 / 42.433 / 49.267 | 42.463 | 0.9999999730674821 | 0.00023209141570 |
+
+相同case三次数值指标一致。耗时存在明显波动，这些是首次完整通过的样本，不据此签发稳定最优性能或三轮优化完成。
+两份actual module SHA256分别为`8ab7b4dfe385f872e74e48b0479879baba737046c2effdc729857842d69a3895`、
+`9e8e6d7bdc9dba35ae5f9a5f62c7a0d8406105633836c32ad2c4bee13275eebe`；包和逐次结果分别在本轮目录的
+`vit-pieces-1024/1025`与`board/vit-1024/1025`。
+
+LLaMA FP16/BF16及三组大GEMM均以本轮source重新执行默认8/42构包、no-card；
+五个完整package及全部source文件与上一节最新实卡通过版本逐byte一致，实际设备指令未改变。
+对照使用`assembly-reuse/prepared/`的最终CRT与拼接复用版本，保留上一节性能目标。
+本轮证据位于`build/test/attention-precision/`。
