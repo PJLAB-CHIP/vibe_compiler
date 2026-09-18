@@ -2467,3 +2467,40 @@ LocalReduce的deep42完整包与standard逐byte相同，中位差不能证明搜
 standard剩余3项补编译/no-card已完成，冻结版本共51/51；后续38项deep及板测续跑队列已停止，不自动恢复。
 当前有界细调修改后的全矩阵和核心性能资格尚未重签。
 逐次样本、包身份及编译计数见[本轮证据](data/board-performance/search-deep42-20260918.json)。
+
+## 2026-09-18：有界细调后的同预算对照
+
+本轮compiler为`f2ba7974`，将每方案细调限制为一轮、每坐标左右最近对齐点；粗尺度入口、耗时改善后的粗邻域及actual容量修正仍保留。
+原13项重新导出source，逐文件与旧版输入核对一致；新版standard与deep均使用width8/trials42。
+13项standard全部构包/no-card通过，完整package均与原健康standard逐byte相同。
+清理的是已取消搜索的76个中间目录，共21.76 GiB逻辑数据；完整对照包及日志保留。
+
+### 已完成的搜索成本对照
+
+前后均为13项并发准备，下面同时报告实际求值、CPU、wall及最大RSS；wall受机器负载影响，不作为串行加速比。
+下表三项新版deep均完成42个方案，unfinished为0，各执行42轮fine，fine求值均未超过候选上界。
+
+| Case | 旧/新actual求值 | 旧/新wall s | 旧/新CPU s | 旧/新最大RSS KiB | 新fine求值/上界 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `division` | 3464 / 2448 | 447.45 / 268.51 | 929.86 / 542.48 | 186548 / 135636 | 389 / 1696 |
+| `division-tail-1025` | 5313 / 2760 | 1012.16 / 405.15 | 2180.05 / 818.36 | 277528 / 169656 | 458 / 1856 |
+| `division-tail-1031` | 8713 / 2789 | 1838.98 / 414.96 | 4199.05 / 835.03 | 441256 / 170292 | 482 / 1856 |
+
+三个尺寸的actual求值分别减少29.3%、48.1%、68.0%，CPU分别减少41.7%、62.5%、80.1%。
+Fine仍接受了部分合法点，但三项fine均未改善估算耗时；这不证明其它case的fine同样无收益。
+
+### 已完成的配对实卡
+
+三项输入分别为`[2,4,1024]`、`[2,4,1025]`、`[2,4,1031]`，延续Division特殊值合同使用FP32。
+沿用SDK 5.7/API1400及同一boot，重新生成输入和原PyTorch reference，baseline/新standard/新deep均fresh no-card。
+三个执行顺序分别为baseline→standard→deep、deep→baseline→standard、standard→deep→baseline，使用普通TX事件计时。
+每次launch前检查全系统设备占用，按运行时间窗口读取kernel dmesg；27次完整输出、completion/readback/cleanup均通过，未发现新设备错误。
+
+| Case | baseline中位 ms | 新standard中位 ms | 新deep中位 ms | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| `division` | 0.581 | 0.539 | 0.544 | 三版完整包相同，不归为搜索收益 |
+| `division-tail-1025` | 0.643 | 0.575 | 0.550 | 三版完整包相同，不归为搜索收益 |
+| `division-tail-1031` | 0.574 | 0.560 | 0.586 | deep包不同；计时区间重叠，尚无稳定收益结论 |
+
+其余结果未纳入本记录，不能据这三项签发全矩阵性能不下降或deep核心收益。当前任务进度由任务表和搜索组织计划维护。
+逐次样本、source/input/package身份及编译计数见[本轮证据](data/board-performance/search-bounded-fine-20260918.json)。
