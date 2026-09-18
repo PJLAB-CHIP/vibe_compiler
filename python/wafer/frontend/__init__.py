@@ -96,9 +96,18 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
         return output, mean.to(input.dtype), rstd.to(input.dtype)
 
     decompositions[native_layer_norm] = cpu_layer_norm_results
-    # Match pinned PyTorch/XLA's StableHLO export decomposition. The source
-    # contract uses ordinary softmax, including NaN for an all-negative-inf row.
-    decompositions[torch.ops.aten._safe_softmax.default] = torch.softmax
+    def ordinary_softmax(input, dim, dtype=None):
+        output_dtype = input.dtype if dtype is None else dtype
+        compute_dtype = (torch.float32 if output_dtype in
+                         (torch.float16, torch.bfloat16) else output_dtype)
+        # An explicit dtype converts the input before the softmax opmath.
+        return torch.softmax(input.to(output_dtype), dim,
+                             dtype=compute_dtype).to(output_dtype)
+
+    # Match pinned PyTorch/XLA's ordinary-softmax source policy, including NaN
+    # for an all-negative-inf row. Keep CPU half/BF16 softmax opmath in F32
+    # even when SDPA retains low-precision Q/K/V and probability buffers.
+    decompositions[torch.ops.aten._safe_softmax.default] = ordinary_softmax
     average_pools = (
         torch.ops.aten.avg_pool2d.default,
         torch.ops.aten._adaptive_avg_pool2d.default,
@@ -164,8 +173,16 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
                 return func(*wide, *args[3:], **kwargs).to(args[0].dtype)
             return func(*args, **kwargs)
 
-    with torch.no_grad(), Capture(), CompositeOpmath():
-        result = captured(*xla_inputs)
+    # Use the pinned SDPA implementation's low-precision source policy. This
+    # controls its automatic Q/K/V promotion, not explicit caller casts or
+    # unrelated arithmetic. CPU reference execution keeps the caller setting.
+    math_sdp = torch.backends.cuda.fp16_bf16_reduction_math_sdp_allowed()
+    try:
+        torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(True)
+        with torch.no_grad(), Capture(), CompositeOpmath():
+            result = captured(*xla_inputs)
+    finally:
+        torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(math_sdp)
     if (metrics.counter_value("MarkStep") or 0) > (counters.get("MarkStep") or 0):
         raise RuntimeError("XLA export forward executed a graph step")
     outputs, _ = tree_flatten(result)

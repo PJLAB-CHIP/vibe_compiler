@@ -228,7 +228,8 @@ FP32，convolution和bias加法在FP32完成，整个算子结果再转换回原
 
 输入是原始module直接XLA抓图时的typed `aten._safe_softmax`调用。按用户指定的导出策略，复用pinned
 PyTorch/XLA `stablehlo._run_decompositions`的同一映射，将该调用交给`torch.softmax`，保留dim、dtype和
-普通softmax的opmath；不生成额外的`eq(-Inf) → all → where`。输出是普通StableHLO softmax图，直接交既有
+普通softmax的opmath；FP16/BF16结果使用F32内部softmax并在结果处转回所需dtype，
+不生成额外的`eq(-Inf) → all → where`。输出是普通StableHLO softmax图，直接交既有
 source verifier及05号attention识别；唯一用户入口仍为`export_pytorch_program`。
 
 这是明确的source语义选择：全为负无穷的行按普通softmax产生NaN，不保留`_safe_softmax`额外归零行为。
@@ -241,6 +242,33 @@ source verifier及05号attention识别；唯一用户入口仍为`export_pytorch
 导出或局部attention识别通过不代签完整package/no-card或板端完成。
 映射依据为[PyTorch/XLA 2.5官方导出器](https://github.com/pytorch/xla/blob/v2.5.0/torch_xla/stablehlo.py)，
 实际接口以本仓pinned源码确认。
+
+### 2.5 Attention 的低精度导出
+
+输入为原始eval module在直接XLA capture中调用的ATen SDPA，Q/K/V为FP16或BF16。
+按用户明确授权，capture期间启用pinned PyTorch的`allow_fp16_bf16_reduction_math_sdp(True)`，
+由原SDPA math实现保留输入精度，继续处理scale、causal、mask及head/batch关系；不在已导出的IR上删除转换。
+该选项只拥有SDPA内部的自动提升策略，显式F32输入及其它算术保持原dtype；普通softmax继续遵循2.4节的F32 opmath，
+普通低精度score的概率在PV前恢复低精度，不把softmax指数与归约一并降精度。
+显式F32 additive mask引入的F32 score/PV提升仍保留；这类调用不自动取得低精度target资格。
+用`finally`恢复调用方原设置，包括导出失败；独立CPU reference始终在capture之外由原module生成。
+
+输出为同一portable StableHLO program directory，低精度GEMM及其转换直接进入SSA，
+下游仍为原source verifier、SPMD、05号attention识别和正式compiler；唯一入口为`export_pytorch_program`。
+不增加模型/shape特判、依赖版本、精度开关CLI、第二条导出形式或后端dtype fallback；不放宽数值标准，
+不改已有portable source、module、参数或reference。硬件累加/psum支持继续由当前target合同约束。
+
+依据为[PyTorch数值精度说明](https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html#reduced-precision-reduction-for-fp16-and-bf16-in-scaled-dot-product-attention-sdpa)
+与[pinned 2.5 SDPA实现](https://github.com/pytorch/pytorch/blob/v2.5.0/aten/src/ATen/native/transformers/attention.cpp)。
+采用已有math实现的显式策略，避免复制其mask/scale分解或在lowering猜测转换来源。
+
+| 覆盖 | exact要求 | 完成条件与直接下游 |
+| --- | --- | --- |
+| rank3/4、1024/1025/1031，FP16/BF16 SDPA及F32对照 | 两次dot的输入dtype、输出dtype正确；boolean/additive mask、负scale和causal保留；显式F32 mask继续提升PV；原输入及框架设置不变 | 真实portable export/source verifier及XLA完整输出对原PyTorch相似度验收 |
+| 调用方选项原为开/关，合法导出与异常退出 | capture采用唯一策略，退出恢复原状态；显式F32算术不被降精度 | 产品API回归及失败后合法导出 |
+| 原ViT S1024/1025与LLaMA/大GEMM保护 | 原reference和既定门槛不变，所有完整输出参与比较 | 默认8/42正式构包、fresh no-card、串行实卡；变化的保护包做完整数值及匹配性能 |
+
+导出数值通过不代签完整ViT上板；SPM、target和实卡结果分别记录。
 
 ## 3. Frontend Verification
 

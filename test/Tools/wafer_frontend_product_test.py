@@ -503,7 +503,10 @@ def check_softmax_export(output_root: pathlib.Path) -> None:
     generator = torch.Generator().manual_seed(431)
     for dtype, extent in ((torch.float16, 1024), (torch.bfloat16, 1025),
                           (torch.float32, 1031)):
-        for output_dtype in (None, torch.float32):
+        output_dtypes = (None, torch.float32)
+        if dtype == torch.float32:
+            output_dtypes += (torch.float16, torch.bfloat16)
+        for output_dtype in output_dtypes:
             model = Softmax(output_dtype).eval()
             values = torch.randn((2, 3, extent), generator=generator).to(dtype)
             values[..., :17] = -torch.inf
@@ -550,7 +553,98 @@ def check_softmax_export(output_root: pathlib.Path) -> None:
                 context=f"exported attention {dtype} masked={masked}")
             for tensor, original in zip(inputs, before):
                 torch.testing.assert_close(tensor, original, rtol=0, atol=0)
-    print("softmax_export: direct=6 attention=6 mask_preserved=true all_inf=ordinary_softmax")
+    print("softmax_export: direct=8 attention=6 mask_preserved=true all_inf=ordinary_softmax")
+
+
+def check_attention_precision(output_root: pathlib.Path) -> None:
+    import wafer_pytorch_board_common as comparison
+
+    class Attention(torch.nn.Module):
+        def __init__(self, causal, scale):
+            super().__init__()
+            self.causal, self.scale = causal, scale
+
+        def forward(self, query, key, value, mask=None):
+            return torch.nn.functional.scaled_dot_product_attention(
+                query, key, value, attn_mask=mask,
+                is_causal=self.causal, scale=self.scale)
+
+    class Interrupted(torch.nn.Module):
+        def forward(self, query):
+            assert torch.backends.cuda.fp16_bf16_reduction_math_sdp_allowed()
+            raise RuntimeError("interrupted attention capture")
+
+    backend = torch.backends.cuda
+    previous = backend.fp16_bf16_reduction_math_sdp_allowed()
+    generator = torch.Generator().manual_seed(743)
+    try:
+        for dtype in (torch.float16, torch.bfloat16, torch.float32):
+            element = {torch.float16: "f16", torch.bfloat16: "bf16",
+                       torch.float32: "f32"}[dtype]
+            for extent in (1024, 1025, 1031):
+                prefix = (2,) if extent == 1025 else (1, 2)
+                inputs = tuple(torch.randn((*prefix, length, 32), generator=generator).to(dtype)
+                               for length in (17, extent, extent))
+                if extent == 1024:
+                    mask = torch.ones((17, extent), dtype=torch.bool)
+                    mask[:, :7] = False
+                    inputs += (mask,)
+                elif extent == 1025:
+                    mask = torch.zeros((17, extent), dtype=torch.float32)
+                    mask[:, :7] = -torch.inf
+                    inputs += (mask,)
+                model = Attention(extent == 1031, -0.125 if extent == 1025 else 0.25).eval()
+                backend.allow_fp16_bf16_reduction_math_sdp(False)
+                expected = model(*inputs)
+                before = tuple(value.clone() for value in inputs)
+                exports = []
+                for setting in (False, True):
+                    backend.allow_fp16_bf16_reduction_math_sdp(setting)
+                    directory = output_root / f"attention-precision-{element}-{extent}-{setting}"
+                    export_pytorch_program(model, inputs, directory)
+                    assert backend.fp16_bf16_reduction_math_sdp_allowed() == setting
+                    exports.append(directory)
+                if snapshot(exports[0]) != snapshot(exports[1]):
+                    raise RuntimeError("caller SDPA setting changed the exported source")
+                text = subprocess.check_output([
+                    os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                    str(exports[0] / "functions/forward.stablehlo.bc"),
+                ], text=True)
+                dots = [line for line in text.splitlines() if "stablehlo.dot_general" in line]
+                # An explicit F32 additive mask still promotes the score and
+                # PV computation through the pinned XLA arithmetic. The policy
+                # controls SDPA's automatic Q/K/V widening, not caller F32 data.
+                dot_elements = (element, "f32" if extent == 1025 else element)
+                if len(dots) != 2 or any(
+                    not all(t.endswith(f"x{compute}>") for t in re.findall(r"tensor<[^>]+>", line))
+                    for line, compute in zip(dots, dot_elements, strict=True)
+                ):
+                    raise RuntimeError(f"SDPA lost its explicit GEMM dtype: {dots}")
+                exponential, = [line for line in text.splitlines() if "stablehlo.exponential" in line]
+                if not exponential.rstrip().endswith("xf32>"):
+                    raise RuntimeError("attention softmax lost F32 opmath")
+                actual, = run_exported_graph(exports[0], inputs)
+                comparison.assert_tensor_matches(
+                    actual, expected, policy=comparison.make_similarity_policy(dtype),
+                    context=f"attention precision {element} extent={extent}")
+                assert actual.dtype == dtype
+                for value, original in zip(inputs, before, strict=True):
+                    torch.testing.assert_close(value, original, rtol=0, atol=0)
+        for setting in (False, True):
+            backend.allow_fp16_bf16_reduction_math_sdp(setting)
+            directory = output_root / f"attention-interrupted-{setting}"
+            try:
+                export_pytorch_program(Interrupted().eval(), (inputs[0],), directory)
+            except RuntimeError as error:
+                if "interrupted attention capture" not in str(error):
+                    raise
+            else:
+                raise RuntimeError("interrupted capture succeeded")
+            assert not directory.exists()
+            assert backend.fp16_bf16_reduction_math_sdp_allowed() == setting
+    finally:
+        backend.allow_fp16_bf16_reduction_math_sdp(previous)
+    print("attention_precision: exports=18 numeric=9 dot_dtype=true softmax_f32=true settings_restored=true")
 
 
 def main() -> None:
@@ -581,6 +675,7 @@ def main() -> None:
     check_pooling_precision(args.output_root)
     check_silu_precision(args.output_root)
     check_softmax_export(args.output_root)
+    check_attention_precision(args.output_root)
     check_direct_xla(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")
