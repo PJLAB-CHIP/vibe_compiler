@@ -2504,3 +2504,56 @@ Fine仍接受了部分合法点，但三项fine均未改善估算耗时；这不
 
 其余结果未纳入本记录，不能据这三项签发全矩阵性能不下降或deep核心收益。当前任务进度由任务表和搜索组织计划维护。
 逐次样本、source/input/package身份及编译计数见[本轮证据](data/board-performance/search-bounded-fine-20260918.json)。
+
+## 2026-09-18：多尺度搜索与实际IR前缀复用的首批验收
+
+原13项standard 8/42重新导出、构包及no-card通过，完整包均与此前健康standard一致。
+三项Division的deep 8/42完成42个方案及no-card，完整包与前版对应deep一致。
+实际求值分别由2448/2760/2789降至2146/2190/2206；PBQP由2448/2760/2789降至1725/1735/1680。
+首次编译wall由268.51/405.15/414.96秒降至195.50/215.86/243.41秒；匹配负载重复与其余十项完整成本尚未完成。
+
+三项Division重新生成输入及原PyTorch reference，按baseline/standard/deep交替顺序各取三次普通设备计时，
+27次完整输出、guard和正常清理均通过，执行窗口无新设备错误。F32沿用这些case的特殊值数值语义。
+本轮仍为SDK5.7.0、runtime API1400及16 Tile；compiler、runner、runtime、boot及完整artifact身份见
+[本轮证据](data/board-performance/search-multiscale-20260918.json)。
+
+| case，输入`[2,4,S]` | baseline三次/ms | standard三次/ms | deep三次/ms | standard/deep中位数/ms |
+| --- | --- | --- | --- | --- |
+| Division S1024 | 0.897 / 0.522 / 0.633 | 0.550 / 0.552 / 0.565 | 0.546 / 0.660 / 0.580 | 0.552 / 0.580 |
+| Division S1025 | 0.560 / 0.533 / 0.621 | 0.555 / 0.511 / 0.522 | 0.562 / 0.541 / 0.584 | 0.522 / 0.562 |
+| Division S1031 | 0.550 / 0.552 / 0.503 | 0.681 / 0.560 / 0.671 | 0.549 / 0.538 / 0.548 | 0.671 / 0.548 |
+
+三项standard包均与baseline逐byte相同；S1024/1025的deep也与standard相同，耗时差异不能归因于搜索。
+S1031的deep产物不同，但此前相同产物的配对测量未证明稳定收益，当前亦未闭合重复测量门槛。
+这些数值通过及单批时间不代签核心case、全部case性能保护或deep核心收益。
+
+## 2026-09-19：13项standard单次实卡验收
+
+用户指定先完成原13项standard，每项一次普通执行。沿用上一节多尺度实现冻结compiler
+`999c13a8213fba98f1cced5c97bb13dbf67e18b030db51708f4553d913e10e23`的standard 8/42包，
+本轮重新导出source、生成输入和原PyTorch reference，核对source及完整package身份并重新通过no-card。
+这不是用最终提交重新编译13项的记录。SDK5.7.0.0524.01、runtime API1400、16 Tile及原数值门槛保持不变；
+Division沿用F32以覆盖零和特殊值，其余均为FP16。
+
+重启后的同一会话先完成fresh FP16 Add：16384项exact通过，设备耗时0.805 ms，运行窗口无新内核错误。
+随后13项逐case串行执行，每次launch前完成系统级占用检查；13次完整数值、guard、completion/readback/cleanup均通过，
+各运行窗口无新设备错误。逐项身份、输入hash、全部输出摘要和原始计时见
+[本轮证据](data/board-performance/search-standard-13-20260919.json)。
+
+| case | dtype | 设备耗时/ms | 完整数值 |
+| --- | --- | ---: | --- |
+| AllReduce S1024 | FP16 | 0.821 | 通过 |
+| AllReduce S1025 | FP16 | 0.696 | 通过 |
+| AllReduce S1031 | FP16 | 0.702 | 通过 |
+| AllGather+Add S1024 | FP16 | 0.591 | 通过 |
+| AllGather+Add S1025 | FP16 | 0.563 | 通过 |
+| AllGather+Add S1031 | FP16 | 0.564 | 通过 |
+| AllToAll transpose S1024 | FP16 | 0.913 | 通过 |
+| AllToAll transpose S1025 | FP16 | 0.903 | 通过 |
+| AllToAll transpose S1031 | FP16 | 0.892 | 通过 |
+| Division S1024 | F32 | 0.592 | 通过，含特殊值 |
+| Division S1025 | F32 | 0.541 | 通过，含特殊值 |
+| Division S1031 | F32 | 0.528 | 通过，含特殊值 |
+| LocalReduce | FP16 | 0.717 | 两个输出均通过 |
+
+本批每项仅一个样本，完成指定范围的实卡数值验收；不据此签发性能不下降或deep收益，也不推断历史设备异常已修复。

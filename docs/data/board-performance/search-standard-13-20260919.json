@@ -1,0 +1,1106 @@
+{
+  "identity": {
+    "compiler_sha256": "999c13a8213fba98f1cced5c97bb13dbf67e18b030db51708f4553d913e10e23",
+    "runner_sha256": "65006e766992dafc96b010f3774a77800ee538e8b7b52865234886ce498dcbf9",
+    "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+    "runtime_api": 1400,
+    "sdk": "5.7.0.0524.01",
+    "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "seed": 20260803,
+    "standard": {
+      "width": 8,
+      "trials": 42
+    },
+    "timing": "ordinary tx-stream-events; one standard sample per case; no warmup or trace"
+  },
+  "cases": [
+    {
+      "case": "all-reduce-sum",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:13:59.768287+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:13:59",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:13:59.994234+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 821000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "0f4916d3020a20d0b269288e837e2baa58359eacf117654650fc60e6d201fdaa",
+            "card_00_user_input_1.f16.raw": "a2472bb0ca9580e561bdf99730bd616caf1abd359caff3255ee9e4de528dd0d3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                16,
+                1024,
+                1
+              ],
+              "dtype": "torch.float16",
+              "elements": 16384,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/all-reduce-sum-float16/standard/package",
+          "manifest_sha256": "7e6e0271a9f3e66ea45dfa34ae7c5b1c2749e5f271bc238008f83dd1bb6d0302",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "7e6e0271a9f3e66ea45dfa34ae7c5b1c2749e5f271bc238008f83dd1bb6d0302",
+            "modules/module_00000.so": "414812d86705e56e995a0cf95585a402e654950f3e2992bf455dcf32131c94c6"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "7b4a2c8519e67b7a60a26357253fdc6b274c07faa7919334e3bfe269ba36ed4f",
+        "functions/forward.stablehlo.bc": "35ee3fb61a3c79fa875e2cac780ca2ee64ad44f8de44fd190e38cd6d65de5ae6"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.821
+      ],
+      "standard_median_ms": 0.821
+    },
+    {
+      "case": "all-reduce-sum-tail-1025",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:00.282016+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:00",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:00.538702+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 696000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "717ce28b3a56f7c99f3b2e3b6a1658f3af7c78a956e1237d6884766e2aafe6f2",
+            "card_00_user_input_1.f16.raw": "ead6f9da13cd40d86c51b41fc5847e33d6a4dfe5fa87037274ddbc111c819e98"
+          },
+          "outputs": [
+            {
+              "shape": [
+                16,
+                1025,
+                1
+              ],
+              "dtype": "torch.float16",
+              "elements": 16400,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/all-reduce-sum-tail-1025-float16/standard/package",
+          "manifest_sha256": "faeae918b7ac163831632747cc806bf92086ef5f2fb2e0cb6a1eab292482c940",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "faeae918b7ac163831632747cc806bf92086ef5f2fb2e0cb6a1eab292482c940",
+            "modules/module_00000.so": "8306b1e3f18abc440cd2613efc0573e4cc1ef35f8a6309f295f228b8f58e35ba"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "cd9998a4e72bfcd50cbd318308e878dcb0a6ac66a4ae79ab19f3e88eab487d9e",
+        "functions/forward.stablehlo.bc": "07ae98618c4f5aab1598f8cb33fc77df6a79367bd0f4285fdab73dc5791f02e5"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.696
+      ],
+      "standard_median_ms": 0.696
+    },
+    {
+      "case": "all-reduce-sum-tail-1031",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:00.814367+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:00",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:00.968520+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 702000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "a828084cfb18e39a1b247e424e24eaa516e0a6f189a0acaf28fdc87794d5e364",
+            "card_00_user_input_1.f16.raw": "0257e4c5fa409eedd7ba4d2b9a9ec98968a1960a8bf21fbcafb942b308d371a3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                16,
+                1031,
+                1
+              ],
+              "dtype": "torch.float16",
+              "elements": 16496,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/all-reduce-sum-tail-1031-float16/standard/package",
+          "manifest_sha256": "813c5b0b022262400570dda9561199734d413cf3dfe6f38a8b0e7bebf40b8b91",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "813c5b0b022262400570dda9561199734d413cf3dfe6f38a8b0e7bebf40b8b91",
+            "modules/module_00000.so": "6c063239387a22e9430e61e9d81d927a34bffec6893f09c0a176146467dfad40"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "60e433240595d49aa3bcaaa1864f18a3d79eba7c4e8837ada9d69ff98db79ed8",
+        "functions/forward.stablehlo.bc": "d9a515a897cf3467143f818022543d6c6b13c474ad50d88ba6f79e5f286f8d16"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.702
+      ],
+      "standard_median_ms": 0.702
+    },
+    {
+      "case": "allgather-add",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:01.243204+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:01",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:01.498663+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 591000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "b0b79fc29035088e56898050c172d1d0551230918f1a080fbc8df4d460a4ceb8",
+            "card_00_user_input_1.f16.raw": "358a089cc6d492cf782175f11b87761e28ab9b4750925360eaa3c203e9b0d021"
+          },
+          "outputs": [
+            {
+              "shape": [
+                16,
+                16,
+                1,
+                1024
+              ],
+              "dtype": "torch.float16",
+              "elements": 262144,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/allgather-add-float16/standard/package",
+          "manifest_sha256": "7e13a0d84b8611d2aa70ea5652a3bb856c77db7f39c4dd1d49dccf056f743d92",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "7e13a0d84b8611d2aa70ea5652a3bb856c77db7f39c4dd1d49dccf056f743d92",
+            "modules/module_00000.so": "f8c1df98fdb9590a616d65bb9e69508286f111db1a7513c77bbf7c29d1b579fc"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "661568cf21decc9ee5ced0289e1338390d7f2f92d6eb53cec2a924e9683b8af0",
+        "functions/forward.stablehlo.bc": "f8c9bd4bbe80eb031a858b8db4b30916bfca07083cc38ce26eb879c206d06031"
+      },
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.591
+      ],
+      "standard_median_ms": 0.591
+    },
+    {
+      "case": "allgather-add-tail-1025",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:01.768113+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:01",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:01.920464+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 563000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "bd7c1815f580faec73dfe16eab4bba6ced7518160202ab58cb54f6cd44e101eb",
+            "card_00_user_input_1.f16.raw": "5d7346a0681ce896009a25314b66d38534b34cf98b6cf4618fcb48070bd1a65e"
+          },
+          "outputs": [
+            {
+              "shape": [
+                16,
+                16,
+                1,
+                1025
+              ],
+              "dtype": "torch.float16",
+              "elements": 262400,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/allgather-add-tail-1025-float16/standard/package",
+          "manifest_sha256": "0ee2ec0e9716871ae006e75c39a4f48f0f0982700d75bc46394ae164b48c9f25",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "0ee2ec0e9716871ae006e75c39a4f48f0f0982700d75bc46394ae164b48c9f25",
+            "modules/module_00000.so": "7c6dd1d651158ca210728e7ad2572af37736bba3ccb4d24749dc2f75b9649d93"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "085b189050158def7569bc403606621a6613144640f68e7f3cb7fc449c3702e7",
+        "functions/forward.stablehlo.bc": "ea719236ff7d4b8be853c1172fedeb47b5447e14251fb1a05411fa526bdb0b3e"
+      },
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.563
+      ],
+      "standard_median_ms": 0.563
+    },
+    {
+      "case": "allgather-add-tail-1031",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:02.152758+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:02",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:02.362649+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 564000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "ed2aedbb38e20add5aa0a6d8d8bb691aff1c0876009daaea9bd3d454bf25111f",
+            "card_00_user_input_1.f16.raw": "7e1eadf743640de20d8b30c8fb608cf79bfb54f851c59ce06f52e7df9b07fb57"
+          },
+          "outputs": [
+            {
+              "shape": [
+                16,
+                16,
+                1,
+                1031
+              ],
+              "dtype": "torch.float16",
+              "elements": 263936,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/allgather-add-tail-1031-float16/standard/package",
+          "manifest_sha256": "428a03fa94fd57078efb30cbfd6612c75374e5f52f5d7c27ecdfd49193ea8e18",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "428a03fa94fd57078efb30cbfd6612c75374e5f52f5d7c27ecdfd49193ea8e18",
+            "modules/module_00000.so": "0602d2464a31b7530f40c76c8b2b6667b695fc4e455a819a3d63b5645d62ae12"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "60ef15bb30efd224bbb35fddb94e04cb804d6115dc36aa0a5b41d9484723156c",
+        "functions/forward.stablehlo.bc": "d626c6b1a44925c19ca1abc1c22f72cedaef77c79ed9335dcbe6ac5f43cb5c0e"
+      },
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.564
+      ],
+      "standard_median_ms": 0.564
+    },
+    {
+      "case": "alltoall-transpose",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:02.614985+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:02",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:02.802556+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 913000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "422ebd2e94481d0180def5b8b1e0ab29da9a147363abe8cf7fcb1e4db3bd12c4",
+            "card_00_user_input_1.f16.raw": "dcd3f3d461ea4398108553be4154ae47629b373ecb3b95385f0be57b10aed065"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1024,
+                16,
+                1
+              ],
+              "dtype": "torch.float16",
+              "elements": 16384,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/alltoall-transpose-float16/standard/package",
+          "manifest_sha256": "885c1a203cc6cb081d2d38e888ae1d09b3cd8ccaaf7f7720d6bf276d63ed50a6",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "885c1a203cc6cb081d2d38e888ae1d09b3cd8ccaaf7f7720d6bf276d63ed50a6",
+            "modules/module_00000.so": "797972c297af1c200c28ba4b9670f95782fb20b717ff60d3fc0449789caf18ef"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "3a3add235db643990e79977c371922a823e305ee86c393a8cf524ecc8cc284f9",
+        "functions/forward.stablehlo.bc": "afd32fc4b6e118adfb0d95f9d7758ba99a97305dcc4b4c82675389496f77a421"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.913
+      ],
+      "standard_median_ms": 0.913
+    },
+    {
+      "case": "alltoall-transpose-tail-1025",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:03.062640+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:03",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:03.208409+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 903000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "b4582c252575afd20c3436eaf8a4329a6527c38aa6f91b8ac725cc8c9435a5bf",
+            "card_00_user_input_1.f16.raw": "22a5a428cd73d26375d83b9b74dbfeef9ce316723dc2a6c6273b2b65d17b680f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1025,
+                16,
+                1
+              ],
+              "dtype": "torch.float16",
+              "elements": 16400,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/alltoall-transpose-tail-1025-float16/standard/package",
+          "manifest_sha256": "61df52f3c2f21bec636699af3e729e248a2a1e1b2262d886d59276713f65c9e4",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "61df52f3c2f21bec636699af3e729e248a2a1e1b2262d886d59276713f65c9e4",
+            "modules/module_00000.so": "1b19c60120cc00573372127766b13a3371f38c8db5876cd2703734bbdf2d95b3"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "88eec7d73499e83f5315eb48456345d8846b50ed9a7f3eb2e862fd8dc414df8c",
+        "functions/forward.stablehlo.bc": "6283350bca598a5dcdb418bcb213aa768a1a1188f253b4de73a0ee73f093004a"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.903
+      ],
+      "standard_median_ms": 0.903
+    },
+    {
+      "case": "alltoall-transpose-tail-1031",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:03.465853+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:03",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:03.714579+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 892000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "0e8b8e2a2197941feaddf3e586db3244b1b584a23652e1d39c4eedf644281de9",
+            "card_00_user_input_1.f16.raw": "351dcf730adf5c1f57aca7d9da1bc42ea79eda030f4c0fe51a7f05748232143a"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1031,
+                16,
+                1
+              ],
+              "dtype": "torch.float16",
+              "elements": 16496,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/alltoall-transpose-tail-1031-float16/standard/package",
+          "manifest_sha256": "f2856a35b8ecd076cdb8ad0f42403307621308019bf4236bfe90f683b0ea12d7",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "f2856a35b8ecd076cdb8ad0f42403307621308019bf4236bfe90f683b0ea12d7",
+            "modules/module_00000.so": "89c0ed6c14ac97672683a1ae7ea039208b58f7920ae59a6be6d22e6f6bc23afe"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "450b60379f37aa4ce4045ae485a5778582c640b745097b950907f3ad249cd81b",
+        "functions/forward.stablehlo.bc": "acba69dcd62a3ee22a70d2ca1d16e82a8979f3bfbcc2606dc4dd98fc48d78469"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.892
+      ],
+      "standard_median_ms": 0.892
+    },
+    {
+      "case": "division",
+      "dtype": "float32",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:03.995500+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:03",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:04.248480+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 592000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "51632115fc726bc8823263c03d93e46f047f250555f8bd3a7d420fa99a0dec52",
+            "card_00_user_input_1.f32.raw": "7efdf4dff7d402e9c60dd3b43f902a509e58f898bf2414c3367a4abc01f9bcf0"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1024
+              ],
+              "dtype": "torch.float32",
+              "elements": 8192,
+              "max_abs_error": null
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/division-float32/standard/package",
+          "manifest_sha256": "5399b8c04771fb122f18334f0f21f22076e9aae28d9b4a8406f4202b5fe3c7cc",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "5399b8c04771fb122f18334f0f21f22076e9aae28d9b4a8406f4202b5fe3c7cc",
+            "modules/module_00000.so": "06e553666a09bc9f0b3a748d3290b0328d6c9a6393f20c4b52a68c2a5513e5b0"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "1a60460b85a0a98c775897533c9cbec7a0f38bd69eb0a2987923b4955e4a8235",
+        "functions/forward.stablehlo.bc": "bea0fd815474c06988dd41f4ac750a30de183a1610fa94ae9accfb773c631805"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": true,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.592
+      ],
+      "standard_median_ms": 0.592
+    },
+    {
+      "case": "division-tail-1025",
+      "dtype": "float32",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:04.527742+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:04",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:04.684447+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 541000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "4e1fb61cf884285461c5032f70677f087ac7e2b1fe4c493153a71b3dcefd0988",
+            "card_00_user_input_1.f32.raw": "33d948da7ff3856a80963feda24d3def566fcc94aa3eab53fb1e7a88a32ca32f"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1025
+              ],
+              "dtype": "torch.float32",
+              "elements": 8200,
+              "max_abs_error": null
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/division-tail-1025-float32/standard/package",
+          "manifest_sha256": "b6ef5598ad94dd955679cb875dd7fc2701646625406c36aef8ad287c73085525",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "b6ef5598ad94dd955679cb875dd7fc2701646625406c36aef8ad287c73085525",
+            "modules/module_00000.so": "2abf2443bea2034c2ca8ddd35c81b77296f6721e5633b184743cde6c000229f2"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "9386a8171935bd3977a0dcf592599e01723d3694340ca74b9dc755729f8c3bcb",
+        "functions/forward.stablehlo.bc": "8ca59ca803e3eb811281503f4df37fbfcc9cb17a1ce18036a7a962893e85d64f"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": true,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.541
+      ],
+      "standard_median_ms": 0.541
+    },
+    {
+      "case": "division-tail-1031",
+      "dtype": "float32",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:04.958552+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:04",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:05.166636+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 528000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/division-tail-1031-float32/standard/package",
+          "manifest_sha256": "b947be186a51478a177dea6d1fbc3b0971bec5b9be9eba2a2931704548714a07",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "b947be186a51478a177dea6d1fbc3b0971bec5b9be9eba2a2931704548714a07",
+            "modules/module_00000.so": "c4866c6ccc1caa4eb75a6ca2a0e548dee38a39d106f38c20863e471162793972"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "b730e3ca2866d6a3a42b237b61acc82a0f735975866202eea8800262320cc325",
+        "functions/forward.stablehlo.bc": "e753caa0cf0ea3d88b54091ac95dcba298c1a7f5c1635b0973a0ab6c21040d23"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": true,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.528
+      ],
+      "standard_median_ms": 0.528
+    },
+    {
+      "case": "local-reduce",
+      "dtype": "float16",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T17:14:05.457677+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_since": "2026-09-19 01:14:05",
+          "kernel_log_source": "dmesg",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T17:14:05.666642+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 717000,
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "091896f5d4910765dc1495c899fe1e88cf753c454021ff56539d6cdb63e1c602"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                24,
+                8
+              ],
+              "dtype": "torch.float16",
+              "elements": 192,
+              "max_abs_error": 0.0
+            },
+            {
+              "shape": [
+                1,
+                24
+              ],
+              "dtype": "torch.float16",
+              "elements": 24,
+              "max_abs_error": 0.0
+            }
+          ]
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "build/test/search-organization/multiscale/local-reduce-float16/standard/package",
+          "manifest_sha256": "85b152ca8ccd9a08dae8c601f80d6a027d217a7aad8b475b9570aef38d6b74a0",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "85b152ca8ccd9a08dae8c601f80d6a027d217a7aad8b475b9570aef38d6b74a0",
+            "modules/module_00000.so": "b14822ab51925a6153f9d143112ea5828bbe82ca154608376e78c164c5a4aaa2"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "67fa48f1666a3d93954919c19d7d4f385e4a4c07bf188aa1e29bd4611fa8e798",
+        "functions/forward.stablehlo.bc": "b158cf240f4507d0d1d5b9ee12982abeadffc2aef0c670f995917e6367f59aad"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": false,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.717
+      ],
+      "standard_median_ms": 0.717
+    }
+  ],
+  "scope": "用户指定的原13项standard，每项一次实卡；沿用多尺度实现冻结包，fresh source/input/reference及no-card；不签发性能涨跌。",
+  "artifact_directory": "build/test/search-organization/multiscale/board-standard-20260919",
+  "recovery_add": {
+    "case": "complete-tile-add",
+    "step": 1,
+    "policy": "none",
+    "search_mode": null,
+    "search_width": null,
+    "search_trials": null,
+    "manifest_sha256": "978de37010c5bc874cbb74a34c330c917dc5f4f25f2786705a141662fc6f2a89",
+    "comparison_passed": true,
+    "comparison": {
+      "rtol": 0.0,
+      "atol": 0.0,
+      "equal_nan": false,
+      "min_cosine": null,
+      "max_relative_l2": null
+    },
+    "inputs": {
+      "card_00_user_input_0.f16.raw": "aefcd4839dd66f5f0523239e096f2f83c63ac9bc153ab34165ce345817c33e9b",
+      "card_00_user_input_1.f16.raw": "193b66568fd9aa53a39189491a6b7a83f55bcd46edcca267b7dc7332fd4c0f37"
+    },
+    "outputs": [
+      {
+        "shape": [
+          16384
+        ],
+        "dtype": "torch.float16",
+        "elements": 16384,
+        "max_abs_error": 0.0
+      }
+    ],
+    "timing": [
+      "board_timing: kind=tx-stream-events device_elapsed_ns=805000"
+    ],
+    "kernel_window_new_errors": false
+  }
+}

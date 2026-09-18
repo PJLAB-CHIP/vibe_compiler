@@ -388,6 +388,15 @@ domain oracle另发现既有coupled-state helper无条件重置全部scope的loo
 降至195.50/215.86/243.41秒。这是首批观测，仍须匹配负载复测，不能以此签发整体效率或设备收益。
 Deep其余十项、核心及全矩阵验收继续。首可行/赢家出现时间观测已接入，新增观测及保留的容量邻域上界经
 63项Driver定向回归、正式CLI及source→package/no-card通过；canonical完整增量构建及第二次Ninja no-op通过。
+实现提交为`f087c52e`。三项Division完成27次交替实卡，完整数值/guard及运行窗口检查通过，性能结论仍待定；
+逐次数据见[本轮板测记录](../../docs/board-performance-results.md#2026-09-18多尺度搜索与实际ir前缀复用的首批验收)。
+该提交重新导出的核心大GEMM三配置standard已构包/no-card，完整source及package与健康版本一致；
+LLaMA两dtype的standard随后完成构包/no-card；ViT两shape、核心deep及原13项剩余deep的进程已中断，未完成项待续跑。
+核心编译与原13项剩余deep当时有负载重叠，wall比较须单独匹配复验。
+用户随后指定先测原13项standard：2026-09-19重启后，每项重新生成输入/reference并通过no-card，
+使用上述多尺度实现冻结版本的8/42包，各一次完整实卡数值、guard和运行窗口检查全部通过。
+逐项耗时及身份见[单次实卡记录](../../docs/board-performance-results.md#2026-09-1913项standard单次实卡验收)；
+尚未完成最终compiler重编13项及匹配重复性能比较，不能代签全矩阵或deep收益。
 
 ## 先前版本检查点（不代签本次效率重构）
 
