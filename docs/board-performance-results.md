@@ -2378,14 +2378,19 @@ LLaMA FP16/BF16及三组大GEMM均以本轮source重新执行默认8/42构包、
 | LLaMA block BF16 | 9.383 / 9.292 / 9.372 | 9.028 / 8.869 / 8.812 | 六次完整数值通过，中位9.372→8.869 ms |
 | GEMM4096 FP16 | 7.086 / 6.828 / 6.830 | 7.074 / 6.936 / 6.793 | 六次完整数值通过；两份完整包逐byte相同，区间重叠 |
 | GEMM4096 BF16 | 6.862 / 6.841 / 6.884 | 6.850 / 6.763 / 6.888 | 六次完整数值通过；两份完整包逐byte相同，区间重叠 |
-| GEMM4097 FP16 | 8.516 / 8.620 / 8.601 | 8.571 / 8.563 / 8.598 | 六次输出比较通过；最后一次所在窗口出现设备异常，不能计为第三份健康性能样本 |
+| GEMM4097 FP16 | 8.516 / 8.620 / 8.601 | 8.571 / 8.563 / 8.598 | 六次完整数值通过；各次运行后检查未报告设备异常，后续ViT窗口的故障不归入本次样本 |
+| ViT1024 FP16 | 63.764（仅一次） | 未运行 | baseline完整数值通过，但同次运行后的内核检查发现TDMA异常，不计为健康性能样本 |
 
 LLaMA与BF16/tail GEMM对照使用此前已恢复性能、最终CRT的健康包；4096 FP16以冻结的修改前compiler
 `093b6c55`在本轮source重新构包。所有包使用本轮输入/reference；GEMM4097的standard包也与健康对照逐byte相同。
 原最好可复现性能目标保留，单次最小值不替代配对结果。
 
-14:23:27，最后一次GEMM4097 standard的completion、readback及数值比较均通过后，内核窗口报告
-`NPU LSU TDMA Timeout`、`0x0D00C005`、`action=RESET_BM`。批次随即停止，ViT尚未launch，未自动retry或reset。
-包相同只排除了此组对照的指令包差异，不能据此判断硬件、runtime或设备状态的根因；本轮不声称修复历史TDMA问题。
+原记录将设备异常错误地关联到最后一份GEMM4097样本，并漏记其后的ViT1024 baseline执行。复核原始audit、runner日志及批次脚本后更正：
+GEMM4097 standard sample-03于14:23:22.076启动，14:23:23.485已写出数值通过audit；
+随后ViT1024 baseline sample-01于14:23:27.228启动，14:23:27.921写出数值通过audit。
+ViT运行后的内核检查读到14:23:27的`NPU LSU TDMA Timeout`、`0x0D00C005`、`action=RESET_BM`，批次随即停止。
+保存的内核日志只有秒级时间，不能确定异常发生在completion、readback或cleanup的哪个环节，更不能由检查顺序确定实际触发操作。
+因此记录的是ViT运行窗口中的设备异常，根因及与此前GEMM的因果关系均unknown。未自动retry或reset，ViT standard及1025未运行。
+GEMM包相同只排除了其自身对照的指令包差异，不作为本次ViT窗口故障的根因证据；本轮不声称修复历史TDMA问题。
 用户随后确认尚未重启恢复。完整逐次相似度、命令及健康样本标记见
 [`search-modes-20260918.json`](data/board-performance/search-modes-20260918.json)。

@@ -266,9 +266,10 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
 - LLaMA 真实源暴露 transport 和 collective 参数组合错误：切到 SharedDDR 必须取消 Peer 算法选择；
   retile 后 collective 当前 component 消失时应为 typed unsupported。修正后默认8/42构包取得3个 accepted，fresh no-card通过。
 - LLaMA FP16/BF16各完成三次baseline与standard配对，完整数值通过，中位分别9.358→8.834、9.372→8.869 ms。
-  GEMM4096两种dtype各六次完整数值通过，baseline/standard包逐byte相同。4097最后一次虽完成输出比较，
-  内核随后报告TDMA Timeout/RESET_BM，该次不算健康性能样本；批次停止，用户确认尚未恢复。
-  ViT1024/1025已经standard构包及fresh no-card，尚未运行本轮实卡。逐次结果统一在板端性能记录中。
+  三组GEMM各六次完整数值通过，baseline/standard包逐byte相同。
+  随后的ViT1024 baseline也完成输出比较，但该次运行后的内核检查发现TDMA Timeout/RESET_BM，不算健康性能样本；
+  批次停止，用户确认尚未恢复。此前误归到GEMM4097且漏记ViT执行的内容已按原始日志更正，实际触发操作仍未知。
+  ViT1024/1025已经standard构包及fresh no-card，standard尚未运行本轮实卡。逐次结果统一在板端性能记录中。
 - 全矩阵暴露的uniform Generate来自标准Pad切片。共享初始化DPS转换供temporal及layout消费，83项定向测试通过，
   8个卷积配置重新构包/no-card通过，原reference与dtype未变。Decode的rank-reducing insert通过标准subset坐标投影处理；
   补齐同一indexing interface的sizes及共享分析，新增source/consumer降rank、exact需求和实际Instr/SPM witness。
@@ -278,7 +279,7 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
   正式standard 42次求值、6 accepted并构包，compiler transaction 42.826秒；fresh reference/no-card已通过。
 - Deep探测步长此前只比较duration，和完整objective的storage改善不一致。扩展与轮次重启现使用同一完整比较，
   34项budget/temporal oracle通过，包含storage-only改善的1/2/4/8步长。旧两个诊断搜索已明确取消并保留工作量，
-  不作穷尽或成功结论；新核心与catalog deep仍在运行，没有新增每方案tiling次数或隐式时间上限。
+  不作穷尽或成功结论；新核心与catalog deep曾继续运行，后续检查发现尚未完成的进程已中断，没有新增每方案tiling次数或隐式时间上限。
 - Deep多scope复审发现成对邻域混合无关scope，16个双轴scope单轮产生1190个性能点。
   已按上述scope局部邻域修复；1/4/16-scope工作量与方向oracle在修复前失败，修复后40项Driver定向测试通过，
   GEMM实际64 MiB读取保护及正式搜索CLI也通过。AllToAll的deep 8/2由1234次actual evaluation降至242次，
@@ -287,4 +288,4 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
   正式Python调用者的deep默认编译deadline已移除，显式deadline仍保留，standard默认1800秒不变；相关Python CTest通过。
   完整代码/设计差异已复审，canonical完整增量构建及第二次Ninja no-op通过。
 - 冻结版本的LLaMA两种dtype及三组大GEMM已构包/no-card，完整包与本轮standard板测版本逐byte相同。
-  两模式全矩阵构包仍在运行；随后仍须闭合本轮全部数值、逐项实卡性能及deep收益，不能以主机通过代签。
+  两模式全矩阵构包部分完成，余下进程已中断、无正常完成记录；仍须续跑并闭合本轮全部数值、逐项实卡性能及deep收益，不能以主机通过代签。
