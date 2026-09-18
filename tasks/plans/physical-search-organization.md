@@ -64,7 +64,7 @@ I₀ 和各 I 分别持有 T 搜索状态。容量失败只约束当前完整参
 Instr/memory直接消费者；Conv/ResNet的正式source→package补充产品witness，不新增按模型分类的转换入口。
 Generate删除前检查标准recursive memory effects；带实际Store的uniform body必须保留，并由下游给出typed不支持结果。
 Decode的实际subset还覆盖rank-reducing insert source；查询与物化共用标准unit维删除语义，不能把verifier-valid的rank差异
-报为compiler contract failure。性能邻居的方向扩展和轮次重启均比较同一完整objective，覆盖仅storage改善时的指数步长。
+报为compiler contract failure。性能winner继续比较完整objective；粗邻域仅耗时严格改善时重启，对齐细调最多一轮，storage改善不扩展搜索。
 非整除batch reshape的矩形image证明优先复用现有row-major exact分片，把其无local变量的实际矩形并集交给同一集合证明；
 不先让通用整数求解器重新消去reshape的商余变量。覆盖1024/1025/1031跨行界的dense与带缺口请求，保留typed非矩形结果。
 
@@ -165,9 +165,13 @@ Deep 提供完整的容量修正机会及有限局部调优，不宣称遍历全
    无法归因时不猜测失败坐标，继续有限普通粗尺度/其它已有方向；未知反馈不能成为整个方案不合法的证据。
 4. **尚无可行点**：继续尚未访问的粗尺度种子及其容量下降链。T 的合法域有限、下降方向必须严格减小且去重，
    因而该过程有限；执行中不得为每个新点递归生成无边界的性能邻居。
-5. **已有可行点**：以当前最佳实际结果执行一轮有限的既有粗到细邻域，包括成组/单轴尺寸、成对交换、
-   适用对齐边界及合法顺序邻居。邻居容量失败可完成其下降链。只有完整 actual objective 严格改善才重开新一轮；
-   持平只按稳定 tie-break 更新输出，不重启搜索。一轮无改善则结束该方案的局部调优。
+5. **已有可行点**：保留成组/单轴粗尺寸、同scope成对交换及合法顺序邻居；仅实际估算耗时严格改善重开粗邻域，
+   storage改善仅更新winner。粗尺度入口、粗邻域和容量队列完成后，从当前最佳实际点执行最多一轮对齐细调。
+   每个可切坐标最多左右各一个最近对齐尺寸，总提案不超过2乘可切坐标数；重复或domain不允许的点直接省去。
+   粒度来自target布局几何与现有Linalg接口的索引投影，同轴多operand粒度合并；未知粒度不生成细调。
+   不再生成逐元素±1、对齐边界两侧±1或指数扩展；fine结果无论多好均不重开粗/细轮次。
+   保留已选loop order，仅全extent边界改变活跃循环集合时补全当前scope；不重置其它scope。
+   邻居的actual容量失败仍完成原下降链；原始全extent、tail和raw合法域不变，不把提案边界作为SPM合法性判断。
 6. **结果**：输出最佳 actual owner，或“本轮内层探索未发现可行点”。粗尺度/局部邻域结束不是 raw domain 穷尽，
    不登记整个 `(S,F,I)` 的 exact rejection；只有全域证据才能宣称全域不可行。
 
@@ -189,6 +193,10 @@ Deep 提供完整的容量修正机会及有限局部调优，不宣称遍历全
 | [TVM VerifyGPUCode](https://apache.googlesource.com/tvm/+/877b448b02a9d9da6bacda77d6e0c6ac17419468/src/meta_schedule/postproc/verify_gpu_code.cc) | 流水、双缓冲和存储变换后检查资源 | 不据此声称 TVM 自带本方案的连续容量修正或计费语义 |
 | [TVM MutateTileSize](https://github.com/apache/tvm/blob/v0.19.0/src/meta_schedule/mutator/mutate_tile_size.cc) | 在一个实际tiling decision内部做尺寸变化，避免无关scope的全量两两组合 | 本仓采用确定性scope局部邻域并保留跨scope协调，不移植随机抽样或因子乘积约束 |
 | [CUTLASS builder](https://developer.nvidia.com/blog/cutlass-3-x-orthogonal-reusable-and-composable-abstractions-for-gemm-kernel-design/) | 区分实现配置与由配置推导的底层组件 | 不引入 GEMM 专用模板作为通用调度结构 |
+
+对齐细调参考[MLIR硬件向量粒度原则](https://mlir.llvm.org/docs/Dialects/Vector/#hardware-as-vector-machines-of-minimum-granularity)，
+并与上述TVM基于因子的tile变异比较：本仓保留当前合法域及actual容量证据，选择确定的最近对齐邻居，不移植随机因子搜索。
+每方案一次、每坐标两点是本仓明确的性能提案合同；不是硬件限制，也不是隐藏的deep trial或容量修正上限。
 
 Deep 的方案计费和确定性内层过程是适配本仓的设计选择，不是上述系统共同规定的算法。
 
@@ -214,6 +222,9 @@ standard/deep 只改变搜索服务和预算单位，不维护第二套物化/al
 
 | 输入等价类/结构分支 | exact 检查、typed failure | 直接下游 witness |
 | --- | --- | --- |
+| rank3，1024/1025/1031，1/4/16个scope，对齐/非对齐anchor、轴置换 | fine候选≤2D、单轴相邻对齐点、去重、无±1链；未知粒度不造提案；成功改善后不重开 | 同一domain验证 → 正式source→Instr/SPM/package/no-card |
+| storage-only改善、耗时改善、fine后actual容量失败 | storage-only不重开粗轮；fine任何改善不重开；容量下降链仍到合法下界 | ActualResultController保留更好owner；实际SPM反馈见既有capacity witness |
+| fine计数与分阶段耗时，standard/deep | actual fine次数单独计数，不修改standard每次求值扣费或deep方案扣费 | 正式CLI compile-timing报告、budget oracle |
 | 原单轴/多轴 Spatial、部分融合/replica、Joint/Independent | 原exact coverage/无重叠/merge、scope与顺序合法域不变；不按模型名分支 | Spatial/Temporal apply → actual Instr/SPM |
 | 固定 I₀，连续多次 actual capacity failure 后通过 | 实际冲突关联单轴/多scope、深修正及父点兄弟保留；无估算 admission | live allocation证据 → 新T → 真实offset |
 | I₀ 尚未完成验证或容量失败；实际前缀已具备 I 的表达条件 | 已发现分支不因 I₀ 未 accepted 而关闭；覆盖 I₀ 内搜无可行点、I 经自身 retile 后可行 | actual 前缀 → 实现变换 → Instr/SPM 真实拒绝与真实 offset |
@@ -225,7 +236,7 @@ standard/deep 只改变搜索服务和预算单位，不维护第二套物化/al
 | 容量无可归因坐标、layout unsupported、compiler error、显式取消 | 不猜轴；不把非容量错误转成retile；取消为未完成 | 原共同lowering/target边界 |
 | 同layout输入多个后继、retile/closure改变layout输入 | 同输入PBQP一次、新输入fresh求解；FirstUse/LoopInvariant不混作assignment搜索 | assignment apply、bufferization、actual memory |
 | standard/deep各1/2/更大方案或leaf预算，重复发现/yield/失败 | 示例计费精确；deep达到上限后当前内搜继续，下一方案不启动；mode/单位明确 | CLI→driver→完整package |
-| deep可行后局部调优、无改善、持平、下降链失败 | 有限poll停止、严格改善才重开；保留最好actual owner；不冒充raw域穷尽 | production scheduler与独立有界oracle |
+| deep可行后局部调优、无改善、持平、下降链失败 | 粗邻域仅耗时严格改善才重开，fine不重开；保留最好actual owner；不冒充raw域穷尽 | production scheduler与独立有界oracle |
 | width1/8、保留/释放、14/42/126、不同stage yield次数 | owner无悬挂/无隐式重放；同mode预算前缀及最好估值单调；没有嵌套width增长 | Driver/controller与actual source→package |
 | LLaMA block FP16/BF16、大GEMM4096两dtype/4097 FP16、ViT1024/1025 | 原reference与容差、完整输出/guard；搬运/通信/同步变化有解释；无可确认性能退化 | fresh no-card与统一实卡记录 |
 | 统一板测矩阵内全部已实卡通过case，standard/deep两种模式 | 逐项数值通过、性能不下降；保留shape/dtype/state链，不以核心子集或平均值代签 | 改前/改后standard/deep的完整package及匹配板测 |
@@ -240,13 +251,14 @@ AccessReuse/collective/execution transform 测试，避免只用 fake evaluator 
 
 报告沿用现有计时/计数入口，区分 mode、trial单位、开始/完成/未完成方案数、actual evaluations、
 capacity repairs、PBQP solves、首次可行点、最佳cost、wall、RSS和实际IR owner峰值。
+另外记录fine轮次、候选上界、actual求值、接受、objective/耗时改善及各实际执行阶段的fine累计耗时。
 standard/deep 同名 trials 的数字不能直接当作相同编译成本；同时给出同wall或同actual-work参照。
 数值与性能结论仍由本轮真实产物和板测决定；本方案本身不提供新的通过或加速结论。
 
 ## 本轮实施检查点
 
-当前改动以 `093b6c55` 为修改前对照。修改前编译器及已接受性能记录已保留；当前主机资格使用同一冻结的canonical编译器产物，
-SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。最终性能资格尚未签署。
+搜索组织改动以 `093b6c55` 为修改前对照。修改前编译器及已接受性能记录已保留；下述历史矩阵使用冻结的canonical编译器产物，
+SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。本轮有界细调修改尚未重签全矩阵及实卡性能资格。
 
 - 已物化 iteration coordinates，提供复用选择的 capture/bind；绑定消费原 ProgramArgument、Tile、参与者、scope 坐标，
   不跨 retile 保存旧 load/loop。真实规模测试包含换序、主/尾块及 bufferization，并推进到 Instr/SPM。
@@ -277,9 +289,9 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
   初始化副作用检查及下游typed拒绝已补齐；84项Layout/Temporal测试与追加的直接拒绝检查通过。
 - Batch GEMM非整除reshape的通用整数证明超过1800秒。现在用已有row-major exact分片构造同一集合，消除重复的商余变量求解；
   正式standard 42次求值、6 accepted并构包，compiler transaction 42.826秒；fresh reference/no-card已通过。
-- Deep探测步长此前只比较duration，和完整objective的storage改善不一致。扩展与轮次重启现使用同一完整比较，
-  34项budget/temporal oracle通过，包含storage-only改善的1/2/4/8步长。旧两个诊断搜索已明确取消并保留工作量，
-  不作穷尽或成功结论；新核心与catalog deep曾继续运行，后续检查发现尚未完成的进程已中断，没有新增每方案tiling次数或隐式时间上限。
+- 早期Deep曾按完整objective的storage改善扩展探测步长并重开轮次；这会放大工作量，本轮已按用户要求替换为
+  耗时改善才重开粗轮、每方案一轮对齐fine，storage只参与winner比较。原逐元素1/2/4/8扩展不再保留；
+  显式取消仍按未完成记录，不作穷尽或成功结论，也没有新增容量链次数或隐式时间上限。
 - Deep多scope复审发现成对邻域混合无关scope，16个双轴scope单轮产生1190个性能点。
   已按上述scope局部邻域修复；1/4/16-scope工作量与方向oracle在修复前失败，修复后40项Driver定向测试通过，
   GEMM实际64 MiB读取保护及正式搜索CLI也通过。AllToAll的deep 8/2由1234次actual evaluation降至242次，
@@ -294,3 +306,14 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
   AllReduce1031、AllToAll1025、LocalReduce各补三组配对；LocalReduce仍记录为测得更慢，未签性能不下降。
   其standard覆盖15个方案/42次actual，deep仅2个方案/672次actual，小预算结果不能代签deep收益。
   后续正式deep验收使用8/42并保留8/2对照，同时核对actual工作量与编译成本；未完成主机及板测矩阵继续保留。
+
+- 用户要求收敛细调并停止在搜任务后，旧deep 8/42的9个未完成搜索及板测/续跑队列均已停止。
+  冻结版本停止前完成4/13项配对实卡，另有standard全部51项构包/no-card；具体样本由板端性能记录拥有。
+  当前实现将fine限制为每方案一轮、每坐标左右最近对齐点；删除逐元素/指数探针，保留实际容量修正及原预算语义。
+  细调沿接口投影取得target粒度，并保留未改变scope的loop order；full extent边界仍可生成合法tail。
+  新版60项Temporal/Capacity/UnifiedSearch/ActualResultController定向测试通过，覆盖1024/1025/1031、1/4/16 scope、
+  storage-only反馈、持续改善不重开、容量修正到下界及raw域保留。正式Add source→package/no-card和CLI回归通过：
+  deep一个方案完成72次actual，其中fine一轮、16次求值/接受，64点上界，objective改善0；fine实际阶段累计1.851秒。
+  Planning的131项测试及public link smoke通过。完整Driver套件包含长搜索，按暂停搜索要求主动终止，
+  CTest记为Subprocess terminated，不算通过；定向60项与正式入口使用最终构建单独完成。
+  以上是机制验证，不签发板端性能收益。canonical完整增量构建及第二次Ninja no-op通过；旧批次不自动恢复。

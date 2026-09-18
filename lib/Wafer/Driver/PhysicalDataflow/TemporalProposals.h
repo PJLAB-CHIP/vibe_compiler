@@ -18,7 +18,7 @@
 
 namespace wafer::compiler::detail {
 
-enum class TemporalProposalKind : uint8_t { Explore, Repair, Improve };
+enum class TemporalProposalKind : uint8_t { Explore, Repair, Improve, Fine };
 
 struct TemporalCoordinate {
   size_t domain, scope, iterator;
@@ -39,7 +39,7 @@ public:
 
   void seed(const std::vector<TemporalChoice> &initial);
   bool startAt(const std::vector<TemporalChoice> &choices) {
-    return append(choices, TemporalProposalKind::Explore, {}, true);
+    return append(choices, TemporalProposalKind::Explore, true);
   }
   /// Prepares at most one distinct point from a lazy direction cursor.
   bool prepareNext(TemporalProposalKind kind);
@@ -58,13 +58,6 @@ public:
 
 private:
   using Coordinate = TemporalCoordinate;
-  struct Probe {
-    size_t anchor;
-    std::vector<Coordinate> coordinates;
-    int direction = -1;
-    int64_t distance = 1;
-    std::optional<analysis::KnownSearchObjective> referenceObjective;
-  };
   struct ImprovementPoll {
     size_t anchor;
     std::vector<Coordinate> coordinates;
@@ -72,13 +65,17 @@ private:
     size_t batch = 0;
     size_t phase = 0;
     size_t single = 0;
-    size_t fine = 0;
     size_t pairFirst = 0;
     size_t pairSecond = 1;
     size_t pairDirection = 0;
     size_t orderDomain = 0;
     size_t orderScope = 0;
     size_t orderPosition = 0;
+  };
+  struct FinePoll {
+    size_t anchor;
+    std::vector<Coordinate> coordinates;
+    size_t position = 0;
   };
   enum class SeedVariant { Full, Kernel, Axis, Coupled, All };
   struct SeedFamily {
@@ -94,7 +91,7 @@ private:
   };
   struct Entry {
     std::vector<TemporalChoice> choices;
-    std::optional<Probe> probe;
+    TemporalProposalKind kind = TemporalProposalKind::Explore;
     std::optional<analysis::KnownSearchObjective> bestObjective;
     std::set<Coordinate> capacityObserved;
     bool taken = false;
@@ -114,12 +111,14 @@ private:
 
   std::optional<size_t> find(const std::vector<TemporalChoice> &choices) const;
   bool append(std::vector<TemporalChoice> choices, TemporalProposalKind kind,
-              std::optional<Probe> probe = {}, bool preserveOrder = false);
-  void appendProbe(Probe probe, TemporalProposalKind kind);
-  bool materializeProbe(Probe probe, TemporalProposalKind kind);
+              bool preserveOrder = false);
   bool appendCapacityDirection();
   bool appendSeedPoint();
   bool advanceImprovementPoll();
+  bool advanceFinePoll();
+  std::optional<int64_t>
+  getAlignment(const std::vector<TemporalChoice> &choices,
+               Coordinate coordinate) const;
   bool complete(std::vector<TemporalChoice> &choices) const;
   void rankGroups(const std::vector<TemporalChoice> &choices,
                   std::vector<std::vector<Coordinate>> &groups,
@@ -130,20 +129,19 @@ private:
                               Coordinate coordinate) const;
   static int64_t &value(std::vector<TemporalChoice> &choices,
                         Coordinate coordinate);
-  static int64_t expandDistance(int64_t distance);
-  void appendLayoutBoundaries(size_t anchor, Coordinate coordinate,
-                              const analysis::KnownSearchObjective &objective);
 
   std::vector<const TemporalDomain *> domains;
   std::vector<Entry> entries;
   std::unordered_map<size_t, std::vector<size_t>> entryIndex;
-  std::array<std::deque<size_t>, 3> queues;
-  std::array<std::deque<Probe>, 3> probeQueues;
+  std::array<std::deque<size_t>, 4> queues;
   std::deque<CapacityPoll> capacityPolls;
   bool preferFreshCapacity = true;
   std::optional<size_t> priorityCapacityAnchor;
   std::deque<ImprovementPoll> improvementPolls;
   std::optional<analysis::KnownSearchObjective> bestObjective;
+  std::optional<size_t> bestEntry;
+  bool fineStarted = false;
+  std::optional<FinePoll> finePoll;
   std::vector<SeedFamily> seedFamilies;
   std::deque<SeedPoint> seedPoints;
   std::optional<size_t> firstCapacityAnchor;

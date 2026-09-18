@@ -398,6 +398,9 @@ public:
       return yield();
     }
     auto &temporal = *pending;
+    std::optional<support::ScopedCompileTimingSpan> fineTiming;
+    if (temporal.proposalKind == TemporalProposalKind::Fine)
+      fineTiming.emplace("search-candidate", "current-ir", "fine-tuning");
     auto &attempt = temporal.region;
     if (!attempt.lowered) {
       auto prepared = prepareRegion(temporal, attempt);
@@ -734,6 +737,7 @@ private:
   };
   struct TemporalAttempt {
     std::vector<TemporalChoice> choices;
+    TemporalProposalKind proposalKind = TemporalProposalKind::Explore;
     CurrentCandidate tiled;
     RegionAttempt region;
   };
@@ -828,6 +832,8 @@ private:
       if (branch.proposals->prepareNext(kind))
         return kind;
     }
+    if (branch.proposals->prepareNext(TemporalProposalKind::Fine))
+      return TemporalProposalKind::Fine;
     return std::nullopt;
   }
 
@@ -981,13 +987,13 @@ private:
     if (work) {
       choices = current().proposals->take(*work);
       current().phase = (current().phase + 1) % 3;
-      support::addCompileCounter("search",
-                                 *work == TemporalProposalKind::Repair
-                                     ? "integer-repair-proposals"
-                                 : *work == TemporalProposalKind::Improve
-                                     ? "integer-improve-proposals"
-                                     : "integer-explore-proposals",
-                                 1);
+      support::addCompileCounter(
+          "search",
+          *work == TemporalProposalKind::Repair    ? "integer-repair-proposals"
+          : *work == TemporalProposalKind::Improve ? "integer-improve-proposals"
+          : *work == TemporalProposalKind::Fine    ? "fine-tuning-evaluations"
+                                                : "integer-explore-proposals",
+          1);
     } else if (options.mode == SearchMode::Deep) {
       completeImplementation();
       return std::nullopt;
@@ -1008,6 +1014,9 @@ private:
           break;
       }
     }
+    std::optional<support::ScopedCompileTimingSpan> fineTiming;
+    if (work == TemporalProposalKind::Fine)
+      fineTiming.emplace("search-candidate", "current-ir", "fine-tuning");
     if (statistics) {
       statistics->accessReuseCandidates += bool(current().choice.reuse);
       const auto number = statistics->temporalCandidateActualizations++;
@@ -1083,6 +1092,7 @@ private:
                   "selected closure is unavailable at this tile point");
     TemporalAttempt attempt;
     attempt.choices = std::move(choices);
+    attempt.proposalKind = work.value_or(TemporalProposalKind::Explore);
     attempt.tiled = std::move(*candidate);
     attempt.region.merged = current().choice.merged;
     attempt.region.placement = current().choice.placement;
