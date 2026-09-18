@@ -1716,6 +1716,69 @@ Temporal choice下的Region/layout/movement/execution alternatives逐个惰性�
 | Layout/通信/复用/流水及组合 | 分别物化、verify、fresh memory/target；局部坏但组合好的oracle | 实际owner、访问、completion及标量cost |
 | 全workload与模型 | 原PyTorch容差；decode实际KV接续；估时与实卡时间分别报告 | fresh package/no-card与串行board |
 
+### 7.5 待实施：主搜索、实现分支与 deep 预算
+
+本节是用户指定的新搜索组织目标，尚未实现。第7.3、7.4节的逐 actual leaf 计费描述当前产品；
+实现完成时同步替换受影响的现行调度条款，不保留新旧两套生产路径。
+具体步骤、方法比较和逐项覆盖见[搜索组织实施方案](plans/physical-search-organization.md)。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  verified card-local TensorProgram、现有 Spatial/Region/Temporal domain、target facts 和 search 配置。
+- Current stage responsibility:
+  组织 S/F/T 主搜索与 I 实现分支；固定 S/F/I 后共用连续 Temporal 搜索及 actual 容量反馈；
+  区分方案计费与实际求值工作量。每个实际输入只执行一次 layout assignment。
+- Output IR / files:
+  同一 actual accepted executable owner、typed 结束原因、mode/预算单位及实际工作量。
+- Downstream consumer:
+  原 PackageAssembly、LLVM/link、ExecutablePackage、no-card 与统一板测入口。
+- User-level driver / named pipeline:
+  原 search policy；拟增加 --search-mode=standard|deep，默认 standard。
+- Explicit non-goals:
+  不扩大 layout assignment 外层搜索、不修改数值语义、SPM admission 或同步合同；
+  不建立 future IR、第二套 allocator/materializer 或设备调参系统。
+- Completion criteria:
+  实现选择跨 retile 保持语义，两种预算精确计费且终止；主机、正式产品及受影响性能保护闭合。
+```
+
+**选择分层。** S 是空间切分与 placement，F 是 Region 融合和 binding，T 是 traversal kind、各 scope 的
+tile vector 及合法 loop order；三者构成主搜索。I 是现有 communication closure、copy placement、
+transport/collective algorithm、访问复用、流水及合法组合。Layout、bufferization、lowering、completion、
+实际内存规划与 cost 是每点的固定求解步骤，不增加 outer search 维度。
+同一未变 layout-input 的兄弟复用一次 PBQP；T 或 pre-layout closure 改变时重新求解。
+
+**实现分支。** 在被保留的基础方案上选择 I，固定 S/F/I 继续调整 T，不能只在基础 T 上尝试一次。
+语义必需的通信照常物化；已有必要 transport/closure 入口不因基础尚未可行而永久关闭。
+逻辑方案身份 `(S,F,I)` 只保存可解释的选择，T 的去重、cost 和容量反馈归属于该分支。
+不同 I 的相同 T 必须能独立求值。选择锚定到存活父 IR 的 typed use/scope 关系，每次 retile
+重新定位和证明实际作用对象；旧 load/loop 句柄不得跨 mutation 复用，不按首个可用实现恢复选择。
+缺少可靠关联时先修其 producer/consumer 合同，不增加按 op 类型区别的修复控制分支。
+
+**预算。** standard 保留逐实际求值扣 trial，含物化失败；deep 对每个首次开始实际物化的不同
+`(S,F,I)` 收取一次，分支内所有 T 求值和 retile 不再扣方案次数，但继续记录 actual evaluations。
+改变 S/F/I 才是新方案，重复发现/续跑不重复收费。Deep trials 达到上限只禁止新方案启动，
+已计费方案仍完成规定的内层过程；不能简单继续使用 `remainingActualizationCredits == 0` 的停止条件。
+模式进入同一 typed search 配置；none 拒绝 search 配置。默认 mode 为 standard，width/trials 仍为8/42。
+width 统一约束可扩展分支和实际 checkpoint，不允许 S/F、I、T 各自嵌套保留 width 份 IR。
+
+**内层过程。** 沿现有有限粗尺度种子、实际证据关联的单轴/成组/协调下降链寻找可行点；每次
+严格缩小合法参数并去重，保留父点换轴兄弟及全关联轴方向。取得可行点后执行有限粗到细局部 poll，
+只有实际 objective 严格改善才重开一轮，一轮无改善则结束。FullExtentOnly 和 domain 下界保持原合同；
+未知归因继续普通探索，不伪造容量关联。有限种子与局部过程结束保持 partial，不冒充 raw 域穷尽。
+最小点失败不能推断其它点不可行，也不保证缩小必定减少实际峰值。
+不增加隐含的每方案 tiling 次数上限；显式取消、已有 query/solver 资源失败保持 typed 未完成状态。
+
+**调度和 owner。** standard 可在 actual trial 边界暂停；deep 在开始下一方案前完成当前有限内搜。
+同一 mode 下增加 trials 延续确定的方案/求值前缀，最佳 actual objective 不变差；mode 间不要求相同前缀。
+每点只从存活实际祖先物化新的候选后缀，各阶段重新 verify/analysis；成功 owner 原样交付，失败 owner 销毁。
+容量证据、非容量失败、局部搜索结束和全域不可行保持区分，所有实现仍经过同一 completion/SPM/target leaf。
+
+本项最低覆盖包含：1024/1025/1031、4/16 Tile、多 scope/tail；每类 I 连续 retile 后可行；
+不同 I 同 T；作用对象变化/条件不适用；合法下界仍失败；PBQP 同输入一次；两种计费、重复/yield/预算边界；
+deep 无改善终止与同 mode 前缀；同一 accepted owner 交付。直接下游必须包含实际 Instr/SPM 和正式 package，
+不能仅用 fake evaluator 代签。LLaMA block、大 GEMM 与 ViT 的完整数值及匹配性能按统一板测矩阵保护。
+
 ## 8. Ownership、analysis 与实现边界
 
 - Compiler driver拥有policy routing、frontier/budget、candidate transaction和唯一winner handoff；不实现leaf rewrite。

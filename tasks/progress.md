@@ -22,7 +22,12 @@
 具体case与验收顺序记录在同一份板测计划中，逐次已测性能与根因追加到
 [`docs/board-performance-results.md`](../docs/board-performance-results.md)；不再按算子、正确性或性能拆work item。编译器实现任务保留自身范围。
 
-用户最新授权优先修正局部拼接引入的重复访问，恢复原有共享与性能；本轮已修复复用约束，LLaMA block两种dtype及
+用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
+[06号待实施合同](06-physical-dataflow-synthesis.md#75-待实施主搜索实现分支与-deep-预算)及
+[现有搜索组织计划](plans/physical-search-organization.md)。本轮仅完成方案，编译器和 CLI 尚未实现；
+仍归 `board-testing`，不新增队列项，也不代签下述模型、性能和板端未完成门槛。
+
+此前用户授权优先修正局部拼接引入的重复访问，恢复原有共享与性能；本轮已修复复用约束，LLaMA block两种dtype及
 三组大GEMM均完成三次完整实卡数值与性能保护。此前ViT S1024/1025默认8/42搜索各有4个actual SPM accepted，
 最终target拒绝导出图中的F32 attention GEMM输入；用户已授权并完成02号低精度attention导出，保留原reference和验收标准。
 两个完整ViT的XLA数值通过；进一步修复06号空间物化对真实多矩形view image的拒绝后，

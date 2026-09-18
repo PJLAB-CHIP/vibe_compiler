@@ -8,6 +8,9 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
 
+搜索组织与 deep search 的设计调整见[同一任务内的实施方案](physical-search-organization.md)，
+当前仅完成方案，尚未实现。其后续代码修改复用本文的完整数值与性能保护，不改变模型范围和已有门槛。
+
 ## 算子回归与重点模型板测（2026-09-17）
 
 ### 当前授权顺序与性能保护
