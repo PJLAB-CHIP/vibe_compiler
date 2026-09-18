@@ -2,6 +2,7 @@
 
 #include "InlineConstantData.h"
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
+#include "Wafer/Driver/CompilationQualification.h"
 
 #include "PhysicalDataflow/BaselineCurrentIR.h"
 #include "PhysicalDataflow/PhysicalDataflowInstrumentation.h"
@@ -28,14 +29,24 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CompilationIRTrace *irTrace,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   if (!optimizations.isNone() && !optimizations.isSearch())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "device executable compilation requires an optimization policy");
-  if (qualification && !optimizations.isNone())
-    return llvm::createStringError(llvm::errc::invalid_argument,
-                                   "explicit qualification cannot run search");
+  const auto *communication =
+      qualification
+          ? std::get_if<CommunicationCandidateSelection>(&qualification->choice)
+          : nullptr;
+  const auto *inspection =
+      qualification
+          ? std::get_if<SearchCandidateInspection>(&qualification->choice)
+          : nullptr;
+  if ((communication && !optimizations.isNone()) ||
+      (inspection && !optimizations.isSearch()))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "qualification does not match optimization policy");
   if (auto error =
           outlineInlineConstantData(tensorModule, program, programData))
     return std::move(error);
@@ -50,6 +61,8 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
           "search optimization policy omitted its work limits");
     options.limits = *limits;
     options.mode = optimizations.getSearchMode();
+    if (inspection)
+      options.candidateObserver = inspection->observer;
     options.downstream.captureTileDataflowIR = irTrace != nullptr;
     SearchCurrentIRStatistics searchStatistics;
     compiled = compileSearchCurrentIR(tensorModule, program, executionConfig,
@@ -57,7 +70,7 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
                                       &searchStatistics, &executableStatistics);
   } else {
     BaselineCurrentIROptions options;
-    options.qualification = qualification;
+    options.qualification = communication;
     options.downstream.captureTileDataflowIR = irTrace != nullptr;
     BaselineCurrentIRStatistics baselineStatistics;
     compiled = compileBaselineCurrentIR(
@@ -105,7 +118,7 @@ static llvm::Expected<DeviceExecutable> buildDeviceExecutableImpl(
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData, CompilationIRTrace *irTrace,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   (void)failAfterLaunchSlot;
   wafer::support::ScopedCompileTimingSpan timing(
       "stage", "tensor-program-to-executable", "device-executable");
@@ -137,7 +150,7 @@ llvm::Expected<DeviceExecutable> buildDeviceExecutableWithIRTrace(
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData, CompilationIRTrace &irTrace,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   return buildDeviceExecutableImpl(
       context, tensorModule, std::move(program), executionConfig, optimizations,
       diagnostics, failAfterLaunchSlot, programData, &irTrace, qualification);

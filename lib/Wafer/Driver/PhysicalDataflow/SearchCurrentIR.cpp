@@ -1697,6 +1697,7 @@ ExecutableCompilationResult compileSearchCurrentIR(
   traversal.maximumRegionRefinementCandidates =
       maximumRegionRefinementCandidates;
   traversal.termination = options.termination;
+  traversal.candidateObserver = options.candidateObserver;
   traversal.costCohort = currentCohort;
   // Actual capacity remains typed, but it is not generalized to a structural
   // no-good until current buffer owners can prove the causal root subset.
@@ -1843,6 +1844,22 @@ ExecutableCompilationResult compileSearchCurrentIR(
                 << " unsupported=" << statistics->unsupportedCandidates
                 << " indeterminate=" << statistics->indeterminateCandidates;
   diagnostics << '\n';
+  if (options.candidateObserver) {
+    if (!searched.inspectedCandidate)
+      return fail(searched.control.coverage == SearchControllerCoverage::Failed
+                      ? ExecutableCompilationStatus::CompilerFailure
+                      : ExecutableCompilationStatus::IndeterminateFailure,
+                  "search-inspection", "requested candidate was not reached");
+    auto &inspected = *searched.inspectedCandidate;
+    if (inspected.compilation)
+      return std::move(*inspected.compilation);
+    return fail(inspected.status == ActualCandidateStatus::CompilerBug
+                    ? ExecutableCompilationStatus::CompilerFailure
+                : inspected.status == ActualCandidateStatus::Unsupported
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : ExecutableCompilationStatus::IndeterminateFailure,
+                "search-inspection", inspected.detail);
+  }
   if (searched.control.winner)
     return std::move(searched.control.winner->compilation);
 

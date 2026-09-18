@@ -7,6 +7,11 @@
 
 ## 输入、职责、输出
 
+本轮追加prefill候选实卡对照：在现有test-support调用边界提供实际候选检查，捕获正常搜索中已合法的DTE候选，
+通过原target/package与fresh no-card后，与普通winner交替各三次实卡。先覆盖S1024；S1025用于主机尾块入口验证。
+观察序号不进入IR或package，不添加attention特判，不改cost/搜索提案。完成须记录精度、运行窗口和普通设备计时；
+设备异常即停止批次。覆盖包括普通winner不变、同一actual owner移交、拒绝/未命中不发布和生产CLI隔离。
+
 - Upstream IR / input：verified card-local TensorProgram、现有Spatial/Region/Temporal domain、只读target facts、
   同一cost cohort，以及search mode、width、trials。
 - Current stage responsibility：组织S/F/T主空间及I实现分支；复用未变化的实际IR前缀；用一个多尺度参数过程和
@@ -414,6 +419,25 @@ Division区间重叠，LocalConv增加52.34%且峰值RSS增加，不能签发全
 普通runner本轮只验证完整输出及生命周期，未做独立red-zone guard；不将该缺口记为通过。
 下一步先在通用搜索/物化owner定位两项设备退化和LocalConv编译开销，修复后重测对应配对及核心保护。
 完整scope、全部样本及限制见[本轮结果](../../docs/board-performance-results.md#2026-09-19最终实现的完整standard验证及优化收益)。
+
+### Prefill落选DTE方案的实卡对照
+
+已增加仅供`wafer-compile-test`使用的`--test-search-candidate`入口。调用者选择本次求值序号；
+driver在actual结果边界移交同一owner，随后沿正式target/package路径构包，不重建候选，也不修改评分。
+FP16 S1024普通winner与DTE候选各交替三次实卡，完整数值和运行窗口检查通过；DTE中位耗时更高。
+样本、IR工作量及不同分块的比较限制见[专项记录](../../docs/board-performance-results.md#2026-09-19prefill落选dte候选实卡对照)。
+
+| 覆盖边界 | 本轮证据 |
+| --- | --- |
+| 真实输入→实际候选→package/no-card | 原PyTorch source，FP16 S1024与S1025均通过；S1025只作主机尾块覆盖 |
+| 普通搜索与检查前缀一致 | S1024前29次求值的4518项候选/choice计数相同；普通winner完整包与此前standard逐byte相同 |
+| 同一actual owner移交 | rank-3、1024/1025实际Instr/SPM单测比较TileModule owner并验证输出 |
+| typed拒绝与未命中 | 实际capacity候选及预算内未到达序号均失败且无输出包；单测另覆盖已有winner后unsupported/未命中不替代 |
+| 产品入口隔离 | 生产CLI拒绝内部选项，既有通信qualification工具回归通过 |
+| 实卡 | 同一新输入/reference、原精度合同，两包各三次普通设备事件计时，完整输出相同 |
+
+相关Driver单测27项及工具测试2项实际通过；canonical完整增量构建与随后Ninja no-op通过。
+本轮只验证该落选方案，不修改cost，不代签其它DTE方案、deep收益或此前未完成的性能门槛。
 
 ## 先前版本检查点（不代签本次效率重构）
 

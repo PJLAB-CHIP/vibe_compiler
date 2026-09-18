@@ -3,6 +3,7 @@
 #include "TestSupport/Driver/CompilerTesting.h"
 
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Driver/CompilationQualification.h"
 #include "Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.h"
 #include "Wafer/Driver/ProgramResourceVerification.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
@@ -50,9 +51,30 @@ llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
     selection.pipelineLoads = true;
     break;
   }
+  detail::CompilationQualification qualification{selection};
   return detail::compileProgramWithTargetLLVMModulesImpl(
       std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, options, diagnostics, &selection);
+      targetToolchain, options, diagnostics, &qualification);
+}
+
+llvm::Expected<CompiledProgram> compileProgramWithSearchCandidate(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    uint64_t candidateIndex, llvm::raw_ostream &diagnostics) {
+  if (!options.getOptimizationConfig().isSearch())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "candidate inspection requires search");
+  auto observe = [&](uint64_t index, const detail::ActualCandidateResult &) {
+    return index == candidateIndex
+               ? detail::CandidateObservationAction::Inspect
+               : detail::CandidateObservationAction::Continue;
+  };
+  detail::CompilationQualification qualification{
+      detail::SearchCandidateInspection{observe}};
+  return detail::compileProgramWithTargetLLVMModulesImpl(
+      std::move(request), outputDirectory, xlaSpmdPartitionerHelper,
+      targetToolchain, options, diagnostics, &qualification);
 }
 
 mlir::FailureOr<TransportContract>

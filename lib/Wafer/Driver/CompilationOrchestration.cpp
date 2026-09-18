@@ -57,7 +57,7 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<ProfileInstrumentationProduct> *retainedProfileProduct,
     CompilationStage *failureStage,
     CommitFailureInjection commitFailureInjection,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputDirectory;

@@ -12,6 +12,8 @@
 
 #include "llvm/ADT/ArrayRef.h"
 
+#include <cstdint>
+
 namespace wafer::compiler::testing {
 
 enum class CommunicationCandidate {
@@ -31,6 +33,14 @@ llvm::Expected<CompiledProgram> compileProgramWithCommunicationCandidate(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     CommunicationCandidate candidate, llvm::raw_ostream &diagnostics);
+
+/// Inspects the zero-based actual evaluation in this invocation. Search runs
+/// unchanged up to that point; only an accepted same-owner result is published.
+llvm::Expected<CompiledProgram> compileProgramWithSearchCandidate(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    uint64_t candidateIndex, llvm::raw_ostream &diagnostics);
 
 /// Test-only entry to card Direct DTE binding. Successful calls attach
 /// typed bindings; failed calls leave every issue unbound.

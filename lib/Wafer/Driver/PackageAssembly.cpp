@@ -833,7 +833,7 @@ mlir::LogicalResult stageTargetPackage(
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
@@ -880,7 +880,7 @@ mlir::LogicalResult stageProfileTargetPackages(
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
     ProfileInstrumentationIdentity &profileIdentity,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");

@@ -49,7 +49,7 @@ struct DeviceExecutableBuilder {
 
 namespace detail {
 
-struct CommunicationCandidateSelection;
+struct CompilationQualification;
 
 /// Verifies the exact program/DDR binding coverage consumed by target ABI
 /// preparation. Candidate admission and final target lowering call this same
@@ -76,7 +76,7 @@ llvm::Expected<DeviceExecutable> buildDeviceExecutableWithIRTrace(
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData, CompilationIRTrace &irTrace,
-    const CommunicationCandidateSelection *qualification = nullptr);
+    const CompilationQualification *qualification = nullptr);
 
 } // namespace detail
 } // namespace wafer::compiler

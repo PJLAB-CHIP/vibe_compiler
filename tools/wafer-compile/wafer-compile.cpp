@@ -324,9 +324,23 @@ int main(int argc, char **argv) {
     return reportSuccess(*injectionResult, numPartitions);
   }
   if (options.targetModel || options.compilerIRDumpDirectory ||
-      options.testCommunicationCandidate) {
+      options.testCommunicationCandidate || options.testSearchCandidate) {
     auto compileInspection =
         [&]() -> llvm::Expected<wafer::compiler::CompiledProgram> {
+      if (options.testSearchCandidate) {
+        uint64_t index = 0;
+        if (options.testCommunicationCandidate ||
+            llvm::StringRef(*options.testSearchCandidate)
+                .getAsInteger(10, index))
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "search candidate must be a nonnegative index and cannot combine "
+              "with communication qualification");
+        return wafer::compiler::testing::compileProgramWithSearchCandidate(
+            std::move(*request), *options.outputDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            compilationOptions, index, llvm::errs());
+      }
       if (!options.testCommunicationCandidate)
         return wafer::compiler::compileProgramWithTargetLLVMModules(
             std::move(*request), *options.outputDirectory,

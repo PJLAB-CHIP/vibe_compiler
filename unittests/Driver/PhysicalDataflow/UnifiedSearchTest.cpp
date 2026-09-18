@@ -1087,4 +1087,35 @@ TEST(UnifiedSearchTest, VerifiedStageYieldsPreserveOwnersAndActualBudget) {
   EXPECT_EQ(traces[0], traces[1]);
 }
 
+TEST(UnifiedSearchTest, InspectionRetainsRejectedOutcomeWithoutSubstitution) {
+  auto parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string text, reason;
+  llvm::raw_string_ostream diagnostics(text);
+  auto fixture = prepare(*parsed.module, diagnostics, reason);
+  ASSERT_TRUE(fixture.session) << reason;
+  FirstAcceptingThenUnsupportedEvaluator evaluator;
+  UnifiedSearchOptions options;
+  options.trialCredits = 4;
+  std::vector<ActualCandidateStatus> observed;
+  auto observe = [&](uint64_t index, const ActualCandidateResult &candidate) {
+    EXPECT_EQ(index, observed.size());
+    observed.push_back(candidate.status);
+    return index == 1 ? CandidateObservationAction::Inspect
+                      : CandidateObservationAction::Continue;
+  };
+  options.candidateObserver = observe;
+  auto result = runUnifiedSearch(*fixture.session, evaluator, options);
+  ASSERT_TRUE(result.inspectedCandidate);
+  EXPECT_EQ(result.inspectedCandidate->status,
+            ActualCandidateStatus::Unsupported);
+  EXPECT_FALSE(result.inspectedCandidate->compilation);
+  EXPECT_EQ(result.work.candidateActualizations, 2u);
+  ASSERT_EQ(observed.size(), 2u);
+  EXPECT_EQ(observed[0], ActualCandidateStatus::Accepted);
+  EXPECT_EQ(observed[1], ActualCandidateStatus::Unsupported);
+  // The ordinary incumbent remains distinct from the inspected failure.
+  EXPECT_TRUE(result.hasWinner());
+}
+
 } // namespace

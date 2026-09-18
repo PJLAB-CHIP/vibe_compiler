@@ -142,7 +142,7 @@ llvm::Expected<CompiledProgram> detail::compileProgramWithTargetLLVMModulesImpl(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   std::optional<DeviceExecutable> retainedDeviceExecutable;
   std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;

@@ -32,6 +32,7 @@ void printHelp() {
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   llvm::outs()
       << "test-only internal entry also accepts: "
+         "[--test-search-candidate <zero-based-evaluation>] "
          "[--test-communication-candidate "
          "<peer|shared-ddr|recursive-doubling|dimension-ordered|ring-"
          "reduction|access-reuse-peer|pipelined-loads>] "
@@ -236,6 +237,13 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       }
       options.targetModel = true;
+      continue;
+    }
+    if (arg == "--test-search-candidate" ||
+        arg.starts_with("--test-search-candidate=")) {
+      if (parseValueOption(argc, argv, index, arg, "--test-search-candidate",
+                           options.testSearchCandidate))
+        return false;
       continue;
     }
     if (arg == "--test-communication-candidate" ||

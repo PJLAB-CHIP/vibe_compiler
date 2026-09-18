@@ -177,6 +177,17 @@ actual offset或materializer遍历顺序。
 
 ### 4.3 Candidate transaction
 
+内部候选检查入口可在一次正常搜索的实际求值边界中止并移交当前结果，用于验证落选方案。
+输入是本次调用的只读观察回调；回调返回继续搜索或检查当前结果，正式产品调用不设置回调。
+观察前仍执行原变换、verifier、唯一SPM/target及cost；移交的是仍存活的actual owner，不重建、不clone或修改评分。
+输出沿原DeviceExecutable→target→package路径发布。未命中或命中非accepted结果均不能发布另一候选替代。
+测试入口以本次调用的零起始求值序号选择观察点；该序号只用于诊断定位，不是跨运行IR身份或可重放的语义协议。
+该入口不属于设备autotuner，不改变正常搜索的候选顺序、计费或winner。
+
+覆盖要求：真实规模整除/尾块source到package/no-card；观察前的搜索前缀与普通调用一致；
+直接移交同一owner；非accepted及预算内未命中不发布；生产CLI拒绝内部选项。
+板端性能比较使用同一新输入/reference及原精度合同，记录分块差异，不能把不同分块包装成纯transport单变量实验。
+
 每个candidate owner明确持有：
 
 - 本次新建或clone的最近`IsolatedFromAbove` candidate builtin module及其all-and-only TileModule set；

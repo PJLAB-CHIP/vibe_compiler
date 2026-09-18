@@ -1,6 +1,7 @@
 //===- SearchRoutingTest.cpp ------------------------------------------===//
 
 #include "TestSupport/CodeGen/ExecutableTestSupport.h"
+#include "Wafer/Driver/PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/Support/Error.h"
@@ -192,6 +193,63 @@ TEST(SearchRoutingTest, NoneBuildsOneCurrentIRDeviceExecutable) {
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("name=region-refinement"), std::string::npos)
       << diagnosticsText;
+}
+
+TEST(SearchRoutingTest, InspectionTransfersTheSameAcceptedIROwner) {
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025}) {
+    auto parsed = parseRealScaleDependentProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    std::string text;
+    llvm::raw_string_ostream diagnostics(text);
+    wafer::compiler::ProgramDataHandoff data;
+    SearchCurrentIROptions options;
+    options.limits = wafer::SearchLimits{2, 8};
+    std::vector<mlir::Operation *> observedOwners;
+    auto observe = [&](uint64_t, const ActualCandidateResult &candidate) {
+      if (!candidate.isAccepted())
+        return CandidateObservationAction::Continue;
+      for (const auto &tile : candidate.compilation->executable->tiles)
+        observedOwners.push_back(tile.getModule());
+      return CandidateObservationAction::Inspect;
+    };
+    options.candidateObserver = observe;
+    auto result = compileSearchCurrentIR(
+        *parsed.module, realScaleDependentProgramMetadata(extent),
+        executionConfig(), diagnostics, data, options);
+    ASSERT_TRUE(result.isAccepted()) << text << result.detail;
+    ASSERT_FALSE(observedOwners.empty());
+    ASSERT_EQ(result.executable->tiles.size(), observedOwners.size());
+    for (size_t i = 0; i < observedOwners.size(); ++i) {
+      EXPECT_EQ(result.executable->tiles[i].getModule(), observedOwners[i]);
+      EXPECT_TRUE(mlir::succeeded(
+          mlir::verify(result.executable->tiles[i].getModule())));
+    }
+  }
+}
+
+TEST(SearchRoutingTest, MissingInspectionDoesNotReturnAnEarlierWinner) {
+  using namespace wafer::compiler::detail;
+  auto parsed = parseProgram();
+  ASSERT_TRUE(parsed.module);
+  std::string text;
+  llvm::raw_string_ostream diagnostics(text);
+  wafer::compiler::ProgramDataHandoff data;
+  SearchCurrentIROptions options;
+  options.limits = wafer::SearchLimits{1, 1};
+  bool accepted = false;
+  auto observe = [&](uint64_t index, const ActualCandidateResult &candidate) {
+    EXPECT_EQ(index, 0u);
+    accepted = candidate.isAccepted();
+    return CandidateObservationAction::Continue;
+  };
+  options.candidateObserver = observe;
+  auto result =
+      compileSearchCurrentIR(*parsed.module, programMetadata(),
+                             executionConfig(), diagnostics, data, options);
+  ASSERT_TRUE(accepted) << text;
+  EXPECT_EQ(result.status, ExecutableCompilationStatus::IndeterminateFailure);
+  EXPECT_FALSE(result.executable);
 }
 
 } // namespace

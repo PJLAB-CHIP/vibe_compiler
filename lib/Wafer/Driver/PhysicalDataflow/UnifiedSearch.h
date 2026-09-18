@@ -8,6 +8,8 @@
 #include "Wafer/Planning/PhysicalDataflow/PlanningSession.h"
 #include "Wafer/Support/OptimizationConfig.h"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
+
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -23,7 +25,14 @@ enum class SearchTerminationPolicy : uint8_t {
   FirstAccepted,
 };
 
+enum class CandidateObservationAction : uint8_t { Continue, Inspect };
+// Invocation-local, read-only observation of the actual result. Inspect stops
+// traversal and transfers that result's same owner, including typed failures.
+using CandidateObserver = llvm::function_ref<CandidateObservationAction(
+    uint64_t, const ActualCandidateResult &)>;
+
 struct UnifiedSearchOptions {
+  CandidateObserver candidateObserver = nullptr;
   SearchMode mode = SearchMode::Standard;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   uint64_t retainedBranches = 8;
@@ -143,6 +152,7 @@ enum class UnifiedSearchResumeStatus : uint8_t {
   Paused,
   FrontierExhausted,
   AcceptedCheckpoint,
+  InspectionCheckpoint,
   CandidateBudgetExhausted,
   Indeterminate,
   CompilerBug,
@@ -155,6 +165,7 @@ struct UnifiedSearchResumeResult {
 };
 
 struct UnifiedSearchResult {
+  std::optional<ActualCandidateResult> inspectedCandidate;
   SearchControllerResult control;
   PlanningWorkCounts planning;
   UnifiedSearchWork work;

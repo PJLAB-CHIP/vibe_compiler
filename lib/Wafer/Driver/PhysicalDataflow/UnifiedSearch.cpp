@@ -179,7 +179,8 @@ struct UnifiedSearchSession::Impl {
         controller(ActualResultControllerOptions{
             std::numeric_limits<uint64_t>::max(), options.costCohort,
             options.exactRejectionCache}),
-        profile(options.profile), trace(trace) {
+        profile(options.profile), trace(trace),
+        candidateObserver(options.candidateObserver) {
     frontier.emplace_back(SpatialFrame{});
     if (profile) {
       profile->beginSearch();
@@ -479,6 +480,14 @@ struct UnifiedSearchSession::Impl {
       recordRegionCandidateCounter(work.candidateActualizations - 1,
                                    "structural-session", branch.identity);
     }
+    if (candidateObserver && evaluation.actualizations &&
+        candidateObserver(work.candidateActualizations - 1,
+                          *evaluation.result) ==
+            CandidateObservationAction::Inspect) {
+      inspectedCandidate.emplace(std::move(*evaluation.result));
+      status = UnifiedSearchResumeStatus::InspectionCheckpoint;
+      return;
+    }
     const bool exhausted =
         evaluation.continuation == CandidateContinuation::Exhausted;
     const auto actualStatus = evaluation.result->status;
@@ -681,6 +690,7 @@ struct UnifiedSearchSession::Impl {
                                                !sawIncompleteInnerDomain
                                            ? SearchFrontierStatus::Exhausted
                                            : SearchFrontierStatus::Incomplete);
+    result.inspectedCandidate = std::move(inspectedCandidate);
     result.planning = planningSession.getWork();
     result.work = work;
     result.frontierExhausted = exhausted;
@@ -709,6 +719,8 @@ struct UnifiedSearchSession::Impl {
   ActualResultController controller;
   PlanningProfileSink *profile;
   UnifiedSearchTrace *trace;
+  CandidateObserver candidateObserver;
+  std::optional<ActualCandidateResult> inspectedCandidate;
   std::deque<FrontierFrame> frontier;
   std::optional<RegionState> pending;
   std::vector<Branch> branches;

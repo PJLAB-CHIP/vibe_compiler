@@ -86,7 +86,7 @@ llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
     std::optional<int64_t> failAfterLaunchSlot, ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace,
-    const CommunicationCandidateSelection *qualification) {
+    const CompilationQualification *qualification) {
   return compileTensorProgram<DeviceExecutable>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
       resolver,

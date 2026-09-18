@@ -28,6 +28,7 @@ struct SearchCurrentIROptions {
   // uses its requested trial budget, without an implicit wall-time cutoff.
   std::optional<std::chrono::steady_clock::time_point> deadline;
   CurrentIRDownstreamOptions downstream;
+  CandidateObserver candidateObserver = nullptr;
 
   // Proposal generation is independent of retention width and leaf budget.
   uint64_t getRefinementLimit() const { return 2; }

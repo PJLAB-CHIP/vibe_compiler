@@ -37,6 +37,7 @@ struct CommandLineOptions {
   // The following fields belong to the internal qualification/debug entry
   // (wafer-compile-test) and are never parsed by the production compiler.
   std::optional<std::string> testCommunicationCandidate;
+  std::optional<std::string> testSearchCandidate;
   std::vector<std::string> modelInputs;
   std::vector<std::string> modelExpected;
   std::optional<std::string> modelAtol;

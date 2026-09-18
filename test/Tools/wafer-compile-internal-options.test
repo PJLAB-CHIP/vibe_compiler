@@ -8,8 +8,10 @@
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --model-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=MODEL-INPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OLD-FLAG
 # RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OLD-PACKAGE-FLAG
+# RUN: not wafer-compile --test-search-candidate=0 2>&1 | FileCheck %s --check-prefix=SEARCH-CANDIDATE
 # RUN: wafer-compile --help | FileCheck %s --check-prefix=HELP
 
+# SEARCH-CANDIDATE: wafer-compile: unknown argument: --test-search-candidate=0
 # MODEL: wafer-compile: unknown argument: --target-model
 # COMMUNICATION: wafer-compile: unknown argument: --test-communication-candidate=peer
 # MODEL-INPUT: wafer-compile: unknown argument: --model-input
@@ -20,6 +22,7 @@
 # HELP: --search-width
 # HELP: --search-trials
 # HELP: --dump-compiler-ir
+# HELP-NOT: --test-search-candidate
 # HELP-NOT: --target-model
 # HELP-NOT: --test-communication-candidate
 # HELP-NOT: --output-program-dir

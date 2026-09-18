@@ -2670,3 +2670,28 @@ GEMM的tiling应用从672降至368、layout求解从38降至23；LLaMA两dtype�
 当前验收结论：51项实卡数值通过；standard设备性能不下降门槛未通过，主机效率有收益也有回归。
 后续先定位LocalConv S1025与FP16 conv-mixed的候选选择/实际产物差异，以及LocalConv编译变慢的实际阶段开销；
 在通用owner修复后再做受影响配对和核心保护。本轮未启动deep，也不重置原最好可复现性能目标。
+
+## 2026-09-19：Prefill落选DTE候选实卡对照
+
+用户要求测量standard搜索中已合法但落选的attention DTE方案。本轮新导出FP16 prefill，
+Q/K/V均为`[1,1,1024,64]`、mask为`[1,1,1024,1024]`，seed为20260803，保留原PyTorch reference和精度合同。
+普通搜索使用standard 8/42；内部测试入口在同一搜索的第28号实际求值处移交仍存活的候选owner，
+沿原target/package路径构包，不按历史日志重放IR。这里的序号从0起，只指本次调用的观察位置。
+前29次求值的4518项候选及choice计数与普通搜索相同；普通winner完整包与此前standard逐byte相同。
+两包均通过fresh no-card，板端按winner、DTE、DTE、winner、winner、DTE顺序单进程运行，
+每次上板前系统级占用检查为空闲；SDK 5.7.0.0524.01/API 1400、16 Tiles，使用普通tx-stream-events计时。
+完整source/package/compiler身份及六次样本见[专项证据](data/board-performance/attention-prefill-dte-20260919.json)。
+
+| 方案 | 三次实卡/ms | 中位/ms | query/KV tile | DDR读取/B | 实际Instr计数 | 模型估时/ms |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| 普通winner，无DTE | 1.618 / 1.563 / 1.542 | 1.563 | 64 / 512 | 6,422,592 | 1920 | 0.263603 |
+| 落选DTE候选 | 5.106 / 5.057 / 4.955 | 5.057 | 32 / 512 | 2,752,576 | 3916 | 0.424202 |
+
+六次完整数值、completion/readback/cleanup及执行窗口检查通过，没有新设备异常。
+所有输出capture逐byte相同；每次与reference的cosine为0.9999999161923511、relative L2为0.0004094186175391358，
+最大绝对误差0.0009765625，原atol/rtol下0/65536元素超限。普通runner未单独验收red-zone guard。
+
+DTE方案中位耗时为普通winner的3.235倍（增加223.54%），这次搜索未选它与实测排序一致。
+其静态DTE send site为30，DDR读取约从6.125 MiB降至2.625 MiB，但query分块减半、Instr计数增加。
+这些结构差异说明本次是两个完整候选的比较，不能把差值全部归因于DTE通信本身；本轮未做分阶段设备归因。
+两者cost profile均未校准，估时低于实测；一次排序一致不能证明模型已准确，也不能推断所有DTE方案都更慢。
