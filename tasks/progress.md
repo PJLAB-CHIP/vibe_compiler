@@ -24,7 +24,8 @@
 
 用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
 [06号待实施合同](06-physical-dataflow-synthesis.md#75-待实施主搜索实现分支与-deep-预算)及
-[现有搜索组织计划](plans/physical-search-organization.md)。本轮仅完成方案，编译器和 CLI 尚未实现；
+[现有搜索组织计划](plans/physical-search-organization.md)。已按用户纠正移除实现分支的基础可行前置条件。
+本轮仅完成方案修订，编译器和 CLI 尚未实现；
 仍归 `board-testing`，不新增队列项，也不代签下述模型、性能和板端未完成门槛。
 
 此前用户授权优先修正局部拼接引入的重复访问，恢复原有共享与性能；本轮已修复复用约束，LLaMA block两种dtype及

@@ -1748,8 +1748,12 @@ transport/collective algorithm、访问复用、流水及合法组合。Layout�
 实际内存规划与 cost 是每点的固定求解步骤，不增加 outer search 维度。
 同一未变 layout-input 的兄弟复用一次 PBQP；T 或 pre-layout closure 改变时重新求解。
 
-**实现分支。** 在被保留的基础方案上选择 I，固定 S/F/I 继续调整 T，不能只在基础 T 上尝试一次。
-语义必需的通信照常物化；已有必要 transport/closure 入口不因基础尚未可行而永久关闭。
+**实现分支。** 在当前 IR 足以发现、表达并物化 I 时展开分支，不要求基础实现 I₀ 先通过 SPM/target，
+也不等待主搜索完成合法性探索。分支来自存活的实际结构与参数前缀，不要求 accepted executable。
+语义必需的通信照常物化；所有适用的通信、复用、流水及组合使用同一展开规则。
+各分支从发现 I 的参数点及同域粗尺度入口开始，固定 S/F/I 独立调整 T，不能只尝试一次。
+基础实现的容量失败或较差 cost 不代表其它 I 的结果；完整下游验证用于判定当前点和比较 cost，
+不作为其它实现的探索门槛。基础实现可优先调度，但优先级与探索资格分开。
 逻辑方案身份 `(S,F,I)` 只保存可解释的选择，T 的去重、cost 和容量反馈归属于该分支。
 不同 I 的相同 T 必须能独立求值。选择锚定到存活父 IR 的 typed use/scope 关系，每次 retile
 重新定位和证明实际作用对象；旧 load/loop 句柄不得跨 mutation 复用，不按首个可用实现恢复选择。
@@ -1770,11 +1774,14 @@ width 统一约束可扩展分支和实际 checkpoint，不允许 S/F、I、T �
 不增加隐含的每方案 tiling 次数上限；显式取消、已有 query/solver 资源失败保持 typed 未完成状态。
 
 **调度和 owner。** standard 可在 actual trial 边界暂停；deep 在开始下一方案前完成当前有限内搜。
+两种模式都按当前 IR 条件发现并保留 I；deep 逐分支服务不要求 I₀ 成功，当前内搜未找到可行点时
+仍按预算调度已保留的其它分支。尚缺实际 IR 条件时延迟发现，不猜测未来 operation 或存储事实。
 同一 mode 下增加 trials 延续确定的方案/求值前缀，最佳 actual objective 不变差；mode 间不要求相同前缀。
 每点只从存活实际祖先物化新的候选后缀，各阶段重新 verify/analysis；成功 owner 原样交付，失败 owner 销毁。
 容量证据、非容量失败、局部搜索结束和全域不可行保持区分，所有实现仍经过同一 completion/SPM/target leaf。
 
 本项最低覆盖包含：1024/1025/1031、4/16 Tile、多 scope/tail；每类 I 连续 retile 后可行；
+基础尚未 accepted 即可展开 I、基础内搜无可行点而备选独立 retile 后可行、条件未齐备时延迟发现；
 不同 I 同 T；作用对象变化/条件不适用；合法下界仍失败；PBQP 同输入一次；两种计费、重复/yield/预算边界；
 deep 无改善终止与同 mode 前缀；同一 accepted owner 交付。直接下游必须包含实际 Instr/SPM 和正式 package，
 不能仅用 fake evaluator 代签。LLaMA block、大 GEMM 与 ViT 的完整数值及匹配性能按统一板测矩阵保护。

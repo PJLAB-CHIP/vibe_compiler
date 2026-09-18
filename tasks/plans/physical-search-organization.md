@@ -11,7 +11,7 @@
 - Upstream IR / input：verified card-local TensorProgram、现有 Spatial/Region/Temporal domain、只读 target facts、
   同一 cost cohort，以及 search mode、width、trials。
 - Current stage responsibility：以 Spatial、Fusion、Temporal 为主搜索空间；每点执行固定的 layout/下游求解；
-  在选中的基础方案上建立实现分支，并让这些分支共用持续 tiling、实际容量反馈和性能改进机制。
+  在当前 IR 具备条件时展开实现分支，并让这些分支共用持续 tiling、实际容量反馈和性能改进机制。
 - Output IR / files：同一 actual accepted executable owner、typed 搜索结束原因，以及分别计数的方案和实际求值工作量。
 - Downstream consumer：原 PackageAssembly、LLVM/link、package/manifest、no-card 与统一设备 runner。
 - User-level driver / named pipeline：现有 `wafer-compile --optimization-policy=search`；拟增加
@@ -36,20 +36,25 @@ Layout 对每个不同的实际 layout-input 只求一次完整 PBQP assignment�
 FirstUse/LoopInvariant 是 copy placement 选择，不是重搜 layout assignment。
 语义必需的通信和结构闭合属于基础物化；可选的是其已有合法实现，不是是否满足原数据依赖。
 
-基础实现 I₀ 使用现有默认构造。先沿 S/F/T 找基础可行点，再从被保留的基础方案展开 I；
-不必等所有 S/F 或基础参数都搜完，也不要求基础方案成为全局 winner。
-必要 transport/closure 的现有入口仍可与容量修正交错，防止把“基础尚未可行”变成整个实现域的永久剪枝。
-未执行的实现只保存合法的选择及游标，不同时物化全部组合。
+基础实现 I₀ 使用现有默认构造。沿 S/F/T 物化时，只要当前 IR 已足以发现、表达并物化某个 I，
+就形成可调度的实现分支；不要求 I₀ 先通过 SPM/target，也不等待主搜索完成合法性探索。
+这里的基础是存活的实际结构与参数前缀，不是已经 accepted 的 executable。
+所有适用的通信、复用、流水及组合都遵守此规则；不能只为少数 transport/closure 保留例外入口。
+I₀ 和各 I 分别持有 T 搜索状态。容量失败只约束当前完整参数点，不能据此关闭其它实现分支；
+实现变换会改变实际 buffer、movement 和 lifetime，必须在各自变换后重新验证容量。
+基础实现可优先调度，但这种优先级不是其它实现的探索资格。尚不具备表达条件的选择保持待发现，
+不能猜测未来 IR；已发现而未执行的实现只保存 typed 选择、游标及所需的存活祖先，不同时物化全部组合。
 
 ```text
-主搜索：S/F → I₀ 下选择 T → 固定求解步骤 → actual SPM/target → 基础可行点
-局部实现：选中基础方案 → 选择 I → 固定 S/F/I 继续搜索 T
+主搜索：选择 S/F → 物化一个 T → 在各自所需的实际 IR 阶段发现 I
+分支展开：保留 I₀ 与适用的 I → 分别固定 S/F/I 继续搜索 T
 共同求值：当前结构 → apply T → 必要 closure → layout 一次 → 物化 I 的后续部分
           → Instr/cleanup/completion → 唯一 SPM/DDR/target → 完整 cost
 容量不足：保持 S/F/I，沿实际证据选择下一 T，重新执行失效的后缀
 ```
 
 通信、复用和流水变换仍在各自输入事实齐备后物化；I 是分支所持有的选择，不是把这些 pass 提到 tiling 前。
+完整下游结果用于判定当前点和比较 cost，不是发现或接纳其它 I 的前置条件。
 
 ## 2. 当前代码差距与修改边界
 
@@ -58,7 +63,7 @@ FirstUse/LoopInvariant 是 copy placement 选择，不是重搜 layout assignmen
 | `TemporalProposals` 按 T 去重并归集 cost/capacity | 将提案状态归属于固定 S/F/I 的搜索上下文；相同 T 在不同 I 下可独立求值，不能互相抑制 |
 | `SearchCurrentIR` 只有一个 `repairReuse` 标志，修正后选择新发现的首个非 Peer reuse | 用明确的实现选择继续同一分支；通信/复用/流水消费同一机制，不再增加类别专用修复标志 |
 | `MovementChoice` 的 reuse 直接持有 actual load/loop，算法和 pipeline 后继藏在内层队列 | 分开“可跨本分支 T 变化的选择意图”和“仅当前 IR 有效的物化句柄”；保留后继的调度机会 |
-| 单个 realization anchor 按基础点成绩保留后续实现 | 基础点的 cost 不代表尚未评价的 I；使用有界分支保留，未访问不能标记为性能劣势或不可行 |
+| 单个 realization anchor 按基础点成绩保留后续实现 | 按 actual IR 条件发现和接纳 I；基础点失败或 cost 较差都不代表尚未评价的 I，使用有界分支保留 |
 | `UnifiedSearch` 将 actualizations 同时用于工作量和 trial 扣款 | 分开实际求值工作量、方案开始事件、预算扣款；deep 不通过扩大一个隐含 leaf 上限实现 |
 | 主机测试覆盖基础容量反馈和部分 reuse 成功 | 增加同一 I 多次 retile、不同 I 同 T、最小合法尺寸及 deep 预算的直接下游 witness |
 
@@ -119,6 +124,8 @@ width 约束保留的可扩展方案及实际 checkpoint 槽位总量，共享�
 standard 继续交错探索、修正和改进，容量链必须获得继续推进机会。
 deep 在开始下一方案前完成当前方案的有限内层过程；width 保留其它可扩展入口，
 这样增加 trials 在相同输入/target/width/mode 下延续相同的完整方案及实际求值前缀。
+两种模式都在条件齐备时发现并保留 I；deep 的逐分支服务只是通用调度顺序，不等待 I₀ 成功。
+当前分支未找到可行点时，仍按预算和顺序继续已保留的其它分支，不能连带丢弃它们。
 mode 间不要求相同访问序列；同一 mode 内最佳 actual objective 随预算增加不得变差。
 全局 trials 达到上限后，当前方案仍可 retile/评价，但不能免费展开新的 I 或 S/F。
 
@@ -127,7 +134,8 @@ mode 间不要求相同访问序列；同一 mode 内最佳 actual objective 随
 Deep 提供完整的容量修正机会及有限局部调优，不宣称遍历全部整数与循环排列。
 两种模式共用同一提案/求值实现，deep 为一个方案推进下述完整过程，standard 可在实际求值预算边界暂停。
 
-1. **起点**：I₀ 沿用现有有限粗尺度种子；附加 I 从所属基础可行 T 开始，再保留同域的粗尺度入口。
+1. **起点**：I₀ 沿用现有有限粗尺度种子；附加 I 从发现它的实际参数点 T 开始，再保留同域的粗尺度入口。
+   发现点无需通过基础实现的 SPM/target；各起点都须 fresh 检查所选 I 的适用条件。
    所有起点来自已有 domain，不能用 SPM footprint 公式预判合法。
 2. **容量阶段**：actual capacity rejection 立即生成带证据的单轴、成组、协调及换轴方向。
    优先推进已有修正链的更深一层，同时保留父点兄弟；每步只改变 domain 允许的坐标，按各轴合法下界截断减半。
@@ -161,7 +169,7 @@ Deep 的方案计费和确定性内层过程是适配本仓的设计选择，不
 
 | 顺序 | 输入 → 修改 owner → 输出 | 验收后才能继续 |
 | --- | --- | --- |
-| 1 | 当前 S/F owner、现有 I → `SearchCurrentIR`/对应 materializer 的 typed 选择绑定 → 跨 T 的同一实现分支 | 通信、复用、流水分别证明选择身份、fresh legality 和实际容量反馈；不能仅实现 reuse 特例 |
+| 1 | 当前 S/F owner、现有 I → `SearchCurrentIR`/对应 materializer 的 typed 选择绑定 → 跨 T 的同一实现分支 | 各类 I 按当前 IR 条件展开，无基础可行门槛；分别证明选择身份、fresh legality 和实际容量反馈 |
 | 2 | 分支上下文/反馈 → `TemporalProposals` 与 `SearchCurrentIR` → 分支内连续 retile/局部搜索 | 不同 I 同 T 独立；深下降链到合法下界；unknown/unsupported/error 分流；旧多轴与tail能力保留 |
 | 3 | 分支事件和 actual work → `UnifiedSearch`/`ActualResultController` → standard/deep 计费与终止 | 深模式不能因一次容量失败关闭方案或因外层预算耗尽截断内搜；owner和前缀验证通过 |
 | 4 | typed mode → `OptimizationConfig`、CLI parser、driver options、正式调用者/runner → 唯一产品入口 | 拟定 `--search-mode=standard|deep`；默认/显式standard一致；none/非法参数负例；统计标注单位 |
@@ -181,6 +189,8 @@ standard/deep 只改变搜索服务和预算单位，不维护第二套物化/al
 | --- | --- | --- |
 | 原单轴/多轴 Spatial、部分融合/replica、Joint/Independent | 原exact coverage/无重叠/merge、scope与顺序合法域不变；不按模型名分支 | Spatial/Temporal apply → actual Instr/SPM |
 | 固定 I₀，连续多次 actual capacity failure 后通过 | 实际冲突关联单轴/多scope、深修正及父点兄弟保留；无估算 admission | live allocation证据 → 新T → 真实offset |
+| I₀ 尚未完成验证或容量失败；实际前缀已具备 I 的表达条件 | 已发现分支不因 I₀ 未 accepted 而关闭；覆盖 I₀ 内搜无可行点、I 经自身 retile 后可行 | actual 前缀 → 实现变换 → Instr/SPM 真实拒绝与真实 offset |
+| 当前 IR 尚不足以表达 I，后续阶段或新 T 才具备条件 | 延迟发现，不构造未来 IR；条件齐备后可调度，不以基础完整下游结果作门槛 | typed use/scope 与 fresh applicability → 生产候选会话 |
 | Peer/DDR、collective算法、resident/sliding复用、流水及组合 | 每种I至少有连续两次retile后可行的适用正例；I身份不漂移，不静默回退 | 实际movement/storage/Instr、fresh completion/SPM、完整cost |
 | 不同 I 使用同一 T；同类 I 作用对象不同 | 完整选择去重；反馈及已访问点不互相抑制；组合独立评价 | 生产候选会话与actual叶子 |
 | retile 后窗口、参与者或流水条件变化 | 可证明延续才应用；该点unsupported/indeterminate不成为全方案失败；旧句柄无使用 | verifier、actual effect/coverage/completion |
