@@ -2440,3 +2440,24 @@ LocalReduce搜索日志显示standard启动15个方案、42次actual求值，dee
 本次8/2只记录小预算结果，后续正式deep验收使用8/42并同时记录方案数、actual求值和主机成本，standard的8/42不变。
 本批不包含deep核心LLaMA/GEMM/ViT收益验收，不改变全矩阵未完成及历史TDMA根因未知的结论。
 逐次样本、包身份、source/input摘要和搜索计数见[本轮证据](data/board-performance/search-ready-deep-20260918.json)。
+
+## 2026-09-18：deep 8/42扩大搜索（进行中）
+
+按用户要求把上述13项的deep方案预算从2提高到42，standard保持8/42。使用同一冻结compiler、SDK/runtime及boot，
+保留deep 8/2包参与同批比较。每项重新导出source、生成输入和原reference，核对source与包身份，三种模式均fresh no-card；
+每项按standard→deep2→deep42、deep42→standard→deep2、deep2→deep42→standard三个顺序执行，共9次launch。
+上板前检查系统占用，各次独立journal cursor核对运行窗口。这里的deep42只扩大方案预算，不改变精度标准或内部tiling计费。
+
+当前已完成2/13项，18次完整数值、completion/readback/cleanup均通过，各次运行窗口无新设备错误；其余仍在编译搜索。
+下表仅记录本批已完成的实测，不表示全批或性能门槛已经完成。
+
+| Case | dtype | standard中位 ms | deep2中位 ms | deep42中位 ms | deep42方案/实际求值 | deep42编译wall s | 最大RSS KiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `division` | FP32 | 0.537 | 0.593 | 0.604 | 42/3464 | 447.45 | 186548 |
+| `division-tail-1025` | FP32 | 0.627 | 0.569 | 0.610 | 42/5313 | 1012.16 | 277528 |
+
+两项deep42完整包均与standard逐byte相同；Division1025还与deep2相同。Division基础尺寸的deep42包不同于deep2，
+但本批没有证明设备收益，不能仅凭方案覆盖扩大签发性能提升。上述wall来自13项并发编译，不作为串行编译效率比。
+已列出的两项各完成42个方案、unfinished为0；其余case的计数只在编译结束后计入本表。
+当前批次完成后继续补齐standard剩余3项及其余38项deep编译/no-card与逐项实卡；核心性能及全矩阵门槛保留。
+逐次样本、包身份及编译计数见[本轮证据](data/board-performance/search-deep42-20260918.json)。
