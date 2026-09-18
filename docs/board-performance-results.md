@@ -2536,7 +2536,7 @@ S1031的deep产物不同，但此前相同产物的配对测量未证明稳定�
 Division沿用F32以覆盖零和特殊值，其余均为FP16。
 
 重启后的同一会话先完成fresh FP16 Add：16384项exact通过，设备耗时0.805 ms，运行窗口无新内核错误。
-随后13项逐case串行执行，每次launch前完成系统级占用检查；13次完整数值、guard、completion/readback/cleanup均通过，
+随后13项逐case串行执行，每次launch前完成系统级占用检查；13次输出长度、完整数值、completion/readback/cleanup均通过，
 各运行窗口无新设备错误。逐项身份、输入hash、全部输出摘要和原始计时见
 [本轮证据](data/board-performance/search-standard-13-20260919.json)。
 
@@ -2557,3 +2557,116 @@ Division沿用F32以覆盖零和特殊值，其余均为FP16。
 | LocalReduce | FP16 | 0.717 | 两个输出均通过 |
 
 本批每项仅一个样本，完成指定范围的实卡数值验收；不据此签发性能不下降或deep收益，也不推断历史设备异常已修复。
+
+## 2026-09-19：最终实现的完整standard验证及优化收益
+
+本轮使用最终实现`f087c52e`对应compiler（SHA256 `467c96e6314535db22b4901398684183357aeea8850d85ea4010716b012da0df`），
+重新完成既定搜索清单51个shape/dtype配置的standard 8/42构包和no-card；上板前重新导出source并核对身份，
+生成新输入和原PyTorch reference。对照为保留的standard compiler `9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。
+每项三次普通实卡，两种decode各为三组两步actual KV接续，共159次launch；全部输出长度、原数值合同、
+completion/readback/cleanup及运行窗口检查通过，无新设备错误。完整LM在本清单中是S16；大序列LM及4K prefill仍保留原未完成状态。
+普通runner未启用独立red-zone guard，因此本记录不声称完成独立越界guard验收；此前本轮记录中的“guard通过”措辞已改为实际执行的输出检查。
+
+38项完整package与对照逐byte相同，13项变化。变化项另做三组新旧交替实卡，共78次launch，全部数值通过；
+所有配对样本与初批current使用相同输入hash。source、完整package身份、全部样本和编译工作量见
+[本轮完整证据](data/board-performance/search-standard-full-20260919.json)。
+以下初批计时均为current，单位ms；decode按“第1步 / 第2步”列各自中位数。
+
+| case | dtype | 三次耗时/ms（decode为两步合计） | 中位数/ms |
+| --- | --- | --- | --- |
+| `all-reduce-sum` | float16 | 0.879 / 0.622 / 0.583 | 0.622 |
+| `all-reduce-sum-tail-1025` | float16 | 0.840 / 0.605 / 0.603 | 0.605 |
+| `all-reduce-sum-tail-1031` | float16 | 0.825 / 0.610 / 0.693 | 0.693 |
+| `allgather-add` | float16 | 0.670 / 0.619 / 0.584 | 0.619 |
+| `allgather-add-tail-1025` | float16 | 0.789 / 0.654 / 0.594 | 0.654 |
+| `allgather-add-tail-1031` | float16 | 0.671 / 0.720 / 0.641 | 0.671 |
+| `alltoall-transpose` | float16 | 0.993 / 1.063 / 0.946 | 0.993 |
+| `alltoall-transpose-tail-1025` | float16 | 1.082 / 0.976 / 0.965 | 0.976 |
+| `alltoall-transpose-tail-1031` | float16 | 1.028 / 0.988 / 1.011 | 1.011 |
+| `attention-decode-kv-cache` | bfloat16 | 12.473 / 12.388 / 12.412 | 6.096 / 6.315 |
+| `attention-decode-kv-cache` | float16 | 12.366 / 44.566 / 12.741 | 6.076 / 6.559 |
+| `attention-prefill` | bfloat16 | 8.269 / 1.480 / 1.512 | 1.512 |
+| `attention-prefill` | float16 | 1.603 / 1.521 / 1.444 | 1.521 |
+| `attention-prefill-tail-1025` | float16 | 1.677 / 1.523 / 1.532 | 1.532 |
+| `attention-prefill-tail-1031` | float16 | 1.943 / 1.841 / 1.690 | 1.841 |
+| `batch-shared-rhs-gemm` | float16 | 1.863 / 1.659 / 1.662 | 1.662 |
+| `batch-shared-rhs-gemm-tail-1025` | float16 | 2.548 / 2.459 / 2.391 | 2.459 |
+| `biased-conv` | float16 | 11.175 / 10.959 / 11.146 | 11.146 |
+| `biased-conv-tail-1025` | float16 | 11.137 / 11.241 / 11.080 | 11.137 |
+| `biased-conv-tail-1031` | float16 | 11.114 / 11.081 / 10.893 | 11.081 |
+| `conv-mixed-dag` | bfloat16 | 1.646 / 1.544 / 1.663 | 1.646 |
+| `conv-mixed-dag` | float16 | 13.619 / 13.578 / 13.485 | 13.578 |
+| `division` | float32 | 0.745 / 0.570 / 0.579 | 0.579 |
+| `division-tail-1025` | float32 | 0.633 / 0.540 / 0.529 | 0.540 |
+| `division-tail-1031` | float32 | 0.780 / 0.609 / 0.655 | 0.655 |
+| `heterogeneous-tiling-dataflow` | float16 | 0.977 / 0.876 / 0.878 | 0.878 |
+| `llama-2-7b-block` | bfloat16 | 8.899 / 8.980 / 8.903 | 8.903 |
+| `llama-2-7b-block` | float16 | 8.798 / 8.927 / 8.923 | 8.923 |
+| `llama-2-7b-single-layer-lm` | bfloat16 | 74.294 / 73.215 / 73.671 | 73.671 |
+| `llama-2-7b-single-layer-lm` | float16 | 75.134 / 74.305 / 74.117 | 74.305 |
+| `local-conv` | float16 | 1.043 / 0.934 / 0.910 | 0.934 |
+| `local-conv-tail-1025` | float16 | 2.074 / 1.960 / 1.986 | 1.986 |
+| `local-conv-tail-1031` | float16 | 0.894 / 0.782 / 0.846 | 0.846 |
+| `local-reduce` | float16 | 0.754 / 0.665 / 0.634 | 0.665 |
+| `local-reduce-tail-1025` | float16 | 0.735 / 0.688 / 0.634 | 0.688 |
+| `local-reduce-tail-1031` | float16 | 0.673 / 0.707 / 0.606 | 0.673 |
+| `reduce-scatter-sum` | float16 | 0.843 / 0.692 / 0.684 | 0.692 |
+| `reduce-scatter-sum-tail-1025` | float16 | 0.795 / 0.675 / 0.685 | 0.685 |
+| `reduce-scatter-sum-tail-1031` | float16 | 0.742 / 0.759 / 0.655 | 0.742 |
+| `resnet18` | float16 | 92.372 / 26.395 / 70.192 | 70.192 |
+| `sigmoid` | float16 | 0.704 / 0.661 / 0.664 | 0.664 |
+| `sigmoid-tail-1025` | float16 | 0.711 / 0.636 / 0.662 | 0.662 |
+| `sigmoid-tail-1031` | float16 | 0.827 / 0.655 / 0.690 | 0.690 |
+| `single-card-gemm` | float16 | 0.833 / 0.680 / 0.616 | 0.680 |
+| `single-card-gemm-4096` | bfloat16 | 6.876 / 6.853 / 6.784 | 6.853 |
+| `single-card-gemm-4096` | float16 | 6.824 / 6.805 / 6.870 | 6.824 |
+| `single-card-gemm-tail-1025` | float16 | 0.783 / 0.607 / 0.704 | 0.704 |
+| `single-card-gemm-tail-1031` | float16 | 0.816 / 0.704 / 0.734 | 0.734 |
+| `single-card-gemm-tail-4097` | float16 | 8.711 / 8.486 / 8.617 | 8.617 |
+| `vit-encoder-block` | float16 | 35.612 / 35.503 / 35.218 | 35.503 |
+| `vit-encoder-block-tail-1025` | float16 | 80.512 / 73.917 / 81.133 | 80.512 |
+
+变化产物的匹配对照如下。两项prefill尾块的新旧样本范围分离，测得收益；LocalConv S1025及conv-mixed的
+新版全部样本均慢于旧版全部样本，记为性能回归。其余样本范围重叠，保持待定；不以平均加速抵消退化。
+
+| case | dtype | baseline中位/ms | current中位/ms | 变化 | 本批结论 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `local-conv` | float16 | 0.845 | 0.887 | +4.97% | 样本范围重叠，待定 |
+| `local-conv-tail-1025` | float16 | 1.095 | 2.103 | +92.05% | 回归 |
+| `local-conv-tail-1031` | float16 | 0.836 | 0.904 | +8.13% | 样本范围重叠，待定 |
+| `biased-conv` | float16 | 10.947 | 10.983 | +0.33% | 样本范围重叠，待定 |
+| `biased-conv-tail-1025` | float16 | 11.187 | 11.146 | -0.37% | 样本范围重叠，待定 |
+| `biased-conv-tail-1031` | float16 | 11.011 | 10.971 | -0.36% | 样本范围重叠，待定 |
+| `attention-prefill-tail-1025` | float16 | 1.894 | 1.609 | -15.05% | 本批测得收益 |
+| `attention-prefill-tail-1031` | float16 | 2.166 | 1.850 | -14.59% | 本批测得收益 |
+| `conv-mixed-dag` | float16 | 12.403 | 13.502 | +8.86% | 回归 |
+| `attention-prefill` | float16 | 1.538 | 1.469 | -4.49% | 样本范围重叠，待定 |
+| `attention-prefill` | bfloat16 | 1.479 | 1.488 | +0.61% | 样本范围重叠，待定 |
+| `resnet18` | float16 | 65.585 | 26.385 | -59.77% | 样本范围重叠，待定 |
+| `vit-encoder-block-tail-1025` | float16 | 34.316 | 33.829 | -1.42% | 样本范围重叠，待定 |
+
+ResNet的baseline为65.585/65.434/72.122 ms，current为26.385/84.747/26.306 ms；
+ViT S1025的baseline为34.316/34.256/61.375 ms，current为33.829/33.829/74.238 ms。
+相同输入和包仍有明显波动，因此不把ResNet的中位差解释为已确认加速，也不把ViT初批80.512 ms中位当作固定性能。
+
+主机侧另外选择GEMM4096、AllGather+Add、Division、LocalConv和prefill，以同一输入、配置、依赖和单compiler并发度，
+各做三组新旧交替编译，验证每次生成的包均与对应冻结产物一致。以下为中位wall；CPU、RSS和全部样本保留在证据中。
+前三项测量期间背景为最后一个GEMM4097的单线程CPU reference；LocalConv首组跨越该reference结束，后两组及prefill处于无其它测试计算的主机环境。
+LocalConv仅取后两组，旧版31.465/31.685秒、新版47.934/48.196秒，变慢仍复现；不以并发全矩阵的历史wall宣称提速。
+
+| case | baseline编译/s | current编译/s | 变化 | baseline/current峰值RSS中位/MiB |
+| --- | ---: | ---: | ---: | ---: |
+| `single-card-gemm-4096` | 12.158 | 10.437 | -14.16% | 87.0 / 88.3 |
+| `allgather-add` | 31.283 | 25.776 | -17.60% | 186.6 / 193.7 |
+| `division` | 4.172 | 4.017 | -3.71% | 72.6 / 72.1 |
+| `local-conv` | 31.465 | 47.934 | +52.34% | 184.3 / 227.6 |
+| `attention-prefill` | 22.731 | 18.801 | -17.29% | 109.5 / 101.7 |
+
+GEMM、AllGather及prefill本批编译更快；Division样本范围重叠，收益未确认；LocalConv编译wall增加52.34%，
+其峰值RSS也由184.3增至227.6 MiB。两种compiler的这些case仍各求值42次，未靠减trial取得结果。
+GEMM的tiling应用从672降至368、layout求解从38降至23；LLaMA两dtype的tiling应用从40128降至24896、layout求解从39降至33。
+这些工作量下降不能代替总wall、RSS或设备性能，本轮LocalConv已给出反例。
+
+当前验收结论：51项实卡数值通过；standard设备性能不下降门槛未通过，主机效率有收益也有回归。
+后续先定位LocalConv S1025与FP16 conv-mixed的候选选择/实际产物差异，以及LocalConv编译变慢的实际阶段开销；
+在通用owner修复后再做受影响配对和核心保护。本轮未启动deep，也不重置原最好可复现性能目标。

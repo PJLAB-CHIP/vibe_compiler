@@ -394,9 +394,26 @@ Deep其余十项、核心及全矩阵验收继续。首可行/赢家出现时间
 LLaMA两dtype的standard随后完成构包/no-card；ViT两shape、核心deep及原13项剩余deep的进程已中断，未完成项待续跑。
 核心编译与原13项剩余deep当时有负载重叠，wall比较须单独匹配复验。
 用户随后指定先测原13项standard：2026-09-19重启后，每项重新生成输入/reference并通过no-card，
-使用上述多尺度实现冻结版本的8/42包，各一次完整实卡数值、guard和运行窗口检查全部通过。
+使用上述多尺度实现冻结版本的8/42包，各一次输出长度、完整实卡数值和运行窗口检查全部通过。
 逐项耗时及身份见[单次实卡记录](../../docs/board-performance-results.md#2026-09-1913项standard单次实卡验收)；
 尚未完成最终compiler重编13项及匹配重复性能比较，不能代签全矩阵或deep收益。
+
+用户进一步要求验证其余standard及优化收益。本轮范围为搜索验收清单的全部51个shape/dtype配置，
+使用最终实现提交的compiler、standard 8/42和原数值合同，补齐当前source→package/no-card。
+板测逐case生成新输入/reference，各取三次普通计时；两步decode使用本轮actual KV接续。
+完整包与改前版本相同时，只能说明生成程序未变化，计时差异不归因于搜索；产物变化时另补健康基线的匹配比较。
+主机效率同时比较actual求值、tiling应用、layout求解及CPU/wall/RSS；全矩阵并发编译的wall不与旧负载直接计算加速比，
+另用相同输入和负载的定向配对编译检验收益。本轮不启动deep，不回放旧故障包作性能基线。
+
+本轮51项已全部用最终实现重新构包/no-card，每项三次实卡数值通过；两种decode均按actual KV接续，合计159次launch。
+38项完整包与对照相同，13项变化；变化项另完成78次匹配实卡，数值全部通过且无新设备错误。
+prefill S1025/1031本批设备中位降低15.05%/14.59%；LocalConv S1025与FP16 conv-mixed分别增加92.05%/8.86%，
+两项新旧样本范围分离，阻止签发standard性能不下降。ResNet及ViT等波动项保持待定。
+五项主机配对中，GEMM、AllGather、prefill的编译wall分别下降14.16%/17.60%/17.29%；
+Division区间重叠，LocalConv增加52.34%且峰值RSS增加，不能签发全面效率改善。
+普通runner本轮只验证完整输出及生命周期，未做独立red-zone guard；不将该缺口记为通过。
+下一步先在通用搜索/物化owner定位两项设备退化和LocalConv编译开销，修复后重测对应配对及核心保护。
+完整scope、全部样本及限制见[本轮结果](../../docs/board-performance-results.md#2026-09-19最终实现的完整standard验证及优化收益)。
 
 ## 先前版本检查点（不代签本次效率重构）
 
