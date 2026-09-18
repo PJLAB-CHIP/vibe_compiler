@@ -2394,3 +2394,11 @@ ViT运行后的内核检查读到14:23:27的`NPU LSU TDMA Timeout`、`0x0D00C005
 GEMM包相同只排除了其自身对照的指令包差异，不作为本次ViT窗口故障的根因证据；本轮不声称修复历史TDMA问题。
 用户随后确认尚未重启恢复。完整逐次相似度、命令及健康样本标记见
 [`search-modes-20260918.json`](data/board-performance/search-modes-20260918.json)。
+
+### 用户指定的单次Add检查
+
+2026-09-18 15:56:54起，按用户要求以当前compiler新导出FP16 Add `[16384]`，16 Tile各1024元素，policy为none。
+Fresh输入、原框架reference、构包及no-card均完成；上板前全系统占用检查只发现已核对身份的日志服务。
+单次普通执行的16384个输出全部exact，最大绝对误差0；completion、回读、cleanup正常，设备事件计时0.792 ms。
+该运行窗口的kernel journal无新记录。本项证明这次Add正常执行，不作为此前TDMA根因已修复的证据。
+原始命令、包身份及numeric audit在`build/test/search-organization/add-probe-current/`，执行及kernel日志位于同级目录。
