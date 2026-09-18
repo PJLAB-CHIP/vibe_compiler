@@ -1475,8 +1475,17 @@ TemporalDomain::getCoupledStateProposal(const TemporalChoice &choice,
         producerScope.iteratorTileSizes[source] = size;
     }
   }
-  for (auto [scope, descriptor] :
-       llvm::zip_equal(proposal.scopes, descriptors)) {
+  for (auto [scope, original, descriptor] :
+       llvm::zip_equal(proposal.scopes, choice.scopes, descriptors)) {
+    const bool sameActiveLoops = llvm::all_of(
+        llvm::zip_equal(scope.iteratorTileSizes, original.iteratorTileSizes,
+                        descriptor.iterationExtents),
+        [](auto sizes) {
+          return (std::get<0>(sizes) == std::get<2>(sizes)) ==
+                 (std::get<1>(sizes) == std::get<2>(sizes));
+        });
+    if (sameActiveLoops)
+      continue;
     auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
                                              scope.iteratorTileSizes,
                                              descriptor.precedence);

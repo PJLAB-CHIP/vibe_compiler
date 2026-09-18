@@ -5,6 +5,7 @@
 
 #include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
+#include "llvm/ADT/DenseMap.h"
 
 #include <array>
 #include <cstdint>
@@ -18,7 +19,7 @@
 
 namespace wafer::compiler::detail {
 
-enum class TemporalProposalKind : uint8_t { Explore, Repair, Improve, Fine };
+enum class TemporalProposalKind : uint8_t { Explore, Repair, Improve };
 
 struct TemporalCoordinate {
   size_t domain, scope, iterator;
@@ -41,7 +42,8 @@ public:
   bool startAt(const std::vector<TemporalChoice> &choices) {
     return append(choices, TemporalProposalKind::Explore, true);
   }
-  /// Prepares at most one distinct point from a lazy direction cursor.
+  /// Advances a lazy direction until a point is queued; a direction can also
+  /// queue its exact relation-coordinated alternative. take() returns one.
   bool prepareNext(TemporalProposalKind kind);
   std::vector<TemporalChoice> take(TemporalProposalKind kind);
   /// Records an ordinary raw-domain point, unless already queued or visited.
@@ -55,27 +57,22 @@ public:
     return !bestObjective && firstCapacityAnchor &&
            (!firstCapacityRoundComplete || !firstCapacityPending.empty());
   }
+  uint64_t getPerformanceRound() const { return performanceRound; }
 
 private:
   using Coordinate = TemporalCoordinate;
   struct ImprovementPoll {
     size_t anchor;
-    std::vector<Coordinate> coordinates;
-    std::vector<std::vector<Coordinate>> groups;
-    size_t batch = 0;
-    size_t phase = 0;
-    size_t single = 0;
-    size_t pairFirst = 0;
-    size_t pairSecond = 1;
-    size_t pairDirection = 0;
+    std::vector<std::vector<std::pair<Coordinate, int>>> directions;
+    size_t position = 0;
     size_t orderDomain = 0;
     size_t orderScope = 0;
     size_t orderPosition = 0;
   };
-  struct FinePoll {
-    size_t anchor;
-    std::vector<Coordinate> coordinates;
-    size_t position = 0;
+  struct AxisScale {
+    int64_t step = 0;
+    std::optional<int64_t> alignment;
+    uint64_t rounds = 0;
   };
   enum class SeedVariant { Full, Kernel, Axis, Coupled, All };
   struct SeedFamily {
@@ -91,7 +88,6 @@ private:
   };
   struct Entry {
     std::vector<TemporalChoice> choices;
-    TemporalProposalKind kind = TemporalProposalKind::Explore;
     std::optional<analysis::KnownSearchObjective> bestObjective;
     std::set<Coordinate> capacityObserved;
     bool taken = false;
@@ -115,7 +111,10 @@ private:
   bool appendCapacityDirection();
   bool appendSeedPoint();
   bool advanceImprovementPoll();
-  bool advanceFinePoll();
+  void initializeScales(const std::vector<TemporalChoice> &choices);
+  void beginImprovementPoll();
+  bool changeSize(std::vector<TemporalChoice> &choices, Coordinate coordinate,
+                  int direction) const;
   std::optional<int64_t>
   getAlignment(const std::vector<TemporalChoice> &choices,
                Coordinate coordinate) const;
@@ -133,15 +132,17 @@ private:
   std::vector<const TemporalDomain *> domains;
   std::vector<Entry> entries;
   std::unordered_map<size_t, std::vector<size_t>> entryIndex;
-  std::array<std::deque<size_t>, 4> queues;
+  std::array<std::deque<size_t>, 3> queues;
   std::deque<CapacityPoll> capacityPolls;
   bool preferFreshCapacity = true;
   std::optional<size_t> priorityCapacityAnchor;
-  std::deque<ImprovementPoll> improvementPolls;
+  std::optional<ImprovementPoll> improvementPoll;
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<AxisScale, 4>> scales;
+  uint64_t performanceRound = 0;
+  uint64_t performanceRounds = 0;
+  bool performanceStarted = false;
   std::optional<analysis::KnownSearchObjective> bestObjective;
   std::optional<size_t> bestEntry;
-  bool fineStarted = false;
-  std::optional<FinePoll> finePoll;
   std::vector<SeedFamily> seedFamilies;
   std::deque<SeedPoint> seedPoints;
   std::optional<size_t> firstCapacityAnchor;

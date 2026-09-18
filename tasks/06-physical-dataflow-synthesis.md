@@ -1550,7 +1550,7 @@ replica输入与mandatory输入分别验证all-and-only，多个replica读取同
 Region proposal的全合并标签若因不连通等结构约束不可构造，使用同一合法合并序列的最终分组作为融合入口；
 不能只保留该序列的中间样本而丢失最终合法融合方案。该入口与baseline、replica先于合并数量采样，raw domain不变。
 Temporal普通探索保留全extent、每scope各可切轴的批量方向、全可切轴减半及协调状态的组合。
-只缩小一轴的入口保留其它轴的复用与指令粒度，避免所有维度一起缩小产生大量小指令；按访问不变性、extent和轴序确定顺序，
+只缩小一轴的入口保留其它轴的复用与指令粒度，避免所有维度一起缩小产生大量小指令；按接口iterator角色、访问不变性、extent和轴序确定顺序，
 不使用SPM估算或算子/模型名。所有入口仍经typed domain、actual transformation、verifier和同一actual leaf。
 每种 transport、共享输入及流水组合在实际条件齐备时形成独立 I，不等待另一 transport 求值或基础 SPM 成功。
 结构 session 按第7.5节维护分支内参数探索、容量修正和性能 poll；基础分支的 cost/容量证据不流入其它实现。

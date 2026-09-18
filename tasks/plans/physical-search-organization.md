@@ -2,8 +2,8 @@
 
 本方案归入现有 `board-testing` work item，稳定边界由[06号设计](../06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)拥有，
 任务状态只看[progress](../progress.md)，产品与性能保护沿用[统一板测矩阵](board-workload-matrix.md#搜索组织修改的性能验收)。
-本次将已讨论方案落为设计：覆盖整个search，共用standard/deep实现；现有代码尚未完成本次迁移。
-本次文档交付不恢复已停止的搜索或板测。已实施版本的证据保留在文末，与新合同验收分开。
+本方案覆盖整个search，共用standard/deep实现；用户已授权按下述顺序实施到验收完成。
+已实施版本的证据保留在文末，与新合同验收分开；本次迁移进度只看progress。
 
 ## 输入、职责、输出
 
@@ -122,6 +122,12 @@ DAG节点只包含已存在的IR；尚未运行的后缀仅是选择，不能保
 
 先测前缀命中、实际pass次数与RSS；clone占比变成实测主要瓶颈前不实现持久化MLIR或通用COW。
 
+首步具体存储边界：全搜索共享一个按完整parent/T查询的FoldingSet和独立LRU顺序，至多width个缓存入口；
+每入口拥有一个actual tiled模块，按closure保留至多两个layout-input，再按placement保留至多四个prepared模块。
+结构owner仍归原session，session销毁前移除其缓存key；正在求值的入口持有独立引用，不被淘汰悬空。
+因此缓存模块至多7×width，另计活动transaction、原结构owner和winner；不是每个S/F再乘一次width。
+缓存只省去同输入的生产pass；closure/实现发现及fresh后缀验证仍按原求值顺序发生。
+
 ## 4. 实现身份、适用性与参数分组
 
 ### 4.1 完整I与当前T的适用性分开
@@ -138,6 +144,13 @@ annotation不含tile size、memory或completion事实，clone/bufferization保�
 可省掉该点后续layout/lowering；需要bufferization或effect信息的条件仍留在对应stage。
 只保留exact条件及typed拒绝，不预测未来IR；检查早移不把单点失败放大成整个T域失败。
 standard已进入实际求值的早失败仍收费；deep首次启动后早失败也收费。仅重复提案/纯发现不收费。
+
+首个提前检查位于actual tiling之后、layout之前：收集current loop的card/tile及完整iteration-coordinate集合，
+检查所选pipeline和非peer reuse的scope/innerScope是否仍存在。该annotation唯一producer是TemporalTiling；
+后续closure、layout、movement和reuse不创造新的坐标身份，因此缺失能证明当前点不适用。
+只读检查不要求当前已有load或预测后缀效果；作用域存在也不表示实现可用，后续真实access/effect绑定仍执行。
+peer参与者、load窗口、流水依赖和SPM条件不在此提前判定。检查覆盖同尺寸不同作用域、共同循环的完整坐标集合、
+full-extent使循环消失、重新缩小后恢复及组合中的任一必要scope缺失；拒绝只作用于当前T。
 
 ### 4.2 减少独立调参维数
 
@@ -190,6 +203,23 @@ I₀保留已有全extent、Joint/Independent和合法几何尺度入口；附�
 接口必须能给出可测试的每轮方向上界，性能proposal工作量为有限尺度数乘O(D+G+R)，
 重复点不求值。这个界只覆盖性能邻域，**不包含**种子覆盖、容量修正或raw域能力；不能宣传为整次搜索复杂度上界。
 具体方向配额与首个步长公式须在提案迁移时以domain oracle固定；不能临时用每方案求值总数截断代替。
+
+本次实现固定如下尺度和方向规则：
+
+- 首次accepted时，按存活domain的operation/iterator建立尺度表，覆盖Joint/Independent两种描述。
+  当前anchor包含的坐标以其尺寸为基准，其余坐标以合法full extent为基准；之后不重新初始化此表。
+  已知g的初始步长为不超过`max(g, base/2)`的最大`g×2^k`；每轮减半，到g轮后该轴停止。
+  未知g以`max(1,base/2)`为初始距离逐轮减半，只投影到已有full→逐次减半→合法下界的几何点。
+  新anchor即使改变traversal kind，也只消费同一尺度表当前轮，不能从大步长重新开始。
+- 已知g的第k个邻点从anchor左右最近严格相邻对齐点起算，`k=step/g`；超出合法区间的方向不发出。
+  full extent由入口保留，非对齐anchor不变成逐元素扫描。未知g从对应一侧的几何点选距目标最近者。
+- 每轮包含每坐标左右方向；跨scope组只由同一ProgramArgument的exact相同read window、访问不变轴及相同iterator角色支持，
+  每坐标至多加入一个组，组不重叠。缺少这种证据就只保留独立方向，不能凭同shape成组。
+- 同scope内按接口角色、访问复用及extent排序，仅相邻轴具有共同actual read投影时提出一增一减的两种方向，
+  不枚举全部轴对。保留每scope合法loop order的相邻交换；参数变动可经现有exact coupled-state关系追加一个协调点。
+  每轮最多`8D+4G+2R`个完整参数提案（含协调点），实际去重和domain验证只会减少它。
+- 轮内anchor固定。轮末采用已accepted的完整objective最佳点，尺度表统一前进一步；没有改善也前进，
+  持续改善也不能重开。未知粒度的几何点及已知对齐粒度均通过oracle检查，容量链完全不读取此尺度表。
 
 ### 5.3 容量失败的处理
 
@@ -283,7 +313,7 @@ API已经对照仓库pinned `llvm/ADT/FoldingSet.h`、`mlir/IR/IRMapping.h`、`m
 原Spatial/Region domain、relation协调、iteration coordinates、唯一SPM/target/cost及winner publication继续使用。
 旧Fine/重启控制在同一多尺度实现及测试接管后删除；不保留旧/new双模式或额外compatibility入口。
 原Pad/Generate共享初始化、rank-reducing subset和非整除reshape修复继续由既有测试保护，不夹带重写。
-代码阶段按AGENTS执行canonical完整增量构建及第二次Ninja no-op；本次纯文档不运行编译或设备任务。
+代码阶段按AGENTS执行canonical完整增量构建及第二次Ninja no-op；设备执行先通过本轮no-card并检查占用。
 
 ## 9. 本项覆盖与验收矩阵
 
@@ -316,6 +346,8 @@ API已经对照仓库pinned `llvm/ADT/FoldingSet.h`、`mlir/IR/IRMapping.h`、`m
 沿现有计时/计数入口记录mode、trial单位、started/completed/unfinished、actual evaluations、容量修正、
 unsupported分类、每stage执行次数/耗时、PBQP solves、prefix命中/淘汰、存活owner峰值、CPU、wall、RSS，
 以及首次可行点和最终最佳点首次出现的求值序号/时间；两者不得混为“search完成时间”。
+这两个观测以统一search session创建为计时起点，使用从0开始的actual候选序号和微秒；
+最终最佳点在controller实际换入incumbent时更新，未找到可行结果时不输出这两组字段。观测不参与搜索决策。
 计时不足时只补能区分提案/query/实际变换的必要span；不新增逐候选长期账本或第二套状态报告。
 报告实际profile身份和calibrated标志；不把估时改善当成设备收益。
 
@@ -333,12 +365,31 @@ standard固定原8/42，deep正式对照8/42并保留预算曲线；同时给出
 
 - deep交错和末尾收尾下的跨预算accepted集合关系尚无证明。第6.3节已明确收窄trace合同并保留质量门槛；
   第4步须用含晚到发现点的oracle固定调度，不能把一般单调性当成既有结论。
-- 第3步须固定首次步长、关系联合方向的明确上界和未知粒度的几何游标细节；必须由通用domain/interface表达，
-  以本节矩阵及原13例成本/核心质量选择，不能按case调参数。
+- 第3步的首次步长、方向上界和未知粒度游标已在第5节固定并进入domain oracle；
+  原13例成本及核心质量仍须实测，不按case调整参数。
 - 当前cost profile对设备收益的区分能力有限。先评估减少重复工作后的质量，独立记录估值与实卡差异；
   本方案不授权改数值语义或把不准的估值变成legality判据。
 
-## 已实施版本的检查点（不代签本次效率重构）
+## 本次效率重构检查点
+
+首步已冻结仅含前缀复用的编译器，三项Division（1024/1025/1031）standard 8/42与修改前逐条候选trace、
+typed结果及完整package逐byte相同；六次source→package/no-card全部通过。每项tiling实际应用由366降至344，
+layout/PBQP由40/41/41降至39/39/39，命中3个Temporal及prepared前缀；短编译wall未形成明确收益。
+缓存入口受全局width限制，LRU淘汰不改变逻辑求值或trial。
+
+后续已接入actual tiled scope的必要条件检查、单一多尺度提案及deep求值间轮转。
+domain oracle另发现既有coupled-state helper无条件重置全部scope的loop order；现仅在活跃循环集合改变时补全对应scope，
+未改变的scope保持原顺序。Planning的131项测试、55项定向Driver测试及正式CLI/source→package/no-card通过；
+包含storage-only轮末anchor、cache关闭/淘汰的完整Instr和候选trace等价性、yield及多width计费收尾。
+另8项正式搜索/路由测试通过，包含实际容量反馈和大GEMM读取保护。
+大GEMM的resident reuse与64 MiB实际读取保护通过；当前13项standard 8/42均完成fresh构包/no-card，
+全部完整package与此前接受的standard相同。三项Division的deep 8/42也构包/no-card通过、42方案全部收尾，
+完整包与此前deep一致；actual求值由2448/2760/2789降至2146/2190/2206，wall由268.51/405.15/414.96秒
+降至195.50/215.86/243.41秒。这是首批观测，仍须匹配负载复测，不能以此签发整体效率或设备收益。
+Deep其余十项、核心及全矩阵验收继续。首可行/赢家出现时间观测已接入，新增观测及保留的容量邻域上界经
+63项Driver定向回归、正式CLI及source→package/no-card通过；canonical完整增量构建及第二次Ninja no-op通过。
+
+## 先前版本检查点（不代签本次效率重构）
 
 搜索组织改动以 `093b6c55` 为修改前对照。修改前编译器及已接受性能记录已保留；下述历史矩阵使用冻结的canonical编译器产物，
 SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。本轮有界细调修改尚未重签全矩阵及实卡性能资格。
@@ -405,4 +456,4 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
   三项Division完成deep 8/42及三模式共27次实卡，完整数值和执行窗口健康检查通过；actual求值减少29.3%至68.0%，
   未证明稳定设备收益，逐项数据见板端性能记录及`search-bounded-fine-20260918.json`。
   用户随后停止批次，剩余10个deep搜索和板测等待队列均已终止，停止时无在途设备执行；取消不算编译失败或完成。
-  此后用户要求系统调研整个search的效率，并将方案落入文档；上文是待实施合同，本节记录此前代码及验证。
+  此后用户要求系统调研整个search的效率，并将方案落入文档；本节只记录此前代码及验证，本轮实施见上节。

@@ -19,7 +19,7 @@
 # RUN: test -d %t.limited-package
 # RUN: wafer-run --package-dir %t.limited-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.deep-package --num-partitions=1 --optimization-policy=search --search-mode=deep --search-width=1 --search-trials=1 --compile-timing > %t.deep.log 2>&1
-# RUN: FileCheck %s --check-prefix=DEEP < %t.deep.log
+# RUN: FileCheck %s --check-prefix=DEEP --implicit-check-not=fine-tuning < %t.deep.log
 # RUN: wafer-run --package-dir %t.deep-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 # RUN: wafer-compile --input-program-dir %t.source --output-dir %t.none-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=NONE
 # RUN: test -d %t.none-package
@@ -64,16 +64,15 @@
 
 # DEEP: wafer-compile: optimization-policy=search search-width=1 search-trials=1 search-mode=deep
 # DEEP: wafer-compile: search-current-ir coverage=feasible-partial
-# DEEP: | search-candidate | current-ir | fine-tuning |
 # DEEP: compile-counter category=search name=candidate-actualizations value={{[2-9]|[1-9][0-9]+}}
-# DEEP: compile-counter category=search name=fine-tuning-accepted value={{[1-9][0-9]*}}
-# DEEP: compile-counter category=search name=fine-tuning-candidate-bound value={{[1-9][0-9]*}}
-# DEEP: compile-counter category=search name=fine-tuning-duration-improvements value={{[0-9]+}}
-# DEEP: compile-counter category=search name=fine-tuning-evaluations value={{[1-9][0-9]*}}
-# DEEP: compile-counter category=search name=fine-tuning-improvements value={{[0-9]+}}
-# DEEP: compile-counter category=search name=fine-tuning-rounds value=1
+# DEEP: compile-counter category=search name=first-feasible-candidate value=0
+# DEEP: compile-counter category=search name=first-feasible-microseconds value={{[1-9][0-9]*}}
+# DEEP: compile-counter category=search name=performance-candidate-bound value={{[1-9][0-9]*}}
+# DEEP: compile-counter category=search name=performance-rounds value={{[1-9][0-9]*}}
 # DEEP: compile-counter category=search name=schemes-completed value=1
 # DEEP: compile-counter category=search name=schemes-started value=1
 # DEEP: compile-counter category=search name=schemes-unfinished value=0
 # DEEP: compile-counter category=search name=trials-used value=1
+# DEEP: compile-counter category=search name=winner-first-candidate value={{[0-9]+}}
+# DEEP: compile-counter category=search name=winner-first-microseconds value={{[1-9][0-9]*}}
 # DEEP: wafer-compile: wrote verified package with num-partitions=1 tiles=16:

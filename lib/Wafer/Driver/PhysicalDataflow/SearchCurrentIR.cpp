@@ -26,11 +26,14 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 
+#include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <deque>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -55,6 +58,121 @@ struct CurrentCandidate {
 struct TemporalAxis {
   TemporalDomain domain;
   TemporalSuccessor current;
+};
+
+struct LayoutInput {
+  CurrentCandidate candidate;
+  std::unique_ptr<LayoutAssignmentQuery> query;
+  ExactPBQPResult assignment;
+};
+
+/// Only already-materialized owners live here. Children are filled once and
+/// never mutated; each transformation clones its nearest actual ancestor.
+struct TemporalPrefix : llvm::FoldingSetNode {
+  mlir::Operation *parent = nullptr;
+  std::vector<TemporalChoice> choices;
+  CurrentCandidate tiled;
+  bool canMerge = false;
+  std::array<std::shared_ptr<const LayoutInput>, 2> layouts;
+  std::array<std::array<std::shared_ptr<const CurrentCandidate>, 2>, 2>
+      prepared;
+
+  static void profile(llvm::FoldingSetNodeID &id, mlir::Operation *parent,
+                      const std::vector<TemporalChoice> &choices) {
+    id.AddPointer(parent);
+    id.AddInteger(choices.size());
+    for (const auto &choice : choices) {
+      id.AddInteger(static_cast<unsigned>(choice.kind));
+      id.AddInteger(choice.scopes.size());
+      for (const auto &scope : choice.scopes) {
+        id.AddPointer(scope.operation);
+        id.AddInteger(scope.iteratorTileSizes.size());
+        for (int64_t size : scope.iteratorTileSizes)
+          id.AddInteger(size);
+        id.AddInteger(scope.loopOrder.size());
+        for (unsigned axis : scope.loopOrder)
+          id.AddInteger(axis);
+      }
+    }
+  }
+  void Profile(llvm::FoldingSetNodeID &id) const {
+    profile(id, parent, choices);
+  }
+
+  void collectModules(llvm::SmallPtrSetImpl<mlir::Operation *> &owners) const {
+    owners.insert(tiled.module.get().getOperation());
+    for (const auto &layout : layouts)
+      if (layout)
+        owners.insert(layout->candidate.module.get().getOperation());
+    for (const auto &placements : prepared)
+      for (const auto &candidate : placements)
+        if (candidate)
+          owners.insert(candidate->module.get().getOperation());
+  }
+};
+
+/// One cache for the whole search, not width entries in each structural
+/// session. An in-flight attempt pins its entry across eviction. Parent
+/// sessions remove their keys before destroying the immutable structural IR.
+class CurrentIRPrefixCache {
+public:
+  CurrentIRPrefixCache(uint64_t capacity, SearchCurrentIRStatistics *statistics)
+      : capacity(capacity), statistics(statistics) {}
+
+  std::shared_ptr<TemporalPrefix>
+  find(mlir::Operation *parent, const std::vector<TemporalChoice> &choices) {
+    llvm::FoldingSetNodeID id;
+    TemporalPrefix::profile(id, parent, choices);
+    void *position = nullptr;
+    auto *found = index.FindNodeOrInsertPos(id, position);
+    if (!found)
+      return {};
+    auto it = llvm::find_if(
+        entries, [&](const auto &entry) { return entry.get() == found; });
+    auto result = *it;
+    entries.splice(entries.end(), entries, it);
+    return result;
+  }
+
+  void retain(std::shared_ptr<TemporalPrefix> prefix) {
+    if (!capacity)
+      return;
+    if (entries.size() == capacity) {
+      index.RemoveNode(entries.front().get());
+      entries.pop_front();
+      if (statistics)
+        ++statistics->prefixEvictions;
+    }
+    index.InsertNode(prefix.get());
+    entries.push_back(std::move(prefix));
+    if (statistics)
+      statistics->peakCachedPrefixes =
+          std::max<uint64_t>(statistics->peakCachedPrefixes, entries.size());
+  }
+
+  void erase(mlir::Operation *parent) {
+    for (auto it = entries.begin(); it != entries.end();) {
+      if ((*it)->parent != parent) {
+        ++it;
+        continue;
+      }
+      index.RemoveNode(it->get());
+      it = entries.erase(it);
+    }
+  }
+
+  void collectModules(mlir::Operation *parent,
+                      llvm::SmallPtrSetImpl<mlir::Operation *> &owners) const {
+    for (const auto &entry : entries)
+      if (entry->parent == parent)
+        entry->collectModules(owners);
+  }
+
+private:
+  const uint64_t capacity;
+  SearchCurrentIRStatistics *statistics;
+  llvm::FoldingSet<TemporalPrefix> index;
+  std::list<std::shared_ptr<TemporalPrefix>> entries;
 };
 
 static ExecutableCompilationResult fail(ExecutableCompilationStatus status,
@@ -333,6 +451,44 @@ struct ImplementationChoice {
   }
 };
 
+/// TemporalTiling is the only producer of iteration-coordinate annotations.
+/// Later stages preserve or erase these loop identities; they cannot restore
+/// a selected identity absent from the actual tiled owner. This is only a
+/// necessary condition: read windows, effects and participants are still
+/// checked after their actual materialization.
+bool hasImplementationScopes(mlir::ModuleOp module,
+                             const ImplementationChoice &choice) {
+  if (!choice.pipeline && !choice.reuse)
+    return true;
+  llvm::SmallVector<PipelineScope, 16> scopes;
+  module.walk([&](mlir::scf::ForOp loop) {
+    auto coordinates = getIterationCoordinates(loop);
+    auto tile = loop->getParentOfType<TileModuleOp>();
+    if (coordinates && tile)
+      scopes.push_back({tile.getCardId(), tile.getTileId(), coordinates});
+  });
+  for (const auto &scope : choice.pipelineScopes)
+    if (!llvm::is_contained(scopes, scope))
+      return false;
+  if (choice.reuse)
+    for (const auto &selection : choice.reuse->selections) {
+      if (selection.kind == AccessReuseKind::Peer)
+        continue;
+      auto contains = [&](IterationCoordinatesAttr coordinates) {
+        return llvm::any_of(scopes, [&](const auto &scope) {
+          return selection.card >= 0 && selection.tile >= 0 &&
+                 scope.card == static_cast<uint64_t>(selection.card) &&
+                 scope.tile == static_cast<uint64_t>(selection.tile) &&
+                 scope.coordinates == coordinates;
+        });
+      };
+      if (!contains(selection.scope) ||
+          (selection.innerScope && !contains(selection.innerScope)))
+        return false;
+    }
+  return true;
+}
+
 class CurrentIRCandidateSession final : public StructuralCandidateSession {
 public:
   CurrentIRCandidateSession(
@@ -345,13 +501,18 @@ public:
       SearchCurrentIRStatistics *statistics,
       ExecutableLoweringStatistics *executableStatistics,
       const std::optional<analysis::SearchCostCohort> &costCohort,
-      size_t explorationStratum)
+      size_t explorationStratum, CurrentIRPrefixCache &prefixCache)
       : state(std::move(state)), tensorProgram(tensorProgram),
         analysis(analysis), planning(planning), program(program),
         executionConfig(executionConfig), diagnostics(diagnostics),
         programData(programData), options(options), statistics(statistics),
         executableStatistics(executableStatistics), costCohort(costCohort),
-        explorationStratum(explorationStratum) {}
+        explorationStratum(explorationStratum), prefixCache(prefixCache) {}
+
+  ~CurrentIRCandidateSession() override {
+    if (structural)
+      prefixCache.erase(structural->module->getOperation());
+  }
 
   StructuralCandidateEvaluation
   advance(CandidateAdvanceLimits limits) override {
@@ -398,9 +559,6 @@ public:
       return yield();
     }
     auto &temporal = *pending;
-    std::optional<support::ScopedCompileTimingSpan> fineTiming;
-    if (temporal.proposalKind == TemporalProposalKind::Fine)
-      fineTiming.emplace("search-candidate", "current-ir", "fine-tuning");
     auto &attempt = temporal.region;
     if (!attempt.lowered) {
       auto prepared = prepareRegion(temporal, attempt);
@@ -699,9 +857,10 @@ public:
   }
 
   bool hasOpenTrial() const override {
-    return options.mode == SearchMode::Deep && active &&
-           implementations[*active]->started &&
-           implementations[*active]->proposals && !exhausted;
+    return options.mode == SearchMode::Deep && !exhausted &&
+           llvm::any_of(implementations, [](const auto &branch) {
+             return branch->started && branch->proposals;
+           });
   }
 
 private:
@@ -723,13 +882,8 @@ private:
   using RegionPreparation =
       std::variant<RegionPrepared, RegionPreparationYielded,
                    ExecutableCompilationResult>;
-  struct LayoutInput {
-    CurrentCandidate candidate;
-    std::unique_ptr<LayoutAssignmentQuery> query;
-    ExactPBQPResult assignment;
-  };
   struct RegionAttempt {
-    std::optional<CurrentCandidate> lowered;
+    std::shared_ptr<const CurrentCandidate> lowered;
     std::shared_ptr<const LayoutInput> layoutInput;
     LayoutMaterializationPlacement placement =
         LayoutMaterializationPlacement::FirstUse;
@@ -737,14 +891,8 @@ private:
   };
   struct TemporalAttempt {
     std::vector<TemporalChoice> choices;
-    TemporalProposalKind proposalKind = TemporalProposalKind::Explore;
-    CurrentCandidate tiled;
+    std::shared_ptr<TemporalPrefix> prefix;
     RegionAttempt region;
-  };
-  struct LayoutCheckpoint {
-    std::vector<TemporalChoice> choices;
-    bool merged;
-    std::shared_ptr<const LayoutInput> input;
   };
 
   ImplementationBranch &current() { return *implementations[*active]; }
@@ -832,27 +980,18 @@ private:
       if (branch.proposals->prepareNext(kind))
         return kind;
     }
-    if (branch.proposals->prepareNext(TemporalProposalKind::Fine))
-      return TemporalProposalKind::Fine;
     return std::nullopt;
   }
 
   bool selectImplementation(bool mayStart) {
     budgetBlocked = false;
-    if (options.mode == SearchMode::Deep && active && current().proposals)
-      return true;
     std::optional<size_t> waiting;
     for (size_t i = 0; i < implementations.size(); ++i)
       if (implementations[i]->state == BranchState::Waiting &&
           (!waiting ||
            implementations[i]->priority > implementations[*waiting]->priority))
         waiting = i;
-    if (waiting &&
-        (options.mode == SearchMode::Deep || visit % 3 == 1 || !active)) {
-      if (!mayStart) {
-        budgetBlocked = true;
-        return false;
-      }
+    if (waiting && mayStart && (visit % 3 == 1 || !active)) {
       if (getRetainedBranchCount() >= retentionLimit &&
           llvm::any_of(implementations, [](const auto &branch) {
             return bool(branch->proposals);
@@ -888,7 +1027,8 @@ private:
         return true;
       }
     }
-    if (active && current().proposals && !current().bestDuration &&
+    if (options.mode == SearchMode::Standard && active && current().proposals &&
+        !current().bestDuration &&
         current().proposals->prepareNext(TemporalProposalKind::Repair))
       return true;
     std::optional<size_t> selected;
@@ -991,7 +1131,6 @@ private:
           "search",
           *work == TemporalProposalKind::Repair    ? "integer-repair-proposals"
           : *work == TemporalProposalKind::Improve ? "integer-improve-proposals"
-          : *work == TemporalProposalKind::Fine    ? "fine-tuning-evaluations"
                                                 : "integer-explore-proposals",
           1);
     } else if (options.mode == SearchMode::Deep) {
@@ -1014,9 +1153,6 @@ private:
           break;
       }
     }
-    std::optional<support::ScopedCompileTimingSpan> fineTiming;
-    if (work == TemporalProposalKind::Fine)
-      fineTiming.emplace("search-candidate", "current-ir", "fine-tuning");
     if (statistics) {
       statistics->accessReuseCandidates += bool(current().choice.reuse);
       const auto number = statistics->temporalCandidateActualizations++;
@@ -1038,49 +1174,62 @@ private:
                     .str(),
                 size);
     }
-    mlir::IRMapping mapping;
-    auto candidate = cloneCandidate(*structural, mapping, detail);
-    if (mlir::failed(candidate))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-temporal-clone", detail);
-    std::vector<TemporalDomain> remappedDomains;
-    std::vector<TemporalChoice> remappedChoices;
-    remappedDomains.reserve(axes.size());
-    remappedChoices.reserve(axes.size());
-    for (auto [axis, choice] : llvm::zip(axes, choices)) {
-      auto region = mlir::dyn_cast_or_null<TileRegionOp>(
-          mapping.lookupOrNull(axis.domain.getRegion().getOperation()));
-      if (!region)
+    auto prefix = prefixCache.find(structural->module->getOperation(), choices);
+    if (prefix) {
+      if (statistics)
+        ++statistics->temporalPrefixHits;
+    } else {
+      mlir::IRMapping mapping;
+      auto candidate = cloneCandidate(*structural, mapping, detail);
+      if (mlir::failed(candidate))
         return fail(ExecutableCompilationStatus::CompilerFailure,
-                    "search-temporal-remap",
-                    "clone omitted a current TileRegion");
-      auto domain = remapTemporalDomain(axis.domain, region, mapping, &detail);
-      auto remapped = remapTemporalChoice(choice, mapping, detail);
-      if (mlir::failed(domain) || mlir::failed(remapped))
+                    "search-temporal-clone", detail);
+      std::vector<TemporalDomain> remappedDomains;
+      std::vector<TemporalChoice> remappedChoices;
+      remappedDomains.reserve(axes.size());
+      remappedChoices.reserve(axes.size());
+      for (auto [axis, choice] : llvm::zip(axes, choices)) {
+        auto region = mlir::dyn_cast_or_null<TileRegionOp>(
+            mapping.lookupOrNull(axis.domain.getRegion().getOperation()));
+        if (!region)
+          return fail(ExecutableCompilationStatus::CompilerFailure,
+                      "search-temporal-remap",
+                      "clone omitted a current TileRegion");
+        auto domain =
+            remapTemporalDomain(axis.domain, region, mapping, &detail);
+        auto remapped = remapTemporalChoice(choice, mapping, detail);
+        if (mlir::failed(domain) || mlir::failed(remapped))
+          return fail(ExecutableCompilationStatus::CompilerFailure,
+                      "search-temporal-remap", detail);
+        remappedDomains.push_back(std::move(*domain));
+        remappedChoices.push_back(std::move(*remapped));
+      }
+      llvm::SmallVector<TemporalTilingRequest, 32> requests;
+      for (auto [domain, choice] :
+           llvm::zip_equal(remappedDomains, remappedChoices))
+        requests.push_back({domain, choice});
+      TemporalTilingFailure temporalFailure;
+      if (mlir::failed(applyTemporalTiling(requests, candidate->relations,
+                                           &temporalFailure)))
         return fail(ExecutableCompilationStatus::CompilerFailure,
-                    "search-temporal-remap", detail);
-      remappedDomains.push_back(std::move(*domain));
-      remappedChoices.push_back(std::move(*remapped));
+                    "search-temporal-apply", temporalFailure.detail);
+      if (statistics)
+        statistics->temporalApplications += requests.size();
+      SpatialRegionMaterializationFailure failure;
+      auto availability = analyzeCommunicationRegionClosure(
+          *candidate->module, candidate->relations, &failure);
+      if (mlir::failed(availability))
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "search-communication-region-availability", failure.detail);
+      prefix = std::make_shared<TemporalPrefix>();
+      prefix->parent = structural->module->getOperation();
+      prefix->choices = choices;
+      prefix->tiled = std::move(*candidate);
+      prefix->canMerge =
+          *availability == CommunicationRegionClosureAvailability::Available;
+      prefixCache.retain(prefix);
     }
-    llvm::SmallVector<TemporalTilingRequest, 32> requests;
-    for (auto [domain, choice] :
-         llvm::zip_equal(remappedDomains, remappedChoices))
-      requests.push_back({domain, choice});
-    TemporalTilingFailure temporalFailure;
-    if (mlir::failed(applyTemporalTiling(requests, candidate->relations,
-                                         &temporalFailure)))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-temporal-apply", temporalFailure.detail);
-    if (statistics)
-      statistics->temporalApplications += requests.size();
-    SpatialRegionMaterializationFailure failure;
-    auto availability = analyzeCommunicationRegionClosure(
-        *candidate->module, candidate->relations, &failure);
-    if (mlir::failed(availability))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-communication-region-availability", failure.detail);
-    const bool canMerge =
-        *availability == CommunicationRegionClosureAvailability::Available;
+    const bool canMerge = prefix->canMerge;
     if (canMerge && !current().choice.merged) {
       auto sibling = current().choice;
       sibling.merged = true;
@@ -1090,15 +1239,24 @@ private:
       return fail(ExecutableCompilationStatus::UnsupportedFailure,
                   "search-communication-region-availability",
                   "selected closure is unavailable at this tile point");
+    if (!hasImplementationScopes(*prefix->tiled.module, current().choice)) {
+      support::addCompileCounter("search", "missing-implementation-scopes", 1);
+      return fail(ExecutableCompilationStatus::UnsupportedFailure,
+                  "search-implementation-scope",
+                  "selected iteration scope is absent at this tile point");
+    }
     TemporalAttempt attempt;
     attempt.choices = std::move(choices);
-    attempt.proposalKind = work.value_or(TemporalProposalKind::Explore);
-    attempt.tiled = std::move(*candidate);
+    attempt.prefix = std::move(prefix);
     attempt.region.merged = current().choice.merged;
     attempt.region.placement = current().choice.placement;
-    if (layoutCheckpoint && layoutCheckpoint->choices == attempt.choices &&
-        layoutCheckpoint->merged == attempt.region.merged)
-      attempt.region.layoutInput = layoutCheckpoint->input;
+    if (statistics) {
+      statistics->mergedRegionCandidates += attempt.region.merged;
+      statistics->regionPreservingCandidates += !attempt.region.merged;
+    }
+    attempt.region.layoutInput = attempt.prefix->layouts[attempt.region.merged];
+    if (attempt.region.layoutInput && statistics)
+      ++statistics->layoutPrefixHits;
     pending.emplace(std::move(attempt));
     return std::nullopt;
   }
@@ -1110,7 +1268,7 @@ private:
     std::string detail;
     if (!attempt.layoutInput) {
       mlir::IRMapping mapping;
-      auto candidate = cloneCandidate(temporal.tiled, mapping, detail);
+      auto candidate = cloneCandidate(temporal.prefix->tiled, mapping, detail);
       if (mlir::failed(candidate))
         return fail(ExecutableCompilationStatus::CompilerFailure,
                     "search-region-clone", detail);
@@ -1124,13 +1282,9 @@ private:
                 *candidate->module, candidate->relations, &closure, &failure)))
           return fail(ExecutableCompilationStatus::CompilerFailure,
                       "search-communication-region-closure", failure.detail);
-        if (statistics) {
+        if (statistics)
           statistics->communicationRegionClosures +=
               closure.closedExchangeComponents;
-          ++statistics->mergedRegionCandidates;
-        }
-      } else if (statistics) {
-        ++statistics->regionPreservingCandidates;
       }
       OnlineAttentionDecompositionFailure attentionFailure;
       if (mlir::failed(decomposeOnlineAttention(
@@ -1160,8 +1314,7 @@ private:
                     "current layout PBQP has no complete assignment");
       attempt.layoutInput = std::make_shared<LayoutInput>(LayoutInput{
           std::move(*candidate), std::move(query.query), std::move(first)});
-      layoutCheckpoint = LayoutCheckpoint{temporal.choices, attempt.merged,
-                                          attempt.layoutInput};
+      temporal.prefix->layouts[attempt.merged] = attempt.layoutInput;
       return RegionPreparationYielded{};
     }
     const auto &input = *attempt.layoutInput;
@@ -1172,47 +1325,58 @@ private:
                                    ? "first-use-placement-candidates"
                                    : "invariant-placement-candidates",
                                1);
-    mlir::IRMapping mapping;
-    auto candidate = cloneCandidate(input.candidate, mapping, detail);
-    if (mlir::failed(candidate))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-layout-clone", detail);
-    LayoutOptimizationResult layout;
-    {
-      support::ScopedCompileTimingSpan timing("stage", "current-ir-physical",
-                                              "layout-and-bufferization");
-      layout = input.query->apply(*candidate->module, candidate->relations,
-                                  input.assignment, &mapping, placement);
+    auto &prepared =
+        temporal.prefix
+            ->prepared[attempt.merged][static_cast<unsigned>(placement)];
+    if (prepared) {
+      if (statistics)
+        ++statistics->preparedPrefixHits;
+    } else {
+      mlir::IRMapping mapping;
+      auto candidate = cloneCandidate(input.candidate, mapping, detail);
+      if (mlir::failed(candidate))
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "search-layout-clone", detail);
+      LayoutOptimizationResult layout;
+      {
+        support::ScopedCompileTimingSpan timing("stage", "current-ir-physical",
+                                                "layout-and-bufferization");
+        layout = input.query->apply(*candidate->module, candidate->relations,
+                                    input.assignment, &mapping, placement);
+      }
+      recordLayoutInstrumentation(layout.statistics);
+      if (statistics) {
+        ++statistics->layoutInvocations;
+        statistics->layoutFeasibleFallbacks +=
+            layout.status == ExactPBQPStatus::Feasible;
+      }
+      if (!layout.succeeded())
+        return fail(classifyLayoutFailure(layout.status), "search-layout",
+                    layout.detail);
+      StructuredToTileResult compute;
+      {
+        support::ScopedCompileTimingSpan timing("stage", "current-ir-physical",
+                                                "structured-to-tile");
+        compute = lowerStructuredComputeToTile(*candidate->module,
+                                               candidate->relations);
+      }
+      if (!compute.succeeded())
+        return fail(compute.failure == StructuredToTileFailureKind::Unsupported
+                        ? ExecutableCompilationStatus::UnsupportedFailure
+                        : ExecutableCompilationStatus::CompilerFailure,
+                    "search-structured-to-tile", compute.detail);
+      auto physicalPlacement = optimizePhysicalMovementPlacement(
+          candidate->module.get().getOperation(), candidate->relations,
+          placement);
+      if (mlir::failed(physicalPlacement))
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "search-physical-movement-placement",
+                    "physical movement placement produced invalid current IR");
+      support::addCompileCounter("movement", "invariant-physical-copies",
+                                 *physicalPlacement);
+      prepared = std::make_shared<CurrentCandidate>(std::move(*candidate));
     }
-    recordLayoutInstrumentation(layout.statistics);
-    if (statistics) {
-      ++statistics->layoutInvocations;
-      statistics->layoutFeasibleFallbacks +=
-          layout.status == ExactPBQPStatus::Feasible;
-    }
-    if (!layout.succeeded())
-      return fail(classifyLayoutFailure(layout.status), "search-layout",
-                  layout.detail);
-    StructuredToTileResult compute;
-    {
-      support::ScopedCompileTimingSpan timing("stage", "current-ir-physical",
-                                              "structured-to-tile");
-      compute = lowerStructuredComputeToTile(*candidate->module,
-                                             candidate->relations);
-    }
-    if (!compute.succeeded())
-      return fail(compute.failure == StructuredToTileFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "search-structured-to-tile", compute.detail);
-    auto physicalPlacement = optimizePhysicalMovementPlacement(
-        candidate->module->getOperation(), candidate->relations, placement);
-    if (mlir::failed(physicalPlacement))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "search-physical-movement-placement",
-                  "physical movement placement produced invalid current IR");
-    support::addCompileCounter("movement", "invariant-physical-copies",
-                               *physicalPlacement);
+    const auto &candidate = prepared;
     auto recursive = analyzeRecursiveDoublingAvailability(*candidate->module,
                                                           candidate->relations);
     if (recursive.kind == RecursiveDoublingAvailabilityKind::BrokenContract)
@@ -1233,7 +1397,8 @@ private:
           "selected collective has no current component at this tile point");
     if (placement == LayoutMaterializationPlacement::FirstUse &&
         (input.query->hasLoopInvariantPlacement(input.assignment) ||
-         hasInvariantPhysicalMovement(candidate->module->getOperation()))) {
+         hasInvariantPhysicalMovement(
+             candidate->module.get().getOperation()))) {
       auto sibling = current().choice;
       sibling.placement = LayoutMaterializationPlacement::LoopInvariant;
       discover(std::move(sibling), temporal.choices);
@@ -1270,24 +1435,24 @@ private:
                  : DistributedReductionAlgorithm::Centralized;
       discover(std::move(sibling), temporal.choices);
     }
-    attempt.lowered.emplace(std::move(*candidate));
+    attempt.lowered = prepared;
     return RegionPrepared{};
   }
 
   void recordOwnership() {
     if (!statistics)
       return;
-    uint64_t modules = bool(structural) + bool(layoutCheckpoint);
-    if (pending) {
-      modules += bool(pending->tiled.module) + bool(pending->region.lowered);
-      modules += bool(pending->region.layoutInput) &&
-                 (!layoutCheckpoint ||
-                  pending->region.layoutInput != layoutCheckpoint->input);
+    llvm::SmallPtrSet<mlir::Operation *, 16> owners;
+    if (structural) {
+      owners.insert(structural->module->getOperation());
+      prefixCache.collectModules(structural->module->getOperation(), owners);
     }
+    if (pending)
+      pending->prefix->collectModules(owners);
     statistics->peakSessionTemporalPrefixes = std::max<uint64_t>(
         statistics->peakSessionTemporalPrefixes, bool(pending));
     statistics->peakSessionIRModules =
-        std::max(statistics->peakSessionIRModules, modules);
+        std::max<uint64_t>(statistics->peakSessionIRModules, owners.size());
   }
 
   StructuralCandidateEvaluation closed() {
@@ -1403,8 +1568,8 @@ private:
   std::vector<std::unique_ptr<ImplementationBranch>> implementations;
   std::optional<size_t> active;
   std::optional<TemporalAttempt> pending;
-  std::optional<LayoutCheckpoint> layoutCheckpoint;
   const size_t explorationStratum;
+  CurrentIRPrefixCache &prefixCache;
   uint64_t visit = 0;
   uint64_t retentionLimit = 1;
   uint64_t stepSchemesStarted = 0;
@@ -1428,14 +1593,16 @@ public:
         program(program), executionConfig(executionConfig),
         diagnostics(diagnostics), programData(programData), options(options),
         statistics(statistics), executableStatistics(executableStatistics),
-        costCohort(costCohort) {}
+        costCohort(costCohort),
+        prefixCache(std::min(options.prefixCacheEntries, options.limits.width),
+                    statistics) {}
 
   std::unique_ptr<StructuralCandidateSession>
   start(const RegionState &state) override {
     return std::make_unique<CurrentIRCandidateSession>(
         state, tensorProgram, analysis, planning, program, executionConfig,
         diagnostics, programData, options, statistics, executableStatistics,
-        costCohort, nextExplorationStratum++);
+        costCohort, nextExplorationStratum++, prefixCache);
   }
 
 private:
@@ -1450,6 +1617,7 @@ private:
   SearchCurrentIRStatistics *statistics;
   ExecutableLoweringStatistics *executableStatistics;
   const std::optional<analysis::SearchCostCohort> &costCohort;
+  CurrentIRPrefixCache prefixCache;
   size_t nextExplorationStratum = 0;
 };
 
@@ -1569,6 +1737,20 @@ ExecutableCompilationResult compileSearchCurrentIR(
   searchCounter("schemes-unfinished",
                 searched.work.schemesStarted - searched.work.schemesCompleted);
   searchCounter("deep-mode", options.mode == SearchMode::Deep);
+  searchCounter("incumbent-updates",
+                searched.control.statistics.incumbentUpdates);
+  if (searched.work.firstFeasible) {
+    searchCounter("first-feasible-candidate",
+                  searched.work.firstFeasible->candidateIndex);
+    searchCounter("first-feasible-microseconds",
+                  searched.work.firstFeasible->elapsedMicroseconds);
+  }
+  if (searched.work.incumbentSelected) {
+    searchCounter("winner-first-candidate",
+                  searched.work.incumbentSelected->candidateIndex);
+    searchCounter("winner-first-microseconds",
+                  searched.work.incumbentSelected->elapsedMicroseconds);
+  }
   if (statistics) {
     searchCounter("peak-session-temporal-prefixes",
                   statistics->peakSessionTemporalPrefixes);
@@ -1590,6 +1772,11 @@ ExecutableCompilationResult compileSearchCurrentIR(
   if (statistics) {
     searchCounter("temporal-domains", statistics->temporalDomainsBuilt);
     searchCounter("temporal-applications", statistics->temporalApplications);
+    searchCounter("temporal-prefix-hits", statistics->temporalPrefixHits);
+    searchCounter("layout-prefix-hits", statistics->layoutPrefixHits);
+    searchCounter("prepared-prefix-hits", statistics->preparedPrefixHits);
+    searchCounter("prefix-evictions", statistics->prefixEvictions);
+    searchCounter("peak-cached-prefixes", statistics->peakCachedPrefixes);
     searchCounter("actual-capacity-refinements",
                   statistics->actualCapacityRefinements);
     searchCounter("unavailable-capacity-refinements",

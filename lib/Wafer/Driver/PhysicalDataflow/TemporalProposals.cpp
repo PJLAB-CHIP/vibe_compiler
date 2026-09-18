@@ -7,6 +7,7 @@
 #include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Interfaces/TilingInterface.h"
 
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
@@ -104,7 +105,7 @@ bool TemporalProposals::append(std::vector<TemporalChoice> choices,
     return false;
   queues[static_cast<unsigned>(kind)].push_back(entries.size());
   entryIndex[hashChoices(choices)].push_back(entries.size());
-  entries.push_back({std::move(choices), kind, {}, {}});
+  entries.push_back({std::move(choices), {}, {}});
   return true;
 }
 
@@ -115,25 +116,6 @@ bool TemporalProposals::prepareNext(TemporalProposalKind kind) {
     return appendCapacityDirection();
   if (kind == TemporalProposalKind::Explore && appendSeedPoint())
     return true;
-  if (kind == TemporalProposalKind::Fine) {
-    if (!fineStarted) {
-      // Fine tuning is one final poll, after all ordinary and capacity work.
-      if (!bestEntry || prepareNext(TemporalProposalKind::Explore) ||
-          prepareNext(TemporalProposalKind::Repair) ||
-          prepareNext(TemporalProposalKind::Improve))
-        return false;
-      fineStarted = true;
-      finePoll = FinePoll{*bestEntry, coordinates(entries[*bestEntry].choices)};
-      support::addCompileCounter("search", "fine-tuning-rounds", 1);
-      for (llvm::StringRef name :
-           {"fine-tuning-evaluations", "fine-tuning-accepted",
-            "fine-tuning-improvements", "fine-tuning-duration-improvements"})
-        support::addCompileCounter("search", name, 0);
-      support::addCompileCounter("search", "fine-tuning-candidate-bound",
-                                 2 * finePoll->coordinates.size());
-    }
-    return advanceFinePoll();
-  }
   if (kind != TemporalProposalKind::Improve)
     return false;
   while (advanceImprovementPoll())
@@ -158,7 +140,7 @@ bool TemporalProposals::visitRaw(const std::vector<TemporalChoice> &choices) {
   if (find(choices))
     return false;
   entryIndex[hashChoices(choices)].push_back(entries.size());
-  entries.push_back({choices, TemporalProposalKind::Explore, {}, {}, true});
+  entries.push_back({choices, {}, {}, true});
   return true;
 }
 
@@ -215,9 +197,19 @@ void TemporalProposals::rankGroups(const std::vector<TemporalChoice> &choices,
         for (size_t axis = 0; axis < reuse.size(); ++axis)
           if (axis < operand.iterators.size() && !operand.iterators.test(axis))
             reuse[axis] = llvm::SaturatingAdd(reuse[axis], operand.bytes);
+    auto tiling = mlir::dyn_cast<mlir::TilingInterface>(scope.operation);
+    auto roles = tiling ? tiling.getLoopIteratorTypes()
+                        : llvm::SmallVector<mlir::utils::IteratorType>{};
+    auto roleRank = [&](Coordinate c) {
+      if (c.iterator >= roles.size())
+        return 2;
+      return roles[c.iterator] == mlir::utils::IteratorType::parallel ? 0 : 1;
+    };
     // Missing evidence leaves the ordinary size/axis order intact. These
     // logical bytes never describe an allocation or authorize a rewrite.
     llvm::sort(group, [&](Coordinate a, Coordinate b) {
+      if (roleRank(a) != roleRank(b))
+        return roleRank(a) < roleRank(b);
       if (reuse[a.iterator] != reuse[b.iterator])
         return shrinking ? reuse[a.iterator] < reuse[b.iterator]
                          : reuse[a.iterator] > reuse[b.iterator];
@@ -363,135 +355,270 @@ void TemporalProposals::observeAccepted(
   if (!index)
     return;
   auto &entry = entries[*index];
-  const bool improvesBest =
-      !bestObjective ||
-      analysis::compareSearchObjectives(objective, *bestObjective) ==
-          analysis::SearchObjectiveComparison::Better;
   if (entry.bestObjective &&
       analysis::compareSearchObjectives(objective, *entry.bestObjective) !=
           analysis::SearchObjectiveComparison::Better)
     return;
   entry.bestObjective = objective;
-  if (entry.kind == TemporalProposalKind::Fine)
-    support::addCompileCounter("search", "fine-tuning-accepted", 1);
-  if (!improvesBest)
+  if (bestObjective &&
+      analysis::compareSearchObjectives(objective, *bestObjective) !=
+          analysis::SearchObjectiveComparison::Better)
     return;
-  const bool improvesDuration =
-      !bestObjective || objective.estimatedDurationPicoseconds <
-                            bestObjective->estimatedDurationPicoseconds;
   bestObjective = objective;
   bestEntry = *index;
-  if (entry.kind == TemporalProposalKind::Fine) {
-    support::addCompileCounter("search", "fine-tuning-improvements", 1);
-    support::addCompileCounter("search", "fine-tuning-duration-improvements",
-                               improvesDuration);
+  // Feedback selects the next round's anchor. It never restarts the current
+  // round or a completed scale, including after a late seed/capacity result.
+  if (!performanceStarted) {
+    performanceStarted = true;
+    initializeScales(choices);
   }
-  // Storage still ranks winners. It does not restart performance exploration.
-  // Neither fine results nor their capacity repairs may reopen either poll.
-  if (!improvesDuration || fineStarted)
-    return;
-  improvementPolls.clear();
-  auto all = coordinates(choices);
-  ImprovementPoll poll{*index, all, {}};
-  for (const auto coordinate : all) {
-    if (poll.groups.empty() ||
-        poll.groups.back().front().domain != coordinate.domain ||
-        poll.groups.back().front().scope != coordinate.scope)
-      poll.groups.emplace_back();
-    poll.groups.back().push_back(coordinate);
+}
+
+void TemporalProposals::initializeScales(
+    const std::vector<TemporalChoice> &choices) {
+  for (auto [domainIndex, domain] : llvm::enumerate(domains))
+    for (auto kind :
+         {TemporalTraversalKind::Joint, TemporalTraversalKind::Independent}) {
+      auto descriptors = domain->getScopeDescriptors(kind);
+      auto probe = choices;
+      probe[domainIndex].kind = kind;
+      probe[domainIndex].scopes.clear();
+      for (const auto &descriptor : descriptors)
+        probe[domainIndex].scopes.push_back(
+            {descriptor.operation, descriptor.iterationExtents, {}});
+      for (auto [scopeIndex, descriptor] : llvm::enumerate(descriptors)) {
+        auto &axes = scales[descriptor.operation];
+        axes.resize(std::max(axes.size(), descriptor.iterationExtents.size()));
+        for (auto [axis, capability] :
+             llvm::enumerate(descriptor.iteratorCapabilities)) {
+          if (capability != IteratorTilingCapability::Tileable ||
+              descriptor.iterationExtents[axis] <= 1 || axes[axis].step)
+            continue;
+          int64_t base = descriptor.iterationExtents[axis];
+          for (const auto &scope : choices[domainIndex].scopes)
+            if (scope.operation == descriptor.operation)
+              base = scope.iteratorTileSizes[axis];
+          auto &scale = axes[axis];
+          scale.alignment =
+              getAlignment(probe, {domainIndex, scopeIndex, axis});
+          const int64_t grain = scale.alignment.value_or(1);
+          scale.step = std::max(grain, base / 2);
+          if (scale.alignment)
+            scale.step = grain * llvm::bit_floor(uint64_t(scale.step / grain));
+          for (int64_t step = scale.step; step >= grain; step /= 2)
+            ++scale.rounds;
+          performanceRounds = std::max(performanceRounds, scale.rounds);
+        }
+      }
+    }
+}
+
+void TemporalProposals::beginImprovementPoll() {
+  const auto &anchor = entries[*bestEntry].choices;
+  ImprovementPoll poll{*bestEntry, {}};
+  auto all = coordinates(anchor);
+  std::vector<std::vector<Coordinate>> local;
+  for (auto coordinate : all) {
+    if (local.empty() || local.back().front().domain != coordinate.domain ||
+        local.back().front().scope != coordinate.scope)
+      local.emplace_back();
+    local.back().push_back(coordinate);
   }
-  rankGroups(choices, poll.groups, false);
-  improvementPolls.push_back(std::move(poll));
+  rankGroups(anchor, local, false);
+  // Only an exact shared program-input window supports a cross-scope group.
+  // An invariant coordinate does not change this read window. Shape alone is
+  // never enough; each coordinate belongs to at most one such group.
+  using GroupKey =
+      std::tuple<mlir::Operation *, uint64_t, uint64_t, std::vector<int64_t>,
+                 std::vector<int64_t>, unsigned, int64_t>;
+  std::map<GroupKey, size_t> groupIndex;
+  std::vector<std::vector<Coordinate>> shared;
+  size_t orderDirections = 0;
+  for (const auto &group : local) {
+    const auto first = group.front();
+    const auto &scope = anchor[first.domain].scopes[first.scope];
+    auto descriptor = domains[first.domain]->getScopeDescriptors(
+        anchor[first.domain].kind)[first.scope];
+    auto reads =
+        getReadOperandProjections(scope.operation, descriptor.iterationExtents);
+    auto tiling = mlir::dyn_cast<mlir::TilingInterface>(scope.operation);
+    auto tile = scope.operation->getParentOfType<TileModuleOp>();
+    auto roles = tiling ? tiling.getLoopIteratorTypes()
+                        : llvm::SmallVector<mlir::utils::IteratorType>{};
+    orderDirections += scope.loopOrder.empty() ? 0 : scope.loopOrder.size() - 1;
+    for (auto coordinate : group) {
+      poll.directions.push_back({{coordinate, 1}});
+      poll.directions.push_back({{coordinate, -1}});
+      if (!reads || !tile || coordinate.iterator >= roles.size())
+        continue;
+      for (const auto &read : *reads) {
+        if (!read.programArgument ||
+            coordinate.iterator >= read.iterators.size() ||
+            read.iterators.test(coordinate.iterator))
+          continue;
+        GroupKey key{scope.operation->getParentOfType<mlir::ModuleOp>(),
+                     tile.getCardId(),
+                     *read.programArgument,
+                     {read.offsets.begin(), read.offsets.end()},
+                     {read.sizes.begin(), read.sizes.end()},
+                     static_cast<unsigned>(roles[coordinate.iterator]),
+                     descriptor.iterationExtents[coordinate.iterator]};
+        auto [it, inserted] = groupIndex.emplace(std::move(key), shared.size());
+        if (inserted)
+          shared.emplace_back();
+        shared[it->second].push_back(coordinate);
+        break;
+      }
+    }
+    // Adjacent ranked axes sharing an actual read projection provide a
+    // linear set of exchanges, rather than every pair of local axes.
+    if (reads)
+      for (size_t axis = 1; axis < group.size(); ++axis) {
+        auto a = group[axis - 1], b = group[axis];
+        if (!llvm::any_of(*reads, [&](const auto &read) {
+              return a.iterator < read.iterators.size() &&
+                     b.iterator < read.iterators.size() &&
+                     (read.iterators.test(a.iterator) ||
+                      read.iterators.test(b.iterator));
+            }))
+          continue;
+        poll.directions.push_back({{a, -1}, {b, 1}});
+        poll.directions.push_back({{a, 1}, {b, -1}});
+      }
+  }
+  size_t groups = 0;
+  for (const auto &group : shared) {
+    if (!llvm::any_of(group, [&](Coordinate c) {
+          return c.domain != group.front().domain ||
+                 c.scope != group.front().scope;
+        }))
+      continue;
+    ++groups;
+    for (int direction : {-1, 1}) {
+      std::vector<std::pair<Coordinate, int>> changes;
+      for (auto coordinate : group)
+        changes.emplace_back(coordinate, direction);
+      poll.directions.push_back(std::move(changes));
+    }
+  }
+  support::addCompileCounter("search", "performance-rounds", 1);
+  support::addCompileCounter("search", "performance-candidate-bound",
+                             8 * all.size() + 4 * groups + 2 * orderDirections);
+  improvementPoll = std::move(poll);
+}
+
+bool TemporalProposals::changeSize(std::vector<TemporalChoice> &choices,
+                                   Coordinate coordinate, int direction) const {
+  auto &scope = choices[coordinate.domain].scopes[coordinate.scope];
+  const auto &scale = scales.find(scope.operation)->second[coordinate.iterator];
+  if (performanceRound >= scale.rounds)
+    return false;
+  const int64_t step = scale.step >> performanceRound;
+  const auto interval = bounds(choices, coordinate);
+  int64_t &size = value(choices, coordinate);
+  const bool wasFull = size == interval.upper;
+  if (scale.alignment) {
+    const int64_t grain = *scale.alignment;
+    const int64_t remainder = size % grain;
+    const int64_t nearest =
+        direction < 0 ? (remainder ? remainder : grain) : grain - remainder;
+    const int64_t distance = nearest + step - grain;
+    const int64_t room =
+        direction < 0 ? size - interval.lower : interval.upper - size;
+    if (distance > room)
+      return false;
+    size += direction * distance;
+  } else {
+    const int64_t room =
+        direction < 0 ? size - interval.lower : interval.upper - size;
+    const int64_t target = size + direction * std::min(room, step);
+    std::optional<int64_t> selected;
+    for (int64_t candidate = interval.upper;;
+         candidate = std::max(interval.lower, candidate / 2)) {
+      if ((direction < 0 ? candidate < size : candidate > size) &&
+          (!selected ||
+           std::abs(candidate - target) < std::abs(*selected - target)))
+        selected = candidate;
+      if (candidate == interval.lower)
+        break;
+    }
+    if (!selected)
+      return false;
+    size = *selected;
+  }
+  if (wasFull != (size == interval.upper)) {
+    auto descriptor = domains[coordinate.domain]->getScopeDescriptors(
+        choices[coordinate.domain].kind)[coordinate.scope];
+    auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
+                                             scope.iteratorTileSizes,
+                                             descriptor.precedence);
+    if (mlir::failed(order))
+      return false;
+    scope.loopOrder = std::move(*order);
+  }
+  return true;
 }
 
 bool TemporalProposals::advanceImprovementPoll() {
-  while (!improvementPolls.empty()) {
-    auto poll = std::move(improvementPolls.front());
-    improvementPolls.pop_front();
-    const auto &anchor = entries[poll.anchor].choices;
-    size_t maximumAxes = 0;
-    for (const auto &group : poll.groups)
-      maximumAxes = std::max(maximumAxes, group.size());
-    std::vector<std::pair<Coordinate, int>> changes;
-    bool preserveOrder = false;
-    std::optional<std::vector<TemporalChoice>> next;
-    if (poll.batch < 2 * (maximumAxes + 1)) {
-      const int direction = poll.batch % 2 == 0 ? 1 : -1;
-      const size_t axis = poll.batch++ / 2;
-      if (axis == maximumAxes)
-        for (auto coordinate : poll.coordinates)
-          changes.emplace_back(coordinate, direction);
-      else
-        for (const auto &group : poll.groups)
-          changes.emplace_back(group[axis % group.size()], direction);
+  while (performanceRound < performanceRounds) {
+    if (!improvementPoll)
+      beginImprovementPoll();
+    auto &poll = *improvementPoll;
+    const auto anchor = entries[poll.anchor].choices;
+    auto next = anchor;
+    if (poll.position < poll.directions.size()) {
+      bool changed = false;
+      for (auto [coordinate, direction] : poll.directions[poll.position++])
+        changed |= changeSize(next, coordinate, direction);
+      if (!changed)
+        continue;
     } else {
       bool selected = false;
-      for (size_t offset = 0; offset < 3 && !selected; ++offset) {
-        const size_t phase = poll.phase;
-        poll.phase = (poll.phase + 1) % 3;
-        if (phase == 0 && poll.single < 2 * poll.coordinates.size()) {
-          changes.emplace_back(poll.coordinates[poll.single / 2],
-                               poll.single % 2 == 0 ? -1 : 1);
-          ++poll.single;
-          selected = true;
-        } else if (phase == 1 &&
-                   prepareScopePair(poll.coordinates, poll.pairFirst,
-                                    poll.pairSecond)) {
-          const int direction = poll.pairDirection++ == 0 ? -1 : 1;
-          changes.emplace_back(poll.coordinates[poll.pairFirst], direction);
-          changes.emplace_back(poll.coordinates[poll.pairSecond], -direction);
-          if (poll.pairDirection == 2) {
-            poll.pairDirection = 0;
-            if (++poll.pairSecond == poll.coordinates.size())
-              poll.pairSecond = ++poll.pairFirst + 1;
-          }
-          selected = true;
-        } else if (phase == 2) {
-          while (poll.orderDomain < anchor.size()) {
-            const auto &scopes = anchor[poll.orderDomain].scopes;
-            if (poll.orderScope == scopes.size()) {
-              ++poll.orderDomain;
-              poll.orderScope = poll.orderPosition = 0;
-              continue;
-            }
-            const auto &order = scopes[poll.orderScope].loopOrder;
-            if (poll.orderPosition + 1 >= order.size()) {
-              ++poll.orderScope;
-              poll.orderPosition = 0;
-              continue;
-            }
-            next = anchor;
-            auto &changedOrder =
-                (*next)[poll.orderDomain].scopes[poll.orderScope].loopOrder;
-            std::swap(changedOrder[poll.orderPosition],
-                      changedOrder[poll.orderPosition + 1]);
-            ++poll.orderPosition;
-            preserveOrder = selected = true;
-            break;
-          }
+      while (poll.orderDomain < anchor.size()) {
+        const auto &scopes = anchor[poll.orderDomain].scopes;
+        if (poll.orderScope == scopes.size()) {
+          ++poll.orderDomain;
+          poll.orderScope = poll.orderPosition = 0;
+          continue;
         }
+        const auto &order = scopes[poll.orderScope].loopOrder;
+        if (poll.orderPosition + 1 >= order.size()) {
+          ++poll.orderScope;
+          poll.orderPosition = 0;
+          continue;
+        }
+        auto &changedOrder =
+            next[poll.orderDomain].scopes[poll.orderScope].loopOrder;
+        std::swap(changedOrder[poll.orderPosition],
+                  changedOrder[poll.orderPosition + 1]);
+        ++poll.orderPosition;
+        selected = true;
+        break;
       }
-      if (!selected)
+      if (!selected) {
+        improvementPoll.reset();
+        ++performanceRound;
         continue;
-    }
-    if (!changes.empty()) {
-      next = anchor;
-      for (auto [coordinate, direction] : changes) {
-        int64_t &size = value(*next, coordinate);
-        auto interval = bounds(*next, coordinate);
-        const int64_t room =
-            direction < 0 ? size - interval.lower : interval.upper - size;
-        size += direction * std::min(room, std::max<int64_t>(1, size / 2));
       }
     }
-    improvementPolls.push_back(std::move(poll));
-    if (next) {
-      support::addCompileCounter("search", "temporal-neighbor-materializations",
-                                 1);
-      append(std::move(*next), TemporalProposalKind::Improve, preserveOrder);
-    }
-    // Duplicate points do not terminate the remaining coarse directions.
-    return true;
+    support::addCompileCounter("search", "temporal-neighbor-materializations",
+                               1);
+    // Preserve the chosen loop order in untouched scopes. The exact domain
+    // may append one relation-coordinated alternative, not a second search.
+    auto coordinated = next;
+    bool coupled = false;
+    for (auto [index, domain] : llvm::enumerate(domains))
+      if (auto choice = domain->getCoupledStateProposal(coordinated[index],
+                                                        &anchor[index])) {
+        coordinated[index] = std::move(*choice);
+        coupled = true;
+      }
+    bool added = append(std::move(next), TemporalProposalKind::Improve, true);
+    if (coupled)
+      added |=
+          append(std::move(coordinated), TemporalProposalKind::Improve, true);
+    if (added)
+      return true;
   }
   return false;
 }
@@ -529,54 +656,6 @@ TemporalProposals::getAlignment(const std::vector<TemporalChoice> &choices,
     alignment *= factor;
   }
   return alignment > 1 ? std::optional<int64_t>(alignment) : std::nullopt;
-}
-
-bool TemporalProposals::advanceFinePoll() {
-  if (!finePoll)
-    return false;
-  while (finePoll->position < 2 * finePoll->coordinates.size()) {
-    const size_t position = finePoll->position++;
-    auto coordinate = finePoll->coordinates[position / 2];
-    auto next = entries[finePoll->anchor].choices;
-    auto alignment = getAlignment(next, coordinate);
-    if (!alignment)
-      continue;
-    auto interval = bounds(next, coordinate);
-    int64_t &size = value(next, coordinate);
-    const bool wasFull = size == interval.upper;
-    int64_t remainder = size % *alignment;
-    if (position % 2 == 0) {
-      int64_t distance = remainder ? remainder : *alignment;
-      if (distance > size - interval.lower)
-        continue;
-      size -= distance;
-    } else {
-      int64_t distance = *alignment - remainder;
-      if (distance > interval.upper - size)
-        continue;
-      size += distance;
-    }
-    // Keep the selected order in every unchanged scope. Only crossing the
-    // full-extent boundary changes the active loop set and needs completion.
-    if (wasFull != (size == interval.upper)) {
-      auto &choice = next[coordinate.domain];
-      auto descriptor = domains[coordinate.domain]->getScopeDescriptors(
-          choice.kind)[coordinate.scope];
-      auto &scope = choice.scopes[coordinate.scope];
-      auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
-                                               scope.iteratorTileSizes,
-                                               descriptor.precedence);
-      if (mlir::failed(order))
-        continue;
-      scope.loopOrder = std::move(*order);
-    }
-    support::addCompileCounter("search", "temporal-neighbor-materializations",
-                               1);
-    if (append(std::move(next), TemporalProposalKind::Fine, true))
-      return true;
-  }
-  finePoll.reset();
-  return false;
 }
 
 bool TemporalProposals::observeCapacity(

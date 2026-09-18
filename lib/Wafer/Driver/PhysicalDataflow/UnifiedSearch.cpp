@@ -10,6 +10,7 @@
 #include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
+#include <chrono>
 #include <deque>
 #include <limits>
 #include <utility>
@@ -320,6 +321,7 @@ struct UnifiedSearchSession::Impl {
       // The session protects its actual base comparison and initial coarse
       // repair round. Later pending neighbors do not lock a slot forever.
       if (!candidate.evaluated ||
+          (mode == SearchMode::Deep && candidate.session->hasOpenTrial()) ||
           candidate.retention != CandidateRetention::Replaceable)
         continue;
       if (!worst) {
@@ -413,7 +415,11 @@ struct UnifiedSearchSession::Impl {
              "work");
         return;
       }
-      status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
+      runningBranch.reset();
+      // This structural family is drained. Other families can still own
+      // charged deep work; the next step selects one of those owners.
+      if (mode != SearchMode::Deep)
+        status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
       return;
     }
     if (evaluation.actualizations > 1 || charge > remainingTrialCredits ||
@@ -507,10 +513,23 @@ struct UnifiedSearchSession::Impl {
     if (trace)
       trace->candidates.push_back({key, actualStatus});
     std::string detail = evaluation.result->detail;
+    const uint64_t incumbentUpdates =
+        controller.getStatistics().incumbentUpdates;
     CandidateRecordOutcome recorded = controller.record(
         key, std::move(*evaluation.result),
         exhausted && evaluation.completeDomain ? CandidateDomainState::Closed
                                                : CandidateDomainState::Open);
+    if (controller.getStatistics().incumbentUpdates != incumbentUpdates) {
+      SearchObservation observation{
+          work.candidateActualizations - 1,
+          static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now() - started)
+                  .count())};
+      work.incumbentSelected = observation;
+      if (!work.firstFeasible)
+        work.firstFeasible = observation;
+    }
     if (exhausted && !evaluation.completeDomain) {
       controller.close(key, SearchFrontierStatus::Incomplete);
       sawIncompleteInnerDomain = true;
@@ -528,8 +547,6 @@ struct UnifiedSearchSession::Impl {
     }
     if (exhausted)
       branches.erase(branches.begin() + index);
-    else if (mode == SearchMode::Deep && branch.session->hasOpenTrial())
-      runningBranch = branch.identity;
     if (recorded == CandidateRecordOutcome::Accepted &&
         termination == SearchTerminationPolicy::FirstAccepted)
       status = UnifiedSearchResumeStatus::AcceptedCheckpoint;
@@ -537,6 +554,21 @@ struct UnifiedSearchSession::Impl {
 
   void step() {
     if (!remainingTrialCredits && !runningBranch) {
+      if (mode == SearchMode::Deep) {
+        std::optional<size_t> selected;
+        for (size_t index = 0; index < branches.size(); ++index) {
+          const auto &branch = branches[index];
+          if (branch.session->hasOpenTrial() &&
+              (!selected || std::tie(branch.lastVisit, branch.identity) <
+                                std::tie(branches[*selected].lastVisit,
+                                         branches[*selected].identity)))
+            selected = index;
+        }
+        if (selected) {
+          evaluate(*selected);
+          return;
+        }
+      }
       status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
       return;
     }
@@ -591,12 +623,12 @@ struct UnifiedSearchSession::Impl {
     if (introduceNext) {
       const bool room =
           retainedCount() < retainedBranches ||
-          llvm::any_of(
-              branches,
-              [](const Branch &branch) {
-                return branch.evaluated &&
-                       branch.retention == CandidateRetention::Replaceable;
-              });
+          llvm::any_of(branches, [&](const Branch &branch) {
+            return branch.evaluated &&
+                   !(mode == SearchMode::Deep &&
+                     branch.session->hasOpenTrial()) &&
+                   branch.retention == CandidateRetention::Replaceable;
+          });
       if (room) {
         if (!pending && !frontier.empty()) {
           generate();
@@ -688,6 +720,8 @@ struct UnifiedSearchSession::Impl {
   std::optional<uint64_t> runningBranch;
   bool introduceNext = true;
   UnifiedSearchWork work;
+  const std::chrono::steady_clock::time_point started =
+      std::chrono::steady_clock::now();
   UnifiedSearchResumeStatus status = UnifiedSearchResumeStatus::Paused;
   bool sawUnsupportedPrefix = false;
   bool sawIncompleteInnerDomain = false;

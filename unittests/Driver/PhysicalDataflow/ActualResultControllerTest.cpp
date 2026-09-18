@@ -471,6 +471,7 @@ TEST(ActualResultControllerTest,
             30u);
   EXPECT_EQ(result.statistics.reserved, 1u);
   EXPECT_EQ(result.statistics.accepted, 3u);
+  EXPECT_EQ(result.statistics.incumbentUpdates, 2u);
   EXPECT_EQ(result.exactCompleteRejections, 0u);
 }
 

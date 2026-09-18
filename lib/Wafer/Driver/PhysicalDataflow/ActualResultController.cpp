@@ -111,8 +111,10 @@ ActualResultController::record(const StructuralCandidateKey &key,
     if (std::holds_alternative<analysis::UnknownSearchObjective>(
             candidate.objective))
       sawUnknownOrIncomparable = true;
-    if (replace)
+    if (replace) {
       incumbent.emplace(std::move(candidate));
+      ++statistics.incumbentUpdates;
+    }
     ++statistics.accepted;
     return CandidateRecordOutcome::Accepted;
   }

@@ -1285,6 +1285,89 @@ TEST(ExecutableCompilationPolicyTest,
 }
 
 TEST(ExecutableCompilationPolicyTest,
+     ActualPrefixCachePreservesCandidatesAndExecutableUnderEviction) {
+  using namespace wafer::compiler::detail;
+  uint64_t reusedTemporal = 0, reusedPrepared = 0;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (auto mode : {wafer::SearchMode::Standard, wafer::SearchMode::Deep}) {
+      // Standard covers the shape matrix and implementation siblings. One
+      // complete deep inner process on the longest tail covers scheme billing
+      // without repeating the whole finite domain for each divisible size.
+      if (mode == wafer::SearchMode::Deep && extent != 1031)
+        continue;
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<unsigned>(mode));
+      std::vector<std::string> referenceTrace, referenceIR;
+      uint64_t referenceApplications = 0, referenceLayouts = 0;
+      for (uint64_t capacity : {0u, 1u, 8u}) {
+        SCOPED_TRACE(capacity);
+        auto parsed =
+            wafer::compiler::testing::parseRealScaleDependentProgram(extent);
+        ASSERT_TRUE(parsed.module);
+        auto program =
+            wafer::compiler::testing::realScaleDependentProgramMetadata(extent);
+        wafer::compiler::ProgramDataHandoff data;
+        std::string text;
+        llvm::raw_string_ostream diagnostics(text);
+        auto timing =
+            std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+        wafer::support::ScopedCompileTimingActivation activation(timing);
+        SearchCurrentIROptions options;
+        options.mode = mode;
+        options.limits = wafer::SearchLimits{
+            8, mode == wafer::SearchMode::Standard ? 42u : 1u};
+        options.prefixCacheEntries = capacity;
+        options.downstream.tilePipelineParallelism = 1;
+        SearchCurrentIRStatistics statistics;
+        auto result =
+            compileSearchCurrentIR(*parsed.module, program,
+                                   wafer::compiler::testing::executionConfig(),
+                                   diagnostics, data, options, &statistics);
+        timing->finishAndPrintSummary();
+        ASSERT_TRUE(result.isAccepted()) << result.detail << text;
+        ASSERT_TRUE(result.executable);
+        ASSERT_EQ(result.executable->tiles.size(), 16u);
+        EXPECT_LE(statistics.peakCachedPrefixes, capacity);
+        EXPECT_EQ(statistics.traversal.trialsUsed, options.limits.trials);
+        if (capacity) {
+          EXPECT_GT(statistics.prefixEvictions, 0u);
+        }
+        std::vector<std::string> trace, ir;
+        llvm::SmallVector<llvm::StringRef> lines;
+        llvm::StringRef(text).split(lines, '\n');
+        for (auto line : lines)
+          if (line.contains("category=search-temporal ") ||
+              line.contains("category=search name=region-candidate-") ||
+              line.starts_with("wafer-compile: rejected-candidate "))
+            trace.push_back(line.str());
+        ASSERT_FALSE(trace.empty());
+        for (const auto &tile : result.executable->tiles) {
+          std::string module;
+          llvm::raw_string_ostream stream(module);
+          tile.getModule().print(stream);
+          ir.push_back(std::move(module));
+        }
+        if (!capacity) {
+          referenceTrace = std::move(trace);
+          referenceIR = std::move(ir);
+          referenceApplications = statistics.temporalApplications;
+          referenceLayouts = statistics.layoutInvocations;
+        } else {
+          EXPECT_EQ(trace, referenceTrace);
+          EXPECT_EQ(ir, referenceIR);
+          EXPECT_LE(statistics.temporalApplications, referenceApplications);
+          EXPECT_LE(statistics.layoutInvocations, referenceLayouts);
+          reusedTemporal += statistics.temporalPrefixHits;
+          reusedPrepared += statistics.preparedPrefixHits;
+        }
+      }
+    }
+  }
+  EXPECT_GT(reusedTemporal, 0u);
+  EXPECT_GT(reusedPrepared, 0u);
+}
+
+TEST(ExecutableCompilationPolicyTest,
      TemporalBackpressureResumesActualPrefixesWithoutChargingYields) {
   for (int64_t extent : {1024, 1025, 1031}) {
     SCOPED_TRACE(extent);

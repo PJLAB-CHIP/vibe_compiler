@@ -21,6 +21,9 @@ struct SearchCurrentIROptions {
   SearchMode mode = SearchMode::Standard;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
+  // Optional cache capacity, capped by the global retention width. Zero is
+  // useful for equivalence tests; it changes work, never search decisions.
+  uint64_t prefixCacheEntries = std::numeric_limits<uint64_t>::max();
   // Optional explicit cancellation boundary for callers. Production search
   // uses its requested trial budget, without an implicit wall-time cutoff.
   std::optional<std::chrono::steady_clock::time_point> deadline;
@@ -36,6 +39,11 @@ struct SearchCurrentIRStatistics {
   uint64_t temporalDomainsBuilt = 0;
   uint64_t temporalCandidateActualizations = 0;
   uint64_t temporalApplications = 0;
+  uint64_t temporalPrefixHits = 0;
+  uint64_t layoutPrefixHits = 0;
+  uint64_t preparedPrefixHits = 0;
+  uint64_t prefixEvictions = 0;
+  uint64_t peakCachedPrefixes = 0;
   uint64_t peakSessionTemporalPrefixes = 0;
   uint64_t peakSessionIRModules = 0;
   uint64_t temporalBackpressureTurns = 0;
@@ -80,10 +88,11 @@ struct SearchCurrentIRStatistics {
 };
 
 /// Traverses explicit Spatial/Region choices and actualizes each selected
-/// structural state from current TensorProgram IR. Temporal alternatives are
-/// cloned once from that structural owner with IRMapping and immediately
-/// applied. Optional communication closure clones that owner while retaining
-/// the original Regions. Each Region choice may clone its post-layout owner
+/// structural state from current TensorProgram IR. Matching Temporal and
+/// layout/placement choices share bounded, immutable actual prefixes. New
+/// suffixes clone their nearest actual owner with IRMapping before mutation.
+/// Optional communication closure retains the original Regions. Each Region
+/// choice may clone its post-layout owner
 /// for causally ordered shared DDR, recursive-doubling AllGather,
 /// dimension-ordered AllToAll, distributed Ring reduction, or their bounded
 /// combinations. A specialized clone is discarded

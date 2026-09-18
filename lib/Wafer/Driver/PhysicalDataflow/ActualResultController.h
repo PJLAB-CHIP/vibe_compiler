@@ -171,6 +171,7 @@ struct SearchControllerStatistics {
   uint64_t exhaustedReservations = 0;
   uint64_t closedReservations = 0;
   uint64_t accepted = 0;
+  uint64_t incumbentUpdates = 0;
   uint64_t exactRejected = 0;
   uint64_t unsupported = 0;
   uint64_t indeterminate = 0;

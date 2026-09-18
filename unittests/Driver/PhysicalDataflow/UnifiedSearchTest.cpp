@@ -12,7 +12,10 @@
 
 #include "gtest/gtest.h"
 
+#include <array>
+#include <map>
 #include <optional>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -237,6 +240,8 @@ TEST(UnifiedSearchTest,
         EXPECT_EQ(result.work.peakRetainedBranches, 1u);
         EXPECT_FALSE(result.frontierExhausted);
         ASSERT_EQ(trace.candidates.size(), leaves);
+        // Width one serializes this oracle. General deep scheduling below
+        // intentionally has no cross-budget complete-trace prefix contract.
         if (mode == SearchMode::Deep) {
           if (trials == 1)
             prefix = trace.candidates;
@@ -249,6 +254,145 @@ TEST(UnifiedSearchTest,
       }
     }
   }
+}
+
+// Independent finite scheduling oracle: each family discovers a second
+// implementation after two base results, and each charged implementation has
+// a fixed terminal point. Replaceable retention deliberately tests that deep
+// protection comes from ownership of an open trial, not a heuristic label.
+TEST(UnifiedSearchTest, DeepInterleavesAndDrainsEveryChargedOwnerUnderWidth) {
+  using Event = std::tuple<size_t, size_t, unsigned>;
+  class Session final : public StructuralCandidateSession {
+  public:
+    Session(size_t family, unsigned yields, std::vector<Event> &events)
+        : family(family), yields(yields), events(events) {}
+    StructuralCandidateEvaluation
+    advance(CandidateAdvanceLimits limits) override {
+      if (!pending) {
+        const size_t count = bool(remaining[0]) + bool(remaining[1]);
+        for (size_t scheme = 0; scheme < 2; ++scheme) {
+          if (started[scheme] || (scheme == 1 && positions[0] < 2) ||
+              !limits.mayStartScheme || count >= limits.retainedBranches)
+            continue;
+          started[scheme] = true;
+          remaining[scheme] = scheme == 0 ? 7 : 3;
+          pending = scheme;
+          leftYields = yields;
+          auto result = yield();
+          result.schemesStarted = 1;
+          return result;
+        }
+        if (!hasOpenTrial()) {
+          StructuralCandidateEvaluation result;
+          result.budgetBlocked = !started[1] && !limits.mayStartScheme;
+          return result;
+        }
+        for (size_t i = 0; i < 2; ++i) {
+          size_t scheme = (next + i) % 2;
+          if (remaining[scheme]) {
+            pending = scheme;
+            leftYields = yields;
+            break;
+          }
+        }
+      }
+      if (leftYields) {
+        --leftYields;
+        return yield();
+      }
+      size_t scheme = *pending;
+      pending.reset();
+      next = (scheme + 1) % 2;
+      events.emplace_back(family, scheme, ++positions[scheme]);
+      --remaining[scheme];
+      auto result = StructuralCandidateEvaluation{
+          acceptedResult(1000 - family * 10 - positions[scheme]), 1,
+          CandidateContinuation::Explore, CandidateRetention::Replaceable};
+      result.schemesCompleted = remaining[scheme] == 0;
+      result.completeDomain = false;
+      return result;
+    }
+    bool hasOpenTrial() const override { return remaining[0] || remaining[1]; }
+    uint64_t getRetainedBranchCount() const override {
+      return std::max<uint64_t>(1, bool(remaining[0]) + bool(remaining[1]));
+    }
+
+  private:
+    StructuralCandidateEvaluation yield() {
+      return {{},
+              0,
+              CandidateContinuation::Explore,
+              CandidateRetention::UnfinishedActualization};
+    }
+    size_t family, next = 0;
+    unsigned yields, leftYields = 0;
+    std::vector<Event> &events;
+    std::array<unsigned, 2> remaining{}, positions{};
+    std::array<bool, 2> started{};
+    std::optional<size_t> pending;
+  };
+  class Evaluator final : public StructuralCandidateEvaluator {
+  public:
+    explicit Evaluator(unsigned yields) : yields(yields) {}
+    std::unique_ptr<StructuralCandidateSession>
+    start(const RegionState &) override {
+      return std::make_unique<Session>(families++, yields, events);
+    }
+    unsigned yields;
+    size_t families = 0;
+    std::vector<Event> events;
+  };
+  for (uint64_t width : {1, 2, 4})
+    for (uint64_t trials : {1, 2, 3, 6}) {
+      SCOPED_TRACE(width);
+      SCOPED_TRACE(trials);
+      std::vector<Event> reference;
+      for (unsigned yields : {0, 2}) {
+        auto parsed = parseProgram();
+        std::string text, reason;
+        llvm::raw_string_ostream diagnostics(text);
+        auto fixture = prepare(*parsed.module, diagnostics, reason);
+        ASSERT_TRUE(fixture.session) << reason;
+        Evaluator evaluator(yields);
+        UnifiedSearchOptions options;
+        options.mode = SearchMode::Deep;
+        options.retainedBranches = width;
+        options.trialCredits = trials;
+        UnifiedSearchSession session(*fixture.session, evaluator, options);
+        UnifiedSearchResumeResult resumed;
+        size_t steps = 0;
+        do {
+          ASSERT_LT(++steps, 10000u); // Finite oracle, not a production limit.
+          resumed = session.resume(yields ? 1 : 5);
+        } while (resumed.status == UnifiedSearchResumeStatus::Paused);
+        auto result = session.finish();
+        ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
+        EXPECT_EQ(resumed.status,
+                  UnifiedSearchResumeStatus::CandidateBudgetExhausted);
+        EXPECT_EQ(result.work.trialsUsed, trials);
+        EXPECT_EQ(result.work.schemesStarted, trials);
+        EXPECT_EQ(result.work.schemesCompleted, trials);
+        EXPECT_LE(result.work.peakRetainedBranches, width);
+        EXPECT_EQ(result.work.candidateActualizations, evaluator.events.size());
+        std::map<std::pair<size_t, size_t>, unsigned> counts;
+        for (auto [family, scheme, point] : evaluator.events)
+          EXPECT_EQ(point, ++counts[std::make_pair(family, scheme)]);
+        EXPECT_EQ(counts.size(), trials);
+        for (auto [key, count] : counts)
+          EXPECT_EQ(count, key.second == 0 ? 7u : 3u);
+        if (width > 1 && trials > 1) {
+          auto secondFamily = llvm::find_if(
+              evaluator.events, [](Event e) { return std::get<0>(e) == 1; });
+          auto firstFinished = llvm::find(evaluator.events, Event{0, 0, 7});
+          ASSERT_NE(secondFamily, evaluator.events.end());
+          EXPECT_LT(secondFamily, firstFinished);
+        }
+        if (!yields)
+          reference = evaluator.events;
+        else
+          EXPECT_EQ(evaluator.events, reference);
+      }
+    }
 }
 
 TEST(UnifiedSearchTest,
@@ -332,6 +476,8 @@ TEST(UnifiedSearchTest,
   EXPECT_EQ(result.control.coverage,
             SearchControllerCoverage::IncompleteNoCandidate);
   EXPECT_TRUE(evaluator.observed.empty());
+  EXPECT_FALSE(result.work.firstFeasible);
+  EXPECT_FALSE(result.work.incumbentSelected);
 }
 
 TEST(UnifiedSearchTest, RetentionWidthDoesNotLimitTotalVisitedStructures) {
@@ -922,6 +1068,15 @@ TEST(UnifiedSearchTest, VerifiedStageYieldsPreserveOwnersAndActualBudget) {
     ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
     EXPECT_EQ(result.work.candidateActualizations, 4u);
     EXPECT_EQ(result.control.statistics.accepted, 4u);
+    ASSERT_TRUE(result.work.firstFeasible);
+    ASSERT_TRUE(result.work.incumbentSelected);
+    EXPECT_EQ(result.work.firstFeasible->candidateIndex, 0u);
+    EXPECT_LT(result.work.incumbentSelected->candidateIndex, 4u);
+    EXPECT_GE(result.work.incumbentSelected->elapsedMicroseconds,
+              result.work.firstFeasible->elapsedMicroseconds);
+    EXPECT_EQ(
+        trace.candidates[result.work.incumbentSelected->candidateIndex].key,
+        result.control.winner->key);
     EXPECT_EQ(result.work.retiredBranches, 0u);
     EXPECT_GE(result.work.stageYields, 12u);
     EXPECT_LE(evaluator.starts, 5u); // At most one other live width-2 owner.

@@ -36,6 +36,13 @@ struct UnifiedSearchOptions {
   PlanningProfileSink *profile = nullptr;
 };
 
+/// Diagnostic observation only; neither elapsed time nor the observation
+/// changes admission, ordering or the actual owner's selection.
+struct SearchObservation {
+  uint64_t candidateIndex = 0;
+  uint64_t elapsedMicroseconds = 0;
+};
+
 struct UnifiedSearchWork {
   uint64_t resumeCalls = 0;
   uint64_t successorSteps = 0;
@@ -52,6 +59,8 @@ struct UnifiedSearchWork {
   uint64_t retiredBranches = 0;
   uint64_t localRegionRefinements = 0;
   uint64_t nonIncumbentRegionRefinements = 0;
+  std::optional<SearchObservation> firstFeasible;
+  std::optional<SearchObservation> incumbentSelected;
 };
 
 using UnifiedSearchPrefixKey = std::variant<SpatialState, RegionState>;
