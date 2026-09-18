@@ -47,6 +47,12 @@ Accepted owner原样交给下游和最终publication，不重建IR或offset。
 
 ## 2. Pipeline Contract
 
+Attention composite迁移按[05号4.5节](05-local-compute-normalization.md#45-composite结构化causal与混合精度attention)
+补齐本stage的actual spatial/temporal物化：保留绝对query/key位置与有效KV域，跳过完全不可见块的读取、计算和state update，
+边界块交给唯一decomposition。两种切分都保持当前tile中间shape、coupled F32 state及exact coverage。
+这些改动不改变search预算/计费，不增加DTE专项或shadow plan；全部结构变换仍先物化、verify再分析，
+SPM合法性只由下述共同actual leaf决定。实施及逐case实卡门槛见[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)。
+
 ```text
 Pipeline position:
 - Upstream IR / input:

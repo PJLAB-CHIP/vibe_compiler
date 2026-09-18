@@ -11,6 +11,108 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 搜索组织与 deep search 的设计调整见[同一任务内的实施方案](physical-search-organization.md)，
 用户已授权按此方案推进实现及验收，当前验收尚未闭合。代码修改保持原模型范围和数值门槛，新增下述性能完成条件；状态只看progress。
 
+## Attention导出展开与实卡验收
+
+本节归入现有`board-testing`，落实用户确认的attention方案及新增大prefill配置。稳定合同分别由
+[02号composite导出](../02-frontend-stablehlo-program.md#26-attention-composite-导出合同)、
+[05号语义与展开](../05-local-compute-normalization.md#45-composite结构化causal与混合精度attention)、
+[08号layout](../08-physical-realization.md#22-layout-assignment-与cleanup)、
+[10号compute/movement](../10-compute-movement.md#4-compute-contracts)及
+[16号module reference](../16-verification-contract.md#attention的原module宽精度reference)拥有。
+本节记录实施方案和必须执行的矩阵，不表示case已注册、已构包或已经通过；本次文档变更不运行设备。
+前文搜索优化的reference不变约束只适用于搜索改动；本节单独调整独立attention reference，阈值和整网reference保持不变。
+
+### 输入、边界与完成合同
+
+- Upstream IR / input：原始PyTorch/HF module、低精度typed输入及明确attention语义，现有compiler与健康性能对照。
+- Current stage responsibility：保留融合边界，更新宽状态与causal分块，修正实际GEMM/layout/broadcast/copy问题；
+  实现完成后用原module新reference验证，完成全部列出正例的实卡与匹配性能保护。
+- Output IR / files：唯一产品路径产生的attention/tiled online/Linalg/Tile/Instr、ExecutablePackage，以及原runner完整结果。
+- Downstream consumer：strict no-card、真实设备runner、现有板端性能记录与`board-testing`完成判定。
+- User-level driver / named pipeline：原`export_pytorch_program`、`wafer-compile`、`wafer_board_pytorch_test.py`及`wafer-run`；
+  named pipeline复用production pass，无第二条attention后端或reference入口。
+- Explicit non-goals：不新增DTE优化任务、不改search计费/预算，不手写reference算法，不按模型或shape特判；
+  不删除必要copy/convert/packing，不以预估footprint判断SPM合法，不放宽数值门限或补ResNet大图。
+- Completion criteria：下述主机结构矩阵和每个可执行正例的fresh no-card、完整实卡数值、健康计时均闭合；
+  attention性能改善且LLaMA block、大GEMM及所有受影响已通过case无可确认退化。no-card不能代签实卡。
+
+### 实施顺序
+
+1. 接通原框架capture的StableHLO composite，保留causal、query/key位置、有效KV长度和GQA关系，
+   经portable/SPMD在structured入口转到现有attention IR。普通causal不再传dense`[S,S]`mask；任意additive mask保持真实输入。
+   QKV projection、RoPE、KV更新及output projection保留各自边界；不从sample mask或模块名恢复语义。
+2. 更新attention/online类型与接口：QK结果、softmax max/sum、归一化系数、PV跨块Accumulator和merge/finalize为F32；
+   GEMM Q/K/V保持FP16/BF16，probability只在PV输入边界窄化，最终结果转回原dtype。
+   两种tiling均保持score/probability为局部tile、行状态为行级；DPS准确表达新旧state。
+   06号跳过全不可见块及其读取/计算，05号只展开边界屏蔽；位置、padding、滑窗及cache有效域必须完整。
+3. 按通用owner补batched NN/NT/TN/TT与宽结果接入；补PBQP的elementwise/convert关系和转换成本；
+   依据DPS、alias/effect/lifetime修复复制和循环不变量搬运；接入硬件支持的scalar/row广播形式。
+   typed Instr、CRT、numeric model与直接下游同步。每次实际物化均verify，重新completion和唯一SPM规划。
+4. 新attention实现路径闭合后，才启用16号新reference：同份低精度Q/K/V转F32，直接调用原PyTorch/HF attention
+   module.forward，返回结果转回原dtype。绝不手写QK/softmax/PV，也不使用compiler/composite展开作为expected。
+   原完整LLaMA/ViT及带projection/状态更新的decode继续用完整原module.forward及既有dtype配置。
+   旧实现不必先通过新reference；新实现失败必须定位，不能退回旧reference或改阈值取得通过。
+5. 逐项fresh构包/no-card、实卡数值及性能验收。先固定tiling归因，再恢复standard 8/42产品搜索验证；
+   实现期间照常运行阶段结构/直接下游检查，最终完整数值对齐按第4步执行，不提前要求旧版本满足新标准。
+
+旧版本保留原reference下的健康资格和最好可复现性能目标；与新版本配对时输入/config/计时条件匹配，
+分别记录各自reference合同，不把旧包新reference失败算成性能回归，也不据此要求新版本复制旧舍入。
+旧故障包不作性能基线。来源计算的显式cast与online混合精度许可要在05号同一合同中表达，
+composite边界本身不授权任意数值重排，普通图仍遵循原算术语义。
+
+### 已定位的指令问题与owner
+
+已审查的S1024普通prefill样本见[原实卡记录](../../docs/board-performance-results.md#2026-09-19prefill落选dte候选实卡对照)。
+832次GS与224次convert是16 Tile及循环累计的动态计数，不是待删除数量，也不是各项独立设备耗时。
+
+| 原样本来源 | 动态GS次数 | 处理边界与验收依据 |
+| --- | ---: | --- |
+| Layout转换 | 384 | 08号补elementwise/convert模型；PBQP只选合法layout，不生成GEMM或广播指令 |
+| 临时结果/状态复制 | 192 | producer DPS错误在producer修；需要旧值则保留copy，冗余只凭actual alias/effect/lifetime消除 |
+| 广播物化 | 128 | 10/11号落实scalar/row广播；不能把逻辑broadcast扩成全局矩阵 |
+| Reduction紧凑打包 | 64 | 按实际stride/layout和指令约束判断；保留必要packing |
+| K转置 | 32 | StructuredToTile通用batched方向接入；多head flatten必须有物理等价证明 |
+| 最终输出切片打包 | 32 | 保持输出位置与coverage，消除有证明的多余打包 |
+
+Convert分别检查score往返、state缩放、PV概率窄化和最终输出转换；新宽状态消除不必要的窄化再扩展，
+必要的GEMM输入与输出转换仍保留。重复Q布局转换使用现有PhysicalMovementPlacement及只读/不变性证明，
+不能在PBQP或attention decomposition中另建一套hoist。指令下降不是SPM合法或设备加速的证明。
+
+### 可执行case与实卡矩阵
+
+下表每一项都要求真实设备执行和完整结果比较；dtype列列出的每种dtype分别验收，不能以FP16代签BF16。
+沿用唯一runner注册新增case，不在此文档假造已有CLI名称或通过数量。矩阵整体必须实际覆盖空间切分和temporal主块/tail。
+
+| case/输入 | dtype | 完整输出与结构验收 | 必须的板端证据 |
+| --- | --- | --- | --- |
+| 普通causal prefill，Q/K/V=`[1,1,S,64]`，S=1024/1025/1031 | FP16、BF16 | 全部output；主块/tail、全可见/边界/不可见块、无dense causal输入 | 每个S/dtype的fresh no-card、实卡数值和普通设备耗时 |
+| 新增大causal MHA prefill，Q/K/V均为`[1,28,4096,128]` | FP16、BF16 | `[B,H,S,D]=[1,28,4096,128]`，Q/KV heads均28、head dim128、dropout=0、默认scale=`1/sqrt(128)`；output同shape共14680064元素；完整28 heads，多Tile、多KV block与head尾组 | 两种dtype分别完整上板及健康重复计时；不得缩成1 head、短序列或只比较抽样输出 |
+| 原LLaMA配置4K prefill，Q/K/V=`[1,32,4096,128]` | 原登记FP16 | 保留原长序列配置；实际workspace、宽状态和所有head/output | 原未闭合4K case仍须实卡，不由新增28-head case代签 |
+| GQA，Q=`[1,32,S,128]`，K/V=`[1,8,S,128]`，S=1024/1025 | FP16、BF16 | 原框架head映射、全部output，不在host/runtime预复制KV | 每个S/dtype的实卡数值与耗时 |
+| 非causal/非方形attention，Q=`[1,1,1024,64]`、K/V=`[1,1,33,64]` | FP16、BF16 | 无mask与现有additive-mask结构分支；完整输出，不能根据shape强加causal | 每种合法mask分支均实卡比较，必要搬运计数明确 |
+| 原普通两步decode及长cache 4094→4095→4096 | FP16、BF16；沿用原shape并补齐缺少的dtype注册 | 原完整module.forward；下一步消费本轮actual KV，旧prefix exact，全部hidden/KV端口 | 每步实卡、actual接续和耗时，不能仅在CPU接续 |
+| 多token causal decode，past KV长度1024，新Q/K/V长度2，单head、D64 | FP16、BF16 | Q位置1024/1025，更新后KV长度1026；第一个query不能看后一个新token；完整module调用与输出 | 两种dtype的实卡数值/耗时；区别于仅Q长度1的decode |
+| padding/有效长度及任意additive mask，沿用上述≥1024规模 | FP16、BF16 | 由原module定义各有效域/数值；合法全屏蔽行为按专项oracle，特殊值不走有限相似度放行 | 每个可执行语义分支实卡；错误位置/非法配置另作主机拒绝负例 |
+| LLaMA block S16，hidden4096；大GEMM4096³；GEMM4097³尾块 | block与4096³为FP16/BF16，4097³为FP16 | 原module及既有reference、全输出；通用修改不得破坏原好性能 | 各项fresh no-card、完整实卡及匹配重复计时，任何稳定退化阻止验收 |
+| ViT EncoderBlock S1024/1025 | 原配置FP16 | 完整原module.forward及全部tokens；非causal、多head与残差 | 两个尺寸实卡数值与匹配性能，不以独立attention代签 |
+| 其它受共用pass影响的既有通过case | 各自原dtype/shape | 原完整reference与全部端口；保留既有任务未完成项 | 逐case重签实卡数值/性能，不能用平均加速抵消单项退化 |
+
+新增28-head case是独立prefill配置，不改变LLaMA2模型的原32 heads，也不替代GQA或旧4K矩阵。
+1024/1025/1031覆盖整除/非整除机制，大case另验证真实28-head分配、4096长度和D128成本。
+主机矩阵另外覆盖：四种GEMM orientation与psum、物理不等价reshape、额外score users、被写alias、旧state存活、
+错误type/位置/region、非法mask和copy不能消除的反例。负例以typed拒绝及无错误改写验收，不安排非法包上板。
+
+### 数值与性能完成条件
+
+所有可执行正例先完整source→package→fresh no-card，再按AGENTS逐case串行上板；占用时等待，设备异常按原纪律停止。
+普通浮点输出同时满足cosine>=0.9999、relative_l2<=0.01，保留最大绝对误差和逐点诊断；整数/KV旧prefix等继续exact。
+先单次完整数值通过，再取得至少三次健康普通计时；有健康基线的case使用平衡配对次序，保留全部样本、中位数和波动。
+记录actual GEMM/convert/GS动态次数与字节、DDR读写、SPM、编译work/time/RSS和设备耗时，不能把CPU reference时间混入设备时间。
+主机reference或workspace遇到资源问题应定位原边界，不能手写分块oracle、减少heads/序列或只比输出片段取得通过。
+最终要求attention有超过测量波动的可重复收益，所有保护项无可确认退化；新增case没有健康旧基线时报告当前绝对耗时，
+不虚构加速比。缺编译、缺no-card、缺实卡或未判明的性能项保持未完成。
+逐次结果写入现有板端性能记录，包含compiler/source/config/输入/reference身份和本轮原始样本；不在本计划填虚构实测。
+
 ## 搜索组织修改的性能验收
 
 本节落实06号第7.5节的性能合同。最终接受搜索改动前，核心保护和全部已通过case的逐项回归、
@@ -82,7 +184,8 @@ ViT三次耗时与波动见统一性能记录；第4项现剩完整LM S1024/1025
 
 全程使用16号原验证链：current source/IR→唯一production driver→实际package/no-card→串行设备执行；
 输出是完整数值、设备计时、实际profile和版本证据，直接供当前项验收与下一项对照。
-不扩大模型范围，不增加ResNet大图，不修改HF reference或既定相似度合同，不按模型名/固定shape特判。
+该轮恢复不扩大模型范围、不增加ResNet大图、不修改HF reference或既定相似度合同，不按模型名/固定shape特判。
+后续独立attention reference与新增prefill范围按本文attention小节执行，整网reference与相似度阈值仍保持。
 数值错误先定位首个分歧；性能修改先确认实际热点。空间与temporal候选可优先考虑大parallel轴和复用，
 但必须由实际物化、verifier、唯一SPM规划及实卡结果决定合法性与收益。
 

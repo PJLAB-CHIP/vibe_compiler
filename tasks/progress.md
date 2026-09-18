@@ -22,6 +22,13 @@
 具体case与验收顺序记录在同一份板测计划中，逐次已测性能与根因追加到
 [`docs/board-performance-results.md`](../docs/board-performance-results.md)；不再按算子、正确性或性能拆work item。编译器实现任务保留自身范围。
 
+当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
+[统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
+顺序为composite接入→宽状态/causal局部展开→GEMM/layout/movement修正→原PyTorch/HF module新reference→完整实卡与性能保护。
+新增Q/K/V均为`[1,28,4096,128]`的causal prefill，FP16/BF16分别验收；全部列出可执行正例都须上板。
+独立attention新reference在实现更新后才启用，旧实现通过它不是前置；整网reference和既定门限保持。
+本次只完成方案文档，新增case尚未注册或执行，不代签实现、no-card、实卡或此前未闭合门槛。
+
 用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
 [06号搜索合同](06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)及
 [现有搜索组织计划](plans/physical-search-organization.md)。已按用户纠正移除实现分支的基础可行前置条件。

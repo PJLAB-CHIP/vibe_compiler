@@ -199,6 +199,37 @@ Python由共同policy工厂提供唯一阈值；同一case策略原样传递到T
 | 普通计算case与专项oracle，FP16/BF16/F32、1024/1025/1031 | 小幅舍入误差可通过相似度且保留逐点超差；尺度错误、符号翻转、缺整行/列/归约贡献仍拒绝；专项oracle与整数单元素错误不被相似度掩盖 |
 | 完整单层LM S16 FP16/BF16 | 本轮原始source、全512000 logits与eager reference，经实际TargetModel计算指标并验收；设备资格独立 |
 
+#### Attention的原module宽精度reference
+
+本节是05号attention更新完成后启用的reference合同；实施顺序固定为先接通composite、宽状态、局部展开和相关lowering，
+再切换reference、对齐完整数值，最后完成实卡与性能保护。旧实现可能不满足新reference，不要求它先通过，
+也不因此放宽新实现门槛或重置旧健康性能目标。当前实现状态只看progress。
+
+- Upstream input：实际送板的同一份已量化FP16/BF16输入、框架module、配置、位置/mask及本轮actual输出。
+- Current stage responsibility：在编译capture之外直接调用原PyTorch/HF module的`forward`生成独立expected，
+  只在规定边界组织dtype转换；禁止手写QK/softmax/PV、使用composite展开函数或编译器模拟结果生成expected。
+- Output / downstream：原runner的完整reference端口及逐端口比较，直接供no-card准备、设备回读与性能样本资格使用。
+- User-level driver：唯一`wafer_board_pytorch_test.py`及现有case factory；不新增reference runner。
+- Non-goals：不通过手写attention拼接整网结果，不把整网全部转F32，不调整cosine/relative L2及专项exact门槛。
+- Completion criteria：本节module调用、精度及输入身份检查通过，计划内全部可执行正例完成fresh package/no-card与实卡。
+
+独立Q/K/V attention case使用原attention module的独立eval副本，在同一份低精度输入基础上将Q/K/V提升到F32，
+按模块接口将需要的浮点参数和浮点mask提升到F32，直接执行其forward，最后将attention结果转换回原输出dtype。
+bool mask、整数位置/长度等保持原类型，浮点mask保持原数值；不重新生成量化前的另一份Q/K/V。
+reference调用必须实际采用F32计算路径，避免autocast重新窄化；调用结束不改变被导出module、原始输入或全局设置。
+框架module内部拥有QK、scale/mask、softmax、PV，测试适配层只负责调用和dtype/端口组织。
+
+LLaMA/ViT整网，以及包含projection/状态更新的完整decode模块，继续直接调用原始完整module.forward，
+保持各自既有整网reference dtype配置和全部输出；不能把独立QKV reference替换或拼接成整网expected。
+decode后一步仍消费本轮前一步actual KV；旧cache前缀与整数端口保持exact。
+普通有限浮点输出沿用cosine>=0.9999、relative_l2<=0.01；全屏蔽行等特殊值按原module语义和对应专项oracle检查，
+不能用相似度接受NaN/Inf。最大绝对误差和逐点超差继续记录，不另设随失败调整的放行规则。
+
+覆盖独立attention的FP16/BF16、MHA/GQA、1024/1025/1031及`[1,28,4096,128]`Q/K/V，
+检查实际原module调用、F32输入/计算、最终dtype、所有端口及输入不变；整网与decode独立覆盖原forward和actual-state接续。
+所有可执行正例和性能保护case必须上板，verifier/非法输入/故障注入负例在主机验证拒绝，不能冒充板测通过。
+具体shape、执行顺序和性能证据归入[统一板测矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)。
+
 ### 3.2 Canonical build gate
 
 ```text

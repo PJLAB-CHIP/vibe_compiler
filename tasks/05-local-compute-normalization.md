@@ -294,6 +294,9 @@ planning/cost看见。两个matches共享Q/K/V或mask并不冲突；只有它们
 
 ### 4.2 单一 op schema
 
+本节以下schema及4.3节state类型描述已实现的图匹配路径；composite、结构化causal和宽状态的迁移目标见4.5节。
+实施时同步更新唯一schema、verifier、interfaces与全部consumer；现有窄Accumulator不作为新合同的保留选项。
+
 概念形式：
 
 ```text
@@ -465,6 +468,69 @@ Maximum/Sum只reduction K2，Accumulator由probability与V的K2 contraction更�
 `exp(oldMaximum - newMaximum)`缩放后作为本block的DPS init，因此已有SCF loop自然承载running state。Score/probability复用一个
 current tensor destination，shape只含本次actual batch/head、M tile和K2 block，不含K1或N。该变换保持current `math.exp`、scale/mask
 顺序和dtype语义；数值选择不属于本stage。
+
+### 4.5 Composite、结构化causal与混合精度attention
+
+本节定义待实施的attention更新合同，顺序与实卡覆盖由
+[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)拥有。先更新实现，再启用16号新reference；
+旧实现能否通过新reference不是施工前置，不修改原健康性能目标。
+
+- Upstream IR / input：02号验证并保留语义的attention composite，或由已有matcher证明的完整structured attention root。
+- Current stage responsibility：统一形成现有`wafer.linalg_ext.attention`，验证位置、mask、head映射和数值语义；
+  提供准确的Tiling/DPS/coupled-state事实，并在actual tiling之后唯一展开online attention。
+- Output IR / files：带明确语义的attention，随后是candidate-owned tiled online_attention及局部Linalg/Tensor/SCF。
+- Downstream consumer：06号空间/时间物化、08号layout/bufferization、10号StructuredToTile及11号Instr。
+- User-level driver / named pipeline：原compiler和StableHLO-to-Linalg/attention/decomposition named pipelines调用同一实现。
+- Explicit non-goals：不新增第二套attention后端、通用能力查询框架、DTE优化或search计费改动；
+  不在普通pure graph中旁路e-graph消除cast，不按模型、固定shape或operand名称恢复语义。
+- Completion criteria：本节结构矩阵、16号module reference和计划中的全部可执行正例实卡闭合；
+  attention取得匹配设备收益，LLaMA block、大GEMM及受影响已通过case守住原性能目标。
+
+#### 精度与state
+
+| 对象 | 目标合同 |
+| --- | --- |
+| Q/K/V与两次GEMM输入 | 保持FP16/BF16，不能为宽累加物化整份F32 Q/K/V输入buffer |
+| QK accumulator及score结果 | F32；score region的首参数表达实际QK结果type，不再强制等于Q的storage type |
+| scale/mask score计算、Maximum/Sum与归一化系数 | F32；任意additive mask保持数值，按明确转换进入score计算 |
+| PV的probability operand | 在GEMM输入边界窄化为对应FP16/BF16；V保持原storage type |
+| PV Accumulator、跨KV block的状态、merge/finalize计算 | F32；coupled-state description、init、DPS iter args及merge必须使用一致type |
+| 最终output | 完成归一化后转回原storage type，只发布完整结果 |
+
+该许可属于完整attention的混合精度数值合同；composite展开定义必须准确，不能把不同舍入图宣称为逐位等价。
+普通图中的显式cast、额外score/probability users及未被合同覆盖的算术保持原SSA。
+graph到online及tile变换使用同一typed事实；不增加字符串precision模式或按case选择的低精度fallback。
+F32状态增加的allocation、布局和lifetime先在actual candidate中物化，再由唯一SPM路径验证。
+宽状态不授权psum与GEMM destination同址；11号要求的storage不重叠及各自dtype物理范围继续有效，
+DPS或copy消除不得绕过该target约束。
+
+#### 位置与局部展开
+
+causal可见性使用真实`key_position <= query_position`及有效KV域。位置经空间切分、temporal tiling和tail后仍由
+SSA/明确IR字段解释，不能用局部Q/K shape差重新推断。普通prefill、带cache的多token decode、单token decode共用该规则。
+单token只有在有效KV前缀全部可见时才能省去三角屏蔽；padding、滑窗和静态cache无效槽仍受原可见域约束。
+
+06号actual循环物化负责跳过对整个query tile都不可见的KV block，包括其读取和state update；全部可见块省去causal屏蔽，
+边界块由本节decomposition生成局部屏蔽计算。任意additive mask继续按实际tile读取，不能从sample payload提升成causal。
+全屏蔽行保持来源算子的结果语义；finite additive值与负无穷不能未经证明互换。
+边界屏蔽由10/11号验证硬件可实现的局部操作及其真实成本，不能预设GPU寄存器mask在本目标上免费。
+
+Score/probability只覆盖当前query tile×KV block；Maximum/Sum/归一化系数保持行级，通过indexing maps表达广播。
+不得借通用decomposition将中间值重新扩大到完整迭代域。DPS准确表达新旧state关系，必要复制由实际旧值用途决定。
+layout、physical transpose、broadcast指令与copy cleanup分别属于08/10/11号，不能全部归因或堆入本decomposition。
+
+依据为[FlashAttention的online算法](https://arxiv.org/abs/2205.14135)、
+[causal mask坐标实现](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/mask.h)及
+[前向F32累加/概率窄化实现](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/flash_fwd_kernel.h)。
+采用其按位置跳块与宽状态原则，实际指令和资源合法性仍以本目标current IR为准。
+
+| 输入等价类/结构分支 | exact输出或typed failure | 直接下游witness |
+| --- | --- | --- |
+| FP16/BF16，rank≥3，S1024/1025/1031，多Tile与多KV block | QK结果和三项online state为F32；所有中间shape局部化；finalize后仅输出窄type | graph→tiled online→Linalg→Instr/completion/SPM→package及完整实卡数值 |
+| causal全可见/全不可见/边界块，query与KV不等长 | 有效元素exact覆盖；不可见整块无读取/计算；跳块前后state接续正确；绝对位置不丢失 | spatial及temporal主块/tail，单/多token decode实卡 |
+| MHA/GQA多head；另有Q/K/V均为`[1,28,4096,128]`的MHA | head分配与尾组不漏不重；禁止全局dense score/mask重物化；F32 state真实容量规划 | 正式source→package/no-card及FP16/BF16实卡 |
+| mask有无、additive数值、全屏蔽行、额外score use | 保持原mask与observable语义；非法位置/type/捕获/effect明确拒绝 | 合法行为进入实卡矩阵；verifier负例只在主机执行 |
+| 旧state仍被使用/可原地更新、共享输入/被写alias | DPS与effect准确；必要copy保留，消除有proof的冗余 | One-Shot bufferization→movement→实际Instr/SPM，不以copy数量为正确性证明 |
 
 ## 5. Attention Algorithms
 

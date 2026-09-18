@@ -101,6 +101,25 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 
 ### 2.2 Layout assignment 与cleanup
 
+#### Attention链路暴露的布局覆盖补齐
+
+下述为与05号4.5节配套的待实施合同，保留现有PBQP solver及query/assignment失效边界。
+当前普通elementwise/convert的部分输入输出关系未进入完整layout tuple/use成本；须按实际指令可接受的layout和
+既有physical traversal证明补齐，不能仅建SSA变量就宣称覆盖完整。Shape/dtype用于现有物理关系与转换字节计算，
+不把数值算法、广播展开或GEMM方向选择交给PBQP，也不新增统一计算能力查询层。
+
+输入仍是已完成attention展开的actual structural IR，输出仍是同一个layout assignment及其实际materialization，
+直接下游为One-Shot bufferization和StructuredToTile。有限目标继续使用本节的转换成本，
+不扩展成预测指令inventory或SPM准入；同一proof规则必须与convert/elementwise lowering一致。
+DPS不准确导致的复制回到producer修复；已确定storage的冗余copy只凭actual alias/effect/lifetime消除。
+循环不变转换沿用现有PhysicalMovementPlacement，不能为attention另建hoist或状态写回特判。
+
+覆盖rank3+、1024/1025/1031的elementwise/convert、row/scalar broadcast、多use、跨循环及alias写入反例；
+检查被选layout、actual转换和直接Instr/SPM结果，并按[板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)
+完成attention、LLaMA、大GEMM和其它受影响正例的实卡保护。
+
+#### 现有求解与物化规则
+
 Layout domain builder只读current structural TileRegion，为每个SSA value、consumer use、exact alias和op layout tuple枚举合法
 `MemLayout` label。Baseline与search调用同一个query-local exact PBQP optimizer，PBQP结果不进入IR、candidate key或下一stage。
 Baseline与search对每个实际layout-input只求解一次完整assignment；search保留未变的current-IR query owner，

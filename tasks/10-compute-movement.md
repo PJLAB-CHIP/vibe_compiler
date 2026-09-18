@@ -217,6 +217,14 @@ current IR中有current SSA owner和typed effect的actual objects；不能由low
 
 ### GEMM
 
+05号4.5节attention更新要求在现有StructuredToTile中补齐batched NN/NT/TN/TT的通用接入：
+从contraction maps及已证明的physical关系推出orientation，不能只在rank2使用native方向、在rank≥3机械物化K转置。
+多batch/head维到canonical rank3的reshape必须证明实际encoding与bank边界，不能按元素数相等静默flatten。
+低精度输入/F32输出及F32 psum沿用11号现有合同；QK及PV的输出type由实际IR确定，不按attention或shape分派。
+目标是减少可吸收的转置与窄输出再扩展，不删除真实排列所需的movement。
+覆盖rank3+、1024/1025/1031、四种orientation、FP16/BF16→F32、有无psum及多batch物理不等价反例；
+每个正例进入直接Instr/target，产品case按统一板测矩阵实卡验收。此段为待实施的producer接入，不代签已有硬件全形态资格。
+
 `wafer.tile.gemm`由lhs/rhs/result type与typed orientation唯一解释M/K/N、batch、stored coordinate relation和result
 shape。它不隐含bias、activation、scale、quant或requant。physical layout与tail由operand/result memref encoding解释；
 accumulator/partial sum若跨op或wave存在，必须是SSA value或loop-carried state。
@@ -264,6 +272,13 @@ low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的can
 `wafer.instr.conv`，不重新判断卷积类别或猜测geometry。
 
 ### Elementwise 与 convert
+
+05号4.5节及08号布局覆盖补齐后，mapped elementwise的scalar/row broadcast继续由本stage/TileToInstr拥有。
+对硬件已有的广播形式，补齐typed Instr、CRT与numeric model的直接调用链后才能减少当前GS物化；
+wrapper存在本身不代表production支持。关系、shape、dtype、布局和destination全部从current IR取得，
+PBQP不负责发射广播指令。Convert仅在physical traversal成立时直接执行，不能把所有convert一律转到Tensor布局。
+1024/1025/1031的scalar/row/full broadcast、非连续映射、共享源及必要打包须分别检查actual指令与完整数值；
+必要的PV概率窄化、最终输出转换及真实packing保留。具体实施/实卡覆盖见统一板测计划的attention小节。
 
 `wafer.tile.elementwise`以closed kind和typed inputs/result表达arithmetic、relation、logic、select及supported
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof

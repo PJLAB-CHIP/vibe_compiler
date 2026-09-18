@@ -270,6 +270,41 @@ source verifier及05号attention识别；唯一用户入口仍为`export_pytorch
 
 导出数值通过不代签完整ViT上板；SPM、target和实卡结果分别记录。
 
+### 2.6 Attention composite 导出合同
+
+本节是下一次attention实现迁移的目标合同，不表示现有入口已经支持；实施顺序及实卡矩阵见
+[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)。2.5节描述迁移前的已实现路径，
+新路径闭合时同步替换相关producer/consumer，不保留两套Wafer attention协议。
+
+- Upstream IR / input：原始eval PyTorch/HF module及同一份静态typed输入，attention调用处仍可取得causal、位置和有效长度。
+- Current stage responsibility：通过现有产品capture保留逻辑attention的`stablehlo.composite`边界；
+  QKV projection、RoPE、KV更新和output projection保持各自SSA边界。展开定义来自框架计算图，准确描述其算术与转换。
+- Output IR / files：同一portable program directory；composite、必要operand/attribute和展开函数都在StableHLO中，
+  不增加旁路语义文件。磁盘metadata/payload仍与真实function signature逐项一致。
+- Downstream consumer：source verifier、pinned SPMD和05号StableHLO到structured转换；后者在通用展开前形成现有attention op。
+- User-level driver / named pipeline：仍为`wafer.frontend.export_pytorch_program`及原compiler入口，named pipeline复用同一转换。
+- Explicit non-goals：不在导出层选择tile、layout、同步或硬件指令；不新增opaque runtime custom-call执行路径，
+  不从模型名、参数名、sample mask数值恢复causal，不用展开函数生成测试expected。
+- Completion criteria：真实module经portable roundtrip、source verifier和SPMD后仍保留必要语义，直接进入05号attention；
+  本节正例继续到package/no-card及实卡，不能由composite打印成功代签。
+
+Q/K/V、scale、必要的additive mask及GQA head关系必须可由输入type、SSA与明确属性解释。
+静态causal配置用属性，运行时位置/有效长度用SSA operand；bool mask、padding与任意浮点bias不得混同。
+普通causal不再以完整`[S,S]`mask作为产品输入；当前adapter在导出前生成mask的做法须在调用边界调整，
+保留真正的规则和位置。任意additive mask仍是实际输入，不根据某次三角形payload改写成causal。
+导出、SPMD和导入都须保留这些事实；composite的展开语义与属性不得矛盾，未知或不完整合同明确拒绝。
+
+选用[StableHLO composite](https://openxla.org/stablehlo/spec#composite)是因为它保留融合边界并携带等价展开定义；
+`custom_call`仅由实现约定语义。本仓pinned StableHLO已有CompositeOp、pinned PyTorch/XLA已有
+`StableHLOCompositeBuilder`；API存在不等于本仓端到端已接入，须验证当前直接XLA capture路径，不能另建Dynamo入口。
+composite本身不授权浮点重排；05号拥有attention混合精度及online重排边界，16号拥有独立module reference。
+
+| 输入等价类/分支 | exact要求或typed failure | 直接下游witness |
+| --- | --- | --- |
+| FP16/BF16，MHA/GQA，S1024/1025/1031及Q/K/V均为`[1,28,4096,128]` | signature/dtype不变；融合边界、head关系、causal与位置完整；普通causal没有dense mask输入 | 实际module→portable→SPMD→attention→package/no-card→实卡 |
+| 非方形prefill、单/多token decode、padding、任意additive mask | query/key绝对位置及有效域保持；不能仅用局部Q/K长度推导causal方向 | 05号main/tail与16号原module数值 |
+| 缺少位置、错误属性/type、展开函数不闭合、额外score输出 | verifier或转换明确拒绝不满足的融合合同；额外observable use不得删除 | 主机负例及原SSA存活检查 |
+
 ## 3. Frontend Verification
 
 ### 3.1 IR 与 function boundary
