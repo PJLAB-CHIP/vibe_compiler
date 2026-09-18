@@ -13,6 +13,7 @@
 #include "Wafer/Transforms/Tile/LoopSubsetState.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
+#include "Wafer/Transforms/Tile/TensorInitialization.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -2573,6 +2574,115 @@ TEST_F(LayoutOptimizationTest,
         }
       }
     }
+}
+
+TEST_F(LayoutOptimizationTest, UniformGeneratePreservesBodyEffects) {
+  auto module = parse(R"mlir(
+module {
+  func.func @entry(%output: memref<2x1025x32xf16>) -> tensor<2x1025x32xf16> {
+    %value = tensor.generate {
+    ^bb0(%b: index, %m: index, %n: index):
+      %zero = arith.constant 0.0 : f16
+      memref.store %zero, %output[%b, %m, %n] : memref<2x1025x32xf16>
+      tensor.yield %zero : f16
+    } : tensor<2x1025x32xf16>
+    return %value : tensor<2x1025x32xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  mlir::IRRewriter rewriter(context.get());
+  auto initialized = lowerUniformTensorInitializers(rewriter, *module);
+  ASSERT_TRUE(mlir::succeeded(initialized));
+  EXPECT_EQ(initialized->generates, 0u);
+  EXPECT_EQ(countOps<mlir::tensor::GenerateOp>(*module), 1u);
+  EXPECT_EQ(countOps<mlir::memref::StoreOp>(*module), 1u);
+  EXPECT_EQ(countOps<mlir::linalg::FillOp>(*module), 0u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  StructuredMaterializationRelations relations;
+  auto prepared = prepareCurrentLayoutInput(*module, relations);
+  EXPECT_EQ(prepared.status, ExactPBQPStatus::NoSolution) << prepared.detail;
+  EXPECT_EQ(countOps<mlir::memref::StoreOp>(*module), 1u);
+}
+
+TEST_F(LayoutOptimizationTest, UniformGenerateIsDPSBeforeLayoutAssignment) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (bool insideConstant : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(insideConstant);
+      const std::string type =
+          "tensor<2x" + std::to_string(extent) + "x32xf16>";
+      std::string text = "module { wafer.tile.module card_id = 0 tile_id = 0 {"
+                         "func.func @entry(%input: " +
+                         type + ") -> " + type +
+                         " {"
+                         "%r = wafer.tile.region(%input : " +
+                         type + ") -> (" + type +
+                         ") {"
+                         "^bb0(%arg: " +
+                         type + "): ";
+      if (!insideConstant)
+        text += "%zero = arith.constant 0.0 : f16 ";
+      text += "%g = tensor.generate { ^bb0(%b: index, %m: index, %n: index): ";
+      if (insideConstant)
+        text += "%zero = arith.constant 0.0 : f16 ";
+      text += "tensor.yield %zero : f16 } : " + type +
+              " %empty = tensor.empty() : " + type +
+              " %sum = linalg.add ins(%arg, %g : " + type + ", " + type +
+              ") outs(%empty : " + type + ") -> " + type +
+              " wafer.tile.yield %sum : " + type + " } return %r : " + type +
+              " } } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto relations = outputRelation(*module);
+      // This is also a spatial-only region: no temporal pass is required to
+      // expose the all-padding initializer before the layout query.
+      auto unprepared = queryCurrentLayoutAssignment(*module);
+      EXPECT_EQ(unprepared.outcome.status, ExactPBQPStatus::BrokenContract);
+      ASSERT_FALSE(unprepared.query);
+      auto prepared = prepareCurrentLayoutInput(*module, relations);
+      ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+      EXPECT_EQ(countOps<mlir::tensor::GenerateOp>(*module), 0u);
+      EXPECT_EQ(countOps<mlir::linalg::FillOp>(*module), 1u);
+      auto query = queryCurrentLayoutAssignment(*module);
+      ASSERT_TRUE(query.query) << query.outcome.detail;
+      auto assignment = query.query->solve(100000);
+      auto applied = query.query->apply(*module, relations, assignment);
+      ASSERT_TRUE(applied.succeeded()) << applied.detail;
+      module->walk([&](mlir::linalg::FillOp fill) {
+        auto buffer =
+            mlir::cast<mlir::MemRefType>(fill.getOutputs()[0].getType());
+        EXPECT_TRUE(isWaferSPMMemRefType(buffer));
+        EXPECT_TRUE(buffer.getElementType().isF16());
+        EXPECT_EQ(buffer.getNumElements(), 2 * extent * 32);
+      });
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeFillOp>(*module), 1u);
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 1u);
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      ASSERT_EQ(standalone->size(), 1u);
+      auto &tile = standalone->front();
+      TileRegionToInstrLoweringSession session(*context);
+      llvm::SmallVector<TileRegionOp, 2> regions;
+      tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+      for (TileRegionOp region : regions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      TileMemoryPlanningFailure memoryFailure;
+      auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+    }
+  }
 }
 
 TEST_F(LayoutOptimizationTest,

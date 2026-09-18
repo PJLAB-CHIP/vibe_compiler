@@ -8,6 +8,9 @@
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=production 2>&1 | FileCheck %s --check-prefix=RETIRED-POLICY
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-max-candidate-evaluations=2 2>&1 | FileCheck %s --check-prefix=RETIRED-SEARCH-BUDGET
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-mode=invalid 2>&1 | FileCheck %s --check-prefix=INVALID-SEARCH-MODE
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=none --search-mode=standard 2>&1 | FileCheck %s --check-prefix=NONE-SEARCH-MODE
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-mode=deep --search-mode=standard 2>&1 | FileCheck %s --check-prefix=DUPLICATE-SEARCH-MODE
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-width=0 2>&1 | FileCheck %s --check-prefix=INVALID-SEARCH-WIDTH
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-trials=text 2>&1 | FileCheck %s --check-prefix=INVALID-SEARCH-TRIALS
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=search --search-trials=18446744073709551616 2>&1 | FileCheck %s --check-prefix=OVERFLOW-SEARCH-TRIALS
@@ -57,3 +60,7 @@
 # SIMILARITY-PAIR: wafer-compile: --model-min-cosine and --model-max-relative-l2 must be supplied together
 # SIMILARITY-RANGE: wafer-compile: --model-min-cosine must be in [0,1]
 # SIMILARITY-FINITE: wafer-compile: invalid --model-max-relative-l2 value: nan
+
+# INVALID-SEARCH-MODE: wafer-compile: invalid --search-mode value: invalid (expected standard or deep)
+# NONE-SEARCH-MODE: wafer-compile: --search-mode requires --optimization-policy=search
+# DUPLICATE-SEARCH-MODE: wafer-compile: duplicate option: --search-mode

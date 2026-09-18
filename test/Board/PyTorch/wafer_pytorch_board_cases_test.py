@@ -637,7 +637,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             case="attention-decode-kv-cache",
             dtype="float16",
             seed=17,
-            prepared_work_dir=None, search_width=None, search_trials=None,
+            prepared_work_dir=None, search_mode=None, search_width=None, search_trials=None,
             compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
             wafer_run=pathlib.Path("wafer-run"),
@@ -763,6 +763,19 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             cases.OPTIMIZATION_POLICIES,
             ("search", "none"),
         )
+        for mode in (None, "standard", "deep"):
+            options = [*required_args, "--optimization-policy=search"]
+            if mode is not None:
+                options.append(f"--search-mode={mode}")
+            with mock.patch.object(sys, "argv", options):
+                self.assertEqual(
+                    board_runner.parse_args().compile_timeout_seconds,
+                    None if mode == "deep" else 1800,
+                )
+            with mock.patch.object(
+                sys, "argv", [*options, "--compile-timeout-seconds=2400"]
+            ):
+                self.assertEqual(board_runner.parse_args().compile_timeout_seconds, 2400)
 
         case = types.SimpleNamespace(
             num_partitions=1,
@@ -776,7 +789,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             ),
         )
         args = types.SimpleNamespace(
-            prepared_work_dir=None, search_width=None, search_trials=None,
+            prepared_work_dir=None, search_mode=None, search_width=None, search_trials=None,
             target_model=False,
             compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
@@ -828,6 +841,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         for policy in ("none", "search"):
             args = types.SimpleNamespace(
                 prepared_work_dir=None,
+                search_mode="deep" if policy == "search" else None,
                 search_width=16 if policy == "search" else None,
                 search_trials=126 if policy == "search" else None,
                 compile_timeout_seconds=2400,
@@ -857,7 +871,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 compile_command = command.call_args.args[0]
                 self.assertFalse(any("test-communication" in arg for arg in compile_command))
                 self.assertEqual(command.call_args.kwargs["timeout_seconds"], 2400)
-                for option, expected in (("--search-width", "16"), ("--search-trials", "126")):
+                for option, expected in (("--search-mode", "deep"), ("--search-width", "16"), ("--search-trials", "126")):
                     if policy == "search":
                         self.assertEqual(compile_command[compile_command.index(option) + 1], expected)
                     else:

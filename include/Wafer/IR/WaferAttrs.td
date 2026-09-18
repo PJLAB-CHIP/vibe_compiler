@@ -72,6 +72,33 @@ def Wafer_ProgramArgumentAttr : AttrDef<Wafer_Dialect, "ProgramArgument"> {
   let assemblyFormat = "`<` $index `>`";
 }
 
+def Wafer_IterationCoordinateAttr
+    : AttrDef<Wafer_Dialect, "IterationCoordinate"> {
+  let mnemonic = "iteration_coordinate";
+  let summary = "A materialized loop's explicit traversal choice coordinate";
+  let description = [{
+    The distinct scope is assigned to a live traversal by its choice domain.
+    The dimension is a TilingInterface iterator coordinate, not an operation
+    ordinal. A tiler attaches these coordinates to the loops it actually
+    creates. They bind implementation choices after cloning and bufferization;
+    they are not allocation owners, memory certificates or schedule facts.
+  }];
+  let parameters = (ins "mlir::DistinctAttr":$scope, "uint32_t":$dimension);
+  let assemblyFormat = "`<` $scope `,` $dimension `>`";
+  let genVerifyDecl = 1;
+}
+
+def Wafer_IterationCoordinatesAttr
+    : AttrDef<Wafer_Dialect, "IterationCoordinates"> {
+  let mnemonic = "iteration_coordinates";
+  let summary = "All traversal coordinates implemented by one current loop";
+  let parameters = (ins
+    ArrayRefParameter<"::wafer::IterationCoordinateAttr">:$coordinates
+  );
+  let assemblyFormat = "`<` `[` $coordinates `]` `>`";
+  let genVerifyDecl = 1;
+}
+
 def Wafer_DDRBindingAttr : AttrDef<Wafer_Dialect, "DDRBinding"> {
   let mnemonic = "ddr_binding";
   let summary = "Tile entry binding to one shared DDR declaration";

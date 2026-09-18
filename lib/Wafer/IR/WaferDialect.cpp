@@ -4,6 +4,7 @@
 #include "Wafer/Target/DirectDTE.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
@@ -23,6 +24,44 @@
 #include <optional>
 
 using namespace wafer;
+
+IterationCoordinatesAttr
+wafer::getIterationCoordinates(mlir::Operation *operation) {
+  return operation->getAttrOfType<IterationCoordinatesAttr>(
+      kIterationCoordinatesAttrName);
+}
+
+mlir::LogicalResult IterationCoordinateAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    mlir::DistinctAttr scope, uint32_t dimension) {
+  if (!scope || !mlir::isa<mlir::UnitAttr>(scope.getReferencedAttr()))
+    return emitError() << "iteration scope must be a distinct unit anchor";
+  return mlir::success();
+}
+
+mlir::LogicalResult IterationCoordinatesAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<IterationCoordinateAttr> coordinates) {
+  if (coordinates.empty())
+    return emitError() << "iteration coordinates must not be empty";
+  llvm::SmallDenseSet<mlir::Attribute> seen;
+  for (auto coordinate : coordinates)
+    if (!coordinate || !seen.insert(coordinate).second)
+      return emitError() << "iteration coordinates must be nonnull and unique";
+  return mlir::success();
+}
+
+mlir::LogicalResult
+WaferDialect::verifyOperationAttribute(mlir::Operation *operation,
+                                       mlir::NamedAttribute attribute) {
+  if (attribute.getName() != kIterationCoordinatesAttrName)
+    return mlir::success();
+  if (!mlir::isa<mlir::scf::ForOp>(operation) ||
+      !mlir::isa<IterationCoordinatesAttr>(attribute.getValue()))
+    return operation->emitOpError(
+        "iteration coordinates require a typed coordinate list on scf.for");
+  return mlir::success();
+}
 
 mlir::LogicalResult
 wafer::verifyNoSchemaFreeSemanticAttributes(mlir::Operation *operation) {

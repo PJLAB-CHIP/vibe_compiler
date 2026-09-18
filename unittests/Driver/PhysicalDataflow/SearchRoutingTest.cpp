@@ -82,13 +82,36 @@ TEST(SearchRoutingTest, SearchBuildsOneCurrentIRDeviceExecutable) {
            "compile-counter category=search name=width value=8",
            "compile-counter category=search name=trials value=42",
            "compile-counter category=search "
-           "name=accepted-candidates value=42",
+           "name=accepted-candidates value=",
            "compile-counter category=search "
-           "name=unsupported-candidates value=0",
+           "name=unsupported-candidates value=",
        })
     EXPECT_NE(diagnosticsText.find(counter.str()), std::string::npos)
         << counter.str() << "\n"
         << diagnosticsText;
+  auto count = [&](llvm::StringRef name) -> uint64_t {
+    auto prefix =
+        "compile-counter category=search name=" + name.str() + " value=";
+    auto text = llvm::StringRef(diagnosticsText);
+    auto position = text.find(prefix);
+    if (position == llvm::StringRef::npos) {
+      ADD_FAILURE() << "missing counter " << name.str();
+      return 0;
+    }
+    uint64_t value = 0;
+    EXPECT_FALSE(text.drop_front(position + prefix.size())
+                     .split(' ')
+                     .first.getAsInteger(10, value));
+    return value;
+  };
+  // A retained pipeline can become inapplicable after retile. That actual
+  // attempt still consumes a standard trial and must not fail the query.
+  EXPECT_GT(count("accepted-candidates"), 0u);
+  EXPECT_EQ(count("accepted-candidates") + count("unsupported-candidates") +
+                count("exact-rejected-candidates") +
+                count("indeterminate-candidates"),
+            count("candidate-actualizations"));
+  EXPECT_EQ(count("trials-used"), count("candidate-actualizations"));
 }
 
 TEST(SearchRoutingTest, PublicLimitsBoundTheActualSearchWork) {

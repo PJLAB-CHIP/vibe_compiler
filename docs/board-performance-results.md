@@ -2365,3 +2365,27 @@ LLaMA FP16/BF16及三组大GEMM均以本轮source重新执行默认8/42构包、
 五个完整package及全部source文件与上一节最新实卡通过版本逐byte一致，实际设备指令未改变。
 对照使用`assembly-reuse/prepared/`的最终CRT与拼接复用版本，保留上一节性能目标。
 本轮证据位于`build/test/attention-precision/`。
+
+## 2026-09-18：搜索组织修改的首轮配对验收
+
+本轮standard仍使用8/42实际求值预算，deep按首次启动的方案计费；本节只记录已经完成的standard实卡，
+尚未闭合两种模式的全矩阵与deep实卡收益门槛。输入及原PyTorch reference由本轮正式source重新生成，精度门槛不变。
+同一SDK 5.7/API1400、ordinary事件计时下，按baseline/standard、standard/baseline、baseline/standard配对运行。
+
+| case | baseline三次 ms | standard三次 ms | 结论 |
+| --- | --- | --- | --- |
+| LLaMA block FP16 | 9.366 / 9.358 / 9.203 | 8.948 / 8.735 / 8.834 | 六次完整数值通过，中位9.358→8.834 ms |
+| LLaMA block BF16 | 9.383 / 9.292 / 9.372 | 9.028 / 8.869 / 8.812 | 六次完整数值通过，中位9.372→8.869 ms |
+| GEMM4096 FP16 | 7.086 / 6.828 / 6.830 | 7.074 / 6.936 / 6.793 | 六次完整数值通过；两份完整包逐byte相同，区间重叠 |
+| GEMM4096 BF16 | 6.862 / 6.841 / 6.884 | 6.850 / 6.763 / 6.888 | 六次完整数值通过；两份完整包逐byte相同，区间重叠 |
+| GEMM4097 FP16 | 8.516 / 8.620 / 8.601 | 8.571 / 8.563 / 8.598 | 六次输出比较通过；最后一次所在窗口出现设备异常，不能计为第三份健康性能样本 |
+
+LLaMA与BF16/tail GEMM对照使用此前已恢复性能、最终CRT的健康包；4096 FP16以冻结的修改前compiler
+`093b6c55`在本轮source重新构包。所有包使用本轮输入/reference；GEMM4097的standard包也与健康对照逐byte相同。
+原最好可复现性能目标保留，单次最小值不替代配对结果。
+
+14:23:27，最后一次GEMM4097 standard的completion、readback及数值比较均通过后，内核窗口报告
+`NPU LSU TDMA Timeout`、`0x0D00C005`、`action=RESET_BM`。批次随即停止，ViT尚未launch，未自动retry或reset。
+包相同只排除了此组对照的指令包差异，不能据此判断硬件、runtime或设备状态的根因；本轮不声称修复历史TDMA问题。
+用户随后确认尚未重启恢复。完整逐次相似度、命令及健康样本标记见
+[`search-modes-20260918.json`](data/board-performance/search-modes-20260918.json)。

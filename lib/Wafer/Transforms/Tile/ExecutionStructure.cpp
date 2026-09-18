@@ -312,6 +312,21 @@ llvm::SmallVector<LoadPipeline, 4> findLoadPipelines(mlir::ModuleOp module) {
           return operation.getNumRegions() != 0;
         }))
       return;
+    // This construction pipelines one local loop. Peeling a cross-Tile
+    // protocol requires a joint transformation of every participant; cloning
+    // its messages locally cannot preserve the existing completion identity.
+    for (auto &operation : loop.getBody()->without_terminator()) {
+      auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+      if (!effects)
+        return;
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> instances;
+      effects.getEffects(instances);
+      if (llvm::any_of(instances, [](const auto &effect) {
+            return effect.getResource() == WaferCommunicationResource::get() ||
+                   effect.getResource() == WaferSyncResource::get();
+          }))
+        return;
+    }
     LoadPipeline pipeline{loop};
     for (StorageLoadOp load : loop.getBody()->getOps<StorageLoadOp>()) {
       auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
@@ -956,6 +971,15 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
 
 bool hasDistanceOneLoadPipeline(mlir::ModuleOp module) {
   return module && !findLoadPipelines(module).empty();
+}
+
+llvm::SmallVector<mlir::scf::ForOp, 4>
+getDistanceOneLoadPipelineLoops(mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::scf::ForOp, 4> loops;
+  if (module)
+    for (auto &pipeline : findLoadPipelines(module))
+      loops.push_back(pipeline.loop);
+  return loops;
 }
 
 MaterializedExecutionStructureResult materializeDistanceOneLoadPipelines(

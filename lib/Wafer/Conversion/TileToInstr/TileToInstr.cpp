@@ -214,6 +214,14 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
   llvm::SmallVector<mlir::memref::SubViewOp, 8> subviews;
   region.walk([&](mlir::memref::SubViewOp view) { subviews.push_back(view); });
   mlir::IRRewriter rewriter(region.getContext(), listener);
+  // The choice has already been materialized. Iteration coordinates are not
+  // instruction, allocation, or completion facts.
+  region.walk([&](mlir::Operation *operation) {
+    if (getIterationCoordinates(operation))
+      rewriter.modifyOpInPlace(operation, [&] {
+        operation->removeAttr(kIterationCoordinatesAttrName);
+      });
+  });
   for (auto view : llvm::reverse(subviews))
     if (view->use_empty())
       rewriter.eraseOp(view);

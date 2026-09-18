@@ -798,22 +798,33 @@ module {{
     options.limits = wafer::SearchLimits{8, 42};
     options.downstream.tilePipelineParallelism = 1;
     SearchCurrentIRStatistics statistics;
+    auto timing =
+        std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+    wafer::support::ScopedCompileTimingActivation activation(timing);
     auto result = compileSearchCurrentIR(
         *parsed.module, program, wafer::compiler::testing::executionConfig(),
         diagnostics, data, options, &statistics);
+    timing->finishAndPrintSummary();
     ASSERT_TRUE(result.isAccepted()) << result.detail << diagnosticText;
     if (extent == 4096) {
       EXPECT_GT(statistics.accessReuseCandidates, 0u);
       EXPECT_GT(statistics.accessReuseAccepted, 0u);
       EXPECT_GT(statistics.accessReuseCapacityRejected, 0u);
-      EXPECT_GT(statistics.residentReuseAccepted, 0u);
+      EXPECT_GT(statistics.residentReuseAccepted, 0u) << diagnosticText;
       ASSERT_TRUE(statistics.minimumResidentDDRReadBytes);
       EXPECT_EQ(*statistics.minimumResidentDDRReadBytes, 64u * 1024 * 1024);
     }
     EXPECT_GT(statistics.accessReuseQueries, 0u);
     EXPECT_GT(statistics.accessReuseEligible, 0u);
     EXPECT_GT(statistics.accessReuseLowBenefit, 0u);
-    EXPECT_GE(statistics.accessReuseQueued, statistics.accessReuseCandidates);
+    EXPECT_GE(statistics.accessReuseBranchesDiscovered,
+              statistics.accessReuseBranchesStarted);
+    EXPECT_GE(statistics.accessReuseCandidates,
+              statistics.accessReuseBranchesStarted);
+    EXPECT_GE(statistics.traversal.schemesStarted,
+              statistics.accessReuseBranchesStarted);
+    EXPECT_EQ(statistics.traversal.trialsUsed,
+              statistics.traversal.candidateActualizations);
     EXPECT_GT(statistics.acceptedCandidates, statistics.accessReuseAccepted);
     EXPECT_EQ(statistics.traversal.candidateActualizations, 42u);
     ASSERT_TRUE(result.executable);

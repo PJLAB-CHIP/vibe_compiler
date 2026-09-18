@@ -37,11 +37,13 @@ resolveStaticValues(llvm::ArrayRef<mlir::OpFoldResult> values) {
 TensorIndexingOperandDescription
 describeOperand(mlir::OpOperand &operand, TensorIndexingOperandRole role,
                 llvm::ArrayRef<int64_t> offsets = {},
+                llvm::ArrayRef<int64_t> sizes = {},
                 llvm::ArrayRef<int64_t> strides = {}) {
   TensorIndexingOperandDescription description;
   description.operand = operand.getOperandNumber();
   description.role = role;
   description.offsets.assign(offsets.begin(), offsets.end());
+  description.sizes.assign(sizes.begin(), sizes.end());
   description.strides.assign(strides.begin(), strides.end());
   return description;
 }
@@ -93,15 +95,16 @@ struct ExtractSliceIndexingModel final
       return mlir::failure();
     auto extract = mlir::cast<mlir::tensor::ExtractSliceOp>(operation);
     auto offsets = resolveStaticValues(extract.getMixedOffsets());
+    auto sizes = resolveStaticValues(extract.getMixedSizes());
     auto strides = resolveStaticValues(extract.getMixedStrides());
-    if (mlir::failed(offsets) || mlir::failed(strides))
+    if (mlir::failed(offsets) || mlir::failed(sizes) || mlir::failed(strides))
       return mlir::failure();
     TensorIndexingDescription description;
     description.kind = TensorIndexingTransformKind::ExtractSlice;
     description.result = result;
-    description.operands.push_back(
-        describeOperand(extract.getSourceMutable(),
-                        TensorIndexingOperandRole::Source, *offsets, *strides));
+    description.operands.push_back(describeOperand(
+        extract.getSourceMutable(), TensorIndexingOperandRole::Source, *offsets,
+        *sizes, *strides));
     return description;
   }
 };
@@ -116,15 +119,16 @@ struct InsertSliceIndexingModel final
       return mlir::failure();
     auto insert = mlir::cast<mlir::tensor::InsertSliceOp>(operation);
     auto offsets = resolveStaticValues(insert.getMixedOffsets());
+    auto sizes = resolveStaticValues(insert.getMixedSizes());
     auto strides = resolveStaticValues(insert.getMixedStrides());
-    if (mlir::failed(offsets) || mlir::failed(strides))
+    if (mlir::failed(offsets) || mlir::failed(sizes) || mlir::failed(strides))
       return mlir::failure();
     TensorIndexingDescription description;
     description.kind = TensorIndexingTransformKind::InsertSlice;
     description.result = result;
-    description.operands.push_back(
-        describeOperand(insert.getSourceMutable(),
-                        TensorIndexingOperandRole::Source, *offsets, *strides));
+    description.operands.push_back(describeOperand(
+        insert.getSourceMutable(), TensorIndexingOperandRole::Source, *offsets,
+        *sizes, *strides));
     description.operands.push_back(describeOperand(
         insert.getDestMutable(), TensorIndexingOperandRole::Destination));
     return description;
@@ -147,9 +151,9 @@ struct PadIndexingModel final
     TensorIndexingDescription description;
     description.kind = TensorIndexingTransformKind::Pad;
     description.result = result;
-    description.operands.push_back(
-        describeOperand(pad.getSourceMutable(),
-                        TensorIndexingOperandRole::Source, *offsets, strides));
+    description.operands.push_back(describeOperand(
+        pad.getSourceMutable(), TensorIndexingOperandRole::Source, *offsets,
+        pad.getSourceType().getShape(), strides));
     return description;
   }
 };

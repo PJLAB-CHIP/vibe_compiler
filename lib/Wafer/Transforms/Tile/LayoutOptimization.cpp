@@ -5,6 +5,7 @@
 #include "GatherLowering.h"
 #include "LoopSubsetState.h"
 
+#include "TensorInitialization.h"
 #include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Analysis/Tile/PhysicalLayoutRelation.h"
@@ -1928,35 +1929,33 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
 
-  // One-Shot creates the Pad allocation and its Fill after the layout query.
-  // Materialize those existing tensor operations first so PBQP sees their
-  // real layout/alias constraints and prices any conversion to a consumer.
-  llvm::SmallVector<mlir::tensor::PadOp> pads;
-  module.walk([&](mlir::tensor::PadOp pad) { pads.push_back(pad); });
-  if (llvm::any_of(pads, [](mlir::tensor::PadOp pad) {
-        return !pad.getConstantPaddingValue();
-      })) {
-    result.status = ExactPBQPStatus::NoSolution;
-    result.detail = "layout input requires uniform tensor padding";
-    return result;
-  }
-  if (!pads.empty()) {
+  // Make every uniform tensor initializer visible to the layout query,
+  // including Generate from standard tiling of an all-padding window.
+  {
     StructuredBufferReplacementListener listener(relations);
-    mlir::PatternRewriter rewriter(module.getContext());
+    mlir::IRRewriter rewriter(module.getContext());
     rewriter.setListener(&listener);
-    mlir::linalg::GeneralizePadOpPattern pattern(module.getContext());
-    for (auto pad : pads) {
-      rewriter.setInsertionPoint(pad);
-      if (mlir::failed(pattern.matchAndRewrite(pad, rewriter))) {
-        result.detail =
-            "tensor padding could not be materialized before layout";
-        return result;
-      }
-    }
-    if (!listener.finalizeAfterRewrite()) {
-      result.detail = "tensor padding left stale current buffer relations";
+    if (mlir::failed(lowerUniformTensorInitializers(rewriter, module))) {
+      result.detail =
+          "tensor initialization could not be materialized before layout";
       return result;
     }
+    if (!listener.finalizeAfterRewrite()) {
+      result.detail =
+          "tensor initialization left stale current buffer relations";
+      return result;
+    }
+  }
+  if (module
+          .walk([](mlir::Operation *op) {
+            return mlir::isa<mlir::tensor::PadOp, mlir::tensor::GenerateOp>(op)
+                       ? mlir::WalkResult::interrupt()
+                       : mlir::WalkResult::advance();
+          })
+          .wasInterrupted()) {
+    result.status = ExactPBQPStatus::NoSolution;
+    result.detail = "layout input requires uniform tensor initialization";
+    return result;
   }
 
   if (mlir::failed(lowerTensorGathers(module, relations))) {
@@ -2056,10 +2055,14 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
     return {std::move(result), nullptr};
   }
   if (module
-          .walk(
-              [](mlir::tensor::PadOp) { return mlir::WalkResult::interrupt(); })
+          .walk([](mlir::Operation *op) {
+            return mlir::isa<mlir::tensor::PadOp, mlir::tensor::GenerateOp>(op)
+                       ? mlir::WalkResult::interrupt()
+                       : mlir::WalkResult::advance();
+          })
           .wasInterrupted()) {
-    result.detail = "layout query requires padding materialization first";
+    result.detail =
+        "layout query requires tensor initialization materialization first";
     return {std::move(result), nullptr};
   }
   llvm::SmallVector<mlir::Value, 64> values;

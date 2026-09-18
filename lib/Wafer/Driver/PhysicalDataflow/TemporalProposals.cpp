@@ -36,6 +36,22 @@ size_t hashChoices(const std::vector<TemporalChoice> &choices) {
   // operation handles; neither hash order nor addresses order proposals.
   return static_cast<size_t>(hash);
 }
+
+bool prepareScopePair(llvm::ArrayRef<TemporalCoordinate> coordinates,
+                      size_t &first, size_t &second) {
+  // Coordinates are contiguous by domain/scope. Keep local axis exchanges
+  // and use the separate grouped directions for cross-scope coordination.
+  // Enumerating every pair of unrelated scope instances grows quadratically
+  // with the number of spatial pieces without defining another local move.
+  while (first + 1 < coordinates.size()) {
+    if (second < coordinates.size() &&
+        coordinates[first].domain == coordinates[second].domain &&
+        coordinates[first].scope == coordinates[second].scope)
+      return true;
+    second = ++first + 1;
+  }
+  return false;
+}
 } // namespace
 
 std::optional<size_t>
@@ -356,29 +372,40 @@ bool TemporalProposals::appendSeedPoint() {
 }
 
 void TemporalProposals::observeAccepted(
-    const std::vector<TemporalChoice> &choices, uint64_t duration) {
+    const std::vector<TemporalChoice> &choices,
+    const analysis::KnownSearchObjective &objective) {
   auto index = find(choices);
   if (!index)
     return;
   auto &entry = entries[*index];
-  if (entry.bestDuration && duration >= *entry.bestDuration)
+  const bool improvesBest =
+      !bestObjective ||
+      analysis::compareSearchObjectives(objective, *bestObjective) ==
+          analysis::SearchObjectiveComparison::Better;
+  if (entry.bestObjective &&
+      analysis::compareSearchObjectives(objective, *entry.bestObjective) !=
+          analysis::SearchObjectiveComparison::Better)
     return;
-  const bool first = !entry.bestDuration;
-  entry.bestDuration = duration;
+  entry.bestObjective = objective;
   if (entry.probe) {
     Probe probe = *entry.probe; // Appending can relocate entries.
-    if (probe.referenceDuration && duration < *probe.referenceDuration) {
+    if (improvesBest && probe.referenceObjective &&
+        analysis::compareSearchObjectives(objective,
+                                          *probe.referenceObjective) ==
+            analysis::SearchObjectiveComparison::Better) {
       probe.anchor = *index;
       probe.distance = expandDistance(probe.distance);
-      probe.referenceDuration = duration;
+      probe.referenceObjective = objective;
       appendProbe(std::move(probe), TemporalProposalKind::Improve);
     } else if (probe.distance > 1) {
       probe.distance /= 2;
       appendProbe(std::move(probe), TemporalProposalKind::Improve);
     }
   }
-  if (!first)
+  if (!improvesBest)
     return;
+  bestObjective = objective;
+  improvementPolls.clear();
   auto all = coordinates(choices);
   ImprovementPoll poll{*index, all, {}};
   for (const auto coordinate : all) {
@@ -393,7 +420,7 @@ void TemporalProposals::observeAccepted(
   // A combination may improve even when every one-coordinate move worsens.
   // Its admission is independent of the single-coordinate observations.
   for (int direction : {-1, 1})
-    appendProbe({*index, all, direction, 1, duration},
+    appendProbe({*index, all, direction, 1, objective},
                 TemporalProposalKind::Explore);
 }
 
@@ -429,13 +456,15 @@ bool TemporalProposals::advanceImprovementPoll() {
           selected = true;
         } else if (phase == 1 && poll.fine < poll.coordinates.size()) {
           auto coordinate = poll.coordinates[poll.fine++];
-          const uint64_t duration = *entries[poll.anchor].bestDuration;
+          const auto &objective = *entries[poll.anchor].bestObjective;
           for (int direction : {-1, 1})
-            appendProbe({poll.anchor, {coordinate}, direction, 1, duration},
+            appendProbe({poll.anchor, {coordinate}, direction, 1, objective},
                         TemporalProposalKind::Improve);
-          appendLayoutBoundaries(poll.anchor, coordinate, duration);
+          appendLayoutBoundaries(poll.anchor, coordinate, objective);
           selected = true;
-        } else if (phase == 2 && poll.pairSecond < poll.coordinates.size()) {
+        } else if (phase == 2 &&
+                   prepareScopePair(poll.coordinates, poll.pairFirst,
+                                    poll.pairSecond)) {
           const int direction = poll.pairDirection++ == 0 ? -1 : 1;
           changes.emplace_back(poll.coordinates[poll.pairFirst], direction);
           changes.emplace_back(poll.coordinates[poll.pairSecond], -direction);
@@ -497,9 +526,9 @@ bool TemporalProposals::advanceImprovementPoll() {
   return false;
 }
 
-void TemporalProposals::appendLayoutBoundaries(size_t anchor,
-                                               Coordinate coordinate,
-                                               uint64_t duration) {
+void TemporalProposals::appendLayoutBoundaries(
+    size_t anchor, Coordinate coordinate,
+    const analysis::KnownSearchObjective &objective) {
   const auto &choices = entries[anchor].choices;
   const auto &scope = choices[coordinate.domain].scopes[coordinate.scope];
   auto operation = mlir::dyn_cast<mlir::linalg::LinalgOp>(scope.operation);
@@ -543,7 +572,7 @@ void TemporalProposals::appendLayoutBoundaries(size_t anchor,
                      {coordinate},
                      point < current ? -1 : 1,
                      point < current ? current - point : point - current,
-                     duration},
+                     objective},
                     TemporalProposalKind::Improve);
       }
   }
@@ -684,7 +713,8 @@ bool TemporalProposals::appendCapacityDirection() {
       ++poll.batch;
     } else if (poll.single < poll.coordinates.size()) {
       selected.push_back(poll.coordinates[poll.single++]);
-    } else if (poll.pairSecond < poll.coordinates.size()) {
+    } else if (prepareScopePair(poll.coordinates, poll.pairFirst,
+                                poll.pairSecond)) {
       selected.push_back(poll.coordinates[poll.pairFirst]);
       selected.push_back(poll.coordinates[poll.pairSecond]);
       if (++poll.pairSecond == poll.coordinates.size())

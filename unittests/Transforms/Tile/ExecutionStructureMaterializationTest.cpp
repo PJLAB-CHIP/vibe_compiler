@@ -648,7 +648,7 @@ TEST(ExecutionStructureMaterializationTest,
     const std::string before = print(*module);
     EXPECT_TRUE(hasDistanceOneLoadPipeline(*module));
     EXPECT_EQ(print(*module), before);
-    for (unsigned failure = 0; failure != 4; ++failure) {
+    for (unsigned failure = 0; failure != 5; ++failure) {
       SCOPED_TRACE(failure);
       mlir::OwningOpRef<mlir::ModuleOp> negative(module->clone());
       mlir::scf::ForOp loop;
@@ -663,7 +663,7 @@ TEST(ExecutionStructureMaterializationTest,
         mlir::OpBuilder builder(store);
         builder.create<StorageLoadOp>(load.getLoc(), load.getSource(),
                                       load.getDest());
-      } else {
+      } else if (failure == 3) {
         auto function = loop->getParentOfType<mlir::func::FuncOp>();
         unsigned index = function.getNumArguments();
         function.insertArgument(index, mlir::IndexType::get(context.get()),
@@ -673,6 +673,11 @@ TEST(ExecutionStructureMaterializationTest,
         auto bound = owner.getBody().front().addArgument(
             mlir::IndexType::get(context.get()), loop.getLoc());
         loop.setUpperBound(bound);
+      } else {
+        mlir::OpBuilder builder(store);
+        builder.create<CommPeerSendOp>(
+            load.getLoc(), load.getDest(), 1, 2 * 32 * 64 * 2,
+            DTEMessageAttr::get(context.get(), 0, 0, 0));
       }
       ASSERT_TRUE(mlir::succeeded(mlir::verify(*negative)));
       const std::string unchanged = print(*negative);

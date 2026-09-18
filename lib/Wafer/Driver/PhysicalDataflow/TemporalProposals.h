@@ -3,6 +3,7 @@
 #ifndef WAFER_DRIVER_PHYSICALDATAFLOW_TEMPORALPROPOSALS_H
 #define WAFER_DRIVER_PHYSICALDATAFLOW_TEMPORALPROPOSALS_H
 
+#include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include <array>
@@ -37,18 +38,21 @@ public:
       : domains(std::move(domains)) {}
 
   void seed(const std::vector<TemporalChoice> &initial);
+  bool startAt(const std::vector<TemporalChoice> &choices) {
+    return append(choices, TemporalProposalKind::Explore, {}, true);
+  }
   /// Prepares at most one distinct point from a lazy direction cursor.
   bool prepareNext(TemporalProposalKind kind);
   std::vector<TemporalChoice> take(TemporalProposalKind kind);
   /// Records an ordinary raw-domain point, unless already queued or visited.
   bool visitRaw(const std::vector<TemporalChoice> &choices);
   void observeAccepted(const std::vector<TemporalChoice> &choices,
-                       uint64_t duration);
+                       const analysis::KnownSearchObjective &objective);
   bool observeCapacity(const std::vector<TemporalChoice> &choices,
                        const std::set<TemporalCoordinate> &affectedCoordinates,
                        bool prioritize = false);
   bool hasCapacityRoundInProgress() const {
-    return firstCapacityAnchor &&
+    return !bestObjective && firstCapacityAnchor &&
            (!firstCapacityRoundComplete || !firstCapacityPending.empty());
   }
 
@@ -59,7 +63,7 @@ private:
     std::vector<Coordinate> coordinates;
     int direction = -1;
     int64_t distance = 1;
-    std::optional<uint64_t> referenceDuration;
+    std::optional<analysis::KnownSearchObjective> referenceObjective;
   };
   struct ImprovementPoll {
     size_t anchor;
@@ -91,7 +95,7 @@ private:
   struct Entry {
     std::vector<TemporalChoice> choices;
     std::optional<Probe> probe;
-    std::optional<uint64_t> bestDuration;
+    std::optional<analysis::KnownSearchObjective> bestObjective;
     std::set<Coordinate> capacityObserved;
     bool taken = false;
     uint64_t repairDepth = 0;
@@ -128,7 +132,7 @@ private:
                         Coordinate coordinate);
   static int64_t expandDistance(int64_t distance);
   void appendLayoutBoundaries(size_t anchor, Coordinate coordinate,
-                              uint64_t duration);
+                              const analysis::KnownSearchObjective &objective);
 
   std::vector<const TemporalDomain *> domains;
   std::vector<Entry> entries;
@@ -139,6 +143,7 @@ private:
   bool preferFreshCapacity = true;
   std::optional<size_t> priorityCapacityAnchor;
   std::deque<ImprovementPoll> improvementPolls;
+  std::optional<analysis::KnownSearchObjective> bestObjective;
   std::vector<SeedFamily> seedFamilies;
   std::deque<SeedPoint> seedPoints;
   std::optional<size_t> firstCapacityAnchor;

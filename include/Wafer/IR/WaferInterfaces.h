@@ -36,6 +36,7 @@ struct TensorIndexingOperandDescription {
   uint32_t operand = 0;
   TensorIndexingOperandRole role = TensorIndexingOperandRole::Source;
   llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
   llvm::SmallVector<int64_t, 4> strides;
 };
 

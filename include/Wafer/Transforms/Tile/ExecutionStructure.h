@@ -122,6 +122,8 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
 /// used; eligibility requires a complete per-iteration definition and no
 /// escaping or mutated alias of the selected load destination.
 bool hasDistanceOneLoadPipeline(mlir::ModuleOp module);
+llvm::SmallVector<mlir::scf::ForOp, 4>
+getDistanceOneLoadPipelineLoops(mlir::ModuleOp module);
 
 /// Materialize two actual slots and the existing SCF pipeline in the owned
 /// transaction. The ordinary Instr/completion/memory path remains the consumer.

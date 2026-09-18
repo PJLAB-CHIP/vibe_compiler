@@ -2,7 +2,7 @@
 
 本方案归入现有 `board-testing` work item，稳定边界由[06号设计](../06-physical-dataflow-synthesis.md)拥有，
 任务状态只看[progress](../progress.md)，产品与性能保护沿用[统一板测矩阵](board-workload-matrix.md)。
-本轮交付是设计调整；下述实现分支和 deep 模式尚未实现，命令示例尚不可执行。
+用户已授权按本方案实施到验收闭合；实现进度只看progress。standard/deep 已接入同一产品入口，整项验收尚未闭合。
 本文件替换原搜索组织计划的已实施步骤；原空间/融合提案、多轴容量修正、单次 PBQP 和 actual-owner 机制继续保留，
 其当前合同见06号第5—7节。历史实测继续由板端性能记录拥有，不把既有通过结果当作新方案验收。
 
@@ -14,7 +14,7 @@
   在当前 IR 具备条件时展开实现分支，并让这些分支共用持续 tiling、实际容量反馈和性能改进机制。
 - Output IR / files：同一 actual accepted executable owner、typed 搜索结束原因，以及分别计数的方案和实际求值工作量。
 - Downstream consumer：原 PackageAssembly、LLVM/link、package/manifest、no-card 与统一设备 runner。
-- User-level driver / named pipeline：现有 `wafer-compile --optimization-policy=search`；拟增加
+- User-level driver / named pipeline：现有 `wafer-compile --optimization-policy=search`；使用
   `--search-mode=standard|deep`，默认 standard。两种模式调用同一变换、SPM gate 和 cost evaluator。
 - Explicit non-goals：不修改算术/dtype、布局合法域、allocator 或 completion 规则；不新增未来 IR、重放 winner、
   模型特判、设备 autotuner 或第二个 search implementation；不把 deep 等同于全空间穷举。
@@ -57,9 +57,18 @@ I₀ 和各 I 分别持有 T 搜索状态。容量失败只约束当前完整参
 通信、复用和流水变换仍在各自输入事实齐备后物化；I 是分支所持有的选择，不是把这些 pass 提到 tiling 前。
 完整下游结果用于判定当前点和比较 cost，不是发现或接纳其它 I 的前置条件。
 
-## 2. 当前代码差距与修改边界
+## 2. 代码迁移与修改边界
 
-| 当前实现 | 所需调整 |
+全矩阵验收覆盖共享初始化边界：Pad切片产生的纯填充Generate在temporal无遍历或已结束时仍须经layout前DPS转换。
+输入覆盖rank3、1024/1025/1031、外部scalar与region内部constant，检查无残留Pad/Generate、原dtype、actual SPM布局及
+Instr/memory直接消费者；Conv/ResNet的正式source→package补充产品witness，不新增按模型分类的转换入口。
+Generate删除前检查标准recursive memory effects；带实际Store的uniform body必须保留，并由下游给出typed不支持结果。
+Decode的实际subset还覆盖rank-reducing insert source；查询与物化共用标准unit维删除语义，不能把verifier-valid的rank差异
+报为compiler contract failure。性能邻居的方向扩展和轮次重启均比较同一完整objective，覆盖仅storage改善时的指数步长。
+非整除batch reshape的矩形image证明优先复用现有row-major exact分片，把其无local变量的实际矩形并集交给同一集合证明；
+不先让通用整数求解器重新消去reshape的商余变量。覆盖1024/1025/1031跨行界的dense与带缺口请求，保留typed非矩形结果。
+
+| 改前机制 | 本轮迁移 |
 | --- | --- |
 | `TemporalProposals` 按 T 去重并归集 cost/capacity | 将提案状态归属于固定 S/F/I 的搜索上下文；相同 T 在不同 I 下可独立求值，不能互相抑制 |
 | `SearchCurrentIR` 只有一个 `repairReuse` 标志，修正后选择新发现的首个非 Peer reuse | 用明确的实现选择继续同一分支；通信/复用/流水消费同一机制，不再增加类别专用修复标志 |
@@ -84,6 +93,17 @@ I₀ 和各 I 分别持有 T 搜索状态。容量失败只约束当前完整参
 不预设新增大而全的 interface 或搜索 IR。
 新 T 下该 I 不适用时返回该参数点的 typed 结果；不得静默换回 I₀，也不得据此关闭其它 T。
 如果只能定义另一作用对象或另一作用域的选择，它是新 I，必须独立计数。
+
+物化边界的具体补充：Temporal domain 为存活父 IR 的各个真实 scope 分配 query-local `DistinctAttr`，
+同次 clone 的 domain 通过 IRMapping 延续该选择锚点。Tiling materializer 在实际生成循环时输出 typed
+iteration-coordinate annotation，内容仅为 scope 锚点与接口中的 iterator 坐标；共享循环记录它实际实现的全部坐标。
+这不是遍历序号、source symbol 或 buffer owner；不能用于 SPM 归因、同步或推定任何访问。
+Main/tail clone 和标准 SCF bufferization 保留 annotation；复用选择从当前 loop annotation 与现有
+ProgramArgument 绑定建立作用域选择，重建后仍须重新证明实际 read/window/effect。
+选择消费完成后在共同下游入口移除 annotation，不能进入 Instr/target 或改变数值、buffer 和 completion 合同。
+现有 IRMapping 只覆盖同次 clone，pinned One-Shot 会替换 SCF loop，裸句柄不足以表达跨 retile 的对应；
+采用 typed attribute 作为标准 SCF op 的扩展元数据，字段由 ODS 生成 accessor，不新增计算 op 或 future IR。
+覆盖须包含坐标交换、同shape的不同scope、Joint共享循环、tail clone、bufferization后fresh绑定及共同下游移除。
 
 ## 3. standard 与 deep 的预算合同
 
@@ -151,6 +171,11 @@ Deep 提供完整的容量修正机会及有限局部调优，不宣称遍历全
 6. **结果**：输出最佳 actual owner，或“本轮内层探索未发现可行点”。粗尺度/局部邻域结束不是 raw domain 穷尽，
    不登记整个 `(S,F,I)` 的 exact rejection；只有全域证据才能宣称全域不可行。
 
+成对尺寸邻域在同一current scope内生成；跨scope继续使用已有成组、全关联轴和关系协调方向，
+不把不同Tile/不同计算scope的所有轴组成笛卡尔积。单轴、合法顺序和最小合法尺寸探索保留。
+这是有限局部邻域的定义，不删除raw domain中的choice，也不根据估算剪掉SPM合法点。
+覆盖1/4/16个真实scope、1024/1025/1031，检查单scope与协调方向、独立轴交换和邻域工作量随scope数线性增长。
+
 “最小”指接口约束下的合法下界，FullExtentOnly 不可缩；缩小不保证实际峰值下降，最小点失败也不能外推其它点。
 外部显式取消/期限和 query resource limit 仍返回未完成/indeterminate；不增加隐式 wall-time 裁剪，
 不把取消当作容量失败或成功。更细粒度参数扫描作为原 raw 域能力保留，本轮不把它变成 deep 的强制穷举步骤。
@@ -162,6 +187,7 @@ Deep 提供完整的容量修正机会及有限局部调优，不宣称遍历全
 | [Ansor](https://www.usenix.org/system/files/osdi20-zheng.pdf) | 结构与参数分层，完整候选评价后精化 | 学习模型、随机演化及 subgraph task scheduler；不借其证明本仓搜索收敛 |
 | [ROLLER](https://www.usenix.org/system/files/osdi22-zhu.pdf) | tile 和存储层次作为构造核心，尺寸方向考虑复用 | 估算 footprint 的容量 admission；本仓仍要求唯一 actual SPM gate |
 | [TVM VerifyGPUCode](https://apache.googlesource.com/tvm/+/877b448b02a9d9da6bacda77d6e0c6ac17419468/src/meta_schedule/postproc/verify_gpu_code.cc) | 流水、双缓冲和存储变换后检查资源 | 不据此声称 TVM 自带本方案的连续容量修正或计费语义 |
+| [TVM MutateTileSize](https://github.com/apache/tvm/blob/v0.19.0/src/meta_schedule/mutator/mutate_tile_size.cc) | 在一个实际tiling decision内部做尺寸变化，避免无关scope的全量两两组合 | 本仓采用确定性scope局部邻域并保留跨scope协调，不移植随机抽样或因子乘积约束 |
 | [CUTLASS builder](https://developer.nvidia.com/blog/cutlass-3-x-orthogonal-reusable-and-composable-abstractions-for-gemm-kernel-design/) | 区分实现配置与由配置推导的底层组件 | 不引入 GEMM 专用模板作为通用调度结构 |
 
 Deep 的方案计费和确定性内层过程是适配本仓的设计选择，不是上述系统共同规定的算法。
@@ -179,7 +205,7 @@ Deep 的方案计费和确定性内层过程是适配本仓的设计选择，不
 原 `repairReuse` 在同一实现分支机制和对应测试替代后删除；不保留两套控制路径。
 原 Spatial/Region domain、Temporal 合法域、关系驱动多轴提案、PBQP、actual leaf、cost 和 winner publication 继续使用。
 standard/deep 只改变搜索服务和预算单位，不维护第二套物化/allocator/评分路径。
-涉及 API/CMake/代码时完成 canonical 全量增量构建及第二次 Ninja no-op；本轮纯方案编辑不运行无关构建。
+涉及 API/CMake/代码时完成 canonical 全量增量构建及第二次 Ninja no-op。
 
 ## 7. 本项覆盖矩阵
 
@@ -216,3 +242,49 @@ AccessReuse/collective/execution transform 测试，避免只用 fake evaluator 
 capacity repairs、PBQP solves、首次可行点、最佳cost、wall、RSS和实际IR owner峰值。
 standard/deep 同名 trials 的数字不能直接当作相同编译成本；同时给出同wall或同actual-work参照。
 数值与性能结论仍由本轮真实产物和板测决定；本方案本身不提供新的通过或加速结论。
+
+## 本轮实施检查点
+
+当前改动以 `093b6c55` 为修改前对照。修改前编译器及已接受性能记录已保留；当前主机资格使用同一冻结的canonical编译器产物，
+SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。最终性能资格尚未签署。
+
+- 已物化 iteration coordinates，提供复用选择的 capture/bind；绑定消费原 ProgramArgument、Tile、参与者、scope 坐标，
+  不跨 retile 保存旧 load/loop。真实规模测试包含换序、主/尾块及 bufferization，并推进到 Instr/SPM。
+- 搜索实现分支分别持有 TemporalProposals；删除原 repairReuse 和按基础点成绩保留单个 realization 的控制。
+  同一存活 layout-input 的 placement/下游方案共享 assignment；分支总槽位由外层统一计数。
+- standard/deep 已分开 schemes-started、actualizations、trials-used；预算 oracle 已确认最后一个已收费 deep 方案完成内搜。
+  正式 Add `[2,1025,128]` source→package/no-card 验证得到 89 次 actual evaluation、1 个 deep trial；不作为实卡或性能结论。
+- 主机七个受影响 component、24 项复用 SystemC 和两项 Python 回归共33个 CTest target已全部通过。
+  Routing断言核对结果分类总和与standard实际计费，允许retained pipeline在retile后按合同返回unsupported；
+  后续计数复审的39项定向Driver及3项正式CLI/source→package/no-card也通过。
+  新增不同 scope 同轴号的重叠选择隔离、共享循环多坐标、retile/interchange/bufferization 和实际copy placement四项通过。
+  canonical 完整增量构建及随后 Ninja no-op 已通过；最终全项复审和实卡门槛仍继续。
+- GEMM4096 在42次内重新取得驻留复用 accepted，原64 MiB实际读取保护不变。Waiting 分支合并所有已发现参数入口，
+  优先访问当前收益较高的入口；实际容量链优先服务，避免无对象的 placement 和浅层重复探测占用预算。
+  更深搜索暴露局部 SCF pipeline 复制跨 Tile 消息的边界问题：单循环重写不拥有其它 participant，无法重建其消息匹配。
+  对实际 Communication/Sync resource effect 的 preflight 明确排除此类局部流水化；本地无通信循环仍走原流水实现。
+- LLaMA 真实源暴露 transport 和 collective 参数组合错误：切到 SharedDDR 必须取消 Peer 算法选择；
+  retile 后 collective 当前 component 消失时应为 typed unsupported。修正后默认8/42构包取得3个 accepted，fresh no-card通过。
+- LLaMA FP16/BF16各完成三次baseline与standard配对，完整数值通过，中位分别9.358→8.834、9.372→8.869 ms。
+  GEMM4096两种dtype各六次完整数值通过，baseline/standard包逐byte相同。4097最后一次虽完成输出比较，
+  内核随后报告TDMA Timeout/RESET_BM，该次不算健康性能样本；批次停止，用户确认尚未恢复。
+  ViT1024/1025已经standard构包及fresh no-card，尚未运行本轮实卡。逐次结果统一在板端性能记录中。
+- 全矩阵暴露的uniform Generate来自标准Pad切片。共享初始化DPS转换供temporal及layout消费，83项定向测试通过，
+  8个卷积配置重新构包/no-card通过，原reference与dtype未变。Decode的rank-reducing insert通过标准subset坐标投影处理；
+  补齐同一indexing interface的sizes及共享分析，新增source/consumer降rank、exact需求和实际Instr/SPM witness。
+  两种dtype、两步decode及ResNet224已完成修复后的source→package/no-card，实卡尚未重签。
+  初始化副作用检查及下游typed拒绝已补齐；84项Layout/Temporal测试与追加的直接拒绝检查通过。
+- Batch GEMM非整除reshape的通用整数证明超过1800秒。现在用已有row-major exact分片构造同一集合，消除重复的商余变量求解；
+  正式standard 42次求值、6 accepted并构包，compiler transaction 42.826秒；fresh reference/no-card已通过。
+- Deep探测步长此前只比较duration，和完整objective的storage改善不一致。扩展与轮次重启现使用同一完整比较，
+  34项budget/temporal oracle通过，包含storage-only改善的1/2/4/8步长。旧两个诊断搜索已明确取消并保留工作量，
+  不作穷尽或成功结论；新核心与catalog deep仍在运行，没有新增每方案tiling次数或隐式时间上限。
+- Deep多scope复审发现成对邻域混合无关scope，16个双轴scope单轮产生1190个性能点。
+  已按上述scope局部邻域修复；1/4/16-scope工作量与方向oracle在修复前失败，修复后40项Driver定向测试通过，
+  GEMM实际64 MiB读取保护及正式搜索CLI也通过。AllToAll的deep 8/2由1234次actual evaluation降至242次，
+  两方案均完成、175个accepted保留，构包/no-card通过；全矩阵仍在重验。
+- 邻域修正后的完整Driver CTest通过；追加基础分支全部unsupported的计费oracle，确认deep仍完成已计费内搜并继续其它方案。
+  正式Python调用者的deep默认编译deadline已移除，显式deadline仍保留，standard默认1800秒不变；相关Python CTest通过。
+  完整代码/设计差异已复审，canonical完整增量构建及第二次Ninja no-op通过。
+- 冻结版本的LLaMA两种dtype及三组大GEMM已构包/no-card，完整包与本轮standard板测版本逐byte相同。
+  两模式全矩阵构包仍在运行；随后仍须闭合本轮全部数值、逐项实卡性能及deep收益，不能以主机通过代签。

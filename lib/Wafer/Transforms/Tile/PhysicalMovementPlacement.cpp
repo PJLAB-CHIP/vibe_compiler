@@ -94,7 +94,27 @@ bool canHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
   return !walk.wasInterrupted();
 }
 
+llvm::SmallVector<mlir::Operation *>
+collectPhysicalCopies(mlir::Operation *root) {
+  llvm::SmallVector<mlir::Operation *> copies;
+  root->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<LayoutMaterializeOp, MoveReshapeOp, MoveTransposeOp,
+                  MoveBroadcastOp, MoveCopyOp, MoveExtractSliceOp>(operation))
+      copies.push_back(operation);
+  });
+  return copies;
+}
+
 } // namespace
+
+bool hasInvariantPhysicalMovement(mlir::Operation *root) {
+  mlir::AliasAnalysis aliases(root);
+  for (auto *copy : collectPhysicalCopies(root))
+    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(copy->getParentOp()))
+      if (canHoist(copy, loop, aliases))
+        return true;
+  return false;
+}
 
 mlir::FailureOr<uint64_t>
 optimizePhysicalMovementPlacement(mlir::Operation *root,
@@ -102,12 +122,7 @@ optimizePhysicalMovementPlacement(mlir::Operation *root,
                                   LayoutMaterializationPlacement placement) {
   if (placement == LayoutMaterializationPlacement::FirstUse)
     return uint64_t{0};
-  llvm::SmallVector<mlir::Operation *> copies;
-  root->walk([&](mlir::Operation *operation) {
-    if (mlir::isa<LayoutMaterializeOp, MoveReshapeOp, MoveTransposeOp,
-                  MoveBroadcastOp, MoveCopyOp, MoveExtractSliceOp>(operation))
-      copies.push_back(operation);
-  });
+  auto copies = collectPhysicalCopies(root);
   uint64_t moved = 0;
   mlir::IRRewriter rewriter(root->getContext());
   for (mlir::Operation *copy : copies) {

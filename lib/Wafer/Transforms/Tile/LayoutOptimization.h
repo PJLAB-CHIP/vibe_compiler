@@ -82,6 +82,9 @@ enum class LayoutMaterializationPlacement : uint8_t {
   LoopInvariant,
 };
 
+/// Uses the same current-IR preflight as placement, without moving any copy.
+bool hasInvariantPhysicalMovement(mlir::Operation *root);
+
 /// Apply the same placement choice to physical copies created by structured
 /// lowering. The return value counts actually moved operations. No memory or
 /// completion admission is performed here; both are rebuilt downstream.

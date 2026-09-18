@@ -409,6 +409,39 @@ TEST(IndexRelationTest,
             llvm::SmallVector<int64_t>({1, 16, 2, 128}));
 }
 
+TEST(IndexRelationTest, ReshapeRowCrossingUsesItsExactRectangularPieces) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto relation = IndexRelation::staticReshape({1, 4 * extent, 1031},
+                                                 {1, 4, extent, 1031});
+    ASSERT_TRUE(relation.isExact());
+    auto complete = relation.get()->getExactStaticRectangularImage(
+        {0, 0, 0}, {1, 2 * extent, 1031});
+    ASSERT_TRUE(complete.isExact()) << complete.reason;
+    EXPECT_EQ(complete.domain->offsets,
+              (llvm::SmallVector<int64_t>{0, 0, 0, 0}));
+    EXPECT_EQ(complete.domain->sizes,
+              (llvm::SmallVector<int64_t>{1, 2, extent, 1031}));
+    auto crossing = relation.get()->getExactStaticRectangularImage(
+        {0, extent - 32, 7}, {1, 64, 1000});
+    EXPECT_EQ(crossing.status, IndexRelationStatus::Unsupported);
+    EXPECT_FALSE(crossing.domain);
+    auto pieces = relation.get()->getExactStaticRectangularImagePieces(
+        {0, extent - 32, 7}, {1, 64, 1000});
+    ASSERT_TRUE(pieces.isExact()) << pieces.reason;
+    ASSERT_EQ(pieces.domains.size(), 2u);
+    int64_t volume = 0;
+    for (auto [index, box] : llvm::enumerate(pieces.domains)) {
+      EXPECT_EQ(box.offsets[0], 0);
+      EXPECT_EQ(box.offsets[3], 7);
+      EXPECT_EQ(box.sizes, (llvm::SmallVector<int64_t>{1, 1, 32, 1000}));
+      const int64_t linearRow = box.offsets[1] * extent + box.offsets[2];
+      EXPECT_EQ(linearRow, extent - 32 + 32 * index);
+      volume += box.sizes[2] * box.sizes[3];
+    }
+    EXPECT_EQ(volume, 64 * 1000);
+  }
+}
+
 TEST(IndexRelationTest,
      InverseCanonicalReshapeRetainsBoundedRectangleDecomposition) {
   IndexRelationResult flatten =

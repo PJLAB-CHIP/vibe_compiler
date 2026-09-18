@@ -13,6 +13,7 @@ add_mlir_library(WaferTileTransforms
   StructuredToTile.cpp
   StructuredBufferRelations.cpp
   TiledOutputStores.cpp
+  TensorInitialization.cpp
 
   DEPENDS
   WaferTransformPassesIncGen

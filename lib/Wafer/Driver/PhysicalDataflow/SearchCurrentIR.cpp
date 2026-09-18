@@ -224,12 +224,13 @@ remapTemporalChoice(const TemporalChoice &source,
   return result;
 }
 
-static bool advanceTemporalAxes(std::vector<TemporalAxis> &axes,
+static bool advanceTemporalAxes(const std::vector<TemporalAxis> &axes,
+                                std::vector<TemporalSuccessor> &current,
                                 std::string &detail, bool &compilerBug) {
   for (size_t offset = 0; offset < axes.size(); ++offset) {
     const size_t index = axes.size() - offset - 1;
-    TemporalAxis &axis = axes[index];
-    const TemporalCursor *cursor = axis.current.getCursor();
+    const TemporalAxis &axis = axes[index];
+    const TemporalCursor *cursor = current[index].getCursor();
     if (!cursor) {
       compilerBug = true;
       detail = "Temporal choice omitted its current-IR cursor";
@@ -242,10 +243,10 @@ static bool advanceTemporalAxes(std::vector<TemporalAxis> &axes,
       return false;
     }
     if (next.getKind() == TemporalSuccessorKind::Choice) {
-      axis.current = std::move(next);
+      current[index] = std::move(next);
       for (size_t reset = index + 1; reset < axes.size(); ++reset) {
-        axes[reset].current = axes[reset].domain.getFirstChoice();
-        if (axes[reset].current.getKind() != TemporalSuccessorKind::Choice) {
+        current[reset] = axes[reset].domain.getFirstChoice();
+        if (current[reset].getKind() != TemporalSuccessorKind::Choice) {
           compilerBug = true;
           detail = "Temporal domain lost its first current-IR choice";
           return false;
@@ -293,16 +294,43 @@ static llvm::StringRef stringifyCoverage(SearchControllerCoverage coverage) {
   return "failed";
 }
 
-struct MovementChoice {
+struct PipelineScope {
+  uint64_t card, tile;
+  IterationCoordinatesAttr coordinates;
+  friend bool operator==(const PipelineScope &a, const PipelineScope &b) {
+    return a.card == b.card && a.tile == b.tile &&
+           a.coordinates == b.coordinates;
+  }
+};
+
+struct ImplementationChoice {
   BoundaryMovementOptions options;
   bool recursive = false;
   bool allToAll = false;
   bool reduction = false;
   bool pipeline = false;
-  std::optional<AccessReuseChoice> reuse;
-  // Owned, immutable actual IR after boundary closure. Profitable siblings
-  // share this prefix; it contains no predicted loads or storage.
-  std::shared_ptr<const CurrentCandidate> input;
+  llvm::SmallVector<PipelineScope, 4> pipelineScopes;
+  bool merged = false;
+  LayoutMaterializationPlacement placement =
+      LayoutMaterializationPlacement::FirstUse;
+  std::optional<AccessReuseIntent> reuse;
+
+  friend bool operator==(const ImplementationChoice &a,
+                         const ImplementationChoice &b) {
+    return a.options.allGather == b.options.allGather &&
+           a.options.allToAll == b.options.allToAll &&
+           a.options.reduction == b.options.reduction &&
+           a.options.transport == b.options.transport &&
+           a.recursive == b.recursive && a.allToAll == b.allToAll &&
+           a.reduction == b.reduction && a.pipeline == b.pipeline &&
+           a.pipelineScopes.size() == b.pipelineScopes.size() &&
+           llvm::all_of(a.pipelineScopes,
+                        [&](const auto &scope) {
+                          return llvm::is_contained(b.pipelineScopes, scope);
+                        }) &&
+           a.merged == b.merged && a.placement == b.placement &&
+           a.reuse == b.reuse;
+  }
 };
 
 class CurrentIRCandidateSession final : public StructuralCandidateSession {
@@ -325,259 +353,204 @@ public:
         executableStatistics(executableStatistics), costCohort(costCohort),
         explorationStratum(explorationStratum) {}
 
-  StructuralCandidateEvaluation advance() override {
-    while (true) {
-      if (exhausted)
-        return {actualFailure(ActualCandidateStatus::CompilerBug,
-                              "candidate session advanced after exhaustion"),
-                0};
-      if (options.deadline &&
-          std::chrono::steady_clock::now() >= *options.deadline) {
+  StructuralCandidateEvaluation
+  advance(CandidateAdvanceLimits limits) override {
+    stepSchemesStarted = 0;
+    stepSchemesCompleted = 0;
+    retentionLimit = limits.retainedBranches;
+    if (exhausted)
+      return closed();
+    if (options.deadline &&
+        std::chrono::steady_clock::now() >= *options.deadline) {
+      exhausted = true;
+      auto result = StructuralCandidateEvaluation{
+          actualFailure(ActualCandidateStatus::Indeterminate,
+                        "search wall-time budget exhausted"),
+          0};
+      result.completeDomain = false;
+      return result;
+    }
+    if (!structural) {
+      if (!limits.mayStartScheme)
+        return blocked();
+      implementations.push_back(std::make_unique<ImplementationBranch>());
+      active = 0;
+      implementations.front()->started = true;
+      stepSchemesStarted = 1;
+      auto failure = initialize();
+      if (failure)
+        return finish(std::move(*failure));
+      activate(0);
+      return yield();
+    }
+    if (!pending) {
+      if (!selectImplementation(limits.mayStartScheme)) {
+        if (budgetBlocked)
+          return blocked();
         exhausted = true;
-        return {actualFailure(ActualCandidateStatus::Indeterminate,
-                              "search wall-time budget exhausted"),
-                0};
+        return closed();
       }
-      // Exactly one charged attempt, even when a transform before Instr fails.
-      if (!structural) {
-        auto failure = initialize();
-        if (failure)
-          return finish(std::move(*failure));
+      auto failure = startTemporal();
+      if (failure)
+        return finish(std::move(*failure));
+      if (!pending)
         return yield();
+      return yield();
+    }
+    auto &temporal = *pending;
+    auto &attempt = temporal.region;
+    if (!attempt.lowered) {
+      auto prepared = prepareRegion(temporal, attempt);
+      if (auto *failure = std::get_if<ExecutableCompilationResult>(&prepared))
+        return finish(std::move(*failure));
+      return yield();
+    }
+    const auto choice = current().choice;
+    std::string detail;
+    mlir::IRMapping mapping;
+    auto candidate = cloneCandidate(*attempt.lowered, mapping, detail);
+    if (mlir::failed(candidate))
+      return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                         "search-movement-clone", detail));
+    auto movement = materializeTileBoundaryMovement(
+        *candidate->module, candidate->relations, choice.options);
+    recordMovementInstrumentation(movement.statistics);
+    if (!movement.succeeded())
+      return finish(
+          fail(movement.failure == BoundaryMovementFailureKind::Unsupported
+                   ? ExecutableCompilationStatus::UnsupportedFailure
+                   : ExecutableCompilationStatus::CompilerFailure,
+               "search-boundary-movement", movement.detail));
+    if ((choice.recursive &&
+         !movement.statistics.recursiveDoublingComponents) ||
+        (choice.allToAll &&
+         !movement.statistics.dimensionOrderedAllToAllComponents) ||
+        (choice.reduction && !movement.statistics.ringReduceScatterComponents &&
+         !movement.statistics.ringAllReduceComponents))
+      return finish(fail(ExecutableCompilationStatus::UnsupportedFailure,
+                         "search-boundary-movement",
+                         "selected algorithm has no current component"));
+
+    // Discovery happens on actual loads, before any SPM/target result. The
+    // logical selection is retained independently of this base point's cost.
+    auto facts = analysis::analyzeAccessReuse(*candidate->module);
+    if (!choice.reuse && !choice.pipeline) {
+      auto reuse =
+          proposeAccessReuse(facts, costCohort ? costCohort->getPolicy()
+                                               : analysis::SearchCostPolicy{});
+      if (statistics) {
+        ++statistics->accessReuseQueries;
+        statistics->accessReuseEligible += reuse.opportunities;
+        statistics->accessReuseLowBenefit += reuse.lowBenefit;
+        statistics->accessReuseUnknownBenefit += reuse.unknownBenefit;
       }
-      if (stage == Stage::SelectTemporal) {
-        const bool continuing = !pending.empty();
-        if (statistics && continuing)
-          ++statistics->temporalBackpressureTurns;
-        TemporalWork work = nextTemporalWork();
-        if (!continuing) {
-          auto order = temporalWorkOrder();
-          for (unsigned offset = 0; offset < order.size(); ++offset)
-            if (order[(temporalPhase + offset) % order.size()] == work) {
-              temporalPhase = (temporalPhase + offset + 1) % order.size();
-              break;
-            }
-          currentContinuation =
-              work == TemporalWork::Repair ? CandidateContinuation::Repair
-              : work == TemporalWork::Improve || work == TemporalWork::Resume
-                  ? CandidateContinuation::Improve
-                  : CandidateContinuation::Explore;
+      support::addCompileCounter("access-reuse", "scope-queries",
+                                 facts.scopeQueries);
+      support::addCompileCounter("access-reuse", "indeterminate-scopes",
+                                 facts.indeterminateScopes);
+      for (const auto &selection : reuse.choices) {
+        auto captured = captureAccessReuse(selection.choice, facts);
+        if (auto *failure = std::get_if<AccessReuseBindingFailure>(&captured)) {
+          if (failure->status == analysis::IndexRelationStatus::Invalid)
+            return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                               "search-reuse-selection", failure->detail));
+          support::addCompileCounter("access-reuse", "unbound-selections", 1);
+          continue;
         }
-        if (work == TemporalWork::Resume && pending.empty()) {
-          pending.push_back(std::move(*realization));
-          realization.reset();
-        }
-        if (work != TemporalWork::Resume) {
-          auto failure = startTemporal(work);
-          if (failure)
-            return finish(std::move(*failure));
-          if (pending.empty()) {
-            exhausted = true;
-            return {{}, 0, CandidateContinuation::Exhausted};
-          }
-        }
-        stage = Stage::PrepareRegion;
-        return yield();
+        auto sibling = choice;
+        sibling.reuse = std::get<AccessReuseIntent>(std::move(captured));
+        if (discover(std::move(sibling), temporal.choices,
+                     selection.estimatedBenefitPicoseconds) &&
+            statistics)
+          ++statistics->accessReuseBranchesDiscovered;
       }
-      TemporalAttempt &temporal = pending.front();
-      RegionAttempt &attempt = temporal.regions.front();
-      if (stage == Stage::PrepareRegion) {
-        if (!attempt.lowered) {
-          auto prepared = prepareRegion(temporal, attempt);
-          if (std::holds_alternative<RegionPreparationYielded>(prepared))
-            return yield();
-          if (auto *failure =
-                  std::get_if<ExecutableCompilationResult>(&prepared)) {
-            completeRegion(temporal);
-            stage = Stage::SelectTemporal;
-            return finish(std::move(*failure));
-          }
-        }
-        stage = Stage::EvaluateMovement;
-        return yield();
-      }
-      if (attempt.nextMovement == attempt.movements.size()) {
-        completeRegion(temporal);
-        stage = Stage::SelectTemporal;
-        return yield();
-      }
-      MovementChoice choice =
-          std::move(attempt.movements[attempt.nextMovement++]);
-      std::string detail;
-      mlir::IRMapping mapping;
-      auto candidate = cloneCandidate(
-          choice.input ? *choice.input : *attempt.lowered, mapping, detail);
-      if (mlir::failed(candidate))
-        return finish(fail(ExecutableCompilationStatus::CompilerFailure,
-                           "search-movement-clone", detail));
-      std::optional<AccessReuseChoice> mappedReuse;
-      if (choice.reuse) {
-        auto mapped = mapAccessReuseChoice(*choice.reuse, mapping);
-        if (mlir::failed(mapped))
-          return finish(fail(ExecutableCompilationStatus::CompilerFailure,
-                             "search-access-reuse-clone",
-                             "clone omitted a selected read or scope"));
-        mappedReuse = std::move(*mapped);
-      }
-      BoundaryMovementOptions movementOptions = choice.options;
-      for (auto &component : movementOptions.components) {
-        if (choice.input)
-          break;
-        component.anchor.sourceEndpoint =
-            mapping.lookupOrNull(component.anchor.sourceEndpoint);
-        component.anchor.destinationEndpoint =
-            mapping.lookupOrNull(component.anchor.destinationEndpoint);
-        if (!component.anchor.sourceEndpoint ||
-            !component.anchor.destinationEndpoint)
-          return finish(
-              fail(ExecutableCompilationStatus::CompilerFailure,
-                   "search-movement-clone",
-                   "clone omitted a selected communication component"));
-      }
-      BoundaryMovementResult movement;
-      if (!choice.input) {
-        movement = materializeTileBoundaryMovement(
-            *candidate->module, candidate->relations, movementOptions);
-        recordMovementInstrumentation(movement.statistics);
-      }
-      ExecutableCompilationResult compiled;
-      std::optional<analysis::SearchObjective> evaluatedObjective;
-      InputCapacityFeedback capacityFeedback;
-      std::mutex feedbackMutex;
-      if (!movement.succeeded()) {
-        compiled =
-            fail(movement.failure == BoundaryMovementFailureKind::Unsupported
+    }
+    if (choice.reuse) {
+      auto bound = bindAccessReuse(*choice.reuse, facts);
+      if (auto *failure = std::get_if<AccessReuseBindingFailure>(&bound))
+        return finish(
+            fail(failure->status == analysis::IndexRelationStatus::Invalid
+                     ? ExecutableCompilationStatus::CompilerFailure
+                 : failure->status ==
+                         analysis::IndexRelationStatus::ResourceExhausted
+                     ? ExecutableCompilationStatus::IndeterminateFailure
+                     : ExecutableCompilationStatus::UnsupportedFailure,
+                 "search-reuse-binding", failure->detail));
+      auto shared =
+          materializeAccessReuse(*candidate->module, candidate->relations,
+                                 std::get<AccessReuseChoice>(bound));
+      if (!shared.succeeded())
+        return finish(
+            fail(shared.failure == AccessReuseFailureKind::Unsupported
                      ? ExecutableCompilationStatus::UnsupportedFailure
+                 : shared.failure == AccessReuseFailureKind::Indeterminate
+                     ? ExecutableCompilationStatus::IndeterminateFailure
                      : ExecutableCompilationStatus::CompilerFailure,
-                 "search-boundary-movement", movement.detail);
-      } else if (!choice.input &&
-                 ((choice.recursive &&
-                   !movement.statistics.recursiveDoublingComponents) ||
-                  (choice.allToAll &&
-                   !movement.statistics.dimensionOrderedAllToAllComponents) ||
-                  (choice.reduction &&
-                   !movement.statistics.ringReduceScatterComponents &&
-                   !movement.statistics.ringAllReduceComponents))) {
-        compiled = fail(ExecutableCompilationStatus::UnsupportedFailure,
-                        "search-boundary-movement",
-                        "selected algorithm has no current component");
-      } else {
-        if (!choice.input && !choice.pipeline) {
-          // BoundaryMovement owns function-boundary bufferization and load
-          // creation. Analyze its actual output, never anticipated loads in
-          // the open physical prefix.
-          auto facts = analysis::analyzeAccessReuse(*candidate->module);
-          auto reuse = proposeAccessReuse(
-              facts, costCohort ? costCohort->getPolicy()
-                                : analysis::SearchCostPolicy{});
-          if (statistics) {
-            ++statistics->accessReuseQueries;
-            statistics->accessReuseEligible += reuse.opportunities;
-            statistics->accessReuseQueued += reuse.choices.size();
-            statistics->accessReuseLowBenefit += reuse.lowBenefit;
-            statistics->accessReuseUnknownBenefit += reuse.unknownBenefit;
-          }
-          support::addCompileCounter("access-reuse", "scope-queries",
-                                     facts.scopeQueries);
-          support::addCompileCounter("access-reuse", "indeterminate-scopes",
-                                     facts.indeterminateScopes);
-          if (!reuse.choices.empty()) {
-            auto prefix =
-                std::make_shared<CurrentCandidate>(std::move(*candidate));
-            auto insert = attempt.movements.begin() +
-                          std::max(attempt.nextMovement, attempt.baseMovements);
-            for (auto &selection : reuse.choices) {
-              MovementChoice selected = choice;
-              selected.input = prefix;
-              selected.reuse = std::move(selection);
-              insert = std::next(
-                  attempt.movements.insert(insert, std::move(selected)));
-            }
-            // Keep the real boundary output as the siblings' input. The base
-            // candidate uses the same ordinary clone operation; no trial
-            // lowering is performed for profitability or memory prediction.
-            mlir::IRMapping baseMapping;
-            candidate = cloneCandidate(*prefix, baseMapping, detail);
-            if (mlir::failed(candidate))
-              return finish(fail(ExecutableCompilationStatus::CompilerFailure,
-                                 "search-access-reuse-prefix", detail));
-            support::addCompileCounter("access-reuse", "retained-prefixes", 1);
-            if (temporal.repairReuse) {
-              auto selected = std::find_if(
-                  attempt.movements.begin() + attempt.nextMovement,
-                  attempt.movements.end(), [&](const auto &movement) {
-                    return movement.input == prefix && movement.reuse &&
-                           llvm::any_of(
-                               movement.reuse->actions, [](const auto &action) {
-                                 return action.kind != AccessReuseKind::Peer;
-                               });
-                  });
-              if (selected != attempt.movements.end()) {
-                MovementChoice base = choice;
-                base.input = prefix;
-                choice = std::move(*selected);
-                *selected = std::move(base);
-                auto mapped = mapAccessReuseChoice(*choice.reuse, baseMapping);
-                if (mlir::failed(mapped))
-                  return finish(
-                      fail(ExecutableCompilationStatus::CompilerFailure,
-                           "search-reuse-repair",
-                           "clone omitted reuse repair anchors"));
-                mappedReuse = std::move(*mapped);
-                temporal.repairReuse = false;
-              }
-            }
-          }
-        }
-        if (mappedReuse) {
-          if (statistics)
-            ++statistics->accessReuseCandidates;
-          auto shared = materializeAccessReuse(
-              *candidate->module, candidate->relations, *mappedReuse);
-          if (!shared.succeeded())
-            return finish(fail(
-                shared.failure == AccessReuseFailureKind::Unsupported
-                    ? ExecutableCompilationStatus::UnsupportedFailure
-                    : (shared.failure == AccessReuseFailureKind::Indeterminate
-                           ? ExecutableCompilationStatus::IndeterminateFailure
-                           : ExecutableCompilationStatus::CompilerFailure),
-                "search-access-reuse", shared.detail));
-          recordMovementInstrumentation(shared.movement);
-          support::addCompileCounter("access-reuse", "peer-receives",
-                                     shared.movement.peerReceives);
-          support::addCompileCounter("access-reuse", "resident-windows",
-                                     shared.residentWindows);
-          support::addCompileCounter("access-reuse", "sliding-windows",
-                                     shared.slidingWindows);
-          support::addCompileCounter("access-reuse", "two-level-windows",
-                                     shared.twoLevelWindows);
-        }
-        if (!choice.pipeline &&
-            hasDistanceOneLoadPipeline(*candidate->module)) {
-          MovementChoice pipelined = choice;
-          pipelined.pipeline = true;
-          attempt.movements.push_back(std::move(pipelined));
-        }
-        if (statistics) {
-          statistics->recursiveDoublingCandidates += choice.recursive;
-          statistics->dimensionOrderedAllToAllCandidates += choice.allToAll;
-          statistics->distributedRingCandidates += choice.reduction;
-          statistics->sharedDDRCandidates +=
-              choice.options.transport == BoundaryMovementTransport::SharedDDR;
-        }
-        CurrentIRDownstreamStatistics downstream;
-        // SCF pipelining replaces loop bodies. Their earlier capacity-owner
-        // scope handles do not survive this actual transformation.
-        if (choice.pipeline)
-          candidate->temporalBodies.clear();
-        const auto temporalBodies = candidate->temporalBodies;
-        llvm::SmallVector<const TemporalDomain *> currentDomains;
-        for (const auto &axis : axes)
-          currentDomains.push_back(&axis.domain);
-        auto observeCapacity = [&](CardId card, TileId tile,
-                                   const SPMMemoryPlanningFailure &failure,
-                                   const StructuredMaterializationRelations
-                                       &relations) {
+                 "search-access-reuse", shared.detail));
+      recordMovementInstrumentation(shared.movement);
+      support::addCompileCounter("access-reuse", "peer-receives",
+                                 shared.movement.peerReceives);
+      support::addCompileCounter("access-reuse", "resident-windows",
+                                 shared.residentWindows);
+      support::addCompileCounter("access-reuse", "sliding-windows",
+                                 shared.slidingWindows);
+      support::addCompileCounter("access-reuse", "two-level-windows",
+                                 shared.twoLevelWindows);
+    }
+    auto pipelineLoops = getDistanceOneLoadPipelineLoops(*candidate->module);
+    llvm::SmallVector<PipelineScope, 4> pipelineScopes;
+    bool completePipelineScopes = true;
+    for (auto loop : pipelineLoops) {
+      auto tile = loop->getParentOfType<TileModuleOp>();
+      auto coordinates = getIterationCoordinates(loop);
+      if (!tile || !coordinates) {
+        completePipelineScopes = false;
+        continue;
+      }
+      PipelineScope scope{tile.getCardId(), tile.getTileId(), coordinates};
+      if (!llvm::is_contained(pipelineScopes, scope))
+        pipelineScopes.push_back(scope);
+    }
+    const bool pipelineAvailable =
+        completePipelineScopes && !pipelineScopes.empty();
+    if (choice.pipeline &&
+        (!pipelineAvailable ||
+         pipelineScopes.size() != choice.pipelineScopes.size() ||
+         !llvm::all_of(pipelineScopes, [&](const auto &scope) {
+           return llvm::is_contained(choice.pipelineScopes, scope);
+         })))
+      return finish(fail(
+          ExecutableCompilationStatus::UnsupportedFailure, "search-pipeline",
+          "selected pipeline is unavailable at this tile point"));
+    if (!choice.pipeline && pipelineAvailable) {
+      auto sibling = choice;
+      sibling.pipeline = true;
+      sibling.pipelineScopes = std::move(pipelineScopes);
+      discover(std::move(sibling), temporal.choices);
+    }
+    if (statistics) {
+      statistics->recursiveDoublingCandidates += choice.recursive;
+      statistics->dimensionOrderedAllToAllCandidates += choice.allToAll;
+      statistics->distributedRingCandidates += choice.reduction;
+      statistics->sharedDDRCandidates +=
+          choice.options.transport == BoundaryMovementTransport::SharedDDR;
+    }
+    ExecutableCompilationResult compiled;
+    std::optional<analysis::SearchObjective> evaluatedObjective;
+    InputCapacityFeedback capacityFeedback;
+    std::mutex feedbackMutex;
+    CurrentIRDownstreamStatistics downstream;
+    // SCF pipelining replaces loop bodies. Their earlier capacity-owner
+    // scope handles do not survive this actual transformation.
+    if (choice.pipeline)
+      candidate->temporalBodies.clear();
+    const auto temporalBodies = candidate->temporalBodies;
+    llvm::SmallVector<const TemporalDomain *> currentDomains;
+    for (const auto &axis : axes)
+      currentDomains.push_back(&axis.domain);
+    auto observeCapacity =
+        [&](CardId card, TileId tile, const SPMMemoryPlanningFailure &failure,
+            const StructuredMaterializationRelations &relations) {
           if (options.downstream.capacityObserver)
             options.downstream.capacityObserver(card, tile, failure, relations);
           auto inputFeedback = deriveInputCapacityFeedback(
@@ -643,188 +616,105 @@ public:
             capacityFeedback.detail = std::move(inputFeedback.detail);
           }
         };
-        CurrentIRDownstreamOptions downstreamOptions = options.downstream;
-        downstreamOptions.communication =
-            CommunicationProposalPolicy::DependencyOrdered;
-        downstreamOptions.distanceOneLoadPipeline = choice.pipeline;
-        if (choice.pipeline)
-          support::addCompileCounter("search", "pipeline-candidates", 1);
-        downstreamOptions.capacityObserver = observeCapacity;
-        compiled = compileCurrentIRCandidateToExecutable(
-            std::move(candidate->module), std::move(candidate->relations),
-            planning.getProblem().getCardId(), analysis.availableTileIds,
-            program, executionConfig, diagnostics, programData,
-            downstreamOptions, &downstream, executableStatistics);
-        if (capacityFeedback.status == CapacityFeedbackStatus::BrokenContract)
-          return finish(fail(ExecutableCompilationStatus::CompilerFailure,
-                             "search-capacity-feedback",
-                             capacityFeedback.detail));
-        if (choice.pipeline && compiled.isAccepted())
-          support::addCompileCounter("search", "pipeline-accepted", 1);
-        if (statistics && choice.reuse && compiled.isAccepted()) {
-          ++statistics->accessReuseAccepted;
-          if (llvm::any_of(choice.reuse->actions, [](const auto &action) {
-                return action.kind != AccessReuseKind::Peer;
-              })) {
-            ++statistics->residentReuseAccepted;
-            const auto &reads =
-                compiled.executable->resourceCost.aggregateDDRReadBytes;
-            if (reads.isKnown())
-              statistics->minimumResidentDDRReadBytes =
-                  statistics->minimumResidentDDRReadBytes
-                      ? std::min(*statistics->minimumResidentDDRReadBytes,
-                                 reads.value)
-                      : reads.value;
-          }
-        }
-        if (statistics) {
-          ++statistics->movementCandidateActualizations;
-          addDownstreamStatistics(statistics->downstream, downstream);
-          if (compiled.isAccepted()) {
-            statistics->recursiveDoublingAccepted += choice.recursive;
-            statistics->dimensionOrderedAllToAllAccepted += choice.allToAll;
-            statistics->distributedRingAccepted += choice.reduction;
-            statistics->sharedDDRAccepted +=
-                choice.options.transport ==
-                BoundaryMovementTransport::SharedDDR;
-            statistics->mergedRegionAccepted += attempt.merged;
-            statistics->regionPreservingAccepted += !attempt.merged;
-          }
-        }
+    CurrentIRDownstreamOptions downstreamOptions = options.downstream;
+    downstreamOptions.communication =
+        CommunicationProposalPolicy::DependencyOrdered;
+    downstreamOptions.distanceOneLoadPipeline = choice.pipeline;
+    if (choice.pipeline)
+      support::addCompileCounter("search", "pipeline-candidates", 1);
+    downstreamOptions.capacityObserver = observeCapacity;
+    compiled = compileCurrentIRCandidateToExecutable(
+        std::move(candidate->module), std::move(candidate->relations),
+        planning.getProblem().getCardId(), analysis.availableTileIds, program,
+        executionConfig, diagnostics, programData, downstreamOptions,
+        &downstream, executableStatistics);
+    if (capacityFeedback.status == CapacityFeedbackStatus::BrokenContract)
+      return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                         "search-capacity-feedback", capacityFeedback.detail));
+    if (choice.pipeline && compiled.isAccepted())
+      support::addCompileCounter("search", "pipeline-accepted", 1);
+    if (statistics && choice.reuse && compiled.isAccepted()) {
+      ++statistics->accessReuseAccepted;
+      if (llvm::any_of(choice.reuse->selections, [](const auto &action) {
+            return action.kind != AccessReuseKind::Peer;
+          })) {
+        ++statistics->residentReuseAccepted;
+        const auto &reads =
+            compiled.executable->resourceCost.aggregateDDRReadBytes;
+        if (reads.isKnown())
+          statistics->minimumResidentDDRReadBytes =
+              statistics->minimumResidentDDRReadBytes
+                  ? std::min(*statistics->minimumResidentDDRReadBytes,
+                             reads.value)
+                  : reads.value;
       }
-      if (choice.options.components.empty())
-        temporal.observedTransports.insert(choice.options.transport);
-      bool repairQueued = false;
-      if (hasActualSPMCapacityRejection(compiled)) {
-        if (statistics && choice.reuse)
-          ++statistics->accessReuseCapacityRejected;
-        temporal.capacityObserved |= !capacityFeedback.coordinates.empty();
-        bool temporalReuse =
-            choice.reuse &&
-            llvm::any_of(choice.reuse->actions, [](const auto &action) {
-              return action.kind != AccessReuseKind::Peer;
-            });
-        bool refined = proposals->observeCapacity(
-            temporal.choices, capacityFeedback.coordinates, temporalReuse);
-        repairQueued = refined;
-        if (choice.reuse && refined &&
-            llvm::any_of(choice.reuse->actions, [](const auto &action) {
-              return action.kind != AccessReuseKind::Peer;
-            }))
-          repairReuse = true;
-        if (statistics) {
-          statistics->actualCapacityRefinements += refined;
-          statistics->unavailableCapacityRefinements += !refined;
-        }
-      } else if (compiled.isAccepted()) {
-        auto objective =
-            deriveExecutableSearchObjective(*compiled.executable, costCohort);
-        evaluatedObjective = objective;
-        if (auto *known =
-                std::get_if<analysis::KnownSearchObjective>(&objective)) {
-          uint64_t duration = known->estimatedDurationPicoseconds;
-          temporal.bestDuration =
-              temporal.bestDuration ? std::min(*temporal.bestDuration, duration)
-                                    : duration;
-          attempt.bestDuration = attempt.bestDuration
-                                     ? std::min(*attempt.bestDuration, duration)
-                                     : duration;
-          proposals->observeAccepted(temporal.choices, duration);
-        }
-      }
-      if (!hasAcceptedCandidate && repairQueued && !realization &&
-          proposals->prepareNext(TemporalProposalKind::Repair)) {
-        // Keep the same actual prefix and all remaining alternatives, but
-        // serve certified capacity repair before exploring those siblings.
-        temporal.realizationOnly = true;
-        realization.emplace(std::move(temporal));
-        pending.pop_front();
-      } else if (!temporal.realizationOnly && compiled.isAccepted() &&
-                 (!realization || !realization->bestDuration ||
-                  (temporal.bestDuration &&
-                   *temporal.bestDuration < *realization->bestDuration))) {
-        // Expose improvement immediately. The unvisited transport/closure
-        // siblings retain this very same actual prefix in the one realization
-        // slot; they no longer block another Temporal point. The executable
-        // itself is handed to the controller below, never reconstructed.
-        RegionAttempt invariant;
-        invariant.layoutInput = attempt.layoutInput;
-        invariant.placement = LayoutMaterializationPlacement::LoopInvariant;
-        invariant.merged = attempt.merged;
-        temporal.regions.push_back(std::move(invariant));
-        temporal.realizationOnly = true;
-        realization.emplace(std::move(temporal));
-        pending.pop_front();
-      } else if (temporal.realizationOnly && choice.reuse &&
-                 compiled.isAccepted() &&
-                 llvm::all_of(choice.reuse->actions,
-                              [](const auto &action) {
-                                return action.kind == AccessReuseKind::Peer;
-                              }) &&
-                 attempt.nextMovement < attempt.movements.size() &&
-                 attempt.movements[attempt.nextMovement].reuse &&
-                 llvm::any_of(
-                     attempt.movements[attempt.nextMovement].reuse->actions,
-                     [](const auto &action) {
-                       return action.kind != AccessReuseKind::Peer;
-                     })) {
-        // Keep this actual prefix for its first temporal/peer combination.
-        // A layout-placement sibling must not consume its turn first.
-      } else if (temporal.realizationOnly) {
-        if (temporal.bestDuration)
-          proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
-        auto visited = std::move(temporal.regions.front());
-        temporal.regions.pop_front();
-        temporal.regions.push_back(std::move(visited));
-        if (llvm::all_of(temporal.regions, [](const auto &region) {
-              return bool(region.layoutInput);
-            }))
-          temporal.tiled = {};
-        realization.emplace(std::move(temporal));
-        pending.pop_front();
-      } else {
-        finishBasePoint(temporal);
-      }
-      return finish(std::move(compiled), std::move(evaluatedObjective));
     }
+    if (statistics) {
+      ++statistics->movementCandidateActualizations;
+      addDownstreamStatistics(statistics->downstream, downstream);
+      if (compiled.isAccepted()) {
+        statistics->recursiveDoublingAccepted += choice.recursive;
+        statistics->dimensionOrderedAllToAllAccepted += choice.allToAll;
+        statistics->distributedRingAccepted += choice.reduction;
+        statistics->sharedDDRAccepted +=
+            choice.options.transport == BoundaryMovementTransport::SharedDDR;
+        statistics->mergedRegionAccepted += attempt.merged;
+        statistics->regionPreservingAccepted += !attempt.merged;
+      }
+    }
+
+    if (hasActualSPMCapacityRejection(compiled)) {
+      if (statistics && choice.reuse)
+        ++statistics->accessReuseCapacityRejected;
+      bool refined = current().proposals->observeCapacity(
+          temporal.choices, capacityFeedback.coordinates, true);
+      if (statistics) {
+        statistics->actualCapacityRefinements += refined;
+        statistics->unavailableCapacityRefinements += !refined;
+      }
+    } else if (compiled.isAccepted()) {
+      auto objective =
+          deriveExecutableSearchObjective(*compiled.executable, costCohort);
+      evaluatedObjective = objective;
+      if (auto *known =
+              std::get_if<analysis::KnownSearchObjective>(&objective)) {
+        auto duration = known->estimatedDurationPicoseconds;
+        current().bestDuration =
+            current().bestDuration ? std::min(*current().bestDuration, duration)
+                                   : duration;
+        current().proposals->observeAccepted(temporal.choices, *known);
+      }
+    }
+    return finish(std::move(compiled), std::move(evaluatedObjective));
+  }
+
+  uint64_t getRetainedBranchCount() const override {
+    return std::max<uint64_t>(
+        1, llvm::count_if(implementations, [](const auto &branch) {
+          return bool(branch->proposals);
+        }));
+  }
+
+  bool hasOpenTrial() const override {
+    return options.mode == SearchMode::Deep && active &&
+           implementations[*active]->started &&
+           implementations[*active]->proposals && !exhausted;
   }
 
 private:
-  enum class Stage { SelectTemporal, PrepareRegion, EvaluateMovement };
-  enum class TemporalWork { Proposal, Repair, Improve, Resume };
-
-  std::array<TemporalWork, 4> temporalWorkOrder() const {
-    return hasAcceptedCandidate
-               ? std::array{TemporalWork::Improve, TemporalWork::Resume,
-                            TemporalWork::Repair, TemporalWork::Proposal}
-               : std::array{TemporalWork::Repair, TemporalWork::Repair,
-                            TemporalWork::Proposal, TemporalWork::Resume};
-  }
-
-  TemporalWork nextTemporalWork() {
-    // Finish the current actualization before starting another Temporal IR.
-    if (!pending.empty())
-      return TemporalWork::Resume;
-    if (repairReuse && proposals &&
-        proposals->prepareNext(TemporalProposalKind::Repair))
-      return TemporalWork::Repair;
-    if (!hasAcceptedCandidate && proposals &&
-        proposals->prepareNext(TemporalProposalKind::Repair))
-      return TemporalWork::Repair;
-    for (unsigned offset = 0; offset < 4; ++offset) {
-      auto work = temporalWorkOrder()[(temporalPhase + offset) % 4];
-      if ((work == TemporalWork::Proposal && proposals &&
-           proposals->prepareNext(TemporalProposalKind::Explore)) ||
-          (work == TemporalWork::Repair && proposals &&
-           proposals->prepareNext(TemporalProposalKind::Repair)) ||
-          (work == TemporalWork::Improve && proposals &&
-           proposals->prepareNext(TemporalProposalKind::Improve)) ||
-          (work == TemporalWork::Resume && realization))
-        return work;
-    }
-    return TemporalWork::Proposal;
-  }
-
+  enum class BranchState { Waiting, Active, Complete, Retired };
+  struct ImplementationBranch {
+    ImplementationChoice choice;
+    std::vector<std::vector<TemporalChoice>> discovery;
+    long double priority = 0;
+    std::unique_ptr<TemporalProposals> proposals;
+    std::vector<TemporalSuccessor> raw;
+    std::optional<uint64_t> bestDuration;
+    BranchState state = BranchState::Waiting;
+    unsigned phase = 0;
+    uint64_t lastVisit = 0;
+    bool started = false;
+  };
   struct RegionPrepared {};
   struct RegionPreparationYielded {};
   using RegionPreparation =
@@ -837,30 +727,189 @@ private:
   };
   struct RegionAttempt {
     std::optional<CurrentCandidate> lowered;
-    // Both placements refer to one unchanged, owned input and one PBQP solve.
-    // Applying either choice mutates only its exact IRMapping clone.
     std::shared_ptr<const LayoutInput> layoutInput;
     LayoutMaterializationPlacement placement =
         LayoutMaterializationPlacement::FirstUse;
-    std::vector<MovementChoice> movements;
-    size_t nextMovement = 0;
-    size_t baseMovements = 0;
-    std::optional<uint64_t> bestDuration;
     bool merged = false;
-    bool baseComplete() const {
-      return lowered && nextMovement >= baseMovements;
-    }
   };
   struct TemporalAttempt {
     std::vector<TemporalChoice> choices;
     CurrentCandidate tiled;
-    std::deque<RegionAttempt> regions;
-    std::set<BoundaryMovementTransport> observedTransports;
-    std::optional<uint64_t> bestDuration;
-    bool realizationOnly = false;
-    bool capacityObserved = false;
-    bool repairReuse = false;
+    RegionAttempt region;
   };
+  struct LayoutCheckpoint {
+    std::vector<TemporalChoice> choices;
+    bool merged;
+    std::shared_ptr<const LayoutInput> input;
+  };
+
+  ImplementationBranch &current() { return *implementations[*active]; }
+
+  bool discover(ImplementationChoice choice,
+                const std::vector<TemporalChoice> &point,
+                long double priority = 0) {
+    for (const auto &branch : implementations)
+      if (branch->choice == choice) {
+        if (branch->state == BranchState::Waiting) {
+          auto existing = llvm::find(branch->discovery, point);
+          if (priority >= branch->priority) {
+            if (existing != branch->discovery.end())
+              branch->discovery.erase(existing);
+            branch->discovery.insert(branch->discovery.begin(), point);
+            branch->priority = priority;
+          } else if (existing == branch->discovery.end()) {
+            branch->discovery.push_back(point);
+          }
+        } else if (branch->proposals) {
+          branch->proposals->startAt(point);
+        }
+        return false;
+      }
+    auto branch = std::make_unique<ImplementationBranch>();
+    branch->choice = std::move(choice);
+    branch->discovery.push_back(point);
+    branch->priority = priority;
+    implementations.push_back(std::move(branch));
+    const auto id = implementations.size() - 1;
+    const auto &selected = implementations.back()->choice;
+    auto count = [&](llvm::StringRef field, uint64_t value) {
+      support::addCompileCounter("search-implementation",
+                                 llvm::formatv("structural-{0}-choice-{1}-{2}",
+                                               explorationStratum, id, field)
+                                     .str(),
+                                 value);
+    };
+    count("structural-stratum", explorationStratum);
+    count("merged", selected.merged);
+    count("invariant",
+          selected.placement == LayoutMaterializationPlacement::LoopInvariant);
+    count("pipeline", selected.pipeline);
+    count("reuse", bool(selected.reuse));
+    if (selected.reuse)
+      count("resident",
+            llvm::any_of(selected.reuse->selections, [](const auto &selection) {
+              return selection.kind != AccessReuseKind::Peer;
+            }));
+    support::addCompileCounter("search", "implementation-choices", 1);
+    return true;
+  }
+
+  void activate(size_t index) {
+    auto &branch = *implementations[index];
+    std::vector<const TemporalDomain *> domains;
+    for (const auto &axis : axes) {
+      domains.push_back(&axis.domain);
+      branch.raw.push_back(axis.domain.getFirstChoice());
+    }
+    branch.proposals = std::make_unique<TemporalProposals>(std::move(domains));
+    for (const auto &point : branch.discovery)
+      branch.proposals->startAt(point);
+    for (const auto &seed : seeds)
+      branch.proposals->seed(seed);
+    branch.state = BranchState::Active;
+    if (branch.choice.reuse && statistics)
+      ++statistics->accessReuseBranchesStarted;
+    active = index;
+  }
+
+  std::optional<TemporalProposalKind> nextWork(ImplementationBranch &branch) {
+    if (!branch.bestDuration &&
+        branch.proposals->prepareNext(TemporalProposalKind::Repair))
+      return TemporalProposalKind::Repair;
+    const std::array order = branch.bestDuration
+                                 ? std::array{TemporalProposalKind::Improve,
+                                              TemporalProposalKind::Repair,
+                                              TemporalProposalKind::Explore}
+                                 : std::array{TemporalProposalKind::Repair,
+                                              TemporalProposalKind::Explore,
+                                              TemporalProposalKind::Improve};
+    for (unsigned offset = 0; offset < order.size(); ++offset) {
+      auto kind = order[(branch.phase + offset) % order.size()];
+      if (branch.proposals->prepareNext(kind))
+        return kind;
+    }
+    return std::nullopt;
+  }
+
+  bool selectImplementation(bool mayStart) {
+    budgetBlocked = false;
+    if (options.mode == SearchMode::Deep && active && current().proposals)
+      return true;
+    std::optional<size_t> waiting;
+    for (size_t i = 0; i < implementations.size(); ++i)
+      if (implementations[i]->state == BranchState::Waiting &&
+          (!waiting ||
+           implementations[i]->priority > implementations[*waiting]->priority))
+        waiting = i;
+    if (waiting &&
+        (options.mode == SearchMode::Deep || visit % 3 == 1 || !active)) {
+      if (!mayStart) {
+        budgetBlocked = true;
+        return false;
+      }
+      if (getRetainedBranchCount() >= retentionLimit &&
+          llvm::any_of(implementations, [](const auto &branch) {
+            return bool(branch->proposals);
+          })) {
+        // A lazy implementation descriptor does not own another IR tree. Make
+        // room only by retiring evaluated, unprotected heuristic work.
+        std::optional<size_t> retire;
+        for (size_t i = 0; i < implementations.size(); ++i) {
+          const auto &branch = *implementations[i];
+          if (!branch.proposals ||
+              branch.proposals->hasCapacityRoundInProgress())
+            continue;
+          if (!retire || !branch.bestDuration ||
+              (implementations[*retire]->bestDuration &&
+               *branch.bestDuration > *implementations[*retire]->bestDuration))
+            retire = i;
+        }
+        if (retire && options.mode == SearchMode::Standard) {
+          implementations[*retire]->proposals.reset();
+          implementations[*retire]->state = BranchState::Retired;
+          support::addCompileCounter("search", "retired-implementations", 1);
+          if (active == retire)
+            active.reset();
+        }
+      }
+      if (getRetainedBranchCount() < retentionLimit ||
+          !llvm::any_of(implementations, [](const auto &branch) {
+            return bool(branch->proposals);
+          })) {
+        activate(*waiting);
+        current().started = true;
+        stepSchemesStarted = 1;
+        return true;
+      }
+    }
+    if (active && current().proposals && !current().bestDuration &&
+        current().proposals->prepareNext(TemporalProposalKind::Repair))
+      return true;
+    std::optional<size_t> selected;
+    for (size_t i = 0; i < implementations.size(); ++i) {
+      auto &branch = *implementations[i];
+      if (!branch.proposals)
+        continue;
+      if (!selected ||
+          std::tie(branch.lastVisit, i) <
+              std::tie(implementations[*selected]->lastVisit, *selected))
+        selected = i;
+    }
+    active = selected;
+    if (active)
+      return true;
+    if (waiting) {
+      if (!mayStart) {
+        budgetBlocked = true;
+        return false;
+      }
+      activate(*waiting);
+      current().started = true;
+      stepSchemesStarted = 1;
+      return true;
+    }
+    return false;
+  }
 
   std::optional<ExecutableCompilationResult> initialize() {
     std::string detail;
@@ -917,51 +966,54 @@ private:
       independent.push_back(*first.getChoice());
       hasFusion |= !axis.domain.getFusions().empty();
     }
-    std::vector<const TemporalDomain *> domains;
-    for (const auto &axis : axes)
-      domains.push_back(&axis.domain);
-    proposals.emplace(std::move(domains));
-    proposals->seed(joint);
+    seeds.push_back(std::move(joint));
     if (hasFusion)
-      proposals->seed(independent);
+      seeds.push_back(std::move(independent));
     return std::nullopt;
   }
 
-  std::optional<ExecutableCompilationResult> startTemporal(TemporalWork work) {
+  std::optional<ExecutableCompilationResult> startTemporal() {
     support::ScopedCompileTimingSpan timing("search-phase", "current-ir",
                                             "start-temporal");
     std::vector<TemporalChoice> choices;
     std::string detail;
-    auto kind = work == TemporalWork::Repair    ? TemporalProposalKind::Repair
-                : work == TemporalWork::Improve ? TemporalProposalKind::Improve
-                                                : TemporalProposalKind::Explore;
-    if (proposals->prepareNext(kind)) {
-      choices = proposals->take(kind);
-      support::addCompileCounter(
-          "search",
-          work == TemporalWork::Repair    ? "integer-repair-proposals"
-          : work == TemporalWork::Improve ? "integer-improve-proposals"
-                                          : "integer-explore-proposals",
-          1);
+    auto work = nextWork(current());
+    if (work) {
+      choices = current().proposals->take(*work);
+      current().phase = (current().phase + 1) % 3;
+      support::addCompileCounter("search",
+                                 *work == TemporalProposalKind::Repair
+                                     ? "integer-repair-proposals"
+                                 : *work == TemporalProposalKind::Improve
+                                     ? "integer-improve-proposals"
+                                     : "integer-explore-proposals",
+                                 1);
+    } else if (options.mode == SearchMode::Deep) {
+      completeImplementation();
+      return std::nullopt;
     } else {
-      bool compilerBug = false;
+      bool bug = false;
       while (true) {
-        if (!advanceTemporalAxes(axes, detail, compilerBug)) {
-          if (compilerBug)
+        if (!advanceTemporalAxes(axes, current().raw, detail, bug)) {
+          if (bug)
             return fail(ExecutableCompilationStatus::CompilerFailure,
                         "search-temporal-next", detail);
-          exhausted = pending.empty();
+          completeImplementation();
           return std::nullopt;
         }
         choices.clear();
-        for (const auto &axis : axes)
-          choices.push_back(*axis.current.getChoice());
-        if (proposals->visitRaw(choices))
+        for (const auto &point : current().raw)
+          choices.push_back(*point.getChoice());
+        if (current().proposals->visitRaw(choices))
           break;
       }
     }
     if (statistics) {
+      statistics->accessReuseCandidates += bool(current().choice.reuse);
       const auto number = statistics->temporalCandidateActualizations++;
+      support::addCompileCounter(
+          "search-temporal",
+          llvm::formatv("choice-{0}-implementation", number).str(), *active);
       support::addCompileCounter(
           "search-temporal",
           llvm::formatv("choice-{0}-structural-stratum", number).str(),
@@ -1020,17 +1072,24 @@ private:
                   "search-communication-region-availability", failure.detail);
     const bool canMerge =
         *availability == CommunicationRegionClosureAvailability::Available;
+    if (canMerge && !current().choice.merged) {
+      auto sibling = current().choice;
+      sibling.merged = true;
+      discover(std::move(sibling), choices);
+    }
+    if (current().choice.merged && !canMerge)
+      return fail(ExecutableCompilationStatus::UnsupportedFailure,
+                  "search-communication-region-availability",
+                  "selected closure is unavailable at this tile point");
     TemporalAttempt attempt;
-    attempt.repairReuse =
-        work == TemporalWork::Repair && std::exchange(repairReuse, false);
     attempt.choices = std::move(choices);
     attempt.tiled = std::move(*candidate);
-    attempt.regions.emplace_back();
-    if (canMerge) {
-      attempt.regions.emplace_back();
-      attempt.regions.back().merged = true;
-    }
-    pending.push_front(std::move(attempt));
+    attempt.region.merged = current().choice.merged;
+    attempt.region.placement = current().choice.placement;
+    if (layoutCheckpoint && layoutCheckpoint->choices == attempt.choices &&
+        layoutCheckpoint->merged == attempt.region.merged)
+      attempt.region.layoutInput = layoutCheckpoint->input;
+    pending.emplace(std::move(attempt));
     return std::nullopt;
   }
 
@@ -1091,6 +1150,8 @@ private:
                     "current layout PBQP has no complete assignment");
       attempt.layoutInput = std::make_shared<LayoutInput>(LayoutInput{
           std::move(*candidate), std::move(query.query), std::move(first)});
+      layoutCheckpoint = LayoutCheckpoint{temporal.choices, attempt.merged,
+                                          attempt.layoutInput};
       return RegionPreparationYielded{};
     }
     const auto &input = *attempt.layoutInput;
@@ -1152,140 +1213,109 @@ private:
     if (distributed.brokenContract)
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "search-movement-domain", distributed.detail);
-    // Transport preferences seed actual construction. Component combinations
-    // are selected only by the unified ready frontier, not a Cartesian mask.
-    attempt.movements.push_back({});
-    if (distributed.sharedDDR) {
-      MovementChoice ddr;
-      ddr.options.transport = BoundaryMovementTransport::SharedDDR;
-      attempt.movements.push_back(ddr);
+    const auto &selected = current().choice;
+    if ((selected.recursive && !recursive.isAvailable()) ||
+        (selected.allToAll && !distributed.dimensionOrderedAllToAll) ||
+        (selected.reduction && !distributed.distributedReduction))
+      return fail(
+          ExecutableCompilationStatus::UnsupportedFailure,
+          "search-movement-domain",
+          "selected collective has no current component at this tile point");
+    if (placement == LayoutMaterializationPlacement::FirstUse &&
+        (input.query->hasLoopInvariantPlacement(input.assignment) ||
+         hasInvariantPhysicalMovement(candidate->module->getOperation()))) {
+      auto sibling = current().choice;
+      sibling.placement = LayoutMaterializationPlacement::LoopInvariant;
+      discover(std::move(sibling), temporal.choices);
     }
-    attempt.baseMovements = attempt.movements.size();
-    // Typed algorithm choices only. Each clone is created when this cursor is
-    // actually selected, then enters the same full downstream acceptance gate.
+    if (distributed.sharedDDR && current().choice.options.transport !=
+                                     BoundaryMovementTransport::SharedDDR) {
+      auto sibling = current().choice;
+      sibling.options.transport = BoundaryMovementTransport::SharedDDR;
+      sibling.options.allGather = CompleteAllGatherAlgorithm::Ring;
+      sibling.options.allToAll = CompleteAllToAllAlgorithm::Direct;
+      sibling.options.reduction = DistributedReductionAlgorithm::Centralized;
+      sibling.recursive = sibling.allToAll = sibling.reduction = false;
+      discover(std::move(sibling), temporal.choices);
+    }
     for (unsigned mask = 1; mask < 8; ++mask) {
       bool gather = mask & 1, allToAll = mask & 2, reduce = mask & 4;
       if ((gather && !recursive.isAvailable()) ||
           (allToAll && !distributed.dimensionOrderedAllToAll) ||
           (reduce && !distributed.distributedReduction))
         continue;
-      MovementChoice choice;
-      choice.recursive = gather;
-      choice.allToAll = allToAll;
-      choice.reduction = reduce;
-      if (gather)
-        choice.options.allGather =
-            CompleteAllGatherAlgorithm::RecursiveDoubling;
-      if (allToAll)
-        choice.options.allToAll = CompleteAllToAllAlgorithm::DimensionOrdered;
-      if (reduce)
-        choice.options.reduction = DistributedReductionAlgorithm::Ring;
-      attempt.movements.push_back(choice);
+      auto sibling = current().choice;
+      sibling.options.transport = BoundaryMovementTransport::Peer;
+      sibling.recursive = gather;
+      sibling.allToAll = allToAll;
+      sibling.reduction = reduce;
+      sibling.options.allGather =
+          gather ? CompleteAllGatherAlgorithm::RecursiveDoubling
+                 : CompleteAllGatherAlgorithm::Ring;
+      sibling.options.allToAll =
+          allToAll ? CompleteAllToAllAlgorithm::DimensionOrdered
+                   : CompleteAllToAllAlgorithm::Direct;
+      sibling.options.reduction =
+          reduce ? DistributedReductionAlgorithm::Ring
+                 : DistributedReductionAlgorithm::Centralized;
+      discover(std::move(sibling), temporal.choices);
     }
     attempt.lowered.emplace(std::move(*candidate));
     return RegionPrepared{};
   }
 
-  void completeRegion(TemporalAttempt &temporal) {
-    support::ScopedCompileTimingSpan timing("search-phase", "current-ir",
-                                            "complete-region");
-    temporal.regions.pop_front();
-    if (temporal.regions.empty())
-      pending.pop_front();
-    else if (!temporal.realizationOnly)
-      finishBasePoint(temporal);
-  }
-
-  void finishBasePoint(TemporalAttempt &temporal) {
-    if (!llvm::all_of(temporal.regions, [](const auto &region) {
-          return region.baseComplete();
-        })) {
-      while (temporal.regions.front().baseComplete()) {
-        auto region = std::move(temporal.regions.front());
-        temporal.regions.pop_front();
-        temporal.regions.push_back(std::move(region));
-      }
-      return;
-    }
-    if (temporal.bestDuration)
-      proposals->observeAccepted(temporal.choices, *temporal.bestDuration);
-    // Keep one actual local realization anchor, never every failed prefix.
-    // Its component cursors keep their owning current post-layout IR alive.
-    for (auto &region : temporal.regions) {
-      // Physical copies can become invariant during StructuredToTile even
-      // when the layout query itself has no invariant materialization.
-      // Keep this actual placement alternative for every retained anchor.
-      if (realization && realization->bestDuration &&
-          (!region.bestDuration ||
-           *realization->bestDuration <= *region.bestDuration))
-        continue;
-      TemporalAttempt anchor;
-      anchor.choices = temporal.choices;
-      anchor.bestDuration = region.bestDuration;
-      anchor.realizationOnly = true;
-      RegionAttempt invariant;
-      invariant.layoutInput = region.layoutInput;
-      invariant.placement = LayoutMaterializationPlacement::LoopInvariant;
-      invariant.merged = region.merged;
-      const bool sharingQueued = llvm::any_of(
-          llvm::ArrayRef(region.movements).drop_front(region.nextMovement),
-          [](const auto &movement) { return movement.reuse.has_value(); });
-      anchor.regions.push_back(std::move(region));
-      if (sharingQueued)
-        anchor.regions.push_back(std::move(invariant));
-      else
-        anchor.regions.push_front(std::move(invariant));
-      realization.emplace(std::move(anchor));
-    }
-    pending.pop_front();
-  }
-
   void recordOwnership() {
-    if (statistics) {
-      uint64_t modules = bool(structural);
-      std::set<const LayoutInput *> inputs;
-      std::set<const CurrentCandidate *> reuseInputs;
-      auto count = [&](const TemporalAttempt &temporal) {
-        modules += bool(temporal.tiled.module);
-        for (const auto &region : temporal.regions) {
-          modules += bool(region.lowered);
-          if (region.layoutInput)
-            inputs.insert(region.layoutInput.get());
-          for (const auto &movement : region.movements)
-            if (movement.input)
-              reuseInputs.insert(movement.input.get());
-        }
-      };
-      for (const auto &temporal : pending)
-        count(temporal);
-      if (realization)
-        count(*realization);
-      modules += inputs.size() + reuseInputs.size();
-      statistics->peakSessionTemporalPrefixes = std::max<uint64_t>(
-          statistics->peakSessionTemporalPrefixes, pending.size());
-      statistics->peakSessionIRModules =
-          std::max(statistics->peakSessionIRModules, modules);
+    if (!statistics)
+      return;
+    uint64_t modules = bool(structural) + bool(layoutCheckpoint);
+    if (pending) {
+      modules += bool(pending->tiled.module) + bool(pending->region.lowered);
+      modules += bool(pending->region.layoutInput) &&
+                 (!layoutCheckpoint ||
+                  pending->region.layoutInput != layoutCheckpoint->input);
     }
+    statistics->peakSessionTemporalPrefixes = std::max<uint64_t>(
+        statistics->peakSessionTemporalPrefixes, bool(pending));
+    statistics->peakSessionIRModules =
+        std::max(statistics->peakSessionIRModules, modules);
   }
 
+  StructuralCandidateEvaluation closed() {
+    StructuralCandidateEvaluation result;
+    result.completeDomain = false;
+    return result;
+  }
+  StructuralCandidateEvaluation blocked() {
+    auto result = closed();
+    result.budgetBlocked = true;
+    return result;
+  }
   StructuralCandidateEvaluation yield() {
     recordOwnership();
-    return {{},
-            0,
-            currentContinuation,
-            CandidateRetention::UnfinishedActualization};
+    StructuralCandidateEvaluation result{
+        {},
+        0,
+        CandidateContinuation::Explore,
+        CandidateRetention::UnfinishedActualization};
+    result.schemesStarted = stepSchemesStarted;
+    result.schemesCompleted = stepSchemesCompleted;
+    result.completeDomain = false;
+    return result;
   }
 
-  StructuralCandidateEvaluation finish(
-      ExecutableCompilationResult compiled,
-      std::optional<analysis::SearchObjective> objective = std::nullopt) {
+  void completeImplementation() {
+    current().proposals.reset();
+    current().state = BranchState::Complete;
+    ++stepSchemesCompleted;
+    active.reset();
+  }
+
+  StructuralCandidateEvaluation
+  finish(ExecutableCompilationResult compiled,
+         std::optional<analysis::SearchObjective> objective = std::nullopt) {
     recordOwnership();
-    stage = Stage::SelectTemporal;
+    pending.reset();
     const auto status = classifyActualStatus(compiled.status);
-    if (!hasAcceptedCandidate && compiled.isAccepted()) {
-      hasAcceptedCandidate = true;
-      temporalPhase = 0;
-    }
     if (status == ActualCandidateStatus::CompilerBug ||
         compiled.failureScope ==
             ExecutableFailureScope::StructuralChoiceInvariant ||
@@ -1310,21 +1340,39 @@ private:
           costCohort, std::move(*objective)};
     if (compiled.isAccepted() || compiled.isProvenExactRejection())
       result.compilation.emplace(std::move(compiled));
-    TemporalWork next = nextTemporalWork();
-    return {std::move(result), 1,
-            exhausted ? CandidateContinuation::Exhausted
-            : next == TemporalWork::Repair ||
-                    (next == TemporalWork::Resume && !pending.empty() &&
-                     !hasAcceptedCandidate && pending.front().capacityObserved)
-                ? CandidateContinuation::Repair
-            : next == TemporalWork::Improve ||
-                    (next == TemporalWork::Resume && hasAcceptedCandidate)
-                ? CandidateContinuation::Improve
-                : CandidateContinuation::Explore,
-            !pending.empty() ? CandidateRetention::UnfinishedActualization
-            : proposals && proposals->hasCapacityRoundInProgress()
-                ? CandidateRetention::PendingCapacityRepair
-                : CandidateRetention::Replaceable};
+    CandidateContinuation next = CandidateContinuation::Explore;
+    if (exhausted && active && status != ActualCandidateStatus::CompilerBug)
+      completeImplementation();
+    if (active && current().proposals) {
+      current().lastVisit = ++visit;
+      auto work = nextWork(current());
+      if (work)
+        next = *work == TemporalProposalKind::Repair
+                   ? CandidateContinuation::Repair
+               : *work == TemporalProposalKind::Improve
+                   ? CandidateContinuation::Improve
+                   : CandidateContinuation::Explore;
+      else if (options.mode == SearchMode::Deep) {
+        completeImplementation();
+      }
+    }
+    CandidateRetention retention = CandidateRetention::Replaceable;
+    if (llvm::any_of(implementations, [](const auto &branch) {
+          return branch->proposals &&
+                 branch->proposals->hasCapacityRoundInProgress();
+        }))
+      retention = CandidateRetention::PendingCapacityRepair;
+    else if (llvm::any_of(implementations, [](const auto &branch) {
+               return branch->state == BranchState::Waiting;
+             }))
+      retention = CandidateRetention::PendingImplementation;
+    StructuralCandidateEvaluation evaluation{
+        std::move(result), 1,
+        exhausted ? CandidateContinuation::Exhausted : next, retention};
+    evaluation.schemesStarted = stepSchemesStarted;
+    evaluation.schemesCompleted = stepSchemesCompleted;
+    evaluation.completeDomain = false;
+    return evaluation;
   }
 
   RegionState state;
@@ -1341,16 +1389,18 @@ private:
   const std::optional<analysis::SearchCostCohort> &costCohort;
   std::optional<CurrentCandidate> structural;
   std::vector<TemporalAxis> axes;
-  std::optional<TemporalProposals> proposals;
-  std::deque<TemporalAttempt> pending;
-  std::optional<TemporalAttempt> realization;
+  std::vector<std::vector<TemporalChoice>> seeds;
+  std::vector<std::unique_ptr<ImplementationBranch>> implementations;
+  std::optional<size_t> active;
+  std::optional<TemporalAttempt> pending;
+  std::optional<LayoutCheckpoint> layoutCheckpoint;
   const size_t explorationStratum;
-  unsigned temporalPhase = 0;
-  bool repairReuse = false;
-  Stage stage = Stage::SelectTemporal;
-  CandidateContinuation currentContinuation = CandidateContinuation::Explore;
+  uint64_t visit = 0;
+  uint64_t retentionLimit = 1;
+  uint64_t stepSchemesStarted = 0;
+  uint64_t stepSchemesCompleted = 0;
   bool exhausted = false;
-  bool hasAcceptedCandidate = false;
+  bool budgetBlocked = false;
 };
 
 class CurrentIRStructuralEvaluator final : public StructuralCandidateEvaluator {
@@ -1464,7 +1514,8 @@ ExecutableCompilationResult compileSearchCurrentIR(
   UnifiedSearchOptions traversal;
   traversal.planningCredits = options.planningCredits;
   traversal.retainedBranches = options.limits.width;
-  traversal.candidateActualizationCredits = options.limits.trials;
+  traversal.trialCredits = options.limits.trials;
+  traversal.mode = options.mode;
   traversal.maximumRegionRefinementCandidates =
       maximumRegionRefinementCandidates;
   traversal.termination = options.termination;
@@ -1502,7 +1553,12 @@ ExecutableCompilationResult compileSearchCurrentIR(
                 searched.work.candidateActualizations);
   searchCounter("width", options.limits.width);
   searchCounter("trials", options.limits.trials);
-  searchCounter("trials-used", searched.work.candidateActualizations);
+  searchCounter("trials-used", searched.work.trialsUsed);
+  searchCounter("schemes-started", searched.work.schemesStarted);
+  searchCounter("schemes-completed", searched.work.schemesCompleted);
+  searchCounter("schemes-unfinished",
+                searched.work.schemesStarted - searched.work.schemesCompleted);
+  searchCounter("deep-mode", options.mode == SearchMode::Deep);
   if (statistics) {
     searchCounter("peak-session-temporal-prefixes",
                   statistics->peakSessionTemporalPrefixes);
@@ -1511,7 +1567,7 @@ ExecutableCompilationResult compileSearchCurrentIR(
                   statistics->temporalBackpressureTurns);
   }
   searchCounter("trials-remaining",
-                options.limits.trials - searched.work.candidateActualizations);
+                options.limits.trials - searched.work.trialsUsed);
   searchCounter("incomplete-inner-domains",
                 searched.work.incompleteInnerDomains);
   searchCounter("accepted-candidates", searched.control.statistics.accepted);
@@ -1552,13 +1608,16 @@ ExecutableCompilationResult compileSearchCurrentIR(
     searchCounter("shared-ddr-candidates", statistics->sharedDDRCandidates);
     searchCounter("shared-ddr-accepted", statistics->sharedDDRAccepted);
     searchCounter("access-reuse-candidates", statistics->accessReuseCandidates);
+    searchCounter("access-reuse-branches-started",
+                  statistics->accessReuseBranchesStarted);
     searchCounter("access-reuse-queries", statistics->accessReuseQueries);
     searchCounter("access-reuse-low-benefit",
                   statistics->accessReuseLowBenefit);
     searchCounter("access-reuse-unknown-benefit",
                   statistics->accessReuseUnknownBenefit);
     searchCounter("access-reuse-eligible", statistics->accessReuseEligible);
-    searchCounter("access-reuse-queued", statistics->accessReuseQueued);
+    searchCounter("access-reuse-branches-discovered",
+                  statistics->accessReuseBranchesDiscovered);
     searchCounter("access-reuse-accepted", statistics->accessReuseAccepted);
     searchCounter("resident-reuse-accepted", statistics->residentReuseAccepted);
     if (statistics->minimumResidentDDRReadBytes)

@@ -25,6 +25,13 @@ namespace {
 using namespace wafer;
 using namespace wafer::compiler::detail;
 
+analysis::KnownSearchObjective measuredCost(uint64_t duration) {
+  auto cohort =
+      analysis::SearchCostCohort::create(analysis::SearchCostPolicy{});
+  assert(mlir::succeeded(cohort));
+  return {{}, *cohort, duration, false};
+}
+
 std::unique_ptr<mlir::MLIRContext> createContext() {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -285,7 +292,7 @@ TEST(TemporalProposalsTest, AcceptedNeighborsExpandAndRevisitAnUnprovedGap) {
         choice.scopes[0].iteratorTileSizes);
     std::vector<TemporalChoice> initial{choice};
     ASSERT_TRUE(proposals.visitRaw(initial));
-    proposals.observeAccepted(initial, 100);
+    proposals.observeAccepted(initial, measuredCost(100));
     bool lowerObserved = false, upperObserved = false;
     bool expanded = false, gap = false;
     while (proposals.prepareNext(TemporalProposalKind::Improve)) {
@@ -293,12 +300,12 @@ TEST(TemporalProposalsTest, AcceptedNeighborsExpandAndRevisitAnUnprovedGap) {
       auto sizes = point[0].scopes[0].iteratorTileSizes;
       if (sizes[1] == 511 && sizes[2] == 64 && !lowerObserved) {
         lowerObserved = true;
-        proposals.observeAccepted(point, 99);
+        proposals.observeAccepted(point, measuredCost(99));
       }
       upperObserved |= sizes[1] == 513 && sizes[2] == 64;
       if (sizes[1] == 509 && sizes[2] == 64) {
         expanded = true;
-        proposals.observeAccepted(point, 101);
+        proposals.observeAccepted(point, measuredCost(101));
       }
       gap |= sizes[1] == 510 && sizes[2] == 64;
     }
@@ -330,7 +337,7 @@ TEST(TemporalProposalsTest,
     ASSERT_TRUE(b.domain->contains(initial[1]));
     TemporalProposals proposals({&*a.domain, &*b.domain});
     ASSERT_TRUE(proposals.visitRaw(initial));
-    proposals.observeAccepted(initial, 100);
+    proposals.observeAccepted(initial, measuredCost(100));
     bool exchange = false, order = false, independent = false;
     bool batchLower = false, batchUpper = false;
     size_t visited = 0;
@@ -353,6 +360,136 @@ TEST(TemporalProposalsTest,
     }
     EXPECT_TRUE(exchange && order && independent);
     EXPECT_TRUE(batchLower && batchUpper);
+  }
+}
+
+TEST(TemporalProposalsTest, LocalNeighborhoodScalesWithIndependentScopes) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (size_t count : {1, 4, 16}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(count);
+      std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modules;
+      std::vector<TemporalDomain> domains;
+      domains.reserve(count);
+      std::vector<const TemporalDomain *> pointers;
+      std::vector<TemporalChoice> initial;
+      std::set<TemporalCoordinate> affected;
+      for (size_t index = 0; index < count; ++index) {
+        modules.push_back(makePointwise(*context, extent, 1031));
+        ASSERT_TRUE(modules.back());
+        auto built = buildTemporalDomain(regionOf(*modules.back()));
+        ASSERT_TRUE(built.succeeded());
+        domains.push_back(std::move(*built.domain));
+        pointers.push_back(&domains.back());
+        initial.push_back(*domains.back().getFirstChoice().getChoice());
+        initial.back().scopes[0].iteratorTileSizes = {1, 256, 512};
+        initial.back().scopes[0].loopOrder = {1, 2};
+        affected.insert({index, 0, 1});
+        affected.insert({index, 0, 2});
+      }
+      for (auto kind :
+           {TemporalProposalKind::Repair, TemporalProposalKind::Improve}) {
+        SCOPED_TRACE(static_cast<unsigned>(kind));
+        TemporalProposals proposals(pointers);
+        ASSERT_TRUE(proposals.visitRaw(initial));
+        if (kind == TemporalProposalKind::Repair)
+          ASSERT_TRUE(proposals.observeCapacity(initial, affected));
+        else
+          proposals.observeAccepted(initial, measuredCost(100));
+        size_t visited = 0;
+        bool single = false, coordinated = false;
+        while (proposals.prepareNext(kind)) {
+          auto point = proposals.take(kind);
+          ++visited;
+          size_t changedScopes = 0;
+          for (size_t index = 0; index < count; ++index) {
+            EXPECT_TRUE(domains[index].contains(point[index]));
+            changedScopes += !(point[index] == initial[index]);
+          }
+          EXPECT_TRUE(changedScopes == 1 || changedScopes == count);
+          single |= changedScopes == 1;
+          coordinated |= changedScopes == count;
+        }
+        EXPECT_TRUE(single && coordinated);
+        // Bounded cost/feedback oracle: every proposal still needs actual
+        // materialization in production. No work limit changes its outcome.
+        EXPECT_LE(visited, kind == TemporalProposalKind::Repair
+                               ? 3 * count + 3
+                               : 32 * count + 16);
+      }
+    }
+  }
+}
+
+TEST(TemporalProposalsTest,
+     StorageImprovementRestartsPollButObjectiveTieDoesNot) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = makePointwise(*context, extent, 64);
+    ASSERT_TRUE(module);
+    auto domain = buildTemporalDomain(regionOf(*module));
+    ASSERT_TRUE(domain.succeeded());
+    for (bool improvesStorage : {false, true}) {
+      TemporalProposals proposals({&*domain.domain});
+      auto choice = *domain.domain->getFirstChoice().getChoice();
+      choice.scopes[0].iteratorTileSizes[1] = 512;
+      choice.scopes[0].loopOrder = *buildFirstTemporalLoopOrder(
+          domain.domain->getScopeDescriptors()[0].iterationExtents,
+          choice.scopes[0].iteratorTileSizes);
+      std::vector<TemporalChoice> initial{choice};
+      ASSERT_TRUE(proposals.visitRaw(initial));
+      auto objective = measuredCost(100);
+      objective.durations.spmHighWaterBytes = 65536;
+      proposals.observeAccepted(initial, objective);
+      while (proposals.prepareNext(TemporalProposalKind::Improve))
+        proposals.take(TemporalProposalKind::Improve);
+      choice.scopes[0].iteratorTileSizes[1] = 800;
+      std::vector<TemporalChoice> other{choice};
+      ASSERT_TRUE(proposals.visitRaw(other));
+      if (improvesStorage)
+        objective.durations.spmHighWaterBytes = 32768;
+      proposals.observeAccepted(other, objective);
+      bool testedNewNeighborhood = false;
+      while (proposals.prepareNext(TemporalProposalKind::Improve)) {
+        auto point = proposals.take(TemporalProposalKind::Improve);
+        testedNewNeighborhood |= point[0].scopes[0].iteratorTileSizes[1] == 400;
+      }
+      EXPECT_EQ(testedNewNeighborhood, improvesStorage);
+    }
+  }
+}
+
+TEST(TemporalProposalsTest, StorageOnlyImprovementExpandsTheSameProbe) {
+  auto context = createContext();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = makePointwise(*context, extent, 64);
+    ASSERT_TRUE(module);
+    auto domain = buildTemporalDomain(regionOf(*module));
+    ASSERT_TRUE(domain.succeeded());
+    TemporalProposals proposals({&*domain.domain});
+    auto choice = *domain.domain->getFirstChoice().getChoice();
+    choice.scopes[0].iteratorTileSizes[1] = 512;
+    choice.scopes[0].loopOrder = *buildFirstTemporalLoopOrder(
+        domain.domain->getScopeDescriptors()[0].iterationExtents,
+        choice.scopes[0].iteratorTileSizes);
+    ASSERT_TRUE(proposals.visitRaw({choice}));
+    auto objective = measuredCost(100);
+    objective.durations.spmHighWaterBytes = 65536;
+    proposals.observeAccepted({choice}, objective);
+    auto previous = choice.scopes[0].iteratorTileSizes;
+    auto point = proposals.take(TemporalProposalKind::Explore);
+    for (int64_t distance : {1, 2, 4, 8}) {
+      SCOPED_TRACE(distance);
+      const auto sizes = point[0].scopes[0].iteratorTileSizes;
+      EXPECT_EQ(sizes[1], previous[1] - distance);
+      EXPECT_EQ(sizes[2], previous[2] - distance);
+      EXPECT_TRUE(domain.domain->contains(point[0]));
+      objective.durations.spmHighWaterBytes -= 1024;
+      proposals.observeAccepted(point, objective);
+      previous = sizes;
+      point = proposals.take(TemporalProposalKind::Improve);
+    }
   }
 }
 
@@ -473,7 +610,7 @@ TEST(TemporalProposalsTest,
             joint = std::move(point);
         }
         ASSERT_TRUE(joint);
-        proposals.observeAccepted(*joint, 100);
+        proposals.observeAccepted(*joint, measuredCost(100));
         auto growth = proposals.take(TemporalProposalKind::Improve);
         EXPECT_GT(growth[0].scopes[0].iteratorTileSizes[reusedAxis],
                   extent / 2);
@@ -530,7 +667,7 @@ TEST(TemporalProposalsTest,
   EXPECT_EQ(sizes[4], 128);
   EXPECT_EQ(sizes[3], 64);
   EXPECT_EQ(sizes[5], 128);
-  proposals.observeAccepted(point, 100);
+  proposals.observeAccepted(point, measuredCost(100));
   bool has127 = false, has129 = false;
   while (proposals.prepareNext(TemporalProposalKind::Improve)) {
     auto neighbor = proposals.take(TemporalProposalKind::Improve)[0];
@@ -690,7 +827,7 @@ TEST(TemporalProposalsTest, RawOracleRetainsOrdersTailsAndCombinationOptimum) {
       if (sizes[1] == 1 && sizes[2] % 2 == 0)
         proposals.observeCapacity(point, {{0, 0, 1}, {0, 0, 2}});
       else
-        proposals.observeAccepted(point, cost);
+        proposals.observeAccepted(point, measuredCost(cost));
     };
     for (unsigned round = 0; round < 1000; ++round) {
       bool any = false;

@@ -32,6 +32,47 @@ using namespace wafer::compiler::detail;
 
 enum class SharingMismatch { None, Window, Input, Layout };
 
+void markCurrentReuseScopes(const analysis::AccessReuseAnalysis &facts) {
+  auto mark = [](mlir::scf::ForOp loop) {
+    if (getIterationCoordinates(loop))
+      return;
+    auto *context = loop.getContext();
+    auto identity = mlir::DistinctAttr::create(mlir::UnitAttr::get(context));
+    loop->setAttr(
+        kIterationCoordinatesAttrName,
+        IterationCoordinatesAttr::get(
+            context, {IterationCoordinateAttr::get(context, identity, 0)}));
+  };
+  for (const auto &window : facts.scopes)
+    mark(window.scope);
+  for (const auto &window : facts.sliding)
+    mark(window.scope);
+}
+
+void checkReuseBinding(mlir::ModuleOp module, const AccessReuseChoice &choice,
+                       const analysis::AccessReuseAnalysis &facts) {
+  auto captured = captureAccessReuse(choice, facts);
+  ASSERT_TRUE(std::holds_alternative<AccessReuseIntent>(captured))
+      << std::get<AccessReuseBindingFailure>(captured).detail;
+  mlir::IRMapping mapping;
+  auto clone = mlir::OwningOpRef<mlir::ModuleOp>(
+      mlir::cast<mlir::ModuleOp>(module->clone(mapping)));
+  auto fresh = analysis::analyzeAccessReuse(*clone);
+  auto bound = bindAccessReuse(std::get<AccessReuseIntent>(captured), fresh);
+  ASSERT_TRUE(std::holds_alternative<AccessReuseChoice>(bound))
+      << std::get<AccessReuseBindingFailure>(bound).detail;
+  auto mapped = mapAccessReuseChoice(choice, mapping);
+  ASSERT_TRUE(mlir::succeeded(mapped));
+  auto &actions = std::get<AccessReuseChoice>(bound).actions;
+  ASSERT_EQ(actions.size(), mapped->actions.size());
+  for (const auto &action : actions)
+    EXPECT_TRUE(llvm::any_of(mapped->actions, [&](const auto &expected) {
+      return action.kind == expected.kind && action.scope == expected.scope &&
+             action.innerScope == expected.innerScope &&
+             action.reads == expected.reads;
+    }));
+}
+
 void checkMemoryAndCompletion(mlir::OwningOpRef<mlir::ModuleOp> module,
                               StructuredMaterializationRelations &relations,
                               bool expectCapacity = false) {
@@ -88,6 +129,7 @@ TEST(AccessReuseTest, ScopedWindowsCoverMainAndTailAndReachActualMemory) {
         ASSERT_TRUE(module);
         auto facts = analysis::analyzeAccessReuse(*module);
         ASSERT_FALSE(facts.scopes.empty()) << facts.detail;
+        markCurrentReuseScopes(facts);
         AccessReuseChoice choice;
         for (const auto &window : facts.scopes) {
           if (!window.outerLoops.empty())
@@ -106,6 +148,7 @@ TEST(AccessReuseTest, ScopedWindowsCoverMainAndTailAndReachActualMemory) {
           choice.actions.push_back(std::move(action));
         }
         ASSERT_EQ(choice.actions.size(), 4u);
+        checkReuseBinding(*module, choice, facts);
         StructuredMaterializationRelations relations;
         rebuildCurrentBufferOwnerRelations(*module, relations);
         auto result = materializeAccessReuse(*module, relations, choice);
@@ -121,6 +164,48 @@ TEST(AccessReuseTest, ScopedWindowsCoverMainAndTailAndReachActualMemory) {
       }
 }
 
+TEST(AccessReuseTest, EqualDimensionsKeepOverlappingScopesAsAlternatives) {
+  mlir::DialectRegistry registry;
+  registerCompilationDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        wafer::testing::makeAccessReuseInput(4, extent, "f16"), &context);
+    ASSERT_TRUE(module);
+    auto facts = analysis::analyzeAccessReuse(*module);
+    // Every loop deliberately uses dimension zero but a distinct scope. The
+    // outer full window and nested windows reuse some of the same actual reads.
+    markCurrentReuseScopes(facts);
+    auto proposals = proposeAccessReuse(facts, analysis::SearchCostPolicy{});
+    unsigned residents = 0;
+    for (const auto &proposal : proposals.choices) {
+      llvm::DenseSet<mlir::Operation *> reads;
+      bool resident = false;
+      for (const auto &action : proposal.choice.actions) {
+        resident |= action.kind == AccessReuseKind::Resident;
+        for (auto read : action.reads)
+          EXPECT_TRUE(reads.insert(read).second);
+      }
+      if (!resident)
+        continue;
+      ++residents;
+      checkReuseBinding(*module, proposal.choice, facts);
+      mlir::IRMapping mapping;
+      auto clone = mlir::OwningOpRef<mlir::ModuleOp>(
+          mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(mapping)));
+      auto mapped = mapAccessReuseChoice(proposal.choice, mapping);
+      ASSERT_TRUE(mlir::succeeded(mapped));
+      StructuredMaterializationRelations relations;
+      rebuildCurrentBufferOwnerRelations(*clone, relations);
+      auto result = materializeAccessReuse(*clone, relations, *mapped);
+      ASSERT_TRUE(result.succeeded()) << result.detail;
+      checkMemoryAndCompletion(std::move(clone), relations);
+    }
+    EXPECT_GE(residents, 2u);
+  }
+}
+
 TEST(AccessReuseTest, SlidingWindowsLoadOnlyNewRowsAndReachActualMemory) {
   mlir::DialectRegistry registry;
   registerCompilationDialects(registry);
@@ -134,6 +219,7 @@ TEST(AccessReuseTest, SlidingWindowsLoadOnlyNewRowsAndReachActualMemory) {
       ASSERT_TRUE(module);
       auto facts = analysis::analyzeAccessReuse(*module);
       ASSERT_EQ(facts.sliding.size(), 4u);
+      markCurrentReuseScopes(facts);
       AccessReuseChoice choice;
       for (const auto &window : facts.sliding) {
         EXPECT_EQ(window.axis, 1u);
@@ -142,6 +228,7 @@ TEST(AccessReuseTest, SlidingWindowsLoadOnlyNewRowsAndReachActualMemory) {
             {AccessReuseKind::Sliding, {window.access.load}, window.scope, {}});
       }
       StructuredMaterializationRelations relations;
+      checkReuseBinding(*module, choice, facts);
       rebuildCurrentBufferOwnerRelations(*module, relations);
       auto result = materializeAccessReuse(*module, relations, choice);
       ASSERT_TRUE(result.succeeded()) << result.detail;
@@ -569,17 +656,17 @@ TEST(AccessReuseTest, ScopeQueriesAreBoundedAndClonesRequireMappedAnchors) {
   auto choices = proposeAccessReuse(facts, analysis::SearchCostPolicy{});
   ASSERT_FALSE(choices.choices.empty());
   auto selected = llvm::find_if(choices.choices, [](const auto &choice) {
-    return llvm::any_of(choice.actions, [](const auto &action) {
+    return llvm::any_of(choice.choice.actions, [](const auto &action) {
       return action.kind != AccessReuseKind::Peer;
     });
   });
   ASSERT_NE(selected, choices.choices.end());
   mlir::IRMapping absent;
-  EXPECT_TRUE(mlir::failed(mapAccessReuseChoice(*selected, absent)));
+  EXPECT_TRUE(mlir::failed(mapAccessReuseChoice(selected->choice, absent)));
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> clone(
       mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(mapping)));
-  auto mapped = mapAccessReuseChoice(*selected, mapping);
+  auto mapped = mapAccessReuseChoice(selected->choice, mapping);
   ASSERT_TRUE(mlir::succeeded(mapped));
   StructuredMaterializationRelations relations;
   rebuildCurrentBufferOwnerRelations(*clone, relations);
@@ -705,19 +792,19 @@ TEST(AccessReuseTest, JointChoiceIncludesThreeIndependentProfitableInputs) {
   ASSERT_FALSE(choices.choices.empty());
   auto selected = llvm::find_if(choices.choices, [&](const auto &choice) {
     llvm::SmallDenseSet<int64_t, 4> identities;
-    for (const auto &action : choice.actions)
+    for (const auto &action : choice.choice.actions)
       for (auto load : action.reads)
         for (const auto &read : facts.reads)
           if (read.load == load)
             identities.insert(read.argument);
     return identities.size() == 3 &&
-           llvm::any_of(choice.actions, [](const auto &action) {
+           llvm::any_of(choice.choice.actions, [](const auto &action) {
              return action.kind != AccessReuseKind::Peer;
            });
   });
   ASSERT_NE(selected, choices.choices.end());
   llvm::SmallDenseSet<int64_t, 4> resources;
-  for (const auto &action : selected->actions)
+  for (const auto &action : selected->choice.actions)
     for (auto load : action.reads)
       for (const auto &read : facts.reads)
         if (read.load == load)
@@ -725,7 +812,7 @@ TEST(AccessReuseTest, JointChoiceIncludesThreeIndependentProfitableInputs) {
   EXPECT_EQ(resources.size(), 3u);
   StructuredMaterializationRelations relations;
   rebuildCurrentBufferOwnerRelations(*module, relations);
-  auto applied = materializeAccessReuse(*module, relations, *selected);
+  auto applied = materializeAccessReuse(*module, relations, selected->choice);
   ASSERT_TRUE(applied.succeeded()) << applied.detail;
   EXPECT_GT(applied.residentWindows, 0u);
   checkMemoryAndCompletion(std::move(module), relations);

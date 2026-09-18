@@ -180,6 +180,12 @@ TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   EXPECT_EQ(*limited.getSearchLimits(), (wafer::SearchLimits{3, 7}));
   EXPECT_NE(search, limited);
   EXPECT_FALSE(none.getSearchLimits());
+  EXPECT_EQ(search.getSearchMode(), wafer::SearchMode::Standard);
+  auto deep = wafer::OptimizationConfig::search({}, wafer::SearchMode::Deep);
+  EXPECT_TRUE(deep.isSearch());
+  EXPECT_EQ(deep.getSearchMode(), wafer::SearchMode::Deep);
+  EXPECT_EQ(deep.getSearchLimits(), search.getSearchLimits());
+  EXPECT_NE(deep, search);
 
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);

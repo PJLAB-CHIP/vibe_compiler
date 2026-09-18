@@ -987,7 +987,7 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
     if (!sourceType || !sourceType.hasStaticShape() ||
         offsets.size() != static_cast<size_t>(assembledType.getRank()) ||
         sizes.size() != static_cast<size_t>(assembledType.getRank()) ||
-        llvm::ArrayRef<int64_t>(sizes) != sourceType.getShape()) {
+        !mlir::computeRankReductionMask(sizes, sourceType.getShape())) {
       result.kind = TemporalConcatQueryKind::BrokenContract;
       result.detail = "insert assembly source does not match its rectangle";
       return result;
@@ -1639,6 +1639,15 @@ TemporalDomainResult buildTemporalDomain(TileRegionOp region) {
     }
     jointScopes.push_back(std::move(*descriptor));
   }
+  llvm::DenseMap<mlir::Operation *, mlir::DistinctAttr> identities;
+  for (auto *scopes : {&jointScopes, &independentScopes})
+    for (auto &scope : *scopes) {
+      auto &identity = identities[scope.operation];
+      if (!identity)
+        identity = mlir::DistinctAttr::create(
+            mlir::UnitAttr::get(region.getContext()));
+      scope.identity = identity;
+    }
   return {TemporalDomain(region, std::move(jointScopes),
                          std::move(independentScopes), std::move(fusions)),
           {}};
@@ -1753,7 +1762,8 @@ remapTemporalDomain(const TemporalDomain &source, TileRegionOp mappedRegion,
                                      scope.iteratorCapabilities,
                                      scope.precedence,
                                      scope.exactReshapeDimensions,
-                                     scope.role};
+                                     scope.role,
+                                     scope.identity};
       out.push_back(std::move(mapped));
     }
     return true;

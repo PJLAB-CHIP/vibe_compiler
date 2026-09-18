@@ -63,7 +63,7 @@ public:
       ActualCandidateResult result,
       CandidateContinuation next = CandidateContinuation::Exhausted)
       : result(std::move(result)), next(next) {}
-  StructuralCandidateEvaluation advance() override {
+  StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
     if (advanced)
       return {{}, 0, CandidateContinuation::Exhausted};
     advanced = true;
@@ -139,6 +139,116 @@ std::string print(mlir::Operation *operation) {
   operation->print(stream);
   stream.flush();
   return text;
+}
+
+// Bounded scheduling oracle: the real-size compiler tests separately exercise
+// actual tiling, allocation rejection and executable ownership.
+TEST(UnifiedSearchTest,
+     DeepChargesSchemesAndFinishesTheLastChargedInnerProcess) {
+  class Session final : public StructuralCandidateSession {
+  public:
+    explicit Session(bool baseFeasible) : baseFeasible(baseFeasible) {}
+    StructuralCandidateEvaluation
+    advance(CandidateAdvanceLimits limits) override {
+      if (!open) {
+        if (!limits.mayStartScheme) {
+          StructuralCandidateEvaluation result;
+          result.budgetBlocked = true;
+          return result;
+        }
+        open = true;
+        remaining = scheme++ == 0 ? 5 : 3;
+        StructuralCandidateEvaluation result{
+            {},
+            0,
+            CandidateContinuation::Explore,
+            CandidateRetention::UnfinishedActualization};
+        result.schemesStarted = 1;
+        return result;
+      }
+      --remaining;
+      open = remaining != 0;
+      auto result = StructuralCandidateEvaluation{
+          acceptedResult(100 - ++leaves), 1, CandidateContinuation::Explore,
+          CandidateRetention::PendingImplementation};
+      if (!baseFeasible && scheme == 1) {
+        result.result = ActualCandidateResult{};
+        result.result->status = ActualCandidateStatus::Unsupported;
+      }
+      result.completeDomain = false;
+      result.schemesCompleted = !open;
+      return result;
+    }
+    bool hasOpenTrial() const override { return open; }
+
+  private:
+    unsigned scheme = 0, remaining = 0, leaves = 0;
+    bool open = false;
+    bool baseFeasible;
+  };
+  class Evaluator final : public StructuralCandidateEvaluator {
+  public:
+    explicit Evaluator(bool baseFeasible) : baseFeasible(baseFeasible) {}
+    std::unique_ptr<StructuralCandidateSession>
+    start(const RegionState &) override {
+      return std::make_unique<Session>(baseFeasible);
+    }
+
+  private:
+    bool baseFeasible;
+  };
+  std::vector<UnifiedSearchCandidateTrace> prefix;
+  for (bool baseFeasible : {true, false}) {
+    for (auto mode : {SearchMode::Standard, SearchMode::Deep}) {
+      for (uint64_t trials : {1, 2}) {
+        auto parsed = parseProgram();
+        ASSERT_TRUE(parsed.module);
+        std::string diagnosticsText, reason;
+        llvm::raw_string_ostream diagnostics(diagnosticsText);
+        auto fixture = prepare(*parsed.module, diagnostics, reason);
+        ASSERT_TRUE(fixture.session) << reason;
+        Evaluator evaluator(baseFeasible);
+        UnifiedSearchOptions options;
+        options.mode = mode;
+        options.retainedBranches = 1;
+        options.trialCredits = trials;
+        UnifiedSearchTrace trace;
+        UnifiedSearchSession session(*fixture.session, evaluator, options,
+                                     &trace);
+        UnifiedSearchResumeResult resumed;
+        do {
+          resumed = session.resume(1);
+        } while (resumed.status == UnifiedSearchResumeStatus::Paused);
+        EXPECT_EQ(resumed.status,
+                  UnifiedSearchResumeStatus::CandidateBudgetExhausted);
+        auto result = session.finish();
+        EXPECT_EQ(result.hasWinner(),
+                  baseFeasible || (mode == SearchMode::Deep && trials == 2))
+            << result.failureDetail;
+        EXPECT_EQ(result.work.trialsUsed, trials);
+        const uint64_t leaves = mode == SearchMode::Standard ? trials
+                                : trials == 1                ? 5
+                                                             : 8;
+        EXPECT_EQ(result.work.candidateActualizations, leaves);
+        EXPECT_EQ(result.work.schemesStarted,
+                  mode == SearchMode::Standard ? 1 : trials);
+        EXPECT_EQ(result.work.schemesCompleted,
+                  mode == SearchMode::Standard ? 0 : trials);
+        EXPECT_EQ(result.work.peakRetainedBranches, 1u);
+        EXPECT_FALSE(result.frontierExhausted);
+        ASSERT_EQ(trace.candidates.size(), leaves);
+        if (mode == SearchMode::Deep) {
+          if (trials == 1)
+            prefix = trace.candidates;
+          else {
+            ASSERT_GE(trace.candidates.size(), prefix.size());
+            EXPECT_TRUE(std::equal(prefix.begin(), prefix.end(),
+                                   trace.candidates.begin()));
+          }
+        }
+      }
+    }
+  }
 }
 
 TEST(UnifiedSearchTest,
@@ -235,7 +345,7 @@ TEST(UnifiedSearchTest, RetentionWidthDoesNotLimitTotalVisitedStructures) {
   AcceptingEvaluator evaluator;
   UnifiedSearchOptions options;
   options.retainedBranches = 1;
-  options.candidateActualizationCredits = 3;
+  options.trialCredits = 3;
   UnifiedSearchResult result =
       runUnifiedSearch(*fixture.session, evaluator, options);
   ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -259,7 +369,7 @@ TEST(UnifiedSearchTest,
   AcceptingEvaluator evaluator;
   UnifiedSearchOptions options;
   options.retainedBranches = 4;
-  options.candidateActualizationCredits = 1;
+  options.trialCredits = 1;
   UnifiedSearchResult result =
       runUnifiedSearch(*fixture.session, evaluator, options);
   ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -284,7 +394,7 @@ TEST(UnifiedSearchTest,
   FirstAcceptingThenUnsupportedEvaluator evaluator;
   UnifiedSearchOptions options;
   options.retainedBranches = 3;
-  options.candidateActualizationCredits = 3;
+  options.trialCredits = 3;
   options.maximumRegionRefinementCandidates = 1;
   UnifiedSearchResult result =
       runUnifiedSearch(*fixture.session, evaluator, options);
@@ -310,7 +420,7 @@ TEST(UnifiedSearchTest, EachAcceptedSpatialFamilyCanRefineItsOwnFusion) {
   AcceptingEvaluator evaluator;
   UnifiedSearchOptions options;
   options.retainedBranches = 8;
-  options.candidateActualizationCredits = 42;
+  options.trialCredits = 42;
   options.maximumRegionRefinementCandidates = 1;
   auto result = runUnifiedSearch(*fixture.session, evaluator, options);
   ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -389,7 +499,7 @@ public:
     log.peak = std::max(log.peak, ++log.live);
   }
   ~ProgressiveSession() override { --log.live; }
-  StructuralCandidateEvaluation advance() override {
+  StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
     if (yielded++ < log.yieldsPerLeaf)
       return {{},
               0,
@@ -431,7 +541,7 @@ private:
 class ExploringEvaluator final : public StructuralCandidateEvaluator {
   class Session final : public StructuralCandidateSession {
   public:
-    StructuralCandidateEvaluation advance() override {
+    StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
       if (!visited) {
         visited = true;
         ActualCandidateResult result;
@@ -463,7 +573,7 @@ TEST(UnifiedSearchTest, ExploresParametersBeforeAnyFeasibleLeafExists) {
     ExploringEvaluator evaluator;
     UnifiedSearchOptions options;
     options.retainedBranches = width;
-    options.candidateActualizationCredits = 14;
+    options.trialCredits = 14;
     options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
     auto result = runUnifiedSearch(*fixture.session, evaluator, options);
     ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -491,7 +601,7 @@ TEST(UnifiedSearchTest, ResumptionPreservesPrefixAndBestAcrossBudgets) {
       ProgressiveEvaluator evaluator(log);
       UnifiedSearchOptions options;
       options.retainedBranches = width;
-      options.candidateActualizationCredits = trials;
+      options.trialCredits = trials;
       options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
       auto result = runUnifiedSearch(*fixture.session, evaluator, options);
       ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -533,7 +643,7 @@ TEST(UnifiedSearchTest,
   ProgressiveEvaluator evaluator(log);
   UnifiedSearchOptions options;
   options.retainedBranches = 2;
-  options.candidateActualizationCredits = 14;
+  options.trialCredits = 14;
   options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
   UnifiedSearchSession session(*fixture.session, evaluator, options);
   while (session.resume(1).status == UnifiedSearchResumeStatus::Paused) {
@@ -559,7 +669,7 @@ TEST(UnifiedSearchTest, PendingRepairServiceSurvivesLocalExplorationTurns) {
     class Session final : public StructuralCandidateSession {
     public:
       Session(AttemptLog &log, uint64_t id) : log(log), id(id) {}
-      StructuralCandidateEvaluation advance() override {
+      StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
         if (yielded++ < log.yieldsPerLeaf)
           return {{},
                   0,
@@ -605,7 +715,7 @@ TEST(UnifiedSearchTest, PendingRepairServiceSurvivesLocalExplorationTurns) {
     log.yieldsPerLeaf = yields;
     Evaluator evaluator(log);
     UnifiedSearchOptions options;
-    options.candidateActualizationCredits = 14;
+    options.trialCredits = 14;
     options.termination = SearchTerminationPolicy::FirstAccepted;
     options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
     auto result = runUnifiedSearch(*fixture.session, evaluator, options);
@@ -628,7 +738,7 @@ TEST(UnifiedSearchTest,
     class Session final : public StructuralCandidateSession {
     public:
       Session(AttemptLog &log, uint64_t id) : log(log), id(id) {}
-      StructuralCandidateEvaluation advance() override {
+      StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
         if (yielded++ < log.yieldsPerLeaf)
           return {{},
                   0,
@@ -671,7 +781,7 @@ TEST(UnifiedSearchTest,
     log.yieldsPerLeaf = yields;
     Evaluator evaluator(log);
     UnifiedSearchOptions options;
-    options.candidateActualizationCredits = 42;
+    options.trialCredits = 42;
     options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
     auto result = runUnifiedSearch(*fixture.session, evaluator, options);
     ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -705,7 +815,7 @@ TEST(UnifiedSearchTest, StageYieldCountsDoNotChangeMultiOutcomeCandidateOrder) {
       ProgressiveEvaluator evaluator(log);
       UnifiedSearchOptions options;
       options.retainedBranches = width;
-      options.candidateActualizationCredits = 42;
+      options.trialCredits = 42;
       options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
       auto result = runUnifiedSearch(*fixture.session, evaluator, options);
       ASSERT_TRUE(result.hasWinner()) << result.failureDetail;
@@ -725,7 +835,7 @@ TEST(UnifiedSearchTest, QueuedRepairSurvivesInterleavedLocalExploration) {
   class Evaluator final : public StructuralCandidateEvaluator {
     class Session final : public StructuralCandidateSession {
     public:
-      StructuralCandidateEvaluation advance() override {
+      StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
         if (++visits < 4) {
           ActualCandidateResult result;
           result.status = ActualCandidateStatus::Indeterminate;
@@ -753,7 +863,7 @@ TEST(UnifiedSearchTest, QueuedRepairSurvivesInterleavedLocalExploration) {
   ASSERT_TRUE(fixture.session) << detail;
   UnifiedSearchOptions options;
   options.retainedBranches = 1;
-  options.candidateActualizationCredits = 4;
+  options.trialCredits = 4;
   options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
   UnifiedSearchSession session(*fixture.session, evaluator, options);
   while (session.resume(1).status == UnifiedSearchResumeStatus::Paused) {
@@ -769,7 +879,7 @@ TEST(UnifiedSearchTest, VerifiedStageYieldsPreserveOwnersAndActualBudget) {
   class Evaluator final : public StructuralCandidateEvaluator {
     class Session final : public StructuralCandidateSession {
     public:
-      StructuralCandidateEvaluation advance() override {
+      StructuralCandidateEvaluation advance(CandidateAdvanceLimits) override {
         if (++visits <= 3)
           return {{},
                   0,
@@ -801,7 +911,7 @@ TEST(UnifiedSearchTest, VerifiedStageYieldsPreserveOwnersAndActualBudget) {
     Evaluator evaluator;
     UnifiedSearchOptions options;
     options.retainedBranches = 2;
-    options.candidateActualizationCredits = 4;
+    options.trialCredits = 4;
     options.costCohort = *SearchCostCohort::create(SearchCostPolicy{});
     UnifiedSearchTrace trace;
     UnifiedSearchSession session(*fixture.session, evaluator, options, &trace);

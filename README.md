@@ -86,7 +86,9 @@ build/bin/wafer-compile \
 
 普通编译的 `<package-directory>` 就是交付 package；编译输出目录必须尚不存在。
 使用 `--optimization-policy none` 选择 deterministic baseline。`search` 可以用 `--search-width` 和 `--search-trials` 限制搜索工作量；
-默认 `width=8` 限制同时保留的可扩展分支，`trials=42` 限制实际尝试次数（包含失败）。有界搜索不承诺全局最优。
+默认 `width=8` 限制同时保留的可扩展分支，`trials=42` 在默认 `--search-mode=standard` 下限制实际尝试次数（包含失败）。
+`--search-mode=deep` 按首次启动的方案收取 trial，方案内的 tiling 求值另计实际工作量；同样的 trial 数会花费更多编译时间。
+完整合同见[搜索设计](tasks/06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)。有界搜索不承诺全局最优。
 
 ## 验证和运行 package
 

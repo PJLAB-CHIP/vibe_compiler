@@ -1933,6 +1933,8 @@
 - 根因：slice/reshape链组合后丢失injectivity/functionality构造证明，每个consumer反复执行Presburger自组合；未消去的整数等式local又使可恢复的affine访问被判为不可表示。
 - 修复模式：在IndexRelation内传播这些数学性质；symbol-free组合使用pinned `mergeAndCompose`消去整数等式local，仍保留中间shape约束。该API要求启用identifier存储，无symbol时使用空identifier，不引入operation身份。
 - 防复发：同时覆盖中间边界裁剪、domain restriction、unit view链、shared uses和真实规模main/tail。恢复表达式后仍须验证完整domain，不能以表达式相同代替约束相同。
+- Row-major reshape的跨行image已有exact矩形分片时，优先在这些无商余local的矩形并集上证明是否为单一矩形；
+  不重复交给通用整数求解器消去同一组商余变量。非矩形并集仍须typed拒绝，1024/1025/1031覆盖连续与带缺口窗口。
 
 ## 精确tile需求与局部reshape生成需要分别闭合
 
@@ -1940,6 +1942,8 @@
 - 修复模式：将generator实际offset/size约定与精确需求bounds比较；按actual source shape和reassociation同步收紧局部Expand/Collapse。只增删unit轴时可在canonical loop内保留bounded动态size，一般dynamic输入仍不支持。
 - 防复发：named/generic window加通道复用、直接/经unit view、1024/1025/1031均检查动态执行覆盖并推进Instr/SPM；负向关系的分析成功与当前generator拒绝分别断言。
 - 当projection替代较一般的reshape表示后，不能假定producer tile与consumer slice具有相同的静态类型精度。按已证明的producer/view轴对应关系对齐局部shape，再重建view并转换回请求类型；内部归约及非零init的尾块必须覆盖该分支。
+- Rank-reducing Extract/InsertSlice的offset/size属于完整subset坐标系，不能用低rank的source/result shape代替sizes。
+  共享indexing interface传递实际sizes，再通过标准unit维删除关系投影source；成对验证两端降rank、非零offset及未覆盖destination需求。
 
 ## 共享需求必须对应实际selected root与合法生成位置
 

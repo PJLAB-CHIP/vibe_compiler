@@ -103,6 +103,10 @@ Stable ODS schema至少覆盖：
 诊断、profiling、调试等 namespaced discardable attr 可以组合；verifier 只拒绝未声明的 Wafer semantic attr，不因
 “attr 不在白名单”拒绝所有 dialect-owned instrumentation。
 
+06号搜索的循环选择对应使用标准 SCF op 的扩展 attribute：坐标内容在 ODS typed attribute 中声明并
+通过 generated accessor 读取，单一 getter 拥有附着名称。它只延续实现选择的作用对象，不能恢复 buffer
+owner、lifetime 或 completion；消费后在共同下游入口移除。不能将此例扩展为任意 schema-free semantic 字段。
+
 ### 3.3 Alias、view 与 bufferization
 
 - `ViewReshapeOp` 收敛为纯 alias view；若 shape/layout 需要 materialization，显式产生 allocation/movement，再构造 view，

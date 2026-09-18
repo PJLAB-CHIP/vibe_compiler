@@ -1,8 +1,10 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -23,6 +25,63 @@
 #include <vector>
 
 namespace {
+
+TEST(WaferDialectTest, IterationCoordinatesVerifyTheirSchemaAndAttachment) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module { func.func @loop() {
+      %zero = arith.constant 0 : index
+      %end = arith.constant 1024 : index
+      %step = arith.constant 128 : index
+      scf.for %i = %zero to %end step %step { }
+      return
+    } }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  context.getOrLoadDialect<wafer::WaferDialect>();
+  auto identity = mlir::DistinctAttr::create(mlir::UnitAttr::get(&context));
+  auto coordinate = wafer::IterationCoordinateAttr::get(&context, identity, 1);
+  auto coordinates =
+      wafer::IterationCoordinatesAttr::get(&context, {coordinate});
+  mlir::scf::ForOp loop;
+  module->walk([&](mlir::scf::ForOp operation) { loop = operation; });
+  ASSERT_TRUE(loop);
+  loop->setAttr(wafer::kIterationCoordinatesAttrName, coordinates);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  std::string text;
+  llvm::raw_string_ostream(text) << *module;
+  auto roundTrip = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+  ASSERT_TRUE(roundTrip);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*roundTrip)));
+  unsigned diagnostics = 0;
+  mlir::ScopedDiagnosticHandler handler(&context, [&](mlir::Diagnostic &) {
+    ++diagnostics;
+    return mlir::success();
+  });
+  auto emit = [&]() {
+    return mlir::emitError(mlir::UnknownLoc::get(&context));
+  };
+  EXPECT_FALSE(wafer::IterationCoordinatesAttr::getChecked(emit, &context, {}));
+  EXPECT_FALSE(wafer::IterationCoordinatesAttr::getChecked(
+      emit, &context, {coordinate, coordinate}));
+  auto invalid =
+      mlir::DistinctAttr::create(mlir::StringAttr::get(&context, "scope"));
+  EXPECT_FALSE(wafer::IterationCoordinateAttr::getChecked(
+      emit, &context, invalid, uint32_t{1}));
+  loop->setAttr(wafer::kIterationCoordinatesAttrName,
+                mlir::UnitAttr::get(&context));
+  EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
+  loop->removeAttr(wafer::kIterationCoordinatesAttrName);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  function->setAttr(wafer::kIterationCoordinatesAttrName, coordinates);
+  EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
+  EXPECT_EQ(diagnostics, 5u);
+}
 
 enum class TestElementKind { I8, F16, F32 };
 

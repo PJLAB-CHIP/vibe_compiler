@@ -18,6 +18,7 @@ namespace wafer::compiler::detail {
 struct SearchCurrentIROptions {
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   SearchLimits limits;
+  SearchMode mode = SearchMode::Standard;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   // Optional explicit cancellation boundary for callers. Production search
@@ -50,7 +51,8 @@ struct SearchCurrentIRStatistics {
   uint64_t accessReuseLowBenefit = 0;
   uint64_t accessReuseUnknownBenefit = 0;
   uint64_t accessReuseEligible = 0;
-  uint64_t accessReuseQueued = 0;
+  uint64_t accessReuseBranchesDiscovered = 0;
+  uint64_t accessReuseBranchesStarted = 0;
   uint64_t accessReuseAccepted = 0;
   uint64_t residentReuseAccepted = 0;
   std::optional<uint64_t> minimumResidentDDRReadBytes;

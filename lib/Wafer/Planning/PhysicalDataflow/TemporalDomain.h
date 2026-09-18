@@ -86,6 +86,9 @@ struct TemporalScopeDescriptor {
   llvm::SmallVector<TemporalPrecedenceEdge, 4> precedence;
   llvm::SmallVector<uint32_t, 2> exactReshapeDimensions;
   TemporalScopeRole role = TemporalScopeRole::Traversal;
+  /// Choice anchor of this live scope. Cloned domains retain it; equality of
+  /// independently derived semantic descriptors does not depend on it.
+  mlir::DistinctAttr identity;
 
   friend bool operator==(const TemporalScopeDescriptor &lhs,
                          const TemporalScopeDescriptor &rhs) {
@@ -204,6 +207,8 @@ enum class TemporalConcatQueryKind : uint8_t {
 
 struct TemporalConcatSegment {
   mlir::Value source;
+  /// Destination coordinates from the actual subset interface. The source
+  /// may omit unit dimensions under the standard rank-reduction contract.
   llvm::SmallVector<int64_t, 4> offsets;
   llvm::SmallVector<int64_t, 4> sizes;
   std::optional<mlir::OpResult> derivedProducer;

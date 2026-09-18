@@ -240,6 +240,68 @@ TEST(TensorResultIndexingTest,
 }
 
 TEST(TensorResultIndexingTest,
+     RankReducedSlicesKeepTheActualDestinationWindow) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    const std::string source =
+        "tensor<1x" + std::to_string(extent - 2) + "x32xf16>";
+    const std::string destination =
+        "tensor<2x1x" + std::to_string(extent) + "x64xf16>";
+    const std::string result =
+        "tensor<1x" + std::to_string(extent) + "x32xf16>";
+    const std::string text =
+        "module { func.func @update(%src: " + source +
+        ", %dst: " + destination + ") -> " + result +
+        " { %r = tensor.insert_slice %src into %dst[1, 0, 1, 16] "
+        "[1, 1, " +
+        std::to_string(extent - 2) + ", 32] [1, 1, 1, 1] : " + source +
+        " into " + destination +
+        " %s = tensor.extract_slice %r[1, 0, 0, 16] "
+        "[1, 1, " +
+        std::to_string(extent) + ", 32] [1, 1, 1, 1] : " + destination +
+        " to " + result + " return %s : " + result + " } }";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    mlir::tensor::InsertSliceOp insert;
+    mlir::tensor::ExtractSliceOp extract;
+    module->walk([&](mlir::tensor::InsertSliceOp op) { insert = op; });
+    module->walk([&](mlir::tensor::ExtractSliceOp op) { extract = op; });
+    auto indexing = deriveTensorResultIndexing(
+        mlir::cast<mlir::OpResult>(insert.getResult()));
+    ASSERT_TRUE(indexing.isExact()) << indexing.detail;
+    auto read = deriveTensorResultIndexing(
+        mlir::cast<mlir::OpResult>(extract.getResult()));
+    ASSERT_TRUE(read.isExact()) << read.detail;
+    auto window =
+        getTensorOperandDemand(*read.indexing, read.indexing->operands[0],
+                               {{{0, 0, 0}, {1, extent, 32}}});
+    ASSERT_TRUE(window.isExact()) << window.reason;
+    ASSERT_EQ(window.domains.size(), 1u);
+    EXPECT_EQ(window.domains[0].offsets,
+              (llvm::SmallVector<int64_t, 4>{1, 0, 0, 16}));
+    EXPECT_EQ(window.domains[0].sizes,
+              (llvm::SmallVector<int64_t, 4>{1, 1, extent, 32}));
+    auto src = getTensorOperandDemand(
+        *indexing.indexing, indexing.indexing->operands[0], window.domains);
+    auto dst = getTensorOperandDemand(
+        *indexing.indexing, indexing.indexing->operands[1], window.domains);
+    ASSERT_TRUE(src.isExact()) << src.reason;
+    ASSERT_TRUE(dst.isExact()) << dst.reason;
+    ASSERT_EQ(src.domains.size(), 1u);
+    EXPECT_EQ(src.domains[0].offsets, (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+    EXPECT_EQ(src.domains[0].sizes,
+              (llvm::SmallVector<int64_t, 4>{1, extent - 2, 32}));
+    ASSERT_EQ(dst.domains.size(), 2u);
+    for (auto [index, box] : llvm::enumerate(dst.domains)) {
+      EXPECT_EQ(box.offsets, (llvm::SmallVector<int64_t, 4>{
+                                 1, 0, index ? extent - 1 : 0, 16}));
+      EXPECT_EQ(box.sizes, (llvm::SmallVector<int64_t, 4>{1, 1, 1, 32}));
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest,
      InsertDemandPartitionsSourceAndUntouchedDestination) {
   using namespace wafer::analysis;
   for (int64_t extent : {1024, 1025, 1031}) {

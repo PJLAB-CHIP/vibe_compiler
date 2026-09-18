@@ -16,6 +16,7 @@ def Wafer_Dialect : Dialect {
     IR layer.
   }];
   let useDefaultAttributePrinterParser = 1;
+  let hasOperationAttrVerify = 1;
   let useDefaultTypePrinterParser = 0;
 }
 

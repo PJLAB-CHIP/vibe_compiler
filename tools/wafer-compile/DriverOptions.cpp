@@ -21,7 +21,8 @@ void printHelp() {
       << "usage: wafer-compile --input-program-dir <dir> "
          "--output-dir <dir> --num-partitions <1> "
          "[--optimization-policy <search|none>] "
-         "[--search-width <count>] [--search-trials <count>] "
+         "[--search-mode <standard|deep>] [--search-width <count>] "
+         "[--search-trials <count>] "
          "[--compile-timing] "
          "[--dump-compiler-ir <dir>] "
          "[--profile]\n"
@@ -185,6 +186,12 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         arg.starts_with("--optimization-policy=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
                            options.optimizationPolicy))
+        return false;
+      continue;
+    }
+    if (arg == "--search-mode" || arg.starts_with("--search-mode=")) {
+      if (parseValueOption(argc, argv, index, arg, "--search-mode",
+                           options.searchMode))
         return false;
       continue;
     }
@@ -574,7 +581,18 @@ parseOptimizationConfig(const CommandLineOptions &options) {
           return std::nullopt;
         limits.trials = *trials;
       }
-      config = OptimizationConfig::search(limits);
+      SearchMode mode = SearchMode::Standard;
+      if (options.searchMode) {
+        if (*options.searchMode == "deep")
+          mode = SearchMode::Deep;
+        else if (*options.searchMode != "standard") {
+          llvm::errs() << "wafer-compile: invalid --search-mode value: "
+                       << *options.searchMode
+                       << " (expected standard or deep)\n";
+          return std::nullopt;
+        }
+      }
+      config = OptimizationConfig::search(limits, mode);
     } else if (*options.optimizationPolicy == "none")
       config = OptimizationConfig::none();
     else {
@@ -585,9 +603,11 @@ parseOptimizationConfig(const CommandLineOptions &options) {
     }
   }
 
-  if ((options.searchWidth || options.searchTrials) && !config.isSearch()) {
-    llvm::StringRef option =
-        options.searchWidth ? "--search-width" : "--search-trials";
+  if ((options.searchMode || options.searchWidth || options.searchTrials) &&
+      !config.isSearch()) {
+    llvm::StringRef option = options.searchMode    ? "--search-mode"
+                             : options.searchWidth ? "--search-width"
+                                                   : "--search-trials";
     llvm::errs() << "wafer-compile: " << option
                  << " requires --optimization-policy=search\n";
     return std::nullopt;

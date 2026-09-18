@@ -299,9 +299,19 @@ deriveTensorResultIndexing(mlir::OpResult result,
                                               operandType.getShape(), limits);
       break;
     case TensorIndexingTransformKind::ExtractSlice:
-      relation = IndexRelation::staticSlice(
-          resultType.getShape(), operandType.getShape(), operand.offsets,
-          operand.strides, limits);
+      if (!mlir::computeRankReductionMask(operand.sizes, resultType.getShape()))
+        return fail(TensorResultIndexingStatus::BrokenContract,
+                    "slice result does not match its current subset sizes");
+      relation =
+          IndexRelation::staticSlice(operand.sizes, operandType.getShape(),
+                                     operand.offsets, operand.strides, limits);
+      if (relation.isExact() && resultType.getRank() != operandType.getRank()) {
+        auto expansion = IndexRelation::staticReshape(resultType.getShape(),
+                                                      operand.sizes, limits);
+        if (!expansion.isExact())
+          return fromRelationFailure(expansion);
+        relation = expansion.relation->compose(*relation.relation, limits);
+      }
       break;
     case TensorIndexingTransformKind::InsertSlice:
       if (operand.role == TensorIndexingOperandRole::Destination) {
@@ -311,9 +321,20 @@ deriveTensorResultIndexing(mlir::OpResult result,
                           [](int64_t stride) { return stride == 1; }))
           return fail(TensorResultIndexingStatus::Unsupported,
                       "insert_slice requires unit-stride exact semantics");
-        relation = IndexRelation::staticInsertSlice(resultType.getShape(),
-                                                    operandType.getShape(),
-                                                    operand.offsets, limits);
+        if (!mlir::computeRankReductionMask(operand.sizes,
+                                            operandType.getShape()))
+          return fail(TensorResultIndexingStatus::BrokenContract,
+                      "insert source does not match its current subset sizes");
+        relation = IndexRelation::staticInsertSlice(
+            resultType.getShape(), operand.sizes, operand.offsets, limits);
+        if (relation.isExact() &&
+            resultType.getRank() != operandType.getRank()) {
+          auto reduction = IndexRelation::staticReshape(
+              operand.sizes, operandType.getShape(), limits);
+          if (!reduction.isExact())
+            return fromRelationFailure(reduction);
+          relation = relation.relation->compose(*reduction.relation, limits);
+        }
       }
       break;
     case TensorIndexingTransformKind::Pad:
@@ -325,7 +346,7 @@ deriveTensorResultIndexing(mlir::OpResult result,
     if (!relation.isExact())
       return fromRelationFailure(relation);
     indexing.operands.push_back({operand.operand, operand.role, operand.offsets,
-                                 operand.strides,
+                                 operand.sizes, operand.strides,
                                  std::move(*relation.relation)});
   }
   return {TensorResultIndexingStatus::Exact, std::move(indexing), {}};
@@ -363,12 +384,13 @@ getTensorOperandDemand(const TensorResultIndexing &indexing,
     sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
         indexing.result.getOwner()->getOperand(source->operand).getType());
     if (!sourceType || !sourceType.hasStaticShape() ||
-        sourceType.getRank() != type.getRank() ||
+        source->sizes.size() != static_cast<size_t>(type.getRank()) ||
+        !mlir::computeRankReductionMask(source->sizes, sourceType.getShape()) ||
         source->offsets.size() != static_cast<size_t>(type.getRank()))
       return fail(IndexRelationStatus::Invalid,
                   "tensor insertion has an inconsistent source window");
-    for (auto [offset, size, extent] : llvm::zip_equal(
-             source->offsets, sourceType.getShape(), type.getShape()))
+    for (auto [offset, size, extent] :
+         llvm::zip_equal(source->offsets, source->sizes, type.getShape()))
       if (offset < 0 || offset > extent || size < 0 || size > extent - offset)
         return fail(IndexRelationStatus::Invalid,
                     "tensor insertion is out of bounds");
@@ -393,9 +415,8 @@ getTensorOperandDemand(const TensorResultIndexing &indexing,
       for (unsigned d = 0; d < rectangle.offsets.size(); ++d) {
         const int64_t begin =
             std::max(rectangle.offsets[d], source->offsets[d]);
-        const int64_t end =
-            std::min(rectangle.offsets[d] + rectangle.sizes[d],
-                     source->offsets[d] + sourceType.getDimSize(d));
+        const int64_t end = std::min(rectangle.offsets[d] + rectangle.sizes[d],
+                                     source->offsets[d] + source->sizes[d]);
         overlaps &= begin < end;
         read.offsets[d] = begin;
         read.sizes[d] = std::max<int64_t>(0, end - begin);

@@ -31,6 +31,7 @@ struct CommandLineOptions {
   std::optional<std::string> optimizationPolicy;
   std::optional<std::string> searchWidth;
   std::optional<std::string> searchTrials;
+  std::optional<std::string> searchMode;
   bool compileTiming = false;
   bool profile = false;
   // The following fields belong to the internal qualification/debug entry

@@ -75,10 +75,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-runtime-library-sha256")
     parser.add_argument("--completion-timeout-ms", type=int, default=60000)
     parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--search-mode", choices=("standard", "deep"))
     parser.add_argument("--search-width", type=int)
     parser.add_argument("--search-trials", type=int)
-    parser.add_argument("--compile-timeout-seconds", type=int, default=COMPILE_TIMEOUT_SECONDS)
-    return parser.parse_args()
+    parser.add_argument(
+        "--compile-timeout-seconds", type=int,
+        help="explicit host compile deadline; defaults to 1800 seconds except in deep mode",
+    )
+    args = parser.parse_args()
+    if args.compile_timeout_seconds is None and args.search_mode != "deep":
+        args.compile_timeout_seconds = COMPILE_TIMEOUT_SECONDS
+    return args
 
 
 def run(
@@ -1152,7 +1159,7 @@ def prepare_case_step(
             compile_command.extend(
                 ["--dump-compiler-ir", str(dump_compiler_ir)]
             )
-        for option in ("search_width", "search_trials"):
+        for option in ("search_mode", "search_width", "search_trials"):
             value = getattr(args, option)
             if value is not None:
                 compile_command.extend(["--" + option.replace("_", "-"), str(value)])
@@ -1310,8 +1317,10 @@ def base_runtime_command(
 
 def main() -> int:
     args = parse_args()
-    if args.compile_timeout_seconds < 1:
+    if args.compile_timeout_seconds is not None and args.compile_timeout_seconds < 1:
         raise RuntimeError("compile timeout must be positive")
+    if args.search_mode is not None and args.optimization_policy != "search":
+        raise RuntimeError("search mode requires search policy")
     for limit in (args.search_width, args.search_trials):
         if limit is not None and (limit < 1 or args.optimization_policy != "search"):
             raise RuntimeError("search limits require search policy and positive values")
@@ -1488,6 +1497,7 @@ def main() -> int:
                     "case": current_case.name,
                     "step": step_index + 1,
                     "policy": args.optimization_policy,
+                    "search_mode": args.search_mode,
                     "search_width": args.search_width,
                     "search_trials": args.search_trials,
                     "manifest_sha256": file_sha256(package / "manifest.json"),

@@ -1,0 +1,1201 @@
+{
+  "baseline_commit": "093b6c55685488b9a6f1c4cc9d2c7a7bef7eec04",
+  "status": "partial-board-acceptance",
+  "search_modes": {
+    "standard": {
+      "width": 8,
+      "trials": 42
+    },
+    "deep": {
+      "status": "host-search-in-progress",
+      "board_passed": false
+    }
+  },
+  "samples": [
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "sample": "sample-01",
+      "started": "2026-09-18T05:59:15.321990+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "fc908721b768fa216954cac693f23150225a6368aef7ce52389b9e2fa4b5d44b",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9366000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 65536,
+          "max_abs_error": 0.0009765625,
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05
+        }
+      ],
+      "variant": "baseline",
+      "key": "llama-fp16",
+      "audit": "build/test/search-organization/board/llama-fp16/baseline/sample-01-audit.json",
+      "device_elapsed_ns": 9366000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:08:10.705894+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "fc908721b768fa216954cac693f23150225a6368aef7ce52389b9e2fa4b5d44b",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9358000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 65536,
+          "max_abs_error": 0.0009765625,
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05
+        }
+      ],
+      "variant": "baseline",
+      "key": "llama-fp16",
+      "audit": "build/test/search-organization/board/llama-fp16/baseline/sample-02-audit.json",
+      "device_elapsed_ns": 9358000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:08:30.772344+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "fc908721b768fa216954cac693f23150225a6368aef7ce52389b9e2fa4b5d44b",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9203000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 65536,
+          "max_abs_error": 0.0009765625,
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05
+        }
+      ],
+      "variant": "baseline",
+      "key": "llama-fp16",
+      "audit": "build/test/search-organization/board/llama-fp16/baseline/sample-03-audit.json",
+      "device_elapsed_ns": 9203000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:01:07.958474+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "298118cec7e32b38e6436069d87eeb886faa0f427b0cfb341a1e344c235b340e",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8948000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 65536,
+          "max_abs_error": 0.0009765625,
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05
+        }
+      ],
+      "variant": "standard",
+      "key": "llama-fp16",
+      "audit": "build/test/search-organization/board/llama-fp16/standard/sample-01-audit.json",
+      "device_elapsed_ns": 8948000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:07:51.314100+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "298118cec7e32b38e6436069d87eeb886faa0f427b0cfb341a1e344c235b340e",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8735000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 65536,
+          "max_abs_error": 0.0009765625,
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05
+        }
+      ],
+      "variant": "standard",
+      "key": "llama-fp16",
+      "audit": "build/test/search-organization/board/llama-fp16/standard/sample-02-audit.json",
+      "device_elapsed_ns": 8735000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:08:51.601211+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "298118cec7e32b38e6436069d87eeb886faa0f427b0cfb341a1e344c235b340e",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8834000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 65536,
+          "max_abs_error": 0.0009765625,
+          "cosine_similarity": 0.9999998115787115,
+          "relative_l2_error": 0.0006141426009450267,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 9.299789235228673e-05
+        }
+      ],
+      "variant": "standard",
+      "key": "llama-fp16",
+      "audit": "build/test/search-organization/board/llama-fp16/standard/sample-03-audit.json",
+      "device_elapsed_ns": 8834000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:03:15.127791+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "ea1bca7ebc00c673b061c0c9d09629ed942d8d49732df21e73504244004812fa",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9383000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65536,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999879965260843,
+          "relative_l2_error": 0.004899748790239562,
+          "elementwise_mismatches": 51,
+          "mean_abs_error": 0.0007326925697270781
+        }
+      ],
+      "variant": "baseline",
+      "key": "llama-bf16",
+      "audit": "build/test/search-organization/board/llama-bf16/baseline/sample-01-audit.json",
+      "device_elapsed_ns": 9383000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:09:32.072711+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "ea1bca7ebc00c673b061c0c9d09629ed942d8d49732df21e73504244004812fa",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9292000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65536,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999879965260843,
+          "relative_l2_error": 0.004899748790239562,
+          "elementwise_mismatches": 51,
+          "mean_abs_error": 0.0007326925697270781
+        }
+      ],
+      "variant": "baseline",
+      "key": "llama-bf16",
+      "audit": "build/test/search-organization/board/llama-bf16/baseline/sample-02-audit.json",
+      "device_elapsed_ns": 9292000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:09:53.847752+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "ea1bca7ebc00c673b061c0c9d09629ed942d8d49732df21e73504244004812fa",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9372000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65536,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999879965260843,
+          "relative_l2_error": 0.004899748790239562,
+          "elementwise_mismatches": 51,
+          "mean_abs_error": 0.0007326925697270781
+        }
+      ],
+      "variant": "baseline",
+      "key": "llama-bf16",
+      "audit": "build/test/search-organization/board/llama-bf16/baseline/sample-03-audit.json",
+      "device_elapsed_ns": 9372000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:05:31.746218+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "dd39ad78d3a1de97e4329ce5bc19e3828c3eeef4ec9de0c9b7345ea5edc3937a",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=9028000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65536,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999879965260843,
+          "relative_l2_error": 0.004899748790239562,
+          "elementwise_mismatches": 51,
+          "mean_abs_error": 0.0007326925697270781
+        }
+      ],
+      "variant": "standard",
+      "key": "llama-bf16",
+      "audit": "build/test/search-organization/board/llama-bf16/standard/sample-01-audit.json",
+      "device_elapsed_ns": 9028000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:09:11.809590+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "dd39ad78d3a1de97e4329ce5bc19e3828c3eeef4ec9de0c9b7345ea5edc3937a",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8869000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65536,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999879965260843,
+          "relative_l2_error": 0.004899748790239562,
+          "elementwise_mismatches": 51,
+          "mean_abs_error": 0.0007326925697270781
+        }
+      ],
+      "variant": "standard",
+      "key": "llama-bf16",
+      "audit": "build/test/search-organization/board/llama-bf16/standard/sample-02-audit.json",
+      "device_elapsed_ns": 8869000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:10:19.918497+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "dd39ad78d3a1de97e4329ce5bc19e3828c3eeef4ec9de0c9b7345ea5edc3937a",
+      "comparison": {
+        "rtol": 0.002,
+        "atol": 0.004,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8812000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            16,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65536,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999879965260843,
+          "relative_l2_error": 0.004899748790239562,
+          "elementwise_mismatches": 51,
+          "mean_abs_error": 0.0007326925697270781
+        }
+      ],
+      "variant": "standard",
+      "key": "llama-bf16",
+      "audit": "build/test/search-organization/board/llama-bf16/standard/sample-03-audit.json",
+      "device_elapsed_ns": 8812000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "sample": "sample-01",
+      "started": "2026-09-18T05:52:55.594571+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=7086000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 16777216,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980989868,
+          "relative_l2_error": 6.18928546096879e-05,
+          "elementwise_mismatches": 29626,
+          "mean_abs_error": 0.00030439076586930014
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4096-fp16",
+      "audit": "build/test/search-organization/board/gemm4096-fp16/baseline/sample-01-audit.json",
+      "device_elapsed_ns": 7086000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:07:24.721057+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6828000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 16777216,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980989868,
+          "relative_l2_error": 6.18928546096879e-05,
+          "elementwise_mismatches": 29626,
+          "mean_abs_error": 0.00030439076586930014
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4096-fp16",
+      "audit": "build/test/search-organization/board/gemm4096-fp16/baseline/sample-02-audit.json",
+      "device_elapsed_ns": 6828000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:07:30.849215+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6830000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 16777216,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980989868,
+          "relative_l2_error": 6.18928546096879e-05,
+          "elementwise_mismatches": 29626,
+          "mean_abs_error": 0.00030439076586930014
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4096-fp16",
+      "audit": "build/test/search-organization/board/gemm4096-fp16/baseline/sample-03-audit.json",
+      "device_elapsed_ns": 6830000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "sample": "sample-01",
+      "started": "2026-09-18T05:53:33.028234+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=7074000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 16777216,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980989868,
+          "relative_l2_error": 6.18928546096879e-05,
+          "elementwise_mismatches": 29626,
+          "mean_abs_error": 0.00030439076586930014
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4096-fp16",
+      "audit": "build/test/search-organization/board/gemm4096-fp16/standard/sample-01-audit.json",
+      "device_elapsed_ns": 7074000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:07:19.070520+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6936000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 16777216,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980989868,
+          "relative_l2_error": 6.18928546096879e-05,
+          "elementwise_mismatches": 29626,
+          "mean_abs_error": 0.00030439076586930014
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4096-fp16",
+      "audit": "build/test/search-organization/board/gemm4096-fp16/standard/sample-02-audit.json",
+      "device_elapsed_ns": 6936000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:07:36.655157+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6793000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.float16",
+          "elements": 16777216,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980989868,
+          "relative_l2_error": 6.18928546096879e-05,
+          "elementwise_mismatches": 29626,
+          "mean_abs_error": 0.00030439076586930014
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4096-fp16",
+      "audit": "build/test/search-organization/board/gemm4096-fp16/standard/sample-03-audit.json",
+      "device_elapsed_ns": 6793000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:22:22.669663+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+      "comparison": {
+        "rtol": 0.016,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6862000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 1.0,
+          "cosine_similarity": 0.9999999873937028,
+          "relative_l2_error": 0.00015884460990067264,
+          "elementwise_mismatches": 1310,
+          "mean_abs_error": 0.00024054590936373188
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4096-bf16",
+      "audit": "build/test/search-organization/board/gemm4096-bf16/baseline/sample-01-audit.json",
+      "device_elapsed_ns": 6862000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:22:38.628283+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+      "comparison": {
+        "rtol": 0.016,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6841000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 1.0,
+          "cosine_similarity": 0.9999999873937028,
+          "relative_l2_error": 0.00015884460990067264,
+          "elementwise_mismatches": 1310,
+          "mean_abs_error": 0.00024054590936373188
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4096-bf16",
+      "audit": "build/test/search-organization/board/gemm4096-bf16/baseline/sample-02-audit.json",
+      "device_elapsed_ns": 6841000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:22:44.261400+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+      "comparison": {
+        "rtol": 0.016,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6884000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 1.0,
+          "cosine_similarity": 0.9999999873937028,
+          "relative_l2_error": 0.00015884460990067264,
+          "elementwise_mismatches": 1310,
+          "mean_abs_error": 0.00024054590936373188
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4096-bf16",
+      "audit": "build/test/search-organization/board/gemm4096-bf16/baseline/sample-03-audit.json",
+      "device_elapsed_ns": 6884000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:22:27.759561+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+      "comparison": {
+        "rtol": 0.016,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6850000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 1.0,
+          "cosine_similarity": 0.9999999873937028,
+          "relative_l2_error": 0.00015884460990067264,
+          "elementwise_mismatches": 1310,
+          "mean_abs_error": 0.00024054590936373188
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4096-bf16",
+      "audit": "build/test/search-organization/board/gemm4096-bf16/standard/sample-01-audit.json",
+      "device_elapsed_ns": 6850000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:22:32.989648+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+      "comparison": {
+        "rtol": 0.016,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6763000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 1.0,
+          "cosine_similarity": 0.9999999873937028,
+          "relative_l2_error": 0.00015884460990067264,
+          "elementwise_mismatches": 1310,
+          "mean_abs_error": 0.00024054590936373188
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4096-bf16",
+      "audit": "build/test/search-organization/board/gemm4096-bf16/standard/sample-02-audit.json",
+      "device_elapsed_ns": 6763000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:22:49.657893+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+      "comparison": {
+        "rtol": 0.016,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6888000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 1.0,
+          "cosine_similarity": 0.9999999873937028,
+          "relative_l2_error": 0.00015884460990067264,
+          "elementwise_mismatches": 1310,
+          "mean_abs_error": 0.00024054590936373188
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4096-bf16",
+      "audit": "build/test/search-organization/board/gemm4096-bf16/standard/sample-03-audit.json",
+      "device_elapsed_ns": 6888000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:22:54.982285+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8516000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4097,
+            4097
+          ],
+          "dtype": "torch.float16",
+          "elements": 16785409,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980578864,
+          "relative_l2_error": 6.256246309311977e-05,
+          "elementwise_mismatches": 29461,
+          "mean_abs_error": 0.00030822417685369484
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4097-fp16",
+      "audit": "build/test/search-organization/board/gemm4097-fp16/baseline/sample-01-audit.json",
+      "device_elapsed_ns": 8516000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:23:11.059889+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8620000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4097,
+            4097
+          ],
+          "dtype": "torch.float16",
+          "elements": 16785409,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980578864,
+          "relative_l2_error": 6.256246309311977e-05,
+          "elementwise_mismatches": 29461,
+          "mean_abs_error": 0.00030822417685369484
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4097-fp16",
+      "audit": "build/test/search-organization/board/gemm4097-fp16/baseline/sample-02-audit.json",
+      "device_elapsed_ns": 8620000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:23:16.752162+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8601000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4097,
+            4097
+          ],
+          "dtype": "torch.float16",
+          "elements": 16785409,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980578864,
+          "relative_l2_error": 6.256246309311977e-05,
+          "elementwise_mismatches": 29461,
+          "mean_abs_error": 0.00030822417685369484
+        }
+      ],
+      "variant": "baseline",
+      "key": "gemm4097-fp16",
+      "audit": "build/test/search-organization/board/gemm4097-fp16/baseline/sample-03-audit.json",
+      "device_elapsed_ns": 8601000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "sample": "sample-01",
+      "started": "2026-09-18T06:23:00.146591+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8571000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4097,
+            4097
+          ],
+          "dtype": "torch.float16",
+          "elements": 16785409,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980578864,
+          "relative_l2_error": 6.256246309311977e-05,
+          "elementwise_mismatches": 29461,
+          "mean_abs_error": 0.00030822417685369484
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4097-fp16",
+      "audit": "build/test/search-organization/board/gemm4097-fp16/standard/sample-01-audit.json",
+      "device_elapsed_ns": 8571000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "sample": "sample-02",
+      "started": "2026-09-18T06:23:05.593839+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8563000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4097,
+            4097
+          ],
+          "dtype": "torch.float16",
+          "elements": 16785409,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980578864,
+          "relative_l2_error": 6.256246309311977e-05,
+          "elementwise_mismatches": 29461,
+          "mean_abs_error": 0.00030822417685369484
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4097-fp16",
+      "audit": "build/test/search-organization/board/gemm4097-fp16/standard/sample-02-audit.json",
+      "device_elapsed_ns": 8563000,
+      "healthy_performance_sample": true
+    },
+    {
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "sample": "sample-03",
+      "started": "2026-09-18T06:23:22.076671+00:00",
+      "comparison_passed": true,
+      "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+      "comparison": {
+        "rtol": 0.001,
+        "atol": 1e-05,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8598000"
+      ],
+      "outputs": [
+        {
+          "shape": [
+            1,
+            4097,
+            4097
+          ],
+          "dtype": "torch.float16",
+          "elements": 16785409,
+          "max_abs_error": 0.25,
+          "cosine_similarity": 0.9999999980578864,
+          "relative_l2_error": 6.256246309311977e-05,
+          "elementwise_mismatches": 29461,
+          "mean_abs_error": 0.00030822417685369484
+        }
+      ],
+      "variant": "standard",
+      "key": "gemm4097-fp16",
+      "audit": "build/test/search-organization/board/gemm4097-fp16/standard/sample-03-audit.json",
+      "device_elapsed_ns": 8598000,
+      "healthy_performance_sample": false
+    }
+  ],
+  "device_fault": {
+    "timestamp": "2026-09-18T14:23:27+08:00",
+    "case": "single-card-gemm-tail-4097",
+    "dtype": "float16",
+    "variant": "standard",
+    "sample": 3,
+    "completion_readback_and_numeric_passed": true,
+    "kernel": "NPU LSU TDMA Timeout",
+    "action": "RESET_BM",
+    "error_id": "0x0D00C005",
+    "baseline_package_byte_identical": true,
+    "batch_stopped": true,
+    "cause": "unknown",
+    "user_recovery_status": "not_recovered"
+  }
+}

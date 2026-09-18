@@ -37,7 +37,9 @@ static void printOptimizationConfig(OptimizationConfig config,
               << (config.isSearch() ? "search" : "none");
   if (std::optional<SearchLimits> limits = config.getSearchLimits())
     diagnostics << " search-width=" << limits->width
-                << " search-trials=" << limits->trials;
+                << " search-trials=" << limits->trials << " search-mode="
+                << (config.getSearchMode() == SearchMode::Deep ? "deep"
+                                                               : "standard");
   diagnostics << '\n';
 }
 

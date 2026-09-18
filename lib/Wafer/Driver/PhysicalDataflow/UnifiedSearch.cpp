@@ -171,7 +171,7 @@ struct UnifiedSearchSession::Impl {
        const UnifiedSearchOptions &options, UnifiedSearchTrace *trace)
       : planningSession(planningSession), evaluator(evaluator),
         termination(options.termination), costCohort(options.costCohort),
-        remainingActualizationCredits(options.candidateActualizationCredits),
+        mode(options.mode), remainingTrialCredits(options.trialCredits),
         retainedBranches(options.retainedBranches),
         maximumRegionRefinementCandidates(
             options.maximumRegionRefinementCandidates),
@@ -272,8 +272,15 @@ struct UnifiedSearchSession::Impl {
     frontier.emplace_back(std::move(continuation));
   }
 
+  uint64_t retainedCount() const {
+    uint64_t count = 0;
+    for (const auto &branch : branches)
+      count += branch.session->getRetainedBranchCount();
+    return count;
+  }
+
   bool makeRoom() {
-    if (branches.size() < retainedBranches)
+    if (retainedCount() < retainedBranches)
       return true;
     std::optional<size_t> worst;
     auto sameStructure = [](const RegionState &lhs, const RegionState &rhs) {
@@ -373,7 +380,7 @@ struct UnifiedSearchSession::Impl {
                         identity});
     pending.reset();
     work.peakRetainedBranches =
-        std::max<uint64_t>(work.peakRetainedBranches, branches.size());
+        std::max<uint64_t>(work.peakRetainedBranches, retainedCount());
     evaluate(branches.size() - 1);
   }
 
@@ -386,12 +393,46 @@ struct UnifiedSearchSession::Impl {
         llvm::formatv("structural={0}, attempt={1}", branch.identity,
                       work.candidateActualizations)
             .str());
-    StructuralCandidateEvaluation evaluation = branch.session->advance();
-    if (evaluation.actualizations > 1 ||
-        evaluation.actualizations > remainingActualizationCredits ||
+    const auto currentCount = retainedCount();
+    if (currentCount > retainedBranches) {
+      fail("candidate sessions exceeded shared branch retention width");
+      return;
+    }
+    StructuralCandidateEvaluation evaluation =
+        branch.session->advance({remainingTrialCredits != 0,
+                                 retainedBranches - currentCount +
+                                     branch.session->getRetainedBranchCount()});
+    const uint64_t charge = mode == SearchMode::Deep
+                                ? evaluation.schemesStarted
+                                : evaluation.actualizations;
+    if (evaluation.budgetBlocked) {
+      if (remainingTrialCredits || branch.session->hasOpenTrial() ||
+          evaluation.result || evaluation.actualizations ||
+          evaluation.schemesStarted || evaluation.schemesCompleted) {
+        fail("candidate reported a budget boundary with unfinished charged "
+             "work");
+        return;
+      }
+      status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
+      return;
+    }
+    if (evaluation.actualizations > 1 || charge > remainingTrialCredits ||
+        evaluation.schemesStarted > 1 || evaluation.schemesCompleted > 1 ||
+        work.schemesCompleted + evaluation.schemesCompleted >
+            work.schemesStarted + evaluation.schemesStarted ||
         (evaluation.result && !evaluation.actualizations &&
          evaluation.continuation != CandidateContinuation::Exhausted)) {
       fail("candidate session must advance by at most one actual attempt");
+      return;
+    }
+    remainingTrialCredits -= charge;
+    work.trialsUsed += charge;
+    work.schemesStarted += evaluation.schemesStarted;
+    work.schemesCompleted += evaluation.schemesCompleted;
+    work.peakRetainedBranches =
+        std::max(work.peakRetainedBranches, retainedCount());
+    if (retainedCount() > retainedBranches) {
+      fail("candidate session exceeded its shared retention allowance");
       return;
     }
     if (!evaluation.result) {
@@ -412,14 +453,16 @@ struct UnifiedSearchSession::Impl {
         return;
       }
       controller.close(StructuralCandidateKey::create(branch.state),
-                       SearchFrontierStatus::Exhausted);
+                       evaluation.completeDomain
+                           ? SearchFrontierStatus::Exhausted
+                           : SearchFrontierStatus::Incomplete);
+      sawIncompleteInnerDomain |= !evaluation.completeDomain;
       branches.erase(branches.begin() + index);
       runningBranch.reset();
       return;
     }
     runningBranch.reset();
     branch.lastVisit = ++visit;
-    remainingActualizationCredits -= evaluation.actualizations;
     work.candidateActualizations += evaluation.actualizations;
     if (evaluation.actualizations)
       servicePhase = (servicePhase + 1) % 3;
@@ -466,7 +509,12 @@ struct UnifiedSearchSession::Impl {
     std::string detail = evaluation.result->detail;
     CandidateRecordOutcome recorded = controller.record(
         key, std::move(*evaluation.result),
-        exhausted ? CandidateDomainState::Closed : CandidateDomainState::Open);
+        exhausted && evaluation.completeDomain ? CandidateDomainState::Closed
+                                               : CandidateDomainState::Open);
+    if (exhausted && !evaluation.completeDomain) {
+      controller.close(key, SearchFrontierStatus::Incomplete);
+      sawIncompleteInnerDomain = true;
+    }
     if (recorded == CandidateRecordOutcome::CompilerBug) {
       fail(detail.empty() ? "invalid typed actual candidate result" : detail);
       return;
@@ -480,13 +528,15 @@ struct UnifiedSearchSession::Impl {
     }
     if (exhausted)
       branches.erase(branches.begin() + index);
+    else if (mode == SearchMode::Deep && branch.session->hasOpenTrial())
+      runningBranch = branch.identity;
     if (recorded == CandidateRecordOutcome::Accepted &&
         termination == SearchTerminationPolicy::FirstAccepted)
       status = UnifiedSearchResumeStatus::AcceptedCheckpoint;
   }
 
   void step() {
-    if (!remainingActualizationCredits) {
+    if (!remainingTrialCredits && !runningBranch) {
       status = UnifiedSearchResumeStatus::CandidateBudgetExhausted;
       return;
     }
@@ -540,7 +590,7 @@ struct UnifiedSearchSession::Impl {
     }
     if (introduceNext) {
       const bool room =
-          branches.size() < retainedBranches ||
+          retainedCount() < retainedBranches ||
           llvm::any_of(
               branches,
               [](const Branch &branch) {
@@ -620,7 +670,8 @@ struct UnifiedSearchSession::Impl {
   StructuralCandidateEvaluator &evaluator;
   SearchTerminationPolicy termination;
   std::optional<analysis::SearchCostCohort> costCohort;
-  uint64_t remainingActualizationCredits;
+  SearchMode mode;
+  uint64_t remainingTrialCredits;
   uint64_t retainedBranches;
   uint64_t maximumRegionRefinementCandidates;
   ActualResultController controller;

@@ -1906,6 +1906,24 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
     if (exactRectangle)
       return StaticRectangularIndexSetResult{
           IndexRelationStatus::Exact, std::move(result), {}};
+    // A row-major image may cross a source row boundary. Its existing exact
+    // decomposition removes the quotient/remainder locals by construction.
+    // Prove rectangularity on that same set of explicit boxes instead of
+    // asking symbolic integer optimization to rediscover their union.
+    auto pieces = getExactStaticRectangularImagePieces(
+        destinationOffsets, destinationSizes, limits);
+    if (pieces.isExact()) {
+      auto exact = PresburgerSet::getEmpty(
+          PresburgerSpace::getSetSpace(getSourceRank()));
+      for (const auto &piece : pieces.domains) {
+        auto box = staticRectangularDomain(piece.offsets, piece.sizes, limits);
+        if (!box.isExact())
+          return failRectangle(box.status, box.reason);
+        exact.unionInPlace(*box.set);
+      }
+      return IndexSetResult{IndexRelationStatus::Exact, std::move(exact), {}}
+          .getExactStaticRectangularDomain(limits);
+    }
   }
 
   if (projectedRectanglePattern && rectangleDestinationShape &&

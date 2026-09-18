@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Driver/PhysicalDataflow/ActualResultController.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningSession.h"
+#include "Wafer/Support/OptimizationConfig.h"
 
 #include <cstdint>
 #include <limits>
@@ -23,9 +24,10 @@ enum class SearchTerminationPolicy : uint8_t {
 };
 
 struct UnifiedSearchOptions {
+  SearchMode mode = SearchMode::Standard;
   uint64_t planningCredits = std::numeric_limits<uint64_t>::max();
   uint64_t retainedBranches = 8;
-  uint64_t candidateActualizationCredits = std::numeric_limits<uint64_t>::max();
+  uint64_t trialCredits = std::numeric_limits<uint64_t>::max();
   uint64_t maximumRegionRefinementCandidates = 0;
   SearchTerminationPolicy termination = SearchTerminationPolicy::Exhaustive;
   std::optional<analysis::SearchCostCohort> costCohort;
@@ -39,6 +41,9 @@ struct UnifiedSearchWork {
   uint64_t successorSteps = 0;
   uint64_t structuralStatesActualized = 0;
   uint64_t candidateActualizations = 0;
+  uint64_t schemesStarted = 0;
+  uint64_t schemesCompleted = 0;
+  uint64_t trialsUsed = 0;
   uint64_t duplicateCompleteKeys = 0;
   uint64_t incompleteInnerDomains = 0;
   uint64_t peakRetainedBranches = 0;
@@ -79,6 +84,7 @@ enum class CandidateContinuation : uint8_t {
 enum class CandidateRetention : uint8_t {
   Replaceable,
   PendingCapacityRepair,
+  PendingImplementation,
   UnfinishedActualization,
 };
 
@@ -90,6 +96,17 @@ struct StructuralCandidateEvaluation {
   CandidateContinuation continuation = CandidateContinuation::Exhausted;
   /// Queued repair survives even when another local work class runs next.
   CandidateRetention retention = CandidateRetention::Replaceable;
+  uint64_t schemesStarted = 0;
+  uint64_t schemesCompleted = 0;
+  bool budgetBlocked = false;
+  /// Finishing a finite heuristic inner process does not exhaust the raw
+  /// domain.
+  bool completeDomain = true;
+};
+
+struct CandidateAdvanceLimits {
+  bool mayStartScheme = true;
+  uint64_t retainedBranches = 1;
 };
 
 /// Owns immutable actual IR checkpoints and their current-epoch cursors. Each
@@ -98,7 +115,10 @@ struct StructuralCandidateEvaluation {
 class StructuralCandidateSession {
 public:
   virtual ~StructuralCandidateSession() = default;
-  virtual StructuralCandidateEvaluation advance() = 0;
+  virtual StructuralCandidateEvaluation
+  advance(CandidateAdvanceLimits limits) = 0;
+  virtual uint64_t getRetainedBranchCount() const { return 1; }
+  virtual bool hasOpenTrial() const { return false; }
 };
 
 /// Starts an owned current-IR session. Construction itself does not actualize

@@ -8,9 +8,12 @@
 
 namespace wafer {
 
+enum class SearchMode : uint8_t { Standard, Deep };
+
 /// Public deterministic work limits for the search optimization policy.
 /// Width bounds simultaneously retained expandable branches, not total visited
-/// structures. Trials bounds actual candidate attempts, including failures.
+/// structures. Standard trials count actual attempts, including failures;
+/// deep trials count implementation branches, each with its own tile search.
 /// Neither value participates in IR legality or cost.
 struct SearchLimits {
   uint64_t width = 8;
@@ -30,8 +33,9 @@ struct SearchLimits {
 /// scheduling allowances are not public axes.
 class OptimizationConfig {
 public:
-  static constexpr OptimizationConfig search(SearchLimits limits = {}) {
-    return OptimizationConfig(Policy::Search, limits);
+  static constexpr OptimizationConfig
+  search(SearchLimits limits = {}, SearchMode mode = SearchMode::Standard) {
+    return OptimizationConfig(Policy::Search, limits, mode);
   }
   static constexpr OptimizationConfig none() {
     return OptimizationConfig(Policy::None, {});
@@ -39,6 +43,7 @@ public:
 
   constexpr bool isSearch() const { return policy == Policy::Search; }
   constexpr bool isNone() const { return policy == Policy::None; }
+  constexpr SearchMode getSearchMode() const { return mode; }
   constexpr std::optional<SearchLimits> getSearchLimits() const {
     return isSearch() ? std::optional<SearchLimits>(limits) : std::nullopt;
   }
@@ -46,7 +51,7 @@ public:
   friend constexpr bool operator==(OptimizationConfig lhs,
                                    OptimizationConfig rhs) {
     return lhs.policy == rhs.policy &&
-           (lhs.isNone() || lhs.limits == rhs.limits);
+           (lhs.isNone() || (lhs.limits == rhs.limits && lhs.mode == rhs.mode));
   }
   friend constexpr bool operator!=(OptimizationConfig lhs,
                                    OptimizationConfig rhs) {
@@ -56,11 +61,13 @@ public:
 private:
   enum class Policy : uint8_t { Search, None };
 
-  explicit constexpr OptimizationConfig(Policy policy, SearchLimits limits)
-      : policy(policy), limits(limits) {}
+  explicit constexpr OptimizationConfig(Policy policy, SearchLimits limits,
+                                        SearchMode mode = SearchMode::Standard)
+      : policy(policy), limits(limits), mode(mode) {}
 
   Policy policy;
   SearchLimits limits;
+  SearchMode mode;
 };
 
 } // namespace wafer

@@ -2737,6 +2737,8 @@ TEST_F(StructuredToTileTest,
         const bool hoisted =
             (variant == 0 || variant == 4 || variant == 6) &&
             placement == LayoutMaterializationPlacement::LoopInvariant;
+        EXPECT_EQ(hasInvariantPhysicalMovement(*module),
+                  variant == 0 || variant == 4 || variant == 6);
         auto moved =
             optimizePhysicalMovementPlacement(*module, relations, placement);
         ASSERT_TRUE(mlir::succeeded(moved));

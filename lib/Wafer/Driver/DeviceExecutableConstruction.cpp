@@ -49,6 +49,7 @@ static llvm::Expected<DeviceExecutable> compileCurrentPolicy(
           llvm::errc::invalid_argument,
           "search optimization policy omitted its work limits");
     options.limits = *limits;
+    options.mode = optimizations.getSearchMode();
     options.downstream.captureTileDataflowIR = irTrace != nullptr;
     SearchCurrentIRStatistics searchStatistics;
     compiled = compileSearchCurrentIR(tensorModule, program, executionConfig,

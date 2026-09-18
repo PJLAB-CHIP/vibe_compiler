@@ -299,6 +299,7 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
   support::ScopedCompileTimingSpan timing("query", "access-reuse",
                                           "profitable-choices");
   AccessReuseProposals result;
+  llvm::SmallVector<AccessReuseChoice, 4> choices;
   using Source = std::pair<int64_t, int64_t>;
   struct RankedChoice {
     long double benefit, priority;
@@ -385,9 +386,20 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
     llvm::append_range(peerChoice.actions, best->choice.actions);
 
   using Domain = std::vector<std::tuple<int64_t, int64_t, int64_t>>;
-  using ScopeKey = std::tuple<Source, Domain, AccessReuseKind>;
-  std::map<ScopeKey, AccessReuseChoice> scoped;
-  auto domainKey = [](mlir::scf::ForOp scope) {
+  using DomainKey = std::variant<Domain, std::vector<uint32_t>>;
+  using ScopeKey = std::tuple<Source, DomainKey, AccessReuseKind>;
+  std::map<ScopeKey, llvm::SmallVector<AccessReuseChoice, 4>> scoped;
+  auto domainKey = [](mlir::scf::ForOp scope) -> DomainKey {
+    if (auto coordinates = getIterationCoordinates(scope)) {
+      // Group explicit actions for ranking. Each action retains its exact
+      // source and scope anchor; equal dimensions never establish identity.
+      // The same iteration family includes its peeled main/tail instances.
+      std::vector<uint32_t> dimensions;
+      for (auto coordinate : coordinates.getCoordinates())
+        dimensions.push_back(coordinate.getDimension());
+      llvm::sort(dimensions);
+      return dimensions;
+    }
     Domain result;
     if (auto loops = analysis::getEnclosingStaticLoopDomains(scope))
       for (const auto &loop : *loops)
@@ -397,13 +409,37 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
       result.push_back(own->bounds());
     return result;
   };
+  auto addScope = [&](Source source, AccessReuseAction action) {
+    auto &families = scoped[{source, domainKey(action.scope), action.kind}];
+    auto coordinates = getIterationCoordinates(action.scope);
+    auto inner = action.innerScope ? getIterationCoordinates(action.innerScope)
+                                   : IterationCoordinatesAttr{};
+    // Keep every peeled instance of one semantic selection together. Distinct
+    // nested scopes may have the same dimension numbers but overlapping reads;
+    // they must remain alternatives, never one conflicting promotion.
+    auto family =
+        llvm::find_if(families, [&](const AccessReuseChoice &candidate) {
+          const auto &first = candidate.actions.front();
+          if (!coordinates)
+            return first.scope == action.scope;
+          auto firstTile = first.reads.front()->getParentOfType<TileModuleOp>();
+          auto tile = action.reads.front()->getParentOfType<TileModuleOp>();
+          return firstTile == tile &&
+                 getIterationCoordinates(first.scope) == coordinates &&
+                 (first.innerScope ? getIterationCoordinates(first.innerScope)
+                                   : IterationCoordinatesAttr{}) == inner;
+        });
+    if (family == families.end()) {
+      families.emplace_back();
+      family = std::prev(families.end());
+    }
+    family->actions.push_back(std::move(action));
+  };
   for (const auto &window : facts.scopes) {
     auto tile = window.tile;
     Source source{tile.getCardId(), window.argument};
-    auto &choice =
-        scoped[{source, domainKey(window.scope), AccessReuseKind::Resident}];
-    choice.actions.push_back(
-        {AccessReuseKind::Resident, window.reads, window.scope, {}});
+    addScope(source,
+             {AccessReuseKind::Resident, window.reads, window.scope, {}});
     const analysis::ScopedReadAccess *inner = nullptr;
     for (const auto &candidate : facts.scopes) {
       auto scope = window.scope;
@@ -416,30 +452,47 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
         inner = &candidate;
     }
     if (inner) {
-      auto &two =
-          scoped[{source, domainKey(window.scope), AccessReuseKind::TwoLevel}];
-      two.actions.push_back({AccessReuseKind::TwoLevel, window.reads,
-                             window.scope, inner->scope});
+      addScope(source, {AccessReuseKind::TwoLevel, window.reads, window.scope,
+                        inner->scope});
     }
   }
   for (const auto &window : facts.sliding) {
     auto tile = window.access.tile;
-    auto &choice = scoped[{{tile.getCardId(), window.access.argument},
-                           domainKey(window.scope),
-                           AccessReuseKind::Sliding}];
-    choice.actions.push_back(
+    addScope(
+        {tile.getCardId(), window.access.argument},
         {AccessReuseKind::Sliding, {window.access.load}, window.scope, {}});
   }
-  for (auto &[key, choice] : scoped) {
+  for (auto &[key, families] : scoped) {
     auto source = std::get<0>(key);
-    unsigned depth = std::get<1>(key).size();
-    if (std::get<2>(key) != AccessReuseKind::Sliding) {
-      auto shared = choice;
-      for (auto &action : shared.actions)
-        action.shareWindow = true;
-      consider(source, std::move(shared), depth);
+    unsigned depth = std::visit(
+        [](const auto &domain) { return domain.size(); }, std::get<1>(key));
+    llvm::SmallVector<AccessReuseChoice, 4> alternatives;
+    for (const auto &family : families) {
+      auto alternative =
+          llvm::find_if(alternatives, [&](const auto &candidate) {
+            return llvm::none_of(candidate.actions, [&](const auto &existing) {
+              return llvm::any_of(family.actions, [&](const auto &added) {
+                return llvm::any_of(added.reads, [&](auto read) {
+                  return llvm::is_contained(existing.reads, read);
+                });
+              });
+            });
+          });
+      if (alternative == alternatives.end()) {
+        alternatives.emplace_back();
+        alternative = std::prev(alternatives.end());
+      }
+      llvm::append_range(alternative->actions, family.actions);
     }
-    consider(source, std::move(choice), depth);
+    for (auto &choice : alternatives) {
+      if (std::get<2>(key) != AccessReuseKind::Sliding) {
+        auto shared = choice;
+        for (auto &action : shared.actions)
+          action.shareWindow = true;
+        consider(source, std::move(shared), depth);
+      }
+      consider(source, std::move(choice), depth);
+    }
   }
   llvm::stable_sort(ranked, [](const auto &a, const auto &b) {
     if (a.priority != b.priority)
@@ -470,7 +523,7 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
         combinedReads.insert(read);
   }
   if (!peerChoice.actions.empty())
-    result.choices.push_back(peerChoice);
+    choices.push_back(peerChoice);
   // A temporal choice must be evaluated together with independently useful
   // peer supply for the other resources. This is linear in opportunities,
   // not a power set, and does not require any single-input global win.
@@ -490,7 +543,7 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
     }
     auto gain = estimateBenefit(joint, facts, policy);
     if (gain && *gain > policy.instructionFixedPicosecondsEstimate)
-      result.choices.push_back(std::move(joint));
+      choices.push_back(std::move(joint));
   }
   if (sources.size() > 1 &&
       !llvm::all_of(combined.actions, [](const auto &action) {
@@ -498,10 +551,10 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
       })) {
     auto gain = estimateBenefit(combined, facts, policy);
     if (gain && *gain > policy.instructionFixedPicosecondsEstimate)
-      result.choices.push_back(std::move(combined));
+      choices.push_back(std::move(combined));
   }
   for (auto &entry : ranked) {
-    bool duplicate = llvm::any_of(result.choices, [&](const auto &other) {
+    bool duplicate = llvm::any_of(choices, [&](const auto &other) {
       return other.actions.size() == entry.choice.actions.size() &&
              llvm::all_of(llvm::zip_equal(other.actions, entry.choice.actions),
                           [](const auto &pair) {
@@ -514,7 +567,12 @@ proposeAccessReuse(const analysis::AccessReuseAnalysis &facts,
                           });
     });
     if (!duplicate)
-      result.choices.push_back(std::move(entry.choice));
+      choices.push_back(std::move(entry.choice));
+  }
+  for (auto &choice : choices) {
+    auto benefit = estimateBenefit(choice, facts, policy);
+    if (benefit)
+      result.choices.push_back({std::move(choice), *benefit});
   }
   return result;
 }

@@ -6,6 +6,7 @@
 #include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/Async/IR/AsyncTypes.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
@@ -39,6 +40,12 @@
 #include "Wafer/IR/WaferInterfaces.h"
 
 namespace wafer {
+
+/// Extension metadata on standard loop operations. The typed attribute owns
+/// its fields; this name is used only at the attachment boundary.
+inline constexpr char kIterationCoordinatesAttrName[] =
+    "wafer.iteration_coordinates";
+IterationCoordinatesAttr getIterationCoordinates(mlir::Operation *operation);
 
 /// Reject attributes that are neither declared by the operation schema nor
 /// explicitly owned by another dialect. This keeps instrumentation metadata
