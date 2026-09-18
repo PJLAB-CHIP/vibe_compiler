@@ -2402,3 +2402,41 @@ Fresh输入、原框架reference、构包及no-card均完成；上板前全系�
 单次普通执行的16384个输出全部exact，最大绝对误差0；completion、回读、cleanup正常，设备事件计时0.792 ms。
 该运行窗口的kernel journal无新记录。本项证明这次Add正常执行，不作为此前TDMA根因已修复的证据。
 原始命令、包身份及numeric audit在`build/test/search-organization/add-probe-current/`，执行及kernel日志位于同级目录。
+
+## 2026-09-18：13项deep小预算配对板测
+
+本轮使用同一冻结compiler，standard为width8/trials42，deep为width8/trials2；deep的2按方案计费。
+13个case重新生成source、输入和原PyTorch reference，逐文件核对两个已编译版本的source，26个package均通过本轮no-card。
+沿用SDK 5.7/API1400和同一boot，每次launch前检查全系统占用，普通TX事件计时，不启用Trace。
+Division因既有特殊值合同保留FP32，其余为FP16；reference、dtype及比较门槛不变。
+
+先逐case交替执行三组standard/deep；AllReduce1031、AllToAll1025、LocalReduce补三组反向顺序配对。
+共96次launch，全部完整输出、completion/readback/cleanup通过；各次journal cursor之后未见新设备错误。
+一次补测的可选相似度摘要误用于逐元素策略，发生在设备完成及输出比较通过之后；直接对该次capture离线复核补齐audit，未重复launch。
+
+| Case | dtype | 每模式样本数 | standard中位 ms | deep中位 ms | deep变化 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `all-reduce-sum` | FP16 | 3 | 0.6790 | 0.6880 | +1.33% |
+| `all-reduce-sum-tail-1025` | FP16 | 3 | 0.6320 | 0.6010 | -4.91% |
+| `all-reduce-sum-tail-1031` | FP16 | 6 | 0.7060 | 0.7525 | +6.59% |
+| `allgather-add` | FP16 | 3 | 0.6130 | 0.5930 | -3.26% |
+| `allgather-add-tail-1025` | FP16 | 3 | 0.5880 | 0.5780 | -1.70% |
+| `allgather-add-tail-1031` | FP16 | 3 | 0.6010 | 0.5710 | -4.99% |
+| `alltoall-transpose` | FP16 | 3 | 0.9140 | 0.9650 | +5.58% |
+| `alltoall-transpose-tail-1025` | FP16 | 6 | 0.9695 | 1.0115 | +4.33% |
+| `alltoall-transpose-tail-1031` | FP16 | 3 | 0.9180 | 0.8920 | -2.83% |
+| `division` | FP32 | 3 | 0.5500 | 0.5290 | -3.82% |
+| `division-tail-1025` | FP32 | 3 | 0.5360 | 0.5470 | +2.05% |
+| `division-tail-1031` | FP32 | 3 | 0.5650 | 0.5440 | -3.72% |
+| `local-reduce` | FP16 | 6 | 0.6190 | 0.7625 | +23.18% |
+
+三项AllToAll及Division1025/1031的完整package逐byte相同，计时差异不能归因为deep生成了不同程序。
+其它case的计时区间也有重叠，尚不能签发稳定收益。LocalReduce的deep在六组配对中五组更慢，
+中位0.6190→0.7625 ms；保留为性能待解决项，不以本轮数值通过代签“不退化”。
+
+LocalReduce搜索日志显示standard启动15个方案、42次actual求值，deep只完成2个方案、672次actual求值；
+此前并发主机准备wall分别21.404/334.686秒，不能当作串行编译加速比。小方案预算确实收窄了覆盖，
+但是否因此错过更快winner仍需提高预算后验证；更低估值也不能代替实卡收益。
+本次8/2只记录小预算结果，后续正式deep验收使用8/42并同时记录方案数、actual求值和主机成本，standard的8/42不变。
+本批不包含deep核心LLaMA/GEMM/ViT收益验收，不改变全矩阵未完成及历史TDMA根因未知的结论。
+逐次样本、包身份、source/input摘要和搜索计数见[本轮证据](data/board-performance/search-ready-deep-20260918.json)。

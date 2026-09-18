@@ -289,3 +289,8 @@ SHA256为`9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548`。�
   完整代码/设计差异已复审，canonical完整增量构建及第二次Ninja no-op通过。
 - 冻结版本的LLaMA两种dtype及三组大GEMM已构包/no-card，完整包与本轮standard板测版本逐byte相同。
   两模式全矩阵构包部分完成，余下进程已中断、无正常完成记录；仍须续跑并闭合本轮全部数值、逐项实卡性能及deep收益，不能以主机通过代签。
+
+- 13个已准备的deep 8/2配置与同compiler的standard 8/42完成配对实卡，96次完整输出均通过，执行窗口无新设备错误。
+  AllReduce1031、AllToAll1025、LocalReduce各补三组配对；LocalReduce仍记录为测得更慢，未签性能不下降。
+  其standard覆盖15个方案/42次actual，deep仅2个方案/672次actual，小预算结果不能代签deep收益。
+  后续正式deep验收使用8/42并保留8/2对照，同时核对actual工作量与编译成本；未完成主机及板测矩阵继续保留。
