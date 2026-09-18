@@ -1739,7 +1739,8 @@ Pipeline position:
   不扩大 layout assignment 外层搜索、不修改数值语义、SPM admission 或同步合同；
   不建立 future IR、第二套 allocator/materializer 或设备调参系统。
 - Completion criteria:
-  实现选择跨 retile 保持语义，两种预算精确计费且终止；主机、正式产品及受影响性能保护闭合。
+  实现选择跨 retile 保持语义，两种预算精确计费且终止；主机、正式产品及全部已通过板测 case 的
+  数值和逐项性能保护闭合；deep 在核心集合取得可重复的实卡性能提升。
 ```
 
 **选择分层。** S 是空间切分与 placement，F 是 Region 融合和 binding，T 是 traversal kind、各 scope 的
@@ -1784,7 +1785,15 @@ width 统一约束可扩展分支和实际 checkpoint，不允许 S/F、I、T �
 基础尚未 accepted 即可展开 I、基础内搜无可行点而备选独立 retile 后可行、条件未齐备时延迟发现；
 不同 I 同 T；作用对象变化/条件不适用；合法下界仍失败；PBQP 同输入一次；两种计费、重复/yield/预算边界；
 deep 无改善终止与同 mode 前缀；同一 accepted owner 交付。直接下游必须包含实际 Instr/SPM 和正式 package，
-不能仅用 fake evaluator 代签。LLaMA block、大 GEMM 与 ViT 的完整数值及匹配性能按统一板测矩阵保护。
+不能仅用 fake evaluator 代签。
+
+**性能验收。** 本次搜索修改以 LLaMA block、大 GEMM 和 ViT 为核心保护集合，并覆盖统一板测矩阵内
+全部已实卡通过的 case。Standard 在原 width/trials 下对比改动前接受版本，逐项保持完整数值通过且
+设备性能不下降；deep 对比同版本 standard，同样逐项不下降，并至少在一个核心 case 上取得超过
+测量波动、可重复的设备耗时降低。两种模式均须守住改动前的性能，不能用平均加速抵消任一 case 退化。
+原最好可复现成绩继续保留，不能以较慢版本重置目标；上述门槛不由 cost 估值、accepted 数或主机编译时间代签。
+数值失败、性能下降或 deep 无实测收益均不满足完成条件；缺测或波动尚不可判定保持未完成。
+测量范围、匹配条件、重复方法和结果表按[统一板测矩阵](plans/board-workload-matrix.md#搜索组织修改的性能验收)执行。
 
 ## 8. Ownership、analysis 与实现边界
 

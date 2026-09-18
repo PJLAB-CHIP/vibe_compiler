@@ -19,7 +19,8 @@
 - Explicit non-goals：不修改算术/dtype、布局合法域、allocator 或 completion 规则；不新增未来 IR、重放 winner、
   模型特判、设备 autotuner 或第二个 search implementation；不把 deep 等同于全空间穷举。
 - Completion criteria：实现分支在连续 retile 中保持选择语义；两种预算按定义计费并确定终止；
-  主机覆盖、正式 source→package/no-card 和受影响的 LLaMA/GEMM/ViT 实卡数值与性能保护闭合。
+  主机覆盖、正式 source→package/no-card 和全部已通过板测 case 的数值与逐项性能保护闭合；
+  deep 在核心 LLaMA/GEMM/ViT 集合取得可重复的实卡性能提升。
 
 ## 1. 搜索空间与固定步骤
 
@@ -173,7 +174,7 @@ Deep 的方案计费和确定性内层过程是适配本仓的设计选择，不
 | 2 | 分支上下文/反馈 → `TemporalProposals` 与 `SearchCurrentIR` → 分支内连续 retile/局部搜索 | 不同 I 同 T 独立；深下降链到合法下界；unknown/unsupported/error 分流；旧多轴与tail能力保留 |
 | 3 | 分支事件和 actual work → `UnifiedSearch`/`ActualResultController` → standard/deep 计费与终止 | 深模式不能因一次容量失败关闭方案或因外层预算耗尽截断内搜；owner和前缀验证通过 |
 | 4 | typed mode → `OptimizationConfig`、CLI parser、driver options、正式调用者/runner → 唯一产品入口 | 拟定 `--search-mode=standard|deep`；默认/显式standard一致；none/非法参数负例；统计标注单位 |
-| 5 | 当前 source/原 reference → 正式 package/no-card → 串行板端对照 | 统一矩阵的LLaMA/GEMM保护及ViT回归；比较质量与搜索成本，不以估值提升代签实卡性能 |
+| 5 | 当前 source/原 reference → 正式 package/no-card → 串行板端对照 | 核心及全部已通过case在standard/deep下数值通过、性能不下降；deep至少一个核心case实测提升，完整规则见统一矩阵 |
 
 原 `repairReuse` 在同一实现分支机制和对应测试替代后删除；不保留两套控制路径。
 原 Spatial/Region domain、Temporal 合法域、关系驱动多轴提案、PBQP、actual leaf、cost 和 winner publication 继续使用。
@@ -201,11 +202,15 @@ standard/deep 只改变搜索服务和预算单位，不维护第二套物化/al
 | deep可行后局部调优、无改善、持平、下降链失败 | 有限poll停止、严格改善才重开；保留最好actual owner；不冒充raw域穷尽 | production scheduler与独立有界oracle |
 | width1/8、保留/释放、14/42/126、不同stage yield次数 | owner无悬挂/无隐式重放；同mode预算前缀及最好估值单调；没有嵌套width增长 | Driver/controller与actual source→package |
 | LLaMA block FP16/BF16、大GEMM4096两dtype/4097 FP16、ViT1024/1025 | 原reference与容差、完整输出/guard；搬运/通信/同步变化有解释；无可确认性能退化 | fresh no-card与统一实卡记录 |
+| 统一板测矩阵内全部已实卡通过case，standard/deep两种模式 | 逐项数值通过、性能不下降；保留shape/dtype/state链，不以核心子集或平均值代签 | 改前/改后standard/deep的完整package及匹配板测 |
+| deep与同版本standard的核心集合对照 | 至少一个核心case有超过波动的可重复提升，其余不下降；只有估值改善或持平不能验收deep收益 | 正式搜索winner的普通执行耗时、完整输出及搜索成本 |
 
 沿用 `TemporalProposalsTest`、`UnifiedSearchTest`、`ExecutableCompilationTest`、search CLI routing 和对应
 AccessReuse/collective/execution transform 测试，避免只用 fake evaluator 代替连续实际物化/分配。
 现有全catalog默认standard资格及已约定预算曲线继续保留；deep先验证有界机制和上述保护集合，
-再按统一矩阵扩展，不能为深搜扩大模型或启动历史故障包。
+再覆盖统一矩阵内全部已实卡通过case；这是最终门槛，不能只验核心子集。
+按[性能验收规则](board-workload-matrix.md#搜索组织修改的性能验收)冻结对照、逐case重复测量并判定；
+退化或deep无实测收益时继续修复，缺测/波动不可判定时保持未完成，不为深搜扩大模型或启动历史故障包。
 
 报告沿用现有计时/计数入口，区分 mode、trial单位、开始/完成/未完成方案数、actual evaluations、
 capacity repairs、PBQP solves、首次可行点、最佳cost、wall、RSS和实际IR owner峰值。
