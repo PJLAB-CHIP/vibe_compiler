@@ -42,6 +42,10 @@ deep收益必须同时闭合；实现过程中可先验证核心，再扩展全�
 Deep收益来自正式driver选择并交付的winner，不能事后从板测候选中挑最快者替代产品结果。
 对照前固定并记录deep的mode/width/trials，不把同名trials当成相同编译成本；同时记录actual evaluations、
 编译wall/RSS，并给出同wall或同actual-work的参照。性能提升指生成程序的设备耗时降低，编译开销另列。
+整个search效率重构另按[搜索组织方案](physical-search-organization.md#9-本项覆盖与验收矩阵)记录阶段工作、CPU、
+首次可行及最佳点出现时间；先比较相同trace的前缀复用，再比较提案/调度变化，不能以减少trial掩盖默认路径退化。
+两模式继续覆盖14/42/126预算曲线：standard检查求值前缀；deep交错及预算收尾不承诺完整trace前缀，
+但同预算须确定，增预算出现最佳objective或设备性能退化时不得签发验收。曲线不是任意输入单调性证明。
 逐case结果表统一写入板端性能记录，列出基线、standard、deep的完整数值结论、原始耗时/中位数、
 变化比例、搜索成本及通过/退化/待定。缺测、数值失败、退化或deep没有实测收益时，本项不标完成。
 

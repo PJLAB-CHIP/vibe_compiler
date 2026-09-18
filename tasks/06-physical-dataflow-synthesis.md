@@ -2,7 +2,8 @@
 
 本文是`TensorProgram -> TileModule set -> TileRegion -> Instr -> DeviceExecutable`主线中card-level physical dataflow的
 唯一设计owner。当前任务状态和施工顺序只看`tasks/progress.md`与
-`tasks/plans/physical-dataflow-synthesis.md`。历史plan和archive只作审计背景，不定义current pipeline。
+`tasks/plans/physical-dataflow-synthesis.md`；搜索组织调整见`tasks/plans/physical-search-organization.md`。
+历史plan和archive只作审计背景，不定义current pipeline。
 
 ## 1. 核心规则
 
@@ -1374,29 +1375,32 @@ Controller接收每个实际leaf的typed结果；leaf更新与结构域关闭分
 - Downstream consumer：`UnifiedSearch`轮转及原共同actual memory/target leaf。
 - User-level driver / named pipeline：原生产search入口，public limits为width/trials，计费单位由search mode确定。
 - Explicit non-goals：不抢占atomic pass、不按耗时中断后重放IR、不通过估算SPM或预测指令数决定admission，不删除未访问的raw choice。
-- Completion criteria：yield不伪造候选、不丢失未完成owner、不饿死其它分支；有限域集合及预算前缀确定；
+- Completion criteria：yield不伪造候选、不丢失未完成owner、不饿死其它分支；有限提案及同预算执行确定，预算前缀按第7.5节区分模式；
   slot满时继续已物化前缀，延后新clone，已接受winner始终独立保留。
 
 结构初始化、Temporal物化、layout查询准备、layout/compute物化和actual leaf是已有职责边界。
 只有阶段完成且其实际IR已验证后才yield；重复layout解和无后继的Region只推进查询游标，同样不能在一次调用内无界遍历。
 没有actual结果的yield与域穷尽分别用typed continuation表达；外层只给实际结果记候选数，
 未完成物化暂时禁止结构替换。capacity repair排队和正在物化的owner具有不同保留原因，不能互相覆盖。
-外层探索通道按启动顺序轮转活动S/F，再引入一个新S/F；无可行结果时与容量修复交错，
-已有可行结果时每三个实际leaf优先两个局部改进和一个探索/修复。空通道让出机会，阶段yield继续当前leaf，不推进配额。
+外层按第7.5节交错可行性/容量、结构覆盖及性能改进；活动方案在actual求值之间轮转。
+空通道让出机会，阶段yield继续当前leaf，不推进轮转配额；配额不能使存活类别永久饥饿。
 同一accepted owner在本轮比较期间保持Instr不变，其SearchObjective按固定cohort计算一次并随actual result传给局部反馈、统计及controller。
 缓存只含由该owner实际IR得到的排序标量及cohort，不保存别名、调度或memory事实；cohort变化重新计算，IR修改须丢弃旧objective。
 每个 S/F session 为实际可发现的 I 保留独立 Temporal 提案、去重与容量反馈，发现条件与基础实现是否可行无关。
-任何 I 的容量失败只关联本分支的实际参数；首次已关联容量方向完成前保留该分支，后续未访问修正不永久锁住槽位。
-所有实现共享同一阶段物化和 actual leaf；每个 session 同时只推进一个 Temporal 求值，另保留一个不可变 layout-input。
-同一 T/closure 的 placement 和下游兄弟共享该 input 的 query/assignment；T 或 closure 改变后重新物化和求解。
-标准模式交错现有容量链、参数改进和新 I；未启动 I 按当前实际访问的收益估计排序，平局保持确定发现顺序。
-这些估计只决定调度，不决定容量合法性。Deep 在当前 I 的有限内搜闭合后再开始下一方案。
-可扩展分支总量受外层 width 约束；空位不足时只淘汰已求值且无受保护容量方向的分支，淘汰标记未完成而非不可行。
+任何I的容量失败只关联本分支的实际参数；首次已关联容量方向完成前保留该分支。
+Standard的后续未访问修正不永久锁住槽位；deep已收费方案的保留与收尾按第7.5节执行。
+所有实现共享同一阶段物化和actual leaf；每个session同时只推进一个Temporal求值，实际前缀按第7.5节有界共享。
+同一T/closure的placement和下游兄弟共享驻留layout-input的query/assignment；输入改变后重新求解。
+两种模式均在actual求值之间交错容量链、参数改进与其它方案；未启动I的排序只使用显式choice或已观测事实，
+平局使用完整semantic顺序。估计只决定调度，不决定容量合法性。
+可扩展分支总量受外层width约束；standard只淘汰已求值且无受保护容量方向的分支，标记未完成而非不可行。
+Deep已收费方案保留至规定内搜完成；槽位不足先推进活动方案，不免费丢弃或重新启动它们。
 实际模块数按固定 pipeline 层数乘 width 增长；未启动 I 只持有 typed choice 和有效参数入口，不持有额外 IR 树。
 关闭结构时销毁其 owner/domain/cursor；全局最佳 actual executable 独立存活，不重建 winner。
 统计存活Temporal前缀、各阶段Module owner、PBQP solve、placement选择、yield及actual试次；这些统计不是IR语义或SPM事实。
 计数中的Module仅指session持有的checkpoint，不包括正在actual leaf内转换的临时逐Tile模块；不将这个计数冒充整个进程RSS上限。
-相同source/width下14、42、126共享确定前缀，报告预算未访问部分，不把调度限额当作空间穷尽。
+相同source/target/width的standard在14、42、126下共享确定求值前缀；deep的预算收尾与质量曲线按第7.5节验收。
+报告预算未访问部分，不把调度限额当作空间穷尽。
 覆盖独立有界oracle、槽位耗尽、连续yield、repair与普通探索交错、预算中止和winner交接，
 以及1024/1025/1031多Tile产品；实际执行矩阵统一归入板测计划第3步。
 
@@ -1470,12 +1474,12 @@ merged/pipelined读入、同输入多consumer的完整/不完整map、非搬运w
 不能按allocation大小、诊断位置、遍历序号或所有Region统一缩小来补归因。观察回调不修改IR、不参与SPM合法判定。
 成功候选的同一actual executable交给全局incumbent，后续搜索不得按choice重建winner。
 
-Public limits只有`width`和`trials`，默认8/42。`width`限制同时保留的可扩展分支数，不限制累计访问的结构数；
-`trials`限制实际候选尝试总数，包括在物化/下游失败的尝试。CLI仍为`--search-width/--search-trials`，C++仍为
-`OptimizationConfig::search(SearchLimits)`。不另设每结构Temporal上限，也不在首个可行Temporal后停止。
-同一source、target和width的更大trials延续同一确定性序列，已找到的最佳actual objective始终保留。
+Public limits仍为`width`和`trials`，默认8/42；mode与计费单位见第7.5节。`width`限制同时保留的可扩展分支数，
+不限制累计访问的结构数；standard的trials包含物化/下游失败的实际求值，deep按新方案收费。
+CLI使用`--search-width/--search-trials`及`--search-mode`，共同进入typed search配置。
+不另设隐藏的每结构Temporal求值上限，也不在首个可行Temporal后停止；同次搜索已找到的最佳actual objective始终保留。
 
-调度轮转探索、容量修正、候选改进三类工作，按上述有界配额服务，空类跳过。探索先给不同结构入口，
+调度轮转探索、容量修正、候选改进三类工作，按第7.5节有界服务，空类跳过。探索先给不同结构入口，
 再遍历参数；容量修正优先最早开始且仍有实际证据的修正链，配额用完只暂停；改进对保留候选提出成组邻域。
 Spatial seed之后交错访问axis tuple的规范placement witness与完整raw placement cursor；二者按完整typed choice去重。
 轴投影复用同一domain successor和closure，不改变raw集合。Region/layout/movement各保留实际checkpoint并逐leaf轮转，
@@ -1490,7 +1494,8 @@ Joint/Independent各自保留全extent和按域下界截断的逐层减半尺度
 只使用已存在的kernel extent，不按模型名选择尺寸，不以该尺寸推断SPM容量或限制整数近邻。
 每层保留按operand访问不变性排列的单轴批量方向、协调与多轴方向；容量关联内也按复用损失排序兄弟，
 可行点放大时优先高复用方向。逻辑重复需求不是实际DDR字节数、SPM预测或剪枝条件；未知访问不删除原方向。
-提案顺序与trials无关，同一更大预算继续同一前缀。Joint/Independent种子交错，所有尺度与组合均保留。
+提案尺度不随trials改变；standard继续同一求值前缀，deep跨预算的调度约束见第7.5节。
+Joint/Independent种子交错；原raw尺度与组合域保留，性能邻域按统一多尺度合同有界提出。
 调用协调查询前先补齐新尺寸对应的loop order并验证typed choice，避免查询拒绝而静默漏掉多结果状态协调。
 多结果producer和唯一consumer另从actual result/input projected-permutation maps提出协调参数：共同迭代维度使用一致tile，
 仅部分结果携带的广播维度保留完整长度，使已有共同输出遍历可被选择。原参数仍保留；区间样本只作普通候选，
@@ -1551,17 +1556,11 @@ Temporal普通探索保留全extent、每scope各可切轴的批量方向、全�
 结构 session 按第7.5节维护分支内参数探索、容量修正和性能 poll；基础分支的 cost/容量证据不流入其它实现。
 `TemporalProposals`只保存未修改结构域的 typed choice、数值提案及该分支已观测 objective，
 不保存 buffer、SPM 或 completion 事实；accepted executable 仍交给原 controller 持有。
-可执行参数先生成各scope轴批次、再生成全部可切坐标的增减方向，每轴步长取当前尺寸的一半并限制在原合法域；
-随后轮转独立轴粗邻居、同scope两轴一增一减及已有合法顺序的相邻交换。各方向从同一原anchor开始，不继承兄弟点的缩小。
-粗邻域只因实际估算耗时严格改善重开；存储目标仍用于winner排序，但不单独触发新一轮。
-粗尺度入口、粗邻域与容量修正完成后，每个S/F/I最多从当前最佳实际点开启一次对齐细调；每个可切坐标只提出
-严格小于/大于anchor的最近硬件对齐点，候选数上界为2乘可切坐标数，去重及domain验证后可以更少。
-对齐粒度沿现有Linalg接口的operand indexing map投影到iterator，来自target物理布局几何；同轴多个粒度取公倍数。
-没有已知投影/粒度时不生成该轴细调，不猜测±1；这只定义性能提案，不改变layout/domain/SPM合法性。
-细调保留已有循环顺序；跨越全extent导致活跃循环集合变化时，只补全被改变scope的合法顺序，其余scope不变。
-删除通用逐元素±1、对齐边界±1、指数探针及其成组Explore入口。细调结果可更新winner，但不重启细调或粗邻域。
-原全extent、非整除tail及实际capacity修正保留；细调后的容量失败仍完成独立修正链。
-细调actual求值、接受、完整objective改善、估算耗时改善分别计数；分阶段累计其物化/求值耗时，不把排队时间算入执行时间。
+可执行参数使用第7.5节的单一多尺度过程：每轮固定anchor、步长和有限方向，轮末更新anchor并减小尺度。
+不因耗时/storage改善重开同尺度，不再另做Fine阶段。单轴/参数组及有实际关系支持的联合方向惰性生成，
+不组合无关scope的所有轴对；合法loop-order邻居同轮有界访问。
+已知粒度沿接口投影target布局几何，未知粒度沿合法几何尺寸入口，不另加密集整数扫描。
+全extent、tail、raw合法域和独立的实际容量修正保留；性能提案的对齐/轮数不成为SPM约束。
 实际capacity反馈只允许证据关联scope内的修正，
 粗修正使用各坐标独立减半及换轴/组合方向；不同leaf后来提供的新owner证据仍可生成修正。无法区分多scope的Region不补猜测归因。
 已排队和已访问的完整typed tuple统一去重，包含traversal kind及loop order；raw游标保留其它整数与顺序。
@@ -1722,7 +1721,7 @@ failure快照，不保存被销毁IR的operation/value指针；新choice必须�
 
 | 本项覆盖 | exact要求 | 直接下游witness |
 | --- | --- | --- |
-| 暂停/恢复、14/42/126、width=1/8 | 已执行序列前缀一致；width只限制保留；最佳actual owner不重建 | Driver/controller与实际source编译 |
+| 暂停/恢复、14/42/126、width=1/8 | 同预算确定、standard求值前缀；deep按7.5节检查质量曲线；width限制保留，最佳actual owner不重建 | Driver/controller与实际source编译 |
 | Joint/Independent、Region/replica、不同placement | 不同结构先获得入口；raw domain仍可达；同流量不去重 | rank≥3、1024/1025/1031多Tile与tail |
 | capacity、unsupported、compiler error | 冲突相关scope才作因果修正；暂停不成为结构no-good | actual Instr→SPM反馈→新candidate |
 | Layout/通信/复用/流水及组合 | 分别物化、verify、fresh memory/target；局部坏但组合好的oracle | 实际owner、访问、completion及标量cost |
@@ -1730,91 +1729,126 @@ failure快照，不保存被销毁IR的operation/value指针；新choice必须�
 
 ### 7.5 主搜索、实现分支与 deep 预算
 
-本节定义当前 standard/deep 共用的搜索组织与预算合同。第7.3、7.4节中的 actual leaf 始终记录真实工作量；
-standard 按 actual leaf 计费，deep 按首次启动的实现方案计费。完成状态与尚未闭合的验收只看 progress。
-具体步骤、方法比较和逐项覆盖见[搜索组织实施方案](plans/physical-search-organization.md)。
+本节是standard/deep共用搜索的目标合同，实施顺序、与现有代码的迁移及证据见
+[搜索组织方案](plans/physical-search-organization.md)，状态只看progress。
+第7.3、7.4节的actual leaf始终记录真实工作量；standard按实际求值收费，deep按首次启动的实现方案收费。
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  verified card-local TensorProgram、现有 Spatial/Region/Temporal domain、target facts 和 search 配置。
+  verified card-local TensorProgram、Spatial/Region/Temporal domain、只读target facts、固定cost cohort及search配置。
 - Current stage responsibility:
-  组织 S/F/T 主搜索与 I 实现分支；固定 S/F/I 后共用连续 Temporal 搜索及 actual 容量反馈；
-  区分方案计费与实际求值工作量。每个实际输入只执行一次 layout assignment。
+  组织S/F/T与I分支；复用相同实际前缀；共用一个多尺度参数过程和独立actual容量修正；
+  在实际求值之间轮转方案，区分方案计费、实际工作与阶段缓存。
 - Output IR / files:
-  同一 actual accepted executable owner、typed 结束原因、mode/预算单位及实际工作量。
+  同一actual accepted executable owner、typed结束原因、mode/计费单位及实际工作量。
 - Downstream consumer:
-  原 PackageAssembly、LLVM/link、ExecutablePackage、no-card 与统一板测入口。
+  原PackageAssembly、LLVM/link、ExecutablePackage、no-card与统一板测入口。
 - User-level driver / named pipeline:
-  原 search policy；--search-mode=standard|deep，默认 standard。
+  原search policy；--search-mode=standard|deep，默认standard，width/trials仍为8/42。
 - Explicit non-goals:
-  不扩大 layout assignment 外层搜索、不修改数值语义、SPM admission 或同步合同；
-  不建立 future IR、第二套 allocator/materializer 或设备调参系统。
+  不扩大layout枚举、不修改算术/dtype、SPM或completion合同；不新增future IR、shadow plan、
+  winner重建、第二套materializer/allocator、设备autotuner或MLIR持久化/COW。
 - Completion criteria:
-  实现选择跨 retile 保持语义，两种预算精确计费且终止；主机、正式产品及全部已通过板测 case 的
-  数值和逐项性能保护闭合；deep 在核心集合取得可重复的实卡性能提升。
+  前缀复用与失效正确；跨retile身份、有限提案、容量修正、预算及确定性闭合；
+  主机成本实测改善；正式产品、全部已通过case数值及逐项设备性能保护闭合，deep核心实卡收益通过。
 ```
 
-**选择分层。** S 是空间切分与 placement，F 是 Region 融合和 binding，T 是 traversal kind、各 scope 的
-tile vector 及合法 loop order；三者构成主搜索。I 是现有 communication closure、copy placement、
-transport/collective algorithm、访问复用、流水及合法组合。Layout、bufferization、lowering、completion、
-实际内存规划与 cost 是每点的固定求解步骤，不增加 outer search 维度。
-同一未变 layout-input 的兄弟复用一次 PBQP；T 或 pre-layout closure 改变时重新求解。
+**选择分层。** S是空间切分、Tile placement与合法merge选择，F是Region融合和binding，
+T是traversal kind、各scope的tile vector和合法loop order；三者构成主搜索空间。
+I是communication closure、copy placement、transport/collective algorithm、访问复用、流水及合法组合。
+Layout、bufferization、lowering、completion、实际内存规划、target与cost是实际输入上的固定求解步骤。
+同一驻留且未变的layout-input只求一次完整PBQP，placement兄弟共享query/assignment；
+T、pre-layout closure、use或约束改变必须fresh求解，不能把“相同输入一次”改成“全搜索只分配一次”。
 
-**实现分支。** 在当前 IR 足以发现、表达并物化 I 时展开分支，不要求基础实现 I₀ 先通过 SPM/target，
-也不等待主搜索完成合法性探索。分支来自存活的实际结构与参数前缀，不要求 accepted executable。
-语义必需的通信照常物化；所有适用的通信、复用、流水及组合使用同一展开规则。
-各分支从发现 I 的参数点及同域粗尺度入口开始，固定 S/F/I 独立调整 T，不能只尝试一次。
-基础实现的容量失败或较差 cost 不代表其它 I 的结果；完整下游验证用于判定当前点和比较 cost，
-不作为其它实现的探索门槛。基础实现可优先调度，但优先级与探索资格分开。
-逻辑方案身份 `(S,F,I)` 只保存可解释的选择，T 的去重、cost 和容量反馈归属于该分支。
-不同 I 的相同 T 必须能独立求值。选择锚定到存活父 IR 的 typed use/scope 关系，每次 retile
-重新定位和证明实际作用对象；旧 load/loop 句柄不得跨 mutation 复用，不按首个可用实现恢复选择。
-缺少可靠关联时先修其 producer/consumer 合同，不增加按 op 类型区别的修复控制分支。
-Tiling 到实现选择之间用 typed iteration-coordinate annotation 表达实际生成循环的选择对应：
-query-local scope 锚点来自存活父 IR，iterator 是 TilingInterface 的坐标；共同循环可对应多个坐标。
-该元数据不保存 source operation pointer、memory 或 completion 事实，不参与其合法性；
-clone/bufferization 保留，选中实现重新验证实际访问，进入共同 Instr 下游前移除。
+**实际前缀与数据结构。** Driver区分方案状态、verified实际前缀与待执行任务：
 
-**预算。** standard 保留逐实际求值扣 trial，含物化失败；deep 对每个首次开始实际物化的不同
-`(S,F,I)` 收取一次，分支内所有 T 求值和 retile 不再扣方案次数，但继续记录 actual evaluations。
-改变 S/F/I 才是新方案，重复发现/续跑不重复收费。Deep trials 达到上限只禁止新方案启动，
-已计费方案仍完成规定的内层过程；不能仅因剩余 trial 为零就截断已启动的方案。
-模式进入同一 typed search 配置；none 拒绝 search 配置。默认 mode 为 standard，width/trials 仍为8/42。
-报告分别记录started/completed/unfinished方案、actual evaluations及trials used；内层过程完成不代表raw域穷尽。
-width 统一约束可扩展分支和实际 checkpoint，不允许 S/F、I、T 各自嵌套保留 width 份 IR。
+- 方案状态保存S/F/I选择、T游标/visited/尺度/anchor和数值反馈，不保存跨stage的memory/effect事实。
+- 前缀拥有已经物化的IR及当前epoch有效的只读query。共享祖先不可变，子候选经clone和同次IRMapping独占修改。
+- 任务引用存活前缀并带下一typed选择和continuation；未执行后缀不是IR，也不形成旁路inventory。
 
-**内层过程。** 沿现有有限粗尺度种子、实际证据关联的单轴/成组/协调下降链寻找可行点；每次
-严格缩小合法参数并去重，保留父点换轴兄弟及全关联轴方向。取得可行点后执行粗尺度局部poll，
-仅估算耗时严格改善可以重开粗邻域；粗探索完成后最多一次对齐细调，每轴左右各一个最近对齐候选。
-细调不因任何结果重开，容量修正不受此上界截断。FullExtentOnly 和 domain 下界保持原合同；
-成对尺寸变化限定在同一current scope，跨scope使用已有成组与关系协调方向，避免无关scope轴的平方组合。
-未知归因继续普通探索，不伪造容量关联。有限种子与局部过程结束保持 partial，不冒充 raw 域穷尽。
-最小点失败不能推断其它点不可行，也不保证缩小必定减少实际峰值。
-不增加隐含的每方案 tiling 次数上限；显式取消、已有 query/solver 资源失败保持 typed 未完成状态。
-正式测试调用者在deep下也不默认设置整次编译超时；用户显式设置的进程deadline仍可取消编译，
-取消结果不得记为内搜完成。Standard调用者保留原编译超时默认值。
+前缀DAG只组织实际owner。先按同一存活parent/epoch、stage和完整typed变换输入建立索引，hash后完整比较；
+target/config由key覆盖或由session固定。索引不决定遍历顺序，不以流量、shape或打印文本合并不同IR。
+跨clone等价须证明SSA对应及全部语义，不忽略operand去重；通用结构hash不是首版前提。
+S/F改变重建相关结构后缀，T/loop order改变重建tiling后缀，closure改变从closure开始，
+placement使用同layout-input/assignment，transport/reuse/pipeline从最早受影响的实际stage重算。
+Mutation默认使分析失效；共享只读owner上不apply变换。
 
-**调度和 owner。** standard 可在 actual trial 边界暂停；deep 在开始下一方案前完成当前有限内搜。
-两种模式都按当前 IR 条件发现并保留 I；deep 逐分支服务不要求 I₀ 成功，当前内搜未找到可行点时
-仍按预算调度已保留的其它分支。尚缺实际 IR 条件时延迟发现，不猜测未来 operation 或存储事实。
-同一 mode 下增加 trials 延续确定的方案/求值前缀，最佳 actual objective 不变差；mode 间不要求相同前缀。
-每点只从存活实际祖先物化新的候选后缀，各阶段重新 verify/analysis；成功 owner 原样交付，失败 owner 销毁。
-容量证据、非容量失败、局部搜索结束和全域不可行保持区分，所有实现仍经过同一 completion/SPM/target leaf。
+width统一限制可扩展方案；必要祖先、active transaction和可选前缀缓存共用固定stage数乘width的owner槽位，
+winner独立持有。可选cache不得挤掉逻辑分支，不能S/F、I、T各自再保留width份IR。
+Owner/query一起存亡；销毁缓存不能留下旧operation/value句柄。Cache-off、eviction、hash seed及stage yield切分
+只改变工作，不改变候选序列、typed结果、accepted set或winner。
+同输入“一次求解”限定在共享owner存活期间；缓存淘汰后的重算只能从存活祖先实际执行生产变换，
+不重做已完成的逻辑求值、不重建winner，不将命中变成免费trial。
 
-本项最低覆盖包含：1024/1025/1031、4/16 Tile、多 scope/tail；每类 I 连续 retile 后可行；
-基础尚未 accepted 即可展开 I、基础内搜无可行点而备选独立 retile 后可行、条件未齐备时延迟发现；
-不同 I 同 T；作用对象变化/条件不适用；合法下界仍失败；PBQP 同输入一次；两种计费、重复/yield/预算边界；
-deep 无改善终止与同 mode 前缀；同一 accepted owner 交付。直接下游必须包含实际 Instr/SPM 和正式 package，
-不能仅用 fake evaluator 代签。
+**实现分支与适用性。** 当前IR足以发现、表达并物化I时就形成分支，不要求I₀先accepted，
+也不等待主搜索结束。语义必需通信照常完成；I的选择可先保存，实际变换仍在事实齐备的生产stage。
+固定S/F/I独立调整T，基础实现的容量失败或较差cost不能代表其它I。
+完整I包含作用对象、参与者、scope和组合；同I重复发现合并，不同作用域的同类算法不能只按布尔值合并。
+选择绑定存活父IR的typed use/scope关系，retile后重新证明访问、window、effect和参与者。
+不适用只拒绝该点，不静默回到I₀，不把一个T失败提升为整个方案失败。
+必要条件只提前到current IR能完整证明的位置；没有未来IR证据时继续保留unknown。
 
-**性能验收。** 本次搜索修改以 LLaMA block、大 GEMM 和 ViT 为核心保护集合，并覆盖统一板测矩阵内
-全部已实卡通过的 case。Standard 在原 width/trials 下对比改动前接受版本，逐项保持完整数值通过且
-设备性能不下降；deep 对比同版本 standard，同样逐项不下降，并至少在一个核心 case 上取得超过
-测量波动、可重复的设备耗时降低。两种模式均须守住改动前的性能，不能用平均加速抵消任一 case 退化。
-原最好可复现成绩继续保留，不能以较慢版本重置目标；上述门槛不由 cost 估值、accepted 数或主机编译时间代签。
-数值失败、性能下降或 deep 无实测收益均不满足完成条件；缺测或波动尚不可判定保持未完成。
-测量范围、匹配条件、重复方法和结果表按[统一板测矩阵](plans/board-workload-matrix.md#搜索组织修改的性能验收)执行。
+沿用iteration-coordinate annotation连接实际tiling循环与选择：query-local scope锚点来自存活父IR，
+iterator为接口坐标；共享循环记录实际实现的全部坐标。Annotation不含tile size、memory或completion事实，
+clone/bufferization保留，共同Instr入口移除。旧load/loop句柄不跨mutation，不按名称、顺序或首个可用对象恢复选择。
+
+**参数分组与多尺度过程。** 从actual partition、iterator角色、indexing/access映射及typed协调关系提出成组参数，
+只减少提案的独立自由度，不删除真实scope、不声明cost等价；shape相同本身不足以分组。
+其它条件相同时优先较大parallel轴及保留访问复用的方向，依据来自接口；未知不猜测，容量证据要求的轴不能被永久排除。
+保留全extent、Joint/Independent与合法几何入口，I从实际发现点开始；各入口共享一个方案级性能尺度游标。
+取得可行点后，每轮固定anchor、步长及有限单轴/成组/关系联合方向，实际求值完整轮后选择下一anchor、步长减半。
+耗时或storage改善不重开同尺度，不再另设Fine阶段；晚到发现点可更新winner但不能免费重启已完成过程。
+已知target粒度通过接口投影，性能方向取合法对齐点，最小尺度结束；未知粒度沿合法几何点，不做密集整数扫描。
+保留full extent及tail；这不是依据SPM或性能单调性剪半区的二分搜索。
+
+每轮联合方向数随有效坐标/关系组数线性增长，不枚举无关scope或全部轴对；合法loop-order方向同轮有界访问。
+每次只补全受影响scope的顺序，full extent边界改变活跃循环集合时重新验证该scope。
+提案上界按“有限尺度数×每轮方向数”验收，仅约束性能邻域，不宣称覆盖种子/容量链或全部raw域。
+
+**容量修正与结束。** 只有actual SPM conflict demand触发定向修正。原单轴、成组、协调、全关联轴及换轴兄弟保留，
+优先更深下降链，严格缩小合法坐标并完整去重；每个T重新物化、verify、completion、SPM和target。
+容量链不被性能轮数截断，修正结果可更新winner但不重启已完成尺度。FullExtentOnly与合法下界不变，
+最小点失败不能外推其它点失败，缩小不保证实际峰值下降。未知归因继续普通入口，非容量结果保持typed区分。
+有限提案结束只称本轮探索完成/未找到可行点，不称raw整数/顺序域穷尽。
+不新增默认每方案tiling次数或wall-time上限；显式取消、query/solver limit保持未完成/indeterminate。
+Deep正式调用者不默认设置整次编译deadline；显式deadline仍可取消，standard既有调用者默认值不变。
+
+**调度与计费。** standard/deep共用可行性/容量、结构覆盖、性能改进三类工作，在actual求值结束后轮转方案，
+不让一个deep方案独占至整个内搜结束。Atomic pass不抢占；stage yield保留当前transaction，不收费也不推进配额。
+空类别让出，存活工作不饥饿；选择顺序不依赖wall time、地址、hash遍历或并行完成顺序。
+Standard对每个新的实际参数/实现求值收费，包含物化或早期适用性失败；deep在首次实际执行不同S/F/I时收费，
+首次失败也收费，同方案retile/性能探测只增加actual work。纯发现、完整重复提案和续跑不重复收费。
+缓存命中不免除新的逻辑求值费用。模式使用同一typed配置；none拒绝search配置。
+
+Standard预算耗尽后完成当前求值，不启动新求值；deep停止新方案，已收费方案仍完成有限内搜。
+Deep活动方案不能因width压力免费抛弃/重启；槽位满时先推进活动方案，未启动选择惰性保留。
+分别报告started/completed/unfinished方案、actual evaluations和trials used，不把取消当完成。
+
+**确定性与跨预算边界。** 同mode/预算/source/target/width必须产生相同语义序列与结果；
+暂停恢复、缓存策略与yield粒度不影响结果。同次搜索的incumbent始终保留，objective不变差。
+Standard继续预算无关的访问顺序，大预算延续小预算实际求值前缀。
+Deep改为交错且预算末尾收尾后，小预算完整trace不再保证是大预算的前缀；不同时保留旧“逐方案跑完”的要求。
+14/42/126跨预算最佳objective与设备性能不退化是验收门槛，不是已证明的任意输入单调性定理。
+调度迁移须覆盖晚到发现、新增I及width/收尾的独立oracle；更大预算若退化须修正规则，不能弱化性能门槛。
+各方案尺度不接受外部分支反馈重置；同I再次发现不得免费重开完整内搜。跨预算集合关系未证明的部分见实施方案。
+
+**最低覆盖。** rank≥3、1024/1025/1031、4/16 Tile与1/4/16 scope；实际tail、分组/独立方向、loop order、
+已知/未知粒度、单尺度仅一轮、改善不重开；actual容量链到合法下界及兄弟保留；I₀未accepted即发现I，
+同I重复/不同scope身份、retile不适用及最早exact拒绝；前缀失效、PBQP复用、cache-off/eviction/hash/yield不变；
+两种计费/早失败/收尾/width背压；同预算确定、standard前缀与deep质量曲线；同一accepted owner交付。
+直接下游必须包含实际Instr/SPM及正式source→package/no-card，fake evaluator不能代签物化和资源合法性。
+
+**效率及设备验收。** 分别验收复用前缀、减少无效工作和提案/调度变化。
+前缀阶段保持原trace/结果/winner，证明实际stage工作减少且owner有界；后续阶段比较完整编译的work、CPU、wall、RSS，
+以及首可行/最佳点到达位置。原13例先做主机成本验证，再覆盖核心及全部已通过case；取消任务不算改善证据。
+主机成本下降不代签设备收益，estimated duration与实卡时间分别报告。
+
+核心保护集合为LLaMA block、大GEMM、ViT，设备回归覆盖统一矩阵内全部已实卡通过case。
+Standard在原width/trials对比改前接受版本，deep对比同版本standard，均逐项完整数值通过且设备性能不下降；
+deep至少一个核心case取得超过波动、可重复的设备耗时降低。两种模式均守住改前性能，不能用平均值抵消单项退化，
+不能以慢版本重置原最好可复现目标。缺测、数值失败、退化或deep无收益均不满足整项完成条件。
+完整测量方法沿用[统一板测矩阵](plans/board-workload-matrix.md#搜索组织修改的性能验收)。
 
 ## 8. Ownership、analysis 与实现边界
 
