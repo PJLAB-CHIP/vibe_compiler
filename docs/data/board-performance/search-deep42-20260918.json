@@ -1137,6 +1137,564 @@
         "user_cpu_seconds": 1980.95,
         "system_cpu_seconds": 199.1
       }
+    },
+    {
+      "case": "division-tail-1031",
+      "dtype": "float32",
+      "status": "passed",
+      "samples": [
+        {
+          "mode": "standard",
+          "sample": 1,
+          "started_utc": "2026-09-18T09:03:03.493615+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:03.658527+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 714000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/standard/sample-01/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/standard/sample-01/kernel.log"
+        },
+        {
+          "mode": "deep2",
+          "sample": 1,
+          "started_utc": "2026-09-18T09:03:03.854950+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:03.982310+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 481000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep2/sample-01/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep2/sample-01/kernel.log"
+        },
+        {
+          "mode": "deep42",
+          "sample": 1,
+          "started_utc": "2026-09-18T09:03:04.170561+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:04.428812+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 485000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep42/sample-01/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep42/sample-01/kernel.log"
+        },
+        {
+          "mode": "deep42",
+          "sample": 2,
+          "started_utc": "2026-09-18T09:03:04.634830+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:04.849021+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 528000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep42/sample-02/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep42/sample-02/kernel.log"
+        },
+        {
+          "mode": "standard",
+          "sample": 2,
+          "started_utc": "2026-09-18T09:03:05.039320+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:05.252930+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 519000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/standard/sample-02/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/standard/sample-02/kernel.log"
+        },
+        {
+          "mode": "deep2",
+          "sample": 2,
+          "started_utc": "2026-09-18T09:03:05.457658+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:05.729123+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 551000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep2/sample-02/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep2/sample-02/kernel.log"
+        },
+        {
+          "mode": "deep2",
+          "sample": 3,
+          "started_utc": "2026-09-18T09:03:05.917720+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:06.184791+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 500000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep2/sample-03/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep2/sample-03/kernel.log"
+        },
+        {
+          "mode": "deep42",
+          "sample": 3,
+          "started_utc": "2026-09-18T09:03:06.374309+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:06.545720+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 578000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep42/sample-03/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/deep42/sample-03/kernel.log"
+        },
+        {
+          "mode": "standard",
+          "sample": 3,
+          "started_utc": "2026-09-18T09:03:06.739331+00:00",
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "major": 10,
+            "minor": 123,
+            "boot_id": "578e9bb2-b320-43cd-82fa-dcf171d91053",
+            "holders": [
+              {
+                "pid": 1613,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "state": "idle"
+          },
+          "kernel_cursor_before": "s=5e90b078e471441abe3419aeea510daf;i=218d345;b=578e9bb2b32043cd82fadcf171d91053;m=ba0b7dd68;t=65bbcf4111ae2;x=350f67a87550ab85",
+          "comparison_passed": true,
+          "healthy_performance_sample": true,
+          "finished_utc": "2026-09-18T09:03:07.008906+00:00",
+          "exit_code": 0,
+          "kernel_fault": false,
+          "device_elapsed_ns": 598000,
+          "inputs": {
+            "card_00_user_input_0.f32.raw": "e02383c0e3c290dcc977dcb645ba123f6d8541e1662b28b90de3b3900a5b58fd",
+            "card_00_user_input_1.f32.raw": "6e1351cb07228c6ad7c1806c1470c590749adf8a68a3d778ff73fa0cc29cf83c"
+          },
+          "outputs": [
+            {
+              "shape": [
+                2,
+                4,
+                1031
+              ],
+              "dtype": "torch.float32",
+              "elements": 8248,
+              "max_abs_error": null
+            }
+          ],
+          "audit": "build/test/search-organization/board-deep42/division-tail-1031-float32/standard/sample-03/numeric-audit.json",
+          "kernel_log": "build/test/search-organization/board-deep42/division-tail-1031-float32/standard/sample-03/kernel.log"
+        }
+      ],
+      "packages": {
+        "standard": {
+          "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/catalog/neighborhood-standard/division-tail-1031-float32/package",
+          "manifest_sha256": "b947be186a51478a177dea6d1fbc3b0971bec5b9be9eba2a2931704548714a07",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "b947be186a51478a177dea6d1fbc3b0971bec5b9be9eba2a2931704548714a07",
+            "modules/module_00000.so": "c4866c6ccc1caa4eb75a6ca2a0e548dee38a39d106f38c20863e471162793972"
+          }
+        },
+        "deep2": {
+          "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/catalog/neighborhood-deep/division-tail-1031-float32/package",
+          "manifest_sha256": "b947be186a51478a177dea6d1fbc3b0971bec5b9be9eba2a2931704548714a07",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "b947be186a51478a177dea6d1fbc3b0971bec5b9be9eba2a2931704548714a07",
+            "modules/module_00000.so": "c4866c6ccc1caa4eb75a6ca2a0e548dee38a39d106f38c20863e471162793972"
+          }
+        },
+        "deep42": {
+          "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/catalog/deep42/division-tail-1031-float32/package",
+          "manifest_sha256": "198b0e78ddb8dca9aab62835aee3a268aec019d9532aa24a34f41abec22aa6a4",
+          "files": {
+            "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "manifest.json": "198b0e78ddb8dca9aab62835aee3a268aec019d9532aa24a34f41abec22aa6a4",
+            "modules/module_00000.so": "eaa67a04384bc66e7e7d2d5a921af021a200998abe64ac7526c6818600fe0409"
+          }
+        }
+      },
+      "source_sha256": {
+        "functions/forward.meta": "b730e3ca2866d6a3a42b237b61acc82a0f735975866202eea8800262320cc325",
+        "functions/forward.stablehlo.bc": "e753caa0cf0ea3d88b54091ac95dcba298c1a7f5c1635b0973a0ab6c21040d23"
+      },
+      "comparison": {
+        "rtol": null,
+        "atol": null,
+        "equal_nan": true,
+        "min_cosine": null,
+        "max_relative_l2": null
+      },
+      "standard_ms": [
+        0.714,
+        0.519,
+        0.598
+      ],
+      "standard_median_ms": 0.598,
+      "deep2_ms": [
+        0.481,
+        0.551,
+        0.5
+      ],
+      "deep2_median_ms": 0.5,
+      "deep42_ms": [
+        0.485,
+        0.528,
+        0.578
+      ],
+      "deep42_median_ms": 0.528,
+      "deep_change_percent": -11.705685618729088,
+      "deep42_vs_deep2_change_percent": 5.600000000000005,
+      "packages_byte_identical": false,
+      "deep42_compilation": {
+        "case": "division-tail-1031",
+        "dtype": "float32",
+        "compiler_sha256": "9d0128779173b09ad33d6f0c05c58bb54279924039bafbef0771a6be1e7da548",
+        "search_mode": "deep",
+        "width": 8,
+        "trials": 42,
+        "source": "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/board-ready-deep/division-tail-1031-float32/source-program",
+        "source_sha256": {
+          "functions/forward.meta": "b730e3ca2866d6a3a42b237b61acc82a0f735975866202eea8800262320cc325",
+          "functions/forward.stablehlo.bc": "e753caa0cf0ea3d88b54091ac95dcba298c1a7f5c1635b0973a0ab6c21040d23"
+        },
+        "started_utc": "2026-09-18T08:32:15.109782+00:00",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/neighborhood-binary/wafer-compile",
+          "--input-program-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/board-ready-deep/division-tail-1031-float32/source-program",
+          "--output-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/catalog/deep42/division-tail-1031-float32/package",
+          "--num-partitions=1",
+          "--optimization-policy=search",
+          "--search-mode=deep",
+          "--search-width=8",
+          "--search-trials=42",
+          "--compile-timing"
+        ],
+        "status": "no-card-passed",
+        "log": "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/catalog/deep42/division-tail-1031-float32/compile.log",
+        "process_pid": 469119,
+        "compile_exit_code": 0,
+        "compile_wall_seconds": 1838.9759765220006,
+        "no_card_command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-run",
+          "--package-dir",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/test/search-organization/catalog/deep42/division-tail-1031-float32/package",
+          "--no-card",
+          "--direct-dte-status-abi",
+          "wafer-direct-dte-status",
+          "--supports-host-watchdog"
+        ],
+        "no_card_exit_code": 0,
+        "manifest_sha256": "198b0e78ddb8dca9aab62835aee3a268aec019d9532aa24a34f41abec22aa6a4",
+        "search_counters": {
+          "schemes-started": 42,
+          "schemes-completed": 42,
+          "schemes-unfinished": 0,
+          "candidate-actualizations": 8713,
+          "accepted-candidates": 7074,
+          "exact-rejected-candidates": 0,
+          "unsupported-candidates": 1639,
+          "trials-used": 42
+        },
+        "finished_utc": "2026-09-18T09:02:56.195889+00:00",
+        "total_wall_seconds": 1841.0861307220039,
+        "max_rss_kib": 441256,
+        "user_cpu_seconds": 3791.91,
+        "system_cpu_seconds": 407.14
+      }
     }
   ],
   "status": "running",

@@ -2448,16 +2448,18 @@ LocalReduce搜索日志显示standard启动15个方案、42次actual求值，dee
 每项按standard→deep2→deep42、deep42→standard→deep2、deep2→deep42→standard三个顺序执行，共9次launch。
 上板前检查系统占用，各次独立journal cursor核对运行窗口。这里的deep42只扩大方案预算，不改变精度标准或内部tiling计费。
 
-当前已完成2/13项，18次完整数值、completion/readback/cleanup均通过，各次运行窗口无新设备错误；其余仍在编译搜索。
+当前已完成3/13项，27次完整数值、completion/readback/cleanup均通过，各次运行窗口无新设备错误；其余仍在编译搜索。
 下表仅记录本批已完成的实测，不表示全批或性能门槛已经完成。
 
 | Case | dtype | standard中位 ms | deep2中位 ms | deep42中位 ms | deep42方案/实际求值 | deep42编译wall s | 最大RSS KiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `division` | FP32 | 0.537 | 0.593 | 0.604 | 42/3464 | 447.45 | 186548 |
 | `division-tail-1025` | FP32 | 0.627 | 0.569 | 0.610 | 42/5313 | 1012.16 | 277528 |
+| `division-tail-1031` | FP32 | 0.598 | 0.500 | 0.528 | 42/8713 | 1838.98 | 441256 |
 
-两项deep42完整包均与standard逐byte相同；Division1025还与deep2相同。Division基础尺寸的deep42包不同于deep2，
+Division及Division1025的deep42完整包均与standard逐byte相同；Division1025还与deep2相同。Division基础尺寸的deep42包不同于deep2，
 但本批没有证明设备收益，不能仅凭方案覆盖扩大签发性能提升。上述wall来自13项并发编译，不作为串行编译效率比。
-已列出的两项各完成42个方案、unfinished为0；其余case的计数只在编译结束后计入本表。
-当前批次完成后继续补齐standard剩余3项及其余38项deep编译/no-card与逐项实卡；核心性能及全矩阵门槛保留。
+Division1031的deep42包不同于standard，本批中位0.598→0.528 ms，但计时区间重叠，仍待验证稳定收益。
+已列出的三项各完成42个方案、unfinished为0；其余case的计数只在编译结束后计入本表。
+standard剩余3项已开始补编译；当前批次完成后接续其余38项deep编译/no-card与逐项实卡，核心性能及全矩阵门槛保留。
 逐次样本、包身份及编译计数见[本轮证据](data/board-performance/search-deep42-20260918.json)。
