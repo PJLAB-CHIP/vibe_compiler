@@ -112,6 +112,11 @@ fixture前后摘要相同；新boot只读访问正例实际通过后，才能单
 新boot首个计算即复现，削弱“必须先连续多个case才触发”的解释；不证明所有历史故障同因，也不排除采样时序影响。
 总矩阵资格数及TDMA根因未闭合状态不变。
 
+现场后的离线对照已执行：当前ELF的16 Tile控制流产生110,272次TDMA调用，各Tile数量与实测最终PMU一致；
+87种不同参数经该ELF链接的SDK constructor/issuer写入模拟MMIO，范围、payload、stride/iteration、inclusive end和control检查通过。
+不模拟NPU计算或队列时序，不因此签包合法性。last-command右移8位与实际destination的592项相关性留作待验证线索；
+重复destination及更新时点未知仍阻止唯一故障site关联。用户询问是否需再重启，已说明现场仍有用、当前无需重启。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。

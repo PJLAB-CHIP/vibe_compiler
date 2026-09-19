@@ -41,6 +41,8 @@
 取得64帧16 Tile寄存器：raw从0变为0x4000、命令字段留存，TDMA计数随后继续增长；正常回读/guard和厂商退出完成。
 此结果说明本次复现不需要先连续跑多个case，但采样影响未隔离，raw编码和故障packet/PC仍未知。
 当前转入离线字段/指令关联，不启动第二个case；70项未签资格及根因修复状态不变，见[实测记录](../docs/data/board-performance/tdma-pmu-observation-20260920.json)。
+已将16 Tile实际ELF控制流的110,272次TDMA调用数与PMU对齐，87种SDK descriptor范围/字段检查通过；
+last-command与destination出现一致相关性，但未恢复唯一故障指令。当前无需用户再重启，继续保留现场。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。

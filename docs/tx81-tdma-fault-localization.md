@@ -104,6 +104,25 @@ Runner 返回 0、回读完整、检查 10,752 guard bytes，随后沿厂商流�
 离线数值检查全量有限、relative L2 为 0.00194608，仍因设备告警拒绝资格。原始 170.612 ms 只保留审计，
 不作健康性能样本；采样对总线时序的影响也未隔离。批次已停，没有第二次 launch、手工 reset 或重试。
 
+### 现场与实际 ELF 的离线对照
+
+在主机模拟器中执行本次 ELF 的 `entry` 及实际 Tile 分派/循环，记录 CRT 调用参数和返回位置；
+NPU 计算调用被跳过，DDR 使用独立合成指针，因此这不是数值模拟或板上动态指令追踪。
+16 Tile 共得到 110,272 次 TDMA 调用，各 Tile 数量均等于本轮 PMU 最终 count。
+全部 87 种不同参数随后进入同 ELF 链接的 SDK GatherScatter/Memset constructor 和 TDMA issuer，
+实际 MMIO 写入落在模拟器内：byte/element count、stride/iteration、inclusive end 和 control 均与参数精确相符；
+GS 两端 payload 一致、地址包络不相交，GS/Memset 的地址范围均在 3 MiB 内。
+这排查了本包这组参数的范围/编码问题，不证明硬件时序、依赖或 timeout 配置正确。
+
+另有一条 **inference：待验证编码线索**：592 个非零 Tile 采样的 last-command 原始字右移 8 位后，
+均能匹配本次 ELF 某个实际 TDMA destination；最终原始低字 `0x040000e0` 与最后一条的 destination `0x40000` 一致。
+但多个指令复用 destination，counter 与 last-command 的更新时点未知、读取非原子，低 8 bit 和高 6 bit 位义也未确认。
+因此这只能用于缩小后续对照范围，尚不能恢复唯一动态命令，更不能认定已抓到最初出错指令。
+
+本包存在 inner 为 4 bytes、iteration 为 65,536 的广播描述符，范围及 SDK 编码检查通过；
+没有故障 site、阈值单位和硬件耗时证据时，不能因数值接近 `0xffff` 就认定它触发 timeout，或据此插 join、改分块和阈值。
+本轮仅离线审计，没有新增设备执行。完整参数、每 Tile 调用记录与脚本摘要归入同一实测证据。
+
 ## 下一次复现需要先补的证据
 
 1. 在实际 TDMA handler 入口、错误状态被更改之前采集一次有界快照最可靠。

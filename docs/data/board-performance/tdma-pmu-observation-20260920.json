@@ -2345,5 +2345,230 @@
       "bytes": 319,
       "sha256": "cab7e39bee9a7dbf36a2aaf49e219c89432051f819d814a72d606ae40563f238"
     }
-  ]
+  ],
+  "host_packet_audit": {
+    "scope": "仅主机：执行当前ELF的地址/控制流，使用独立合成DDR指针并跳过NPU计算调用；随后执行同ELF链接的SDK constructor和issuer，将MMIO保存在模拟器中。不模拟NPU数值、队列时序或硬件timeout。",
+    "passed": true,
+    "tile_counts": [
+      {
+        "tile": 0,
+        "elf_tdma_calls": 7488,
+        "board_final_count": 7488
+      },
+      {
+        "tile": 1,
+        "elf_tdma_calls": 7488,
+        "board_final_count": 7488
+      },
+      {
+        "tile": 2,
+        "elf_tdma_calls": 7488,
+        "board_final_count": 7488
+      },
+      {
+        "tile": 3,
+        "elf_tdma_calls": 7488,
+        "board_final_count": 7488
+      },
+      {
+        "tile": 4,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 5,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 6,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 7,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 8,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 9,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 10,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 11,
+        "elf_tdma_calls": 8032,
+        "board_final_count": 8032
+      },
+      {
+        "tile": 12,
+        "elf_tdma_calls": 4016,
+        "board_final_count": 4016
+      },
+      {
+        "tile": 13,
+        "elf_tdma_calls": 4016,
+        "board_final_count": 4016
+      },
+      {
+        "tile": 14,
+        "elf_tdma_calls": 4016,
+        "board_final_count": 4016
+      },
+      {
+        "tile": 15,
+        "elf_tdma_calls": 4016,
+        "board_final_count": 4016
+      }
+    ],
+    "unique_descriptors": 87,
+    "total_tdma_calls": 110272,
+    "checks": [
+      "16 Tile的TDMA调用数分别等于本次板端最终count",
+      "GatherScatter两端positive iteration及payload乘积一致",
+      "GatherScatter两端包络不相交，GS/Memset范围在3 MiB内",
+      "SDK写出的source/destination stride/iteration字段、byte/element count精确符合调用参数",
+      "inclusive end及opcode/control精确符合调用参数"
+    ],
+    "last_command_correlation": {
+      "classification": "inference：只用于待验证的字段解释，不作为硬件合同或故障site认定",
+      "nonzero_tile_samples": 592,
+      "matched_actual_destination_after_shift8": 592,
+      "final_low_word": "0x040000e0",
+      "actual_final_destination": "0x00040000",
+      "limitation": "存在重复destination，采样非原子且counter与last-command的更新时点未确认；未得到唯一动态命令。高6 bit及低8 bit含义未知。"
+    },
+    "failures_before_success": [
+      "复用旧审计脚本的per-Tile导出符号不适用于当前grid entry；改为实际entry与__get_pid分派。",
+      "Unicorn初始浮点状态未启用，在fcvt.s.l停止；按模拟器RISC-V状态启用FS并清FCSR后，16 Tile完成控制流重放。均为主机工具前置失败，未执行设备。"
+    ],
+    "limitations": [
+      "本次87种descriptor参数经实际SDK constructor/issuer验证；未模拟SDK builder分配/释放和完整硬件行为。",
+      "地址与字段检查通过不证明completion、依赖顺序、SPM bank冲突或硬件timeout配置正确。",
+      "合法范围内存在4字节inner及65536次iteration的广播描述符；缺少触发site和硬件阈值单位，不能据此归因或自行分块/提高timeout。",
+      "根因未定位，没有新增设备执行、reset、寄存器写入或修改runtime/compiler。"
+    ],
+    "artifacts": [
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/record-current-elf.py",
+        "bytes": 3065,
+        "sha256": "19ecedfe18b6257ab950ea9a00e15512a1bc05b6bd7651993921ec56e11eb71e"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/check-sdk-packets.py",
+        "bytes": 7563,
+        "sha256": "71d98e5e8e4ccf7a8ccb93eab7ba820103cb97cca7292173495fefbd40218a1c"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/current-module.asm",
+        "bytes": 1845521,
+        "sha256": "37d6314a34cba61f778bbbbfd0a6161951f52f0d52ed87487f8b7acaf2ff5b4e"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/host-control-flow-results.json",
+        "bytes": 10023,
+        "sha256": "0756fa8d8fa1bf72939a392eaeee56e00edbc3fc8f68ae3daa40d30a3f54812e"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/sdk-packet-audit.json",
+        "bytes": 135314,
+        "sha256": "e72f2d2a5a625149e0f2069099e6fb2e46bffb8dadec82f5d51b90d5121b637e"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/last-command-encoding-correlation.json",
+        "bytes": 6206,
+        "sha256": "841d9ec1e6d031a9b0ae8f882c39e7521419f443e582f242636ce12df3ef7a0e"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-5.calls.json",
+        "bytes": 1683932,
+        "sha256": "20c693d658b4a82e31cba8c6d66c561a143f300ecf4f1975925fe9e2e9de4646"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-8.calls.json",
+        "bytes": 1683932,
+        "sha256": "a63a829afc2e061472be024ca1499ac41e378d6240d603c7db14c544ddb0d5c1"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-4.calls.json",
+        "bytes": 1683932,
+        "sha256": "831eba94630755b5e35cb33956b6b105e1b15fc654ba42f85db97b031cbc3bfc"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-15.calls.json",
+        "bytes": 842013,
+        "sha256": "d2913bff66ade4c0de9819d075bc993bb050617359cc5de04572b160667c779a"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-9.calls.json",
+        "bytes": 1683932,
+        "sha256": "e63ec8f8d2d8c7d58ec11990e2423e95b85d06245c4ed29ba79694544d9ea9cc"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-3.calls.json",
+        "bytes": 1604188,
+        "sha256": "fccaa5f38336935a8eb69fa7f0b6e155850e58d96073cda5103e78f64693cb2e"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-14.calls.json",
+        "bytes": 834813,
+        "sha256": "f12981d793b64267486c8de589194627a407f7ddeed89aa6b21f8798849efce9"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-7.calls.json",
+        "bytes": 1683932,
+        "sha256": "de6de72de3d8532ad4536cc5d6c83fda2e380d8aa3092c107319fac03cd05dea"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-12.calls.json",
+        "bytes": 842013,
+        "sha256": "aa7c071324c2e8fdd6617b46c257bcac5e8b27bc101f549c95403a056d6723c3"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-6.calls.json",
+        "bytes": 1683932,
+        "sha256": "d950cd3768c3f4a48cd36ab3cb6a1eb852d82e26007e15372ae7498b8b5a4b1f"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-1.calls.json",
+        "bytes": 1604188,
+        "sha256": "77e399d18b0ca0beeabf211828febad22e8442f8d83ff8fa169ba578ee110f13"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-2.calls.json",
+        "bytes": 1604188,
+        "sha256": "1653285d7d9d71cf3938421d127feaca76daa9dba4065b48fbdc4618af7dfea3"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-10.calls.json",
+        "bytes": 1683933,
+        "sha256": "93564373cc53cd549283d0ac82230a6b8de391c7c92c274a52c3e2ddee60742b"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-11.calls.json",
+        "bytes": 1683933,
+        "sha256": "9b29afea82dd96bda145ee221950b6f32466907a3e8515279edb9a87f78e18ea"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-13.calls.json",
+        "bytes": 842013,
+        "sha256": "966dac1880d0d9897b507d5e43e28e0022825382f64019278ade69ec411dff36"
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-0.calls.json",
+        "bytes": 1590332,
+        "sha256": "f2fbfe70207d62e1c4bfe55bfa39b3505d28121a4575e72162e09123f46aac5f"
+      }
+    ]
+  }
 }
