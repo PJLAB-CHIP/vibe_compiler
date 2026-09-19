@@ -33,15 +33,18 @@
 ViT1025本轮launch窗口出现`NPU LSU TDMA Timeout`，批次已停止，未retry/reset，不签该项通过。
 主机已闭合滑窗packed BOOL读取、完整TargetModel数值、guard规划与故障注入，完整lit及component回归通过。
 attention性能目标仍未达到；匹配重复计时、实卡guard及最终同版本全矩阵未完成，设备异常处理后才能继续实卡。
-用户此前确认上述ViT1025异常后板卡尚未人工恢复，因此先推进主机优化；最新要求为离开前人工重启，
-先完成本轮全部编译和no-card，再执行实卡验证，实际恢复状态尚未核实。scalar VS、规则mask常量模板、
+用户已确认上述ViT1025异常后人工重启完成，并授权按接续计划推进完整验收；
+先完成本轮全部编译和no-card，再核实设备身份、占用和恢复状态并执行实卡验证。scalar VS、规则mask常量模板、
 私有DPS复用、GQA单位前缀native归约及DDR通知的精确NCC依赖已实现；此前扩大验证已按用户要求停止、记录保留。
 用户现已授权修复layout三项问题：预算中断丢失较优解、缺少完整factor依据的剪枝，以及下游隐藏中间布局选择；
 按08号合同先修求解结果保留，再恢复完整合法域，最后提前物化逐元素中间SSA。三项已有实现及前一检查点的定向验证，尚未提交代码。
 该检查点的prefill静态GS由976增至1084；已定位layout名称比较触发的多余搬运，以及逐元素分解阻断select原地复用两处问题。
-针对两处问题的最新代码只是未构建、未补测试的草稿，旧测试/no-card不覆盖它，不签layout修复完成或attention性能改善。
-本轮用户要求先整理交接与后续计划；当前没有本轮遗留的构建、编译或测试进程。下一步先闭合这两处退化，
-再做同版本定向产品验收，随后处理prefill/decode展开、mask、CPU与同步成本；之后先完成本轮attention矩阵及受影响保护用例的
+两处修正及其直接target、私有publication正反例已通过本轮主机验证；扩大回归发现的跨dtype factor与完整blocked BOOL copy缺口也已修复。
+修复后168项相关transform、37项conversion及lit通过，canonical完整增量构建后第二次Ninja no-op；原失败与复测记录保留。
+Query内物理遍历证明复用已完成定向回归；原8/42配置的prefill、Q1两步及Q2均已fresh构包/no-card通过，
+Q2还通过完整TargetModel输出。相同逐Tile GEMM/循环结构下，本轮无未解释的搬运增长，layout修复主机边界已闭合；
+板端actual KV接续与attention性能尚未重签，后续源码修改须重签其影响范围。
+随后处理prefill/decode展开、mask、CPU与同步成本；之后先完成本轮attention矩阵及受影响保护用例的
 全部编译、构包和fresh no-card，再核实设备恢复并逐例实卡验证。具体第5、6步见
 [当前实施计划](plans/board-workload-matrix.md#交接与接续计划)；此前停止的其它搜索/验证批次不随此授权重启。
 不再通过CPU逐元素生成规则mask；decode已在SPM中的私有rank-0广播源按现有证明直接用于VuV，避免SPM mapping读取。

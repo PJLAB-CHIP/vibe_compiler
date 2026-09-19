@@ -1551,16 +1551,10 @@ createElementwise(ComputeElementwiseKind kind,
   }
   mlir::MemRefType resultType =
       changeElementType(resultShape, resultElementType);
-  // An intermediate predicate has its own bit-packed physical traversal.
-  // Inheriting a float destination's blocked layout changes the lane order
-  // when the native block width depends on dtype. Tensor order is common to
-  // the relation inputs/result; explicit movement preserves other layouts.
-  if (resultElementType.isInteger(1) ||
-      shape.size() != static_cast<size_t>(resultShape.getRank()))
-    resultType = mlir::MemRefType::get(
-        shape, resultElementType, mlir::MemRefLayoutAttrInterface{},
-        MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
-                        MemLayout::Tensor));
+  // Projected intermediates must already be explicit SSA before layout
+  // selection. The selected result encoding also owns predicate lane order.
+  if (shape.size() != static_cast<size_t>(resultShape.getRank()))
+    return mlir::failure();
   mlir::AffineMap identity =
       getIdentityMap(rewriter.getContext(), resultType.getRank());
   maps.push_back(identity);
@@ -2170,13 +2164,22 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
       }
       if (!inputType)
         return mlir::failure();
-      mlir::MemRefType convertedType =
-          changeElementType(getOwnedType(inputType), nested.getResult(0).getType());
-      mlir::FailureOr<mlir::Value> converted = createConvert(
-          input->buffer, convertedType, rewriter, location, statistics);
-      if (mlir::failed(converted))
+      auto identity = analysis::IndexRelation::identity(resultType.getShape());
+      if (!input->indexingMap.isIdentity() || !identity.isExact() ||
+          inputType.getShape() != resultType.getShape() ||
+          mlir::failed(analysis::TransferRealizability::provePhysicalTraversal(
+              inputType, resultType, resultType.getShape(), *identity.get(),
+              *identity.get()))) {
+        operation.emitError("selected pointwise convert has no direct traversal: ")
+            << inputType << " -> " << resultType
+            << ", input map=" << mlir::AffineMapAttr::get(input->indexingMap);
         return mlir::failure();
-      values[nested.getResult(0)] = ExprValue{*converted, input->indexingMap};
+      }
+      auto converted = rewriter.create<ComputeConvertOp>(location, resultType,
+                                                         input->buffer);
+      ++statistics.converts;
+      values[nested.getResult(0)] =
+          ExprValue{converted.getResult(), input->indexingMap};
       continue;
     }
     std::optional<ComputeElementwiseKind> kind =
@@ -2262,6 +2265,13 @@ static void eraseDeadPrivateStorage(mlir::ModuleOp module) {
 }
 
 } // namespace
+
+bool isSupportedElementwiseScalarOperation(mlir::Operation *operation) {
+  return operation && operation->getNumResults() == 1 &&
+         (mlir::isa<mlir::arith::ConstantOp, mlir::arith::ExtFOp,
+                    mlir::arith::TruncFOp>(operation) ||
+          getScalarElementwiseKind(operation).has_value());
+}
 
 mlir::LogicalResult verifyStructuredComputeLowered(mlir::ModuleOp module) {
   if (!module || mlir::failed(mlir::verify(module)))

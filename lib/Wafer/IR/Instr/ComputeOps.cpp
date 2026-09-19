@@ -474,9 +474,8 @@ static mlir::LogicalResult verifySimpleInstrElementwiseContract(
         getLogicalTensorType(input.getType());
     if (!inputTensor)
       return op->emitOpError("expects Wafer buffer operands");
-    if (!isUnit && getWaferLayout(input.getType()) != destLayout)
-      return op->emitOpError(
-          "elementwise operands must use the dest layout family");
+    if (!getWaferLayout(input.getType()))
+      return op->emitOpError("elementwise operands must carry Wafer layouts");
     if (!firstInputTensor)
       firstInputTensor = inputTensor;
     if (!isUnit && mlir::failed(verifySameShape(
@@ -853,9 +852,6 @@ mlir::LogicalResult InstrBit2FpOp::verify() {
     return emitOpError("bit2fp source element type must be i1");
   if (!mlir::isa<mlir::FloatType>(destTensor->getElementType()))
     return emitOpError("bit2fp dest element type must be floating point");
-  if (getWaferLayout(getSource().getType()) !=
-      getWaferLayout(getDest().getType()))
-    return emitOpError("bit2fp source and dest layout families must match");
   if (mlir::failed(verifySameShape(getOperation(), *sourceTensor, *destTensor,
                                    "bit2fp source and dest shapes must match")))
     return mlir::failure();
@@ -882,11 +878,6 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
       getLogicalTensorType(getDest().getType());
   if (!sourceTensor || !maskTensor || !destTensor)
     return emitOpError("mask_move expects ranked Wafer memrefs");
-  std::optional<MemLayout> destLayout = getWaferLayout(getDest().getType());
-  if (!destLayout || getWaferLayout(getSource().getType()) != destLayout ||
-      getWaferLayout(getMask().getType()) != destLayout)
-    return emitOpError(
-        "mask_move source, mask and dest layout families must match");
   if (mlir::failed(verifySameShape(getOperation(), *sourceTensor, *destTensor,
                                    "mask_move source and dest shapes must "
                                    "match")) ||
@@ -930,9 +921,6 @@ mlir::LogicalResult InstrConvertOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  if (getWaferLayout(getSource().getType()) !=
-      getWaferLayout(getDest().getType()))
-    return emitOpError("convert source and dest layout families must match");
   mlir::Type srcElement = getMemRefElementType(getSource().getType());
   mlir::Type dstElement = getMemRefElementType(getDest().getType());
   auto [expectedSrc, expectedDst] =

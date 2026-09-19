@@ -757,6 +757,38 @@ static bool collectAssociativeMergeTree(
     llvm::SmallVectorImpl<mlir::Operation *> &operations,
     llvm::SmallVectorImpl<mlir::Value> &leaves,
     std::set<mlir::Operation *> &visited) {
+  // Each pre-layout payload step has a real DPS destination. Follow a
+  // private, exact publication only when it has one writer and one reader;
+  // aliases, extra users and clobbers must keep the ordinary peer path.
+  if (auto allocation = value.getDefiningOp<mlir::memref::AllocOp>()) {
+    MoveCopyIntoOp publication;
+    ComputeElementwiseOp consumer;
+    if (std::distance(value.use_begin(), value.use_end()) == 2) {
+      for (mlir::Operation *user : value.getUsers()) {
+        if (auto copy = mlir::dyn_cast<MoveCopyIntoOp>(user);
+            copy && copy.getDest() == value)
+          publication = copy;
+        else if (auto compute = mlir::dyn_cast<ComputeElementwiseOp>(user))
+          consumer = compute;
+      }
+    }
+    auto producer =
+        publication
+            ? publication.getSource().getDefiningOp<ComputeElementwiseOp>()
+            : ComputeElementwiseOp{};
+    if (producer && consumer && allocation.getType() == pieceType &&
+        producer.getKind() == kind &&
+        producer.getResult().getType() == pieceType &&
+        producer.getResult().hasOneUse() &&
+        producer->getBlock() == publication->getBlock() &&
+        publication->getBlock() == consumer->getBlock() &&
+        producer->isBeforeInBlock(publication) &&
+        publication->isBeforeInBlock(consumer)) {
+      operations.push_back(publication);
+      operations.push_back(allocation);
+      value = producer.getResult();
+    }
+  }
   auto operation = value.getDefiningOp<ComputeElementwiseOp>();
   if (!operation || operation->getParentOfType<TileRegionOp>() != region ||
       operation.getKind() != kind || operation.getInputs().size() != 2 ||
@@ -773,7 +805,8 @@ static bool collectAssociativeMergeTree(
     if (!operation.getResult().hasOneUse())
       return false;
     mlir::Operation *user = *operation.getResult().getUsers().begin();
-    if (!mlir::isa<ComputeElementwiseOp>(user))
+    if (!mlir::isa<ComputeElementwiseOp>(user) &&
+        !llvm::is_contained(operations, user))
       return false;
   }
   operations.push_back(operation);

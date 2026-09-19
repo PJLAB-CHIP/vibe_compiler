@@ -525,6 +525,83 @@ static void eliminateGemmWritebacks(
   });
 }
 
+// A private DPS publication is not an observable storage identity. Remove
+// its exact copy before choosing destinations, so the existing last-use
+// optimization can still see the allocation-producing expression chain.
+static void eliminatePrivatePointwisePublications(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  llvm::SmallVector<MoveCopyIntoOp> copies;
+  module.walk([&](MoveCopyIntoOp copy) { copies.push_back(copy); });
+  for (auto copy : copies) {
+    auto source = copy.getSource();
+    auto *producer = source.getDefiningOp();
+    auto allocation = copy.getDest().getDefiningOp<mlir::memref::AllocOp>();
+    if (!mlir::isa_and_nonnull<ComputeElementwiseOp, ComputeConvertOp>(
+            producer) ||
+        !allocation || !source.hasOneUse() ||
+        allocation.getResult().hasOneUse() ||
+        source.getType() != allocation.getType() ||
+        producer->getBlock() != copy->getBlock() ||
+        allocation->getBlock() != copy->getBlock() ||
+        !producer->isBeforeInBlock(copy) ||
+        pipelineOperations.contains(producer) ||
+        pipelineOperations.contains(copy) ||
+        pipelineOperations.contains(allocation))
+      continue;
+    auto producerEffects =
+        mlir::dyn_cast<mlir::MemoryEffectOpInterface>(producer);
+    llvm::SmallVector<mlir::MemoryEffects::EffectInstance> allocationEffects;
+    if (!producerEffects)
+      continue;
+    producerEffects.getEffectsOnValue(source, allocationEffects);
+    if (!llvm::any_of(allocationEffects, [](const auto &effect) {
+          return mlir::isa<mlir::MemoryEffects::Allocate>(effect.getEffect());
+        }))
+      continue;
+    bool privateReads = llvm::all_of(
+        allocation.getResult().getUsers(), [&](mlir::Operation *user) {
+          if (user == copy)
+            return true;
+          if (user->getBlock() != copy->getBlock() ||
+              !copy->isBeforeInBlock(user) ||
+              pipelineOperations.contains(user) || user->getNumRegions() ||
+              mlir::isa<mlir::ViewLikeOpInterface>(user))
+            return false;
+          auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(user);
+          if (!effects)
+            return false;
+          llvm::SmallVector<mlir::MemoryEffects::EffectInstance> instances;
+          effects.getEffects(instances);
+          bool reads = false;
+          for (const auto &effect : instances) {
+            if (!effect.getValue() &&
+                effect.getResource() ==
+                    mlir::SideEffects::DefaultResource::get())
+              return false;
+            if (effect.getValue() == allocation.getResult()) {
+              if (!mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect()))
+                return false;
+              reads = true;
+            }
+          }
+          // A read effect alone does not prove that a returned view cannot
+          // escape. Buffer results must own fresh storage, not alias the read.
+          for (mlir::Value result : user->getResults())
+            if (mlir::isa<mlir::MemRefType>(result.getType()) &&
+                !effects.getEffectOnValue<mlir::MemoryEffects::Allocate>(
+                    result))
+              return false;
+          return reads;
+        });
+    if (!privateReads)
+      continue;
+    rewriter.replaceAllUsesWith(allocation.getResult(), source);
+    rewriter.eraseOp(copy);
+    rewriter.eraseOp(allocation);
+  }
+}
+
 static void eliminateElementwiseWritebacks(
     mlir::ModuleOp module, mlir::IRRewriter &rewriter,
     const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
@@ -938,6 +1015,7 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
       pipelineOperations.insert(operation.operation);
   preservePrivateScalarBroadcasts(*module, rewriter, pipelineOperations);
   eliminateGemmWritebacks(*module, rewriter, pipelineOperations);
+  eliminatePrivatePointwisePublications(*module, rewriter, pipelineOperations);
   eliminateElementwiseWritebacks(*module, rewriter, pipelineOperations);
   reuseElementwiseInputs(*module, rewriter, pipelineOperations);
   if (mlir::failed(materializeLoopCarriedDestinations(*module, rewriter)))

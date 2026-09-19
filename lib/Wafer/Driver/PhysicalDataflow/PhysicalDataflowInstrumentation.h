@@ -144,7 +144,6 @@ recordLayoutInstrumentation(const LayoutOptimizationStatistics &statistics) {
   counter("function-boundary-queries", statistics.functionBoundaryQueries);
   counter("pbqp-factors", statistics.pbqpFactors);
   counter("value-groups", statistics.valueGroups);
-  counter("dominated-states-pruned", statistics.dominatedLayoutStatesPruned);
   counter("use-bindings", statistics.useBindings);
   counter("tuple-variables", statistics.tupleVariables);
   counter("conversion-activations", statistics.conversionActivations);

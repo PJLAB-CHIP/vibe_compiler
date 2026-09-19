@@ -26,7 +26,6 @@ struct LayoutOptimizationStatistics {
   uint64_t pbqpVariables = 0;
   uint64_t pbqpFactors = 0;
   uint64_t valueGroups = 0;
-  uint64_t dominatedLayoutStatesPruned = 0;
   uint64_t useBindings = 0;
   uint64_t tupleVariables = 0;
   uint64_t conversionActivations = 0;
@@ -69,13 +68,6 @@ struct LayoutUseConstraint {
 };
 using LayoutConstraint =
     std::variant<LayoutValueConstraint, LayoutUseConstraint>;
-
-enum class LayoutDomain : uint8_t {
-  AllLegal,
-  /// Restricts a single local optimum query to its relevant publication/use
-  /// states. This local objective reduction must not prune physical search.
-  Relevant,
-};
 
 enum class LayoutMaterializationPlacement : uint8_t {
   FirstUse,
@@ -121,8 +113,7 @@ private:
   struct Impl;
   explicit LayoutAssignmentQuery(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl;
-  friend LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp,
-                                                        LayoutDomain);
+  friend LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp);
 };
 
 LayoutOptimizationResult
@@ -130,9 +121,7 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
                           StructuredMaterializationRelations &relations);
 /// Reads the prepared tensor IR. Operations that would introduce unmodeled
 /// compute during bufferization must be materialized before this query.
-LayoutQueryResult
-queryCurrentLayoutAssignment(mlir::ModuleOp module,
-                             LayoutDomain domain = LayoutDomain::AllLegal);
+LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module);
 
 /// Resolves layouts directly on one candidate's current SSA/use graph, binds
 /// observable output pieces to DDR subviews and runs function-boundary plus

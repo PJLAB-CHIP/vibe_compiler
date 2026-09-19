@@ -751,9 +751,6 @@ verifyElementwiseTileContract(mlir::Operation *op, ComputeElementwiseKind kind,
     std::optional<MemLayout> inputLayout = getWaferLayout(input.getType());
     if (!inputLayout)
       return op->emitOpError("elementwise operands must carry Wafer layout");
-    if (!indexingMaps && inputLayout != resultLayout)
-      return op->emitOpError(
-          "map-free elementwise operands must use the result layout family");
     if (!firstInputTensor)
       firstInputTensor = inputTensor;
     if (isSelectKind(kind)) {

@@ -491,7 +491,7 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
         }
       };
   search(0, 0);
-  if (exhausted) {
+  if (exhausted && !bestCost) {
     result.status = ExactPBQPStatus::Indeterminate;
     result.work = budget.used;
     return result;
@@ -505,17 +505,24 @@ static ExactPBQPResult solveNumericExactPBQP(const ExactPBQPProblem &problem,
   std::optional<ExactPBQPCost> checked = evaluate(problem, assignment);
   if (!checked)
     return result;
-  result.status = ExactPBQPStatus::Optimal;
+  result.status =
+      exhausted ? ExactPBQPStatus::Feasible : ExactPBQPStatus::Optimal;
   result.assignment = std::move(assignment);
   result.cost = *checked;
-  result.lowerBound = *checked;
+  result.lowerBound = exhausted ? 0 : *checked;
   result.work = budget.used;
   return result;
 }
 
 static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
                                           uint64_t workLimit,
-                                          uint32_t semanticTieVariableCount) {
+                                          uint32_t semanticTieVariableCount,
+                                          llvm::ArrayRef<uint32_t> incumbent);
+
+static ExactPBQPResult
+solveComponentsAndTies(const ExactPBQPProblem &problem, uint64_t workLimit,
+                       uint32_t semanticTieVariableCount,
+                       llvm::ArrayRef<uint32_t> incumbent) {
   const uint64_t variableWork = problem.variables.size();
   const uint64_t factorCount = problem.factors.size();
   if (factorCount > (std::numeric_limits<uint64_t>::max() - variableWork) / 2) {
@@ -540,25 +547,22 @@ static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
   if (components->size() > 1) {
     ExactPBQPResult combined;
     combined.status = ExactPBQPStatus::Optimal;
-    combined.assignment.resize(problem.variables.size());
+    combined.assignment.assign(problem.variables.size(),
+                               std::numeric_limits<uint32_t>::max());
     combined.cost = 0;
     combined.lowerBound = 0;
     uint64_t used = structuralWork;
     for (const std::vector<uint32_t> &component : *components) {
-      if (used >= workLimit) {
-        combined.status = ExactPBQPStatus::Indeterminate;
-        combined.assignment.clear();
-        combined.cost.reset();
-        combined.work = used;
-        return combined;
-      }
       ExactPBQPProblem local;
       local.variables.reserve(component.size());
+      std::vector<uint32_t> localIncumbent;
       llvm::DenseMap<uint32_t, uint32_t> localIndex;
       uint32_t localSemanticVariables = 0;
       for (uint32_t original : component) {
         localIndex.try_emplace(original, local.variables.size());
         local.variables.push_back(problem.variables[original]);
+        if (!incumbent.empty())
+          localIncumbent.push_back(incumbent[original]);
         localSemanticVariables += original < semanticTieVariableCount;
       }
       for (const ExactPBQPBinaryFactor &factor : problem.factors) {
@@ -578,14 +582,21 @@ static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
         remapped.rhs = rhs->second;
         local.factors.push_back(std::move(remapped));
       }
-      ExactPBQPResult solved =
-          solveExactPBQPImpl(local, workLimit - used, localSemanticVariables);
+      ExactPBQPResult solved = solveExactPBQPImpl(
+          local, workLimit - used, localSemanticVariables, localIncumbent);
       used += solved.work;
-      if (solved.status != ExactPBQPStatus::Optimal || !solved.cost ||
-          solved.assignment.size() != component.size()) {
+      if ((solved.status != ExactPBQPStatus::Optimal &&
+           solved.status != ExactPBQPStatus::Feasible) ||
+          !solved.cost || solved.assignment.size() != component.size()) {
+        // A local assignment is not a complete assignment of the caller's
+        // problem. Never publish it under the parent's variable numbering.
+        solved.assignment.clear();
+        solved.cost.reset();
         solved.work = used;
         return solved;
       }
+      if (solved.status == ExactPBQPStatus::Feasible)
+        combined.status = ExactPBQPStatus::Feasible;
       ExactPBQPCost nextCost = addCost(*combined.cost, *solved.cost);
       ExactPBQPCost nextLowerBound =
           addCost(combined.lowerBound, solved.lowerBound);
@@ -642,9 +653,18 @@ static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
           trial.variables[variable].unaryCosts[other] = kExactPBQPInfinity;
 
       ExactPBQPResult candidate = solveNumericExactPBQP(trial, budget);
-      if (candidate.status == ExactPBQPStatus::Indeterminate) {
-        candidate.work = budget.used;
-        return candidate;
+      if (candidate.status == ExactPBQPStatus::Indeterminate ||
+          candidate.status == ExactPBQPStatus::Feasible) {
+        // The numeric optimum is already proven. Exhausting the tie budget
+        // must not discard that witness or its lower bound. A complete trial
+        // witness at the same cost may improve the stable prefix as well.
+        if (candidate.cost == targetCost &&
+            candidate.assignment < selected.assignment)
+          selected = std::move(candidate);
+        selected.status = ExactPBQPStatus::Feasible;
+        selected.lowerBound = targetCost;
+        selected.work = budget.used;
+        return selected;
       }
       if (candidate.status == ExactPBQPStatus::BrokenContract) {
         candidate.work = budget.used;
@@ -671,8 +691,44 @@ static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
   return selected;
 }
 
+static ExactPBQPResult solveExactPBQPImpl(const ExactPBQPProblem &problem,
+                                          uint64_t workLimit,
+                                          uint32_t semanticTieVariableCount,
+                                          llvm::ArrayRef<uint32_t> incumbent) {
+  auto result = solveComponentsAndTies(problem, workLimit,
+                                       semanticTieVariableCount, incumbent);
+  if (result.status == ExactPBQPStatus::BrokenContract ||
+      result.status == ExactPBQPStatus::NoSolution)
+    return result;
+  auto candidateCost = evaluate(problem, result.assignment);
+  auto initialCost =
+      incumbent.empty() ? std::nullopt : evaluate(problem, incumbent);
+  if (candidateCost != result.cost)
+    return {ExactPBQPStatus::BrokenContract};
+  size_t tieVariables =
+      std::min<size_t>(semanticTieVariableCount, problem.variables.size());
+  if (initialCost && (!candidateCost || *initialCost < *candidateCost ||
+                      (*initialCost == *candidateCost &&
+                       std::lexicographical_compare(
+                           incumbent.begin(), incumbent.begin() + tieVariables,
+                           result.assignment.begin(),
+                           result.assignment.begin() + tieVariables)))) {
+    if (result.status == ExactPBQPStatus::Optimal)
+      return {ExactPBQPStatus::BrokenContract};
+    result.assignment.assign(incumbent.begin(), incumbent.end());
+    result.cost = initialCost;
+    result.status = ExactPBQPStatus::Feasible;
+  }
+  if (result.cost && result.lowerBound > *result.cost)
+    return {ExactPBQPStatus::BrokenContract};
+  return result;
+}
+
 ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
                                const ExactPBQPSolveOptions &options) {
+  Graph validated;
+  if (!validateAndBuild(problem, validated))
+    return {ExactPBQPStatus::BrokenContract};
   std::optional<ExactPBQPCost> feasibleCost;
   if (options.initialFeasibleAssignment) {
     feasibleCost = evaluate(problem, *options.initialFeasibleAssignment);
@@ -683,23 +739,17 @@ ExactPBQPResult solveExactPBQP(const ExactPBQPProblem &problem,
     }
   }
 
-  ExactPBQPResult result = solveExactPBQPImpl(problem, options.workLimit,
-                                              options.semanticTieVariableCount);
+  ExactPBQPResult result = solveExactPBQPImpl(
+      problem, options.workLimit, options.semanticTieVariableCount,
+      options.initialFeasibleAssignment
+          ? llvm::ArrayRef<uint32_t>(*options.initialFeasibleAssignment)
+          : llvm::ArrayRef<uint32_t>{});
   if (result.status == ExactPBQPStatus::NoSolution && feasibleCost) {
     result.status = ExactPBQPStatus::BrokenContract;
     result.assignment.clear();
     result.cost.reset();
     return result;
   }
-  if (result.status != ExactPBQPStatus::Indeterminate || !feasibleCost)
-    return result;
-
-  result.status = ExactPBQPStatus::Feasible;
-  result.assignment = *options.initialFeasibleAssignment;
-  result.cost = *feasibleCost;
-  // All PBQP costs are non-negative, so zero remains a valid lower bound when
-  // exact optimization did not finish.
-  result.lowerBound = 0;
   return result;
 }
 

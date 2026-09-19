@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "BooleanReduction.h"
+#include "ElementwisePayloads.h"
 #include "GatherLowering.h"
 #include "LoopSubsetState.h"
 
@@ -1343,6 +1344,16 @@ static bool hasReductionIterator(mlir::linalg::LinalgOp operation) {
 
 static bool isFixedComputeLayoutOp(mlir::linalg::LinalgOp operation);
 
+static bool isPointwiseCast(mlir::linalg::LinalgOp operation) {
+  auto generic =
+      mlir::dyn_cast<mlir::linalg::GenericOp>(operation.getOperation());
+  return generic && !generic.getNumReductionLoops() &&
+         generic.getNumDpsInputs() == 1 && generic.getNumDpsInits() == 1 &&
+         generic.getBody()->getOperations().size() == 2 &&
+         mlir::isa<mlir::arith::ExtFOp, mlir::arith::TruncFOp>(
+             generic.getBody()->front());
+}
+
 static std::optional<MemLayout> getLayout(mlir::Type type) {
   auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
   MemoryAttr memory = memref ? getWaferMemoryAttr(memref) : MemoryAttr{};
@@ -1355,11 +1366,13 @@ buildUseBindings(mlir::ModuleOp module,
                  std::string &detail) {
   llvm::SmallVector<UseBinding, 64> uses;
   module.walk([&](mlir::linalg::LinalgOp operation) {
-    // Layout-polymorphic Linalg accepts each current operand layout directly.
-    // Only fixed compute tuples introduce use bindings.
-    if (!isFixedComputeLayoutOp(operation))
+    // A cast also needs an explicit input-use choice: changing dtype can
+    // change lane order even within the same layout family.
+    if (!isFixedComputeLayoutOp(operation) && !isPointwiseCast(operation))
       return;
     for (mlir::OpOperand &operand : operation->getOpOperands()) {
+      if (isPointwiseCast(operation) && operation.isDpsInit(&operand))
+        continue;
       if (!isTensorValue(operand.get()))
         continue;
       auto group = groupByValue.find(operand.get());
@@ -1521,16 +1534,60 @@ tupleStateIsLegal(mlir::linalg::LinalgOp operation,
   return true;
 }
 
+// A layout query is read-only. Its type/map geometry is immutable even when
+// many current values on different Tiles have the same shape. Reuse only these
+// pure target proofs within the query; retain no SSA handles or layout choices.
+class PointwiseTraversalProofs {
+public:
+  bool hasPhysicalTraversal(mlir::MemRefType source, mlir::MemRefType dest,
+                            mlir::AffineMap map,
+                            const analysis::IndexRelation &sourceRelation,
+                            const analysis::IndexRelation &destRelation) {
+    return lookup(physicalTraversals, {source, dest, map}, [&] {
+      return mlir::succeeded(
+          analysis::TransferRealizability::provePhysicalTraversal(
+              source, dest, dest.getShape(), sourceRelation, destRelation));
+    });
+  }
+
+  bool hasUnitBroadcast(mlir::MemRefType source, mlir::MemRefType dest,
+                        mlir::AffineMap map,
+                        const analysis::IndexRelation &sourceRelation) {
+    return lookup(unitBroadcasts, {source, dest, map}, [&] {
+      return mlir::succeeded(
+          analysis::TransferRealizability::proveUnitVectorBroadcast(
+              source, dest, sourceRelation));
+    });
+  }
+
+private:
+  using Key = std::tuple<mlir::Type, mlir::Type, mlir::AffineMap>;
+  template <typename Prove>
+  static bool lookup(llvm::DenseMap<Key, bool> &proofs, Key key, Prove prove) {
+    auto found = proofs.find(key);
+    if (found != proofs.end()) {
+      support::addCompileCounter("layout", "pointwise-proof-reuses", 1);
+      return found->second;
+    }
+    support::addCompileCounter("layout", "pointwise-proof-queries", 1);
+    bool proven = prove();
+    proofs.try_emplace(key, proven);
+    return proven;
+  }
+  llvm::DenseMap<Key, bool> physicalTraversals, unitBroadcasts;
+};
+
 // Polymorphic pointwise operations accept each layout, but acceptance does
 // not mean that differently blocked inputs can share a physical traversal.
-// Price the explicit movement used by StructuredToTile/TileToInstr. These
-// finite costs rank choices only; actual lowering and SPM own legality.
-static ExactPBQPCost getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
-                                               mlir::OpOperand &input,
-                                               mlir::RankedTensorType source,
-                                               mlir::RankedTensorType output,
-                                               MemLayout sourceLayout,
-                                               MemLayout outputLayout) {
+// Price the explicit movement used by StructuredToTile/TileToInstr. A target
+// traversal that neither the direct nor mapped path supports is a hard factor;
+// finite movement costs only rank choices and do not establish SPM legality.
+static ExactPBQPCost
+getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
+                          mlir::OpOperand &input, mlir::RankedTensorType source,
+                          mlir::RankedTensorType output, MemLayout sourceLayout,
+                          MemLayout outputLayout,
+                          PointwiseTraversalProofs &proofs) {
   if (!source || !output)
     return 1;
   auto resultMap =
@@ -1547,10 +1604,12 @@ static ExactPBQPCost getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
     return 1;
   auto sourceType = getMemRefType(source, MemorySpace::SPM, sourceLayout);
   auto outputType = getMemRefType(output, MemorySpace::SPM, outputLayout);
-  if (mlir::succeeded(analysis::TransferRealizability::provePhysicalTraversal(
-          sourceType, outputType, output.getShape(), *sourceRelation.get(),
-          *destinationRelation.get())))
+  if (proofs.hasPhysicalTraversal(sourceType, outputType, map,
+                                  *sourceRelation.get(),
+                                  *destinationRelation.get()))
     return 0;
+  if (isPointwiseCast(operation))
+    return kExactPBQPInfinity;
   if (operation.getNumDpsInputs() == 2 &&
       operation.getBlock()->getOperations().size() == 2) {
     mlir::Operation &scalar = operation.getBlock()->front();
@@ -1563,22 +1622,42 @@ static ExactPBQPCost getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
                                  mlir::arith::CmpFOp>(scalar);
     auto argument = operation.getBlock()->getArgument(input.getOperandNumber());
     if (binary && (commutative || scalar.getOperand(1) == argument) &&
-        mlir::succeeded(
-            analysis::TransferRealizability::proveUnitVectorBroadcast(
-                sourceType, outputType, *sourceRelation.get())))
+        proofs.hasUnitBroadcast(sourceType, outputType, map,
+                                *sourceRelation.get()))
       return 0;
   }
-  if (source.getElementType() != output.getElementType() && map.isIdentity()) {
-    ExactPBQPCost cost = 0;
-    if (sourceLayout != MemLayout::Tensor)
-      cost = getLayoutMaterializationCost(source, MemLayout::Tensor, operation);
-    if (outputLayout != MemLayout::Tensor)
-      cost = addCost(
-          cost, getLayoutMaterializationCost(output, outputLayout, operation));
-    return cost;
+  auto mappedElementType = source.getElementType();
+  if (mappedElementType.isInteger(1) &&
+      mlir::isa<mlir::arith::SelectOp>(operation.getBlock()->front()) &&
+      input.getOperandNumber() == 0) {
+    // The mapped select path converts the compact predicate before moving its
+    // floating-point values. Bit2Fp must support that selected source encoding.
+    auto predicate =
+        mlir::RankedTensorType::get(source.getShape(), output.getElementType());
+    auto predicateType =
+        getMemRefType(predicate, MemorySpace::SPM, sourceLayout);
+    auto identity = analysis::IndexRelation::identity(source.getShape());
+    if (!identity.isExact() ||
+        !proofs.hasPhysicalTraversal(sourceType, predicateType,
+                                     mlir::AffineMap::getMultiDimIdentityMap(
+                                         source.getRank(), source.getContext()),
+                                     *identity.get(), *identity.get()))
+      return kExactPBQPInfinity;
+    mappedElementType = output.getElementType();
   }
   auto mappedType =
-      mlir::RankedTensorType::get(output.getShape(), source.getElementType());
+      mlir::RankedTensorType::get(output.getShape(), mappedElementType);
+  auto mappedMemRef = getMemRefType(mappedType, MemorySpace::SPM, outputLayout);
+  // Both types are newly constructed compact memrefs in the selected output
+  // encoding. Equal types with the same identity relation are the same access;
+  // only a dtype difference needs another physical-relation proof here.
+  if (mappedMemRef != outputType &&
+      !proofs.hasPhysicalTraversal(mappedMemRef, outputType,
+                                   mlir::AffineMap::getMultiDimIdentityMap(
+                                       output.getRank(), output.getContext()),
+                                   *destinationRelation.get(),
+                                   *destinationRelation.get()))
+    return kExactPBQPInfinity;
   return getLayoutMaterializationCost(mappedType, outputLayout, operation);
 }
 
@@ -1597,6 +1676,59 @@ static bool hasOnlyReadUses(LayoutMaterializeOp operation) {
                      instance.getEffect());
                });
       });
+}
+
+// Bufferization exposes the actual strides of tensor slices. A selected cast
+// may require a compact read in the *same* encoding; this is operand
+// legalization, not another layout choice. Decide only from that current IR.
+static mlir::LogicalResult
+materializePointwiseCastInputs(mlir::ModuleOp module,
+                               LayoutOptimizationStatistics &statistics,
+                               std::string &detail) {
+  llvm::SmallVector<std::pair<mlir::OpOperand *, mlir::MemRefType>> copies;
+  auto result = module.walk([&](mlir::linalg::LinalgOp op) {
+    if (!isPointwiseCast(op))
+      return mlir::WalkResult::advance();
+    auto *input = op.getDpsInputOperand(0);
+    auto source = mlir::cast<mlir::MemRefType>(input->get().getType());
+    auto destination =
+        mlir::cast<mlir::MemRefType>(op.getDpsInits().front().getType());
+    auto owned = [](mlir::MemRefType type) {
+      return mlir::MemRefType::get(type.getShape(), type.getElementType(),
+                                   mlir::MemRefLayoutAttrInterface{},
+                                   type.getMemorySpace());
+    };
+    auto output = owned(destination);
+    auto identity = analysis::IndexRelation::identity(output.getShape());
+    if (!identity.isExact())
+      return mlir::WalkResult::interrupt();
+    if (mlir::succeeded(analysis::TransferRealizability::provePhysicalTraversal(
+            source, output, output.getShape(), *identity.get(),
+            *identity.get())))
+      return mlir::WalkResult::advance();
+    auto compact = owned(source);
+    if (mlir::failed(analysis::TransferRealizability::provePhysicalTraversal(
+            compact, output, output.getShape(), *identity.get(),
+            *identity.get())) ||
+        mlir::failed(analysis::TransferRealizability::proveGatherScatter(
+            source, compact, *identity.get())))
+      return mlir::WalkResult::interrupt();
+    copies.emplace_back(input, compact);
+    return mlir::WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    detail = "selected pointwise cast input has no exact compact read";
+    return mlir::failure();
+  }
+  mlir::IRRewriter rewriter(module.getContext());
+  for (auto [input, compact] : copies) {
+    auto *op = input->getOwner();
+    rewriter.setInsertionPoint(op);
+    auto copy = rewriter.create<MoveCopyOp>(op->getLoc(), compact, input->get());
+    rewriter.modifyOpInPlace(op, [&] { input->set(copy.getResult()); });
+    ++statistics.necessaryCopies;
+  }
+  return mlir::success();
 }
 
 static void refineConditionalBufferTypes(mlir::ModuleOp module) {
@@ -2107,6 +2239,10 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
   localizeEmptySlices(module, relations);
+  if (mlir::failed(materializeElementwisePayloads(module, relations))) {
+    result.detail = "pointwise payload materialization failed";
+    return result;
+  }
   materializeConstantReads(module);
 
   std::string detail;
@@ -2182,12 +2318,18 @@ LayoutAssignmentQuery::LayoutAssignmentQuery(std::unique_ptr<Impl> impl)
     : impl(std::move(impl)) {}
 LayoutAssignmentQuery::~LayoutAssignmentQuery() = default;
 
-LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
-                                               LayoutDomain domain) {
+LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module) {
+  support::ScopedCompileTimingSpan timing("query", "current-layout",
+                                          "build-pbqp-problem");
   LayoutOptimizationResult result;
   std::string detail;
   if (!module || mlir::failed(mlir::verify(module))) {
     result.detail = "layout query requires verifier-valid current IR";
+    return {std::move(result), nullptr};
+  }
+  if (hasUnmaterializedElementwisePayloads(module)) {
+    result.detail =
+        "layout query requires pointwise payload materialization first";
     return {std::move(result), nullptr};
   }
   if (module
@@ -2229,45 +2371,6 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
       buildResultBindings(module, groupByValue);
   result.statistics.valueGroups = groups.size();
   result.statistics.useBindings = uses.size();
-
-  // For the materialization-count objective, a group layout that is neither a
-  // current fixed-compute publication layout nor a current fixed-use layout is
-  // strictly dominated by every relevant layout available to that group. If
-  // no relevant layout is available, every state has the same objective and
-  // the first canonical state is sufficient. This reduction changes only the
-  // query-local objective-equivalent PBQP domain; it is not persisted as a
-  // separate layout frontier or search axis.
-  for (auto [groupIndex, group] : llvm::enumerate(groups)) {
-    if (group.layouts.empty()) {
-      result.status = ExactPBQPStatus::BrokenContract;
-      result.detail = "current value group has no legal layout state";
-      return {std::move(result), nullptr};
-    }
-    if (domain == LayoutDomain::AllLegal)
-      continue;
-    llvm::SmallVector<MemLayout, 4> relevantLayouts;
-    for (const ResultBinding &binding : resultBindings)
-      if (binding.publishedGroup == groupIndex &&
-          !llvm::is_contained(relevantLayouts, binding.computeLayout))
-        relevantLayouts.push_back(binding.computeLayout);
-    for (const UseBinding &use : uses)
-      if (use.sourceGroup == groupIndex)
-        for (MemLayout layout : use.layouts)
-          if (!llvm::is_contained(relevantLayouts, layout))
-            relevantLayouts.push_back(layout);
-    const size_t oldSize = group.layouts.size();
-    const MemLayout canonicalLayout = group.layouts.front();
-    group.layouts.erase(llvm::remove_if(group.layouts,
-                                        [&](MemLayout layout) {
-                                          return !llvm::is_contained(
-                                              relevantLayouts, layout);
-                                        }),
-                        group.layouts.end());
-    if (group.layouts.empty())
-      group.layouts.push_back(canonicalLayout);
-    result.statistics.dominatedLayoutStatesPruned +=
-        oldSize - group.layouts.size();
-  }
 
   ExactPBQPProblem problem;
   for (auto [groupIndex, group] : llvm::enumerate(groups)) {
@@ -2446,6 +2549,7 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
     }
   }
   result.statistics.conversionActivations = activations.size();
+  PointwiseTraversalProofs traversalProofs;
   module.walk([&](mlir::linalg::LinalgOp operation) {
     if (isFixedComputeLayoutOp(operation) || operation.getNumDpsInits() != 1 ||
         operation->getNumResults() != 1)
@@ -2463,12 +2567,20 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
         continue;
       const auto &sourceGroup = groups[source->second];
       auto sourceType = getLayoutCostType(operand->get());
-      factors.add(sourceGroup.variable, outputGroup.variable,
+      const UseBinding *castUse = nullptr;
+      if (isPointwiseCast(operation))
+        for (unsigned useIndex : usesByOp.lookup(operation))
+          if (uses[useIndex].operandNumber == operand->getOperandNumber())
+            castUse = &uses[useIndex];
+      unsigned variable = castUse ? castUse->variable : sourceGroup.variable;
+      auto layouts = castUse ? llvm::ArrayRef(castUse->layouts)
+                             : llvm::ArrayRef(sourceGroup.layouts);
+      factors.add(variable, outputGroup.variable,
                   [&](uint32_t sourceState, uint32_t outputState) {
                     return getPointwiseTraversalCost(
                         operation, *operand, sourceType, outputType,
-                        sourceGroup.layouts[sourceState],
-                        outputGroup.layouts[outputState]);
+                        layouts[sourceState], outputGroup.layouts[outputState],
+                        traversalProofs);
                   });
     }
   });
@@ -2591,6 +2703,8 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
 ExactPBQPResult
 LayoutAssignmentQuery::solve(uint64_t workLimit,
                              std::optional<LayoutConstraint> constraint) const {
+  support::ScopedCompileTimingSpan timing("query", "current-layout",
+                                          "solve-pbqp-problem");
   ExactPBQPSolveOptions options;
   options.workLimit = impl->exactTupleDomainBounded ? workLimit : 0;
   options.semanticTieVariableCount = static_cast<uint32_t>(impl->groups.size());
@@ -3079,6 +3193,13 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
 
   refineConditionalBufferTypes(module);
 
+  if (mlir::failed(materializePointwiseCastInputs(module, result.statistics,
+                                                 detail))) {
+    result.status = ExactPBQPStatus::NoSolution;
+    result.detail = std::move(detail);
+    return result;
+  }
+
   if (mlir::failed(
           convertLayoutCopies(module, relations, result.statistics, detail))) {
     // This failure means an actual selected copy has no supported exact
@@ -3140,7 +3261,7 @@ resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
   auto prepared = prepareCurrentLayoutInput(module, relations);
   if (!prepared.succeeded())
     return prepared;
-  auto queried = queryCurrentLayoutAssignment(module, LayoutDomain::Relevant);
+  auto queried = queryCurrentLayoutAssignment(module);
   if (!queried.query)
     return std::move(queried.outcome);
   auto solved = queried.query->solve(workLimit);

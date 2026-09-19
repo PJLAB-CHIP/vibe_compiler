@@ -17,6 +17,7 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include "gtest/gtest.h"
 
@@ -425,6 +426,192 @@ TEST(ExecutionStructureMaterializationTest,
       EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(
           *result.materialized->module, 0, 3 * 1024 * 1024, 16)));
     }
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     PrivatePointwisePublicationExposesSelectLastUse) {
+  enum class Case {
+    Private,
+    SharedRead,
+    ExtraWrite,
+    View,
+    Escape,
+    Loop,
+    OldRead,
+    NoReader,
+    SourceShared
+  };
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (Case test : {Case::Private, Case::SharedRead, Case::ExtraWrite,
+                        Case::View, Case::Escape, Case::Loop, Case::OldRead,
+                        Case::NoReader, Case::SourceShared}) {
+        SCOPED_TRACE(::testing::Message() << dtype << ':' << extent << ':'
+                                          << static_cast<int>(test));
+        auto context = createContext();
+        std::string type = "memref<2x" + std::to_string(extent) + "x16x" +
+                           dtype + ", #wafer.memory<spm, tensor>>";
+        std::string mask = "memref<2x" + std::to_string(extent) +
+                           "x16xi1, #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { ";
+        if (test == Case::Escape)
+          out << "func.func private @escape(" << type << ")\n";
+        out << "func.func @main() { wafer.tile.region() -> () {\n"
+               "%input = memref.alloc() : "
+            << type << "\n%true = memref.alloc() : " << type
+            << "\n%mask = memref.alloc() : " << mask
+            << "\n%published = memref.alloc() : " << type
+            << "\n%c0 = arith.constant 0 : index\n"
+               "%c1 = arith.constant 1 : index\n"
+               "%c7 = arith.constant 7 : index\n"
+               "%zero = arith.constant 0.0 : "
+            << dtype
+            << "\n%value = wafer.tile.elementwise <sub> %input, %input : ("
+            << type << ", " << type << ") -> " << type << '\n';
+        if (test == Case::OldRead)
+          out << "%old = wafer.tile.copy %published : " << type << " -> "
+              << type << '\n';
+        out << "wafer.tile.copy_into %value into %published : " << type
+            << " into " << type << '\n';
+        if (test == Case::ExtraWrite)
+          out << "wafer.tile.fill %published, %zero : " << type << ", " << dtype
+              << '\n';
+        if (test == Case::View)
+          out << "%view = memref.cast %published : " << type << " to " << type
+              << '\n';
+        if (test == Case::Escape)
+          out << "func.call @escape(%published) : (" << type << ") -> ()\n";
+        if (test == Case::Loop)
+          out << "scf.for %iv = %c0 to %c7 step %c1 {\n";
+        if (test != Case::NoReader)
+          out << "%selected = wafer.tile.elementwise <select> %mask, %true, "
+              << (test == Case::View ? "%view" : "%published") << " : (" << mask
+              << ", " << type << ", " << type << ") -> " << type << '\n';
+        if (test == Case::Loop)
+          out << "}\n";
+        if (test == Case::SharedRead || test == Case::SourceShared)
+          out << "%retained = wafer.tile.copy "
+              << (test == Case::SharedRead ? "%published" : "%value") << " : "
+              << type << " -> " << type << '\n';
+        out << "wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        auto prepared = prepareTileExecutionStructure(*module, {});
+        ASSERT_TRUE(prepared.succeeded());
+        auto materialized = materializeExecutionStructure(
+            std::move(module), std::move(*prepared.prepared));
+        ASSERT_TRUE(materialized.succeeded())
+            << (materialized.failure ? materialized.failure->detail : "");
+        auto &result = materialized.materialized->module;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*result)));
+        unsigned selectInto = 0, selects = 0, copies = 0;
+        result->walk([&](ComputeElementwiseIntoOp op) {
+          if (op.getKind() != ComputeElementwiseKind::Select)
+            return;
+          ++selectInto;
+          EXPECT_EQ(op.getInputs()[2], op.getDest());
+          auto producer = op.getDest().getDefiningOp<ComputeElementwiseOp>();
+          ASSERT_TRUE(producer);
+          EXPECT_EQ(producer.getKind(), ComputeElementwiseKind::Sub);
+        });
+        result->walk([&](ComputeElementwiseOp op) {
+          selects += op.getKind() == ComputeElementwiseKind::Select;
+        });
+        result->walk([&](MoveCopyIntoOp) { ++copies; });
+        EXPECT_EQ(selectInto, test == Case::Private ? 1u : 0u);
+        EXPECT_EQ(selects,
+                  test == Case::Private || test == Case::NoReader ? 0u : 1u);
+        if (test == Case::Private || test == Case::SharedRead) {
+          EXPECT_EQ(copies, 0u);
+        }
+        if (test != Case::Private && test != Case::SharedRead)
+          continue;
+        TileRegionToInstrLoweringSession session(*context);
+        result->walk([&](TileRegionOp region) {
+          EXPECT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        });
+        unsigned transfers = 0, masks = 0;
+        result->walk([&](InstrGatherScatterOp) { ++transfers; });
+        result->walk([&](InstrMaskMoveOp) { ++masks; });
+        EXPECT_EQ(transfers, test == Case::Private ? 0u : 2u);
+        EXPECT_EQ(masks, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*result)));
+        EXPECT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*result, 0, 3 * 1024 * 1024, 16)));
+        result->walk([&](mlir::memref::AllocOp allocation) {
+          EXPECT_TRUE(allocation->hasAttr(kWaferSPMOffsetAttrName));
+        });
+      }
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     PrivatePublicationPreservesPipelineBindingsAndDynamicCopies) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    auto type = llvm::formatv(
+                    "memref<2x{0}x16xf16, #wafer.memory<spm, tensor>>", extent)
+                    .str();
+    auto text = llvm::formatv(R"mlir(module {{ func.func @main() {{
+      wafer.tile.region() -> () {{
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        %c7 = arith.constant 7 : index
+        scf.for %iv = %c0 to %c7 step %c1 {{
+          %a = memref.alloc() : {0}
+          %d = memref.alloc() : {0}
+          %p = wafer.tile.elementwise <sub> %a, %a : ({0}, {0}) -> {0}
+          wafer.tile.copy_into %p into %d : {0} into {0}
+          %r = wafer.tile.elementwise <exp> %d : ({0}) -> {0}
+        }
+        wafer.tile.yield
+      }
+      return
+    } })mlir",
+                              type)
+                    .str();
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module) << text;
+    TilePipelineChoice choice;
+    module->walk([&](mlir::scf::ForOp loop) { choice.loop = loop; });
+    for (auto &op : choice.loop.getBody()->without_terminator()) {
+      auto compute = mlir::dyn_cast<ComputeElementwiseOp>(op);
+      choice.operations.push_back(
+          {&op, compute && compute.getKind() == ComputeElementwiseKind::Exp
+                    ? 1u
+                    : 0u});
+    }
+    auto prepared = prepareTileExecutionStructure(*module, {choice});
+    ASSERT_TRUE(prepared.succeeded())
+        << (prepared.failure ? prepared.failure->detail : "");
+    auto materialized = materializeExecutionStructure(
+        std::move(module), std::move(*prepared.prepared));
+    ASSERT_TRUE(materialized.succeeded())
+        << (materialized.failure ? materialized.failure->detail : "");
+    ASSERT_EQ(materialized.materialized->pipelines.size(), 1u);
+    auto &pipeline = materialized.materialized->pipelines.front();
+    uint64_t copies = 0, readers = 0;
+    for (const auto &binding : pipeline.operations) {
+      uint64_t executions = binding.phase == MaterializedExecutionPhase::Kernel
+                                ? pipeline.kernelDynamicTripCount
+                                : 1;
+      if (auto copy = mlir::dyn_cast<MoveCopyIntoOp>(binding.operation)) {
+        copies += executions;
+        EXPECT_NE(copy.getSource(), copy.getDest());
+      }
+      if (auto compute =
+              mlir::dyn_cast<ComputeElementwiseOp>(binding.operation))
+        if (compute.getKind() == ComputeElementwiseKind::Exp)
+          readers += executions;
+    }
+    EXPECT_EQ(copies, 7u);
+    EXPECT_EQ(readers, 7u);
+    EXPECT_TRUE(
+        mlir::succeeded(mlir::verify(*materialized.materialized->module)));
+  }
 }
 
 TEST(ExecutionStructureMaterializationTest,

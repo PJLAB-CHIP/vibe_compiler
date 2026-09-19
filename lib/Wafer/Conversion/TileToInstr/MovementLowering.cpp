@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -162,6 +163,22 @@ getPackedCopyDescriptors(mlir::PatternRewriter &rewriter, mlir::Operation *op,
                          mlir::Value source, mlir::Value destination) {
   auto src = mlir::cast<mlir::MemRefType>(source.getType());
   auto dst = mlir::cast<mlir::MemRefType>(destination.getType());
+  // Complete allocations own their physical padding. Equal compact packed
+  // types have the same bit mapping, so copying the full physical byte span is
+  // exact for blocked encodings too. Views cannot establish that ownership.
+  auto ownsStorage = [](mlir::Value value) {
+    auto *producer = value.getDefiningOp();
+    return producer &&
+           mlir::hasEffect<mlir::MemoryEffects::Allocate>(producer, value);
+  };
+  if (src == dst && src.getElementType().isInteger(1) &&
+      src.getLayout().isIdentity() && ownsStorage(source) &&
+      ownsStorage(destination)) {
+    auto descriptor = getContiguousDescriptor(rewriter, op, dst);
+    if (mlir::failed(descriptor))
+      return mlir::failure();
+    return MovementDescriptorPair{*descriptor, *descriptor};
+  }
   if (canCopyPackedBytes(source, destination)) {
     auto descriptor = getContiguousDescriptor(rewriter, op, dst);
     if (mlir::failed(descriptor))

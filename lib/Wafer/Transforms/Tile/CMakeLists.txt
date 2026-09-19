@@ -2,6 +2,7 @@ add_mlir_library(WaferTileTransforms
   BoundaryMovement.cpp
   BooleanReduction.cpp
   DistributedCollectiveMovement.cpp
+  ElementwisePayloads.cpp
   ExecutionStructure.cpp
   GemmFinalization.cpp
   GatherLowering.cpp

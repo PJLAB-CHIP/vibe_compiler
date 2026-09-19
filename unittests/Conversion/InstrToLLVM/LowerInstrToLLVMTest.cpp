@@ -1407,6 +1407,80 @@ TEST(LowerInstrToTargetLLVMTest, RejectsUnprovenCopySubviewEndpoints) {
   }
 }
 
+TEST(LowerInstrToTargetLLVMTest, PackedCopyUsesOnlyCompleteBlockedAllocations) {
+  for (llvm::StringRef layout : {"cx", "ncx"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (bool partial : {false, true}) {
+        SCOPED_TRACE(
+            llvm::formatv("{0}:{1}:{2}", layout, extent, partial).str());
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        auto type =
+            llvm::formatv("memref<2x{0}x197xi1, #wafer.memory<spm, {1}>>",
+                          extent, layout)
+                .str();
+        auto destType =
+            partial ? llvm::formatv("memref<2x{0}x197xi1, "
+                                    "strided<[{1},197,1], offset: {1}>, "
+                                    "#wafer.memory<spm, {2}>>",
+                                    extent, extent * 197, layout)
+                          .str()
+                    : type;
+        auto destination = partial ? llvm::formatv(R"mlir(
+          %base = memref.alloc() : memref<3x{0}x197xi1, #wafer.memory<spm, {1}>>
+          %dest = memref.subview %base[1,0,0] [2,{0},197] [1,1,1]
+            : memref<3x{0}x197xi1, #wafer.memory<spm, {1}>> to {2}
+        )mlir",
+                                                   extent, layout, destType)
+                                         .str()
+                                   : "%dest = memref.alloc() : " + type;
+        auto text = llvm::formatv(R"mlir(module {{ func.func @main() {{
+          %token = arith.constant false
+          %unused = wafer.tile.region(%token : i1) -> (i1) {{
+          ^bb0(%done: i1):
+            %source = memref.alloc() : {0}
+            {1}
+            wafer.tile.copy_into %source into %dest : {0} into {2}
+            wafer.tile.yield %done : i1
+          }
+          return
+        } })mlir",
+                                  type, destination, destType)
+                        .str();
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        wafer::TileRegionOp region;
+        module->walk([&](wafer::TileRegionOp op) { region = op; });
+        wafer::TileRegionToInstrLoweringSession session(context);
+        EXPECT_EQ(
+            mlir::succeeded(wafer::convertTileRegionToInstr(region, session)),
+            !partial);
+        EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module),
+                  partial ? 0u : 1u);
+        if (partial)
+          continue;
+        module->walk([&](wafer::InstrGatherScatterOp op) {
+          auto src = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+          auto info = wafer::computeWaferPhysicalTensorInfo(src);
+          ASSERT_TRUE(info);
+          EXPECT_EQ(op.getByteCountAttr().getInt(), info->physicalBytes);
+          EXPECT_EQ(op.getInnerBytesAttr().getInt(), info->physicalBytes);
+          EXPECT_EQ(op.getSrcIterationsAttr().asArrayRef(),
+                    (llvm::ArrayRef<int64_t>{1, 1, 1}));
+          EXPECT_EQ(op.getDstIterationsAttr().asArrayRef(),
+                    (llvm::ArrayRef<int64_t>{1, 1, 1}));
+          EXPECT_FALSE(op.getSrcOffsetAttr());
+          EXPECT_FALSE(op.getDstOffsetAttr());
+        });
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_TRUE(mlir::succeeded(
+            wafer::target_llvm_detail::verifyTargetInstructionFormats(
+                *module)));
+      }
+}
+
 TEST(LowerInstrToTargetLLVMTest, DescriptorReusePreservesEachActualMovement) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
@@ -1470,6 +1544,8 @@ TEST(LowerInstrToTargetLLVMTest, DescriptorReusePreservesEachActualMovement) {
 }
 
 TEST(LowerInstrToTargetLLVMTest, DescriptorReuseDoesNotCacheUnsupportedCopies) {
+  // Unlike a complete same-encoding byte copy, this conversion needs packed
+  // bit movement between different physical mappings and remains unsupported.
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -1484,9 +1560,9 @@ TEST(LowerInstrToTargetLLVMTest, DescriptorReuseDoesNotCacheUnsupportedCopies) {
         %unused = wafer.tile.region(%token : i1) -> (i1) {
         ^bb0(%done: i1):
           %a = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
-          %b = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
+          %b = memref.alloc() : memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
           memref.copy %a, %b : memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
-                           to memref<1x1024x65xi1, #wafer.memory<spm, ncx>>
+                           to memref<1x1024x65xi1, #wafer.memory<spm, tensor>>
           wafer.tile.yield %done : i1
         }
         return
@@ -1551,6 +1627,188 @@ module {{
         EXPECT_EQ(op.getDest().getType(), outputType);
       });
     }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     DifferentLayoutFamiliesUseProvenTraversalWithoutMovement) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (bool reverse : {false, true})
+        for (bool mapped : {false, true}) {
+          SCOPED_TRACE(
+              llvm::formatv("{0}:{1}:{2}:{3}", dtype, extent, reverse, mapped)
+                  .str());
+          mlir::DialectRegistry registry;
+          registerTargetConversionDialects(registry);
+          mlir::MLIRContext context(registry);
+          context.loadAllAvailableDialects();
+          auto from =
+              llvm::formatv("memref<1x{0}x128x{1}, #wafer.memory<spm, {2}>>",
+                            extent, dtype, reverse ? "cx" : "ncx")
+                  .str();
+          auto to =
+              llvm::formatv("memref<1x{0}x128x{1}, #wafer.memory<spm, {2}>>",
+                            extent, dtype, reverse ? "ncx" : "cx")
+                  .str();
+          llvm::StringRef maps =
+              mapped ? "{indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, "
+                       "affine_map<(d0,d1,d2)->(d0,d1,d2)>]}"
+                     : "";
+          auto text = llvm::formatv(R"mlir(module {{ func.func @main() {{
+          wafer.tile.region() -> () {{
+            %src = memref.alloc() : {0}
+            %result = wafer.tile.elementwise <exp> %src {2} : ({0}) -> {1}
+            wafer.tile.yield
+          }
+          return
+        } })mlir",
+                                    from, to, maps)
+                          .str();
+          auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+          ASSERT_TRUE(module) << text;
+          wafer::TileRegionOp region;
+          module->walk([&](wafer::TileRegionOp op) { region = op; });
+          wafer::TileRegionToInstrLoweringSession session(context);
+          ASSERT_TRUE(mlir::succeeded(
+              wafer::convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+          EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 2u);
+          EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*module), 1u);
+          EXPECT_TRUE(mlir::succeeded(
+              wafer::target_llvm_detail::verifyTargetInstructionFormats(
+                  *module)));
+        }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     ConvertUsesSelectedDifferentFamilyWithoutMovement) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool reverse : {false, true}) {
+      mlir::DialectRegistry registry;
+      registerTargetConversionDialects(registry);
+      mlir::MLIRContext context(registry);
+      context.loadAllAvailableDialects();
+      auto source =
+          llvm::formatv("memref<1x{0}x128x{1}, #wafer.memory<spm, ncx>>",
+                        extent, reverse ? "bf16" : "f16")
+              .str();
+      auto dest = llvm::formatv("memref<1x{0}x128x{1}, #wafer.memory<spm, cx>>",
+                                extent, reverse ? "f16" : "bf16")
+                      .str();
+      auto text = llvm::formatv(R"mlir(module {{ func.func @main() {{
+        wafer.tile.region() -> () {{
+          %src = memref.alloc() : {0}
+          %result = wafer.tile.compute.convert %src : {0} to {1}
+          wafer.tile.yield
+        }
+        return
+      } })mlir",
+                                source, dest)
+                      .str();
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module) << text;
+      wafer::TileRegionOp region;
+      module->walk([&](wafer::TileRegionOp op) { region = op; });
+      wafer::TileRegionToInstrLoweringSession session(context);
+      ASSERT_TRUE(
+          mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+      EXPECT_EQ(countOps<wafer::InstrConvertOp>(*module), 1u);
+      EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+      EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 2u);
+      EXPECT_TRUE(mlir::succeeded(
+          wafer::target_llvm_detail::verifyTargetInstructionFormats(*module)));
+    }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     LinearCTValidatesActualTraversalAcrossFamiliesAndDtypes) {
+  enum class Case { Compatible, Padding, Stride, Dtype };
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef kind :
+         {"elementwise", "convert", "bit2fp", "mask_move"})
+      for (Case test :
+           {Case::Compatible, Case::Padding, Case::Stride, Case::Dtype}) {
+        if (test == Case::Dtype && kind != "convert")
+          continue;
+        SCOPED_TRACE(
+            llvm::formatv("{0}:{1}:{2}", extent, kind, static_cast<int>(test))
+                .str());
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        auto shape = test == Case::Compatible || test == Case::Stride
+                         ? llvm::formatv("1x1x{0}", extent).str()
+                         : llvm::formatv("2x{0}x197", extent).str();
+        auto source =
+            llvm::formatv("memref<{0}x{1}, {2}#wafer.memory<spm, {3}>>", shape,
+                          kind == "bit2fp" ? "i1" : "f16",
+                          test == Case::Stride ? "strided<[4096, 4096, 2]>, "
+                                               : "",
+                          test == Case::Stride ? "tensor" : "ncx")
+                .str();
+        auto dest =
+            llvm::formatv("memref<{0}x{1}, #wafer.memory<spm, {2}>>", shape,
+                          kind == "convert"
+                              ? (test == Case::Dtype ? "f32" : "bf16")
+                              : "f16",
+                          test == Case::Stride ? "tensor" : "cx")
+                .str();
+        std::string instruction;
+        if (kind == "elementwise")
+          instruction =
+              llvm::formatv(
+                  "wafer.instr.elementwise #wafer.instr_elementwise_kind<abs> "
+                  "%src into %dst : {0} into {1}",
+                  source, dest)
+                  .str();
+        else if (kind == "convert")
+          instruction =
+              llvm::formatv("wafer.instr.convert "
+                            "#wafer.instr_convert_kind<{0}> %src into "
+                            "%dst {1} : {2} to {3}",
+                            test == Case::Dtype ? "fp16_fp32" : "fp16_bf16",
+                            test == Case::Dtype ? ""
+                                                : "{rounding_mode = 0 : i64}",
+                            source, dest)
+                  .str();
+        else if (kind == "bit2fp")
+          instruction =
+              llvm::formatv("wafer.instr.bit2fp %src into %dst : {0} to {1}",
+                            source, dest)
+                  .str();
+        else
+          instruction = llvm::formatv("wafer.instr.mask_move %src, %src into "
+                                      "%dst : {0}, {0} into {1}",
+                                      source, dest)
+                            .str();
+        auto text =
+            llvm::formatv(
+                "module {{ func.func @main() {{ %src = memref.alloc() : {0}\n"
+                "%dst = memref.alloc() : {1}\n{2}\nreturn } }",
+                source, dest, instruction)
+                .str();
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        std::string diagnostics;
+        mlir::ScopedDiagnosticHandler handler(
+            &context, [&](mlir::Diagnostic &diagnostic) {
+              llvm::raw_string_ostream stream(diagnostics);
+              diagnostic.print(stream);
+              return mlir::success();
+            });
+        auto result =
+            wafer::target_llvm_detail::verifyTargetInstructionFormats(*module);
+        EXPECT_EQ(mlir::succeeded(result), test == Case::Compatible)
+            << diagnostics;
+        if (test != Case::Compatible) {
+          EXPECT_NE(diagnostics.find("unsupported_target_physical_traversal"),
+                    std::string::npos)
+              << diagnostics;
+        }
+      }
 }
 
 TEST(LowerInstrToTargetLLVMTest, ScalarRHSHasNoStorageOrMovement) {

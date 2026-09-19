@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/ExactPBQPSolver.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
@@ -208,6 +209,75 @@ TEST(ExactPBQPSolverTest, InvalidIncumbentIsABrokenCallerContract) {
             ExactPBQPStatus::BrokenContract);
 }
 
+TEST(ExactPBQPSolverTest, ExhaustionRetainsSearchComponentsAndNumericOptima) {
+  // Tiny finite graphs are intentional: enumerate all assignments as an
+  // independent oracle, and interrupt every solver work boundary.
+  for (unsigned componentCount : {1u, 2u}) {
+    ExactPBQPProblem problem;
+    for (unsigned node = 0; node < 4 * componentCount; ++node)
+      problem.variables.push_back({{9, 0, 4}});
+    for (unsigned component = 0; component < componentCount; ++component)
+      for (unsigned lhs = 0; lhs < 4; ++lhs)
+        for (unsigned rhs = lhs + 1; rhs < 4; ++rhs)
+          problem.factors.push_back(
+              factor(component * 4 + lhs, component * 4 + rhs, 3,
+                     [](uint32_t a, uint32_t b) { return a == b ? 0 : 2; }));
+    auto expected = bruteForce(problem);
+    ASSERT_TRUE(expected);
+    std::vector<uint32_t> initial(problem.variables.size(), 0);
+    ExactPBQPCost previous = 9 * initial.size();
+    bool keptPartialSearch = false, keptNumericOptimum = false;
+    bool keptComponent = false;
+    for (uint64_t budget = 0; budget < 1600; ++budget) {
+      auto solved = solve(problem, budget, initial.size(), initial);
+      SCOPED_TRACE(::testing::Message() << componentCount << "/" << budget);
+      ASSERT_TRUE(solved.status == ExactPBQPStatus::Optimal ||
+                  solved.status == ExactPBQPStatus::Feasible);
+      ASSERT_EQ(solved.assignment.size(), initial.size());
+      ASSERT_TRUE(solved.cost);
+      EXPECT_LE(solved.work, budget);
+      EXPECT_LE(*solved.cost, previous);
+      previous = *solved.cost;
+      // Evaluate this exact returned assignment through the independent oracle.
+      auto fixed = problem;
+      for (unsigned node = 0; node < fixed.variables.size(); ++node)
+        for (unsigned state = 0; state < 3; ++state)
+          if (state != solved.assignment[node])
+            fixed.variables[node].unaryCosts[state] = kExactPBQPInfinity;
+      auto checked = bruteForce(fixed);
+      ASSERT_TRUE(checked);
+      EXPECT_EQ(solved.cost, checked->first);
+      EXPECT_LE(solved.lowerBound, *solved.cost);
+      if (solved.status == ExactPBQPStatus::Optimal) {
+        EXPECT_EQ(solved.cost, expected->first);
+        EXPECT_EQ(solved.assignment, expected->second);
+      } else {
+        keptPartialSearch |=
+            *solved.cost > expected->first && *solved.cost < 9 * initial.size();
+        keptNumericOptimum |= solved.cost == expected->first &&
+                              solved.lowerBound == expected->first;
+        if (componentCount == 2)
+          keptComponent |=
+              llvm::all_of(llvm::ArrayRef(solved.assignment).take_front(4),
+                           [](uint32_t state) { return state == 1; }) &&
+              llvm::all_of(llvm::ArrayRef(solved.assignment).drop_front(4),
+                           [](uint32_t state) { return state == 0; });
+      }
+      if (budget % 31 == 0) {
+        auto repeated = solve(problem, budget, initial.size(), initial);
+        EXPECT_EQ(solved.assignment, repeated.assignment);
+        EXPECT_EQ(solved.status, repeated.status);
+        EXPECT_EQ(solved.work, repeated.work);
+      }
+    }
+    EXPECT_TRUE(keptPartialSearch);
+    EXPECT_TRUE(keptNumericOptimum);
+    if (componentCount == 2) {
+      EXPECT_TRUE(keptComponent);
+    }
+  }
+}
+
 TEST(ExactPBQPSolverTest,
      DisconnectedComponentsPreserveGlobalCostAndAssignmentTie) {
   ExactPBQPProblem problem = makeProblem(/*nodes=*/6, /*states=*/2);
@@ -261,6 +331,11 @@ TEST(ExactPBQPSolverTest,
   EXPECT_EQ(first.assignment.front(), 0u);
   EXPECT_EQ(first.assignment, second.assignment);
   EXPECT_EQ(first.cost, second.cost);
+  auto seeded =
+      solve(problem, /*workLimit=*/1000,
+            /*semanticTieVariableCount=*/0, std::vector<uint32_t>{0, 1});
+  EXPECT_EQ(seeded.status, ExactPBQPStatus::Optimal);
+  EXPECT_EQ(seeded.cost, first.cost);
 }
 
 } // namespace

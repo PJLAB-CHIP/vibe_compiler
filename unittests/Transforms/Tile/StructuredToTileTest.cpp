@@ -2403,7 +2403,8 @@ TEST_F(StructuredToTileTest,
     ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
     EXPECT_EQ(lowered.statistics.contractions, 1u);
     EXPECT_EQ(lowered.statistics.reductions, 1u);
-    EXPECT_EQ(lowered.statistics.elementwiseExpressions, 1u);
+    // The sub and exp are separate current SSA values before layout selection.
+    EXPECT_EQ(lowered.statistics.elementwiseExpressions, 2u);
     EXPECT_GE(lowered.statistics.elementwiseOperations, 2u);
     EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
     EXPECT_EQ(countOps<ComputeGemmOp>(module->getOperation()), 1u);
@@ -3914,7 +3915,10 @@ TEST_F(StructuredToTileTest,
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         mlir::Value input;
         module->walk([&](mlir::linalg::GenericOp generic) {
-          input = generic.getDpsInputOperand(0)->get();
+          // Target decomposition may append a broadcast after a compact
+          // pointwise result. Check the original input's view, not that result.
+          if (!input)
+            input = generic.getDpsInputOperand(0)->get();
         });
         ASSERT_TRUE(input);
         auto sourceType = mlir::cast<mlir::MemRefType>(input.getType());

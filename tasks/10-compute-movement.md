@@ -125,9 +125,11 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 
 输出为实际Linalg select、FP16 min/max和compare SSA，直接交同一layout/One-Shot bufferization及Tile→Instr路径。
 所有临时存储和completion由下游current IR决定，不预测SPM容量，也不添加新的Instr或ABI形式。
-归约前后的BOOL publication copy复用既有packed-byte证明：仅Tensor布局、连续且current SSA已证明byte-aligned的两端，
+归约前后的BOOL publication copy复用既有packed-byte证明：Tensor布局、连续且current SSA已证明byte-aligned的两端，
 目标必须整字节覆盖或拥有最后一个padding byte，才用单个按字节计数的SPM GatherScatter复制。
 不改变BOOL格式，不调用native BOOL Memset；部分字节写入及非对齐切片继续拒绝，不覆盖相邻谓词。
+同type、identity memref layout且两端均有current-IR Allocate effect的完整BOOL allocation还可直接复制全部physical bytes，
+包括Tensor/Cx/NCx及allocation自有的padding；不将此证明推广到view、部分destination或不同encoding的转换。
 完整连续BOOL allocation的fill显式采用physical footprint，按整字节I8路径包含它自己拥有的尾部unused bits；
 不能把这一规则用于共享尾字节的view。
 CT traversal长度由encoding的valid与layout padding元素决定；BOOL末字节用于分配的unused bits不属于计算元素，

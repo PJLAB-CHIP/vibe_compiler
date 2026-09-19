@@ -49,9 +49,8 @@ mlir::LogicalResult ComputeConvertOp::verify() {
     if (!hasWaferMemorySpace(type, MemorySpace::SPM))
       return emitOpError("convert storage values must use SPM memory space");
   }
-  if (!sourceLayout || !resultLayout || sourceLayout != resultLayout)
-    return emitOpError(
-        "convert source and result must use the same Wafer layout family");
+  if (!sourceLayout || !resultLayout)
+    return emitOpError("convert source and result must carry Wafer layouts");
   if (sourceTensor->getShape() != resultTensor->getShape())
     return emitOpError("convert source and result shapes must match");
   mlir::Type sourceElement = sourceTensor->getElementType();

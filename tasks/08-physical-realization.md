@@ -155,6 +155,12 @@ Baseline与search使用同一完整合法label域。合法域只由明确的targ
 参考[MLIR Linalg](https://mlir.llvm.org/docs/Dialects/Linalg/)及pinned DecomposeLinalgOps：复用现有SSA/maps表达，
 但不能把原紧凑scalar/row中间值机械扩成完整迭代域。BOOL及跨dtype的直接执行必须证明physical element ordinal一致，
 必要的布局转换显式物化；同名layout不能代替此证明。下游不得因predicate或rank变化统一指定Tensor。
+Pointwise factor只给实际支持的直接执行或mapped operand路径计有限成本：后者须证明所选result encoding内的
+materialized operand与result遍历兼容；mapped select还须证明原predicate encoding中的Bit2Fp兼容。
+没有这些证明的layout组合是target硬约束，不得给一个尚未物化的Tensor中转执行方案计价来接受它。
+同一次只读query内，相同source/destination完整type与normalized indexing map复用同一pure traversal证明；
+physical traversal与unit broadcast分别缓存，key包含shape、dtype、encoding及map。缓存不保存SSA、owner、SPM结论或assignment，
+query结束即销毁，不跨candidate或IR mutation复用；预算、factor成本和可接受组合保持不变。
 本次分解保留原有scalar常量/cast及rank-0计算的执行路径，不建立“标量统一由CT执行”的规则。
 执行单元选择须比较actual计算次数、数据位置、复用，以及RISC-V计算和CT发射/搬运/同步成本；
 广播后的元素数不等于scalar自身的计算次数。本项不声称已实现这种规模与成本选择。
@@ -171,7 +177,10 @@ One-Shot产生actual memref stride后，在同一layout transformation内验证c
 | 1024/1025/1031、rank3+的固定布局端点及多个自由elementwise | 合法域保留跨普通算子传播的布局；包含Tensor更省转换的对称正例；actual materialization及Instr |
 | 残余搜索、分量、同分选择三处预算中断 | 完整assignment逐factor验证，低成本解不丢；小规模穷举oracle、同预算确定性、无伪Optimal |
 | FP16/BF16/F32、BOOL、cast、scalar/row广播及投影 | 每个中间值进入current SSA；无广播扩张，无下游重选；原算术/dtype、实际Instr/completion/SPM |
+| 多行、宽128的blocked输入与BOOL compare/select，1024/1025/1031 | 直接或mapped traversal均有target证明；完整blocked BOOL publication按actual physical bytes复制；partial/view不误放行；实际Instr/completion/SPM |
 | prefill、Q=1及短Q decode | 正式source到包/no-card及实际转换次数/bytes；Q2补充完整TargetModel数值；未恢复设备不签性能或实卡通过 |
+| Private pointwise publication，rank3、1024/1025/1031、FP16/BF16 | 同一dynamic scope的fresh结果精确复制到私有allocation，后续只有已证明不逃逸的只读consumer时，消除publication后由既有last-use规则选择destination；select精确复用false buffer，直接Instr/completion/SPM通过 |
+| Publication的共享读、额外写入、view/escape、跨loop、pipeline绑定及无reader | 共享读保留旧值且不得原地覆盖；其余无充分证明的publication保持原有storage关系，不因消除copy改变可观察读写或pipeline绑定 |
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。

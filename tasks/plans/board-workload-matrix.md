@@ -78,9 +78,42 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 #### 交接与接续计划
 
 本节记录2026-09-19讨论后的接续步骤，属于原`board-testing`，状态以progress为准。
-代码工作区保留在原checkout；上一个代码提交为`53de6c01`。本轮代码和测试尚未提交，最新两处修改尚未构建。
+交接时，代码工作区保留在原checkout；上一个代码提交为`53de6c01`。本轮代码和测试尚未提交，最新两处修改尚未构建。
 既有`third_party/pytorch-xla`修改及`dcrmi.log`、`log/`不属于本次修复，保留原样。
-本轮三个定向产品检查已经退出，`results.json`均为exit 0；没有本轮后台续跑队列。本次交接不启动构建、实卡或新一轮搜索。
+交接前的三个定向产品检查已经退出，`results.json`均为exit 0；交接时没有后台续跑队列。
+用户随后确认重启并授权继续完成本节计划；该授权不重新开启更早停止的其它批次。
+
+本轮接续已完成第1步主机修复：不同layout family直接执行仍须通过target physical traversal；private publication检查
+共享读、额外写入、alias/escape、跨loop、pipeline绑定、无reader及source共享。扩大回归另发现并修复两处直接下游缺口：
+pointwise factor曾给lowering不能实现的跨dtype遍历计有限成本；完整blocked BOOL allocation的publication未走physical-byte复制。
+前者改为按实际direct/mapped执行路径证明target兼容，后者只对同type、identity memref layout且两端Allocate effect明确的
+完整storage成立，部分destination与跨encoding packed-bit转换仍拒绝。
+
+本轮先运行完整IR/Analysis/Planning/Conversion/Transforms及lit，其中Transforms 477项有1项temporal finalizer失败；
+修复后重跑42项layout、46项temporal、14项execution、6项attention decomposition、60项StructuredToTile和全部37项conversion，
+全部通过；本轮lit通过，canonical完整增量构建后第二次Ninja no-op。原失败及修复后日志均保存在
+`build/test/attention-layout-fix/resumed/host-checks/`。
+第2步首轮prefill与Q2 fresh构包/no-card通过；Q2完整TargetModel的两个KV输出exact，attention满足原cosine/relative-L2门槛。
+其fresh source-program与前一检查点逐文件相同，逐Tile GEMM/循环签名相同。Prefill静态GS为904、43,845,632 bytes、NCC join 16，
+相比分解前976、48,046,080 bytes已消除退化；动态GS统计仍unknown。Q2静态/动态GS均为602、2,902,096 bytes，NCC join 43。
+Q1第一步在600秒主机编译期限停止，未启动第二步；该结果保留为失败，不登记no-card或两步KV资格。
+定向第一个actual候选的计时显示布局query构建12.424秒、PBQP求解0.181秒；该候选的actual SPM capacity rejection保持原义。
+Query内相同type/map物理证明复用后的同一候选构建为0.708秒、PBQP求解0.185秒；实际证明433次、复用18,895次。
+除新增证明计数外，其它compile counters逐项相同，actual SPM仍拒绝同一2097152-byte demand；该定向编译不登记为产品通过。
+证明复用后103项layout/StructuredToTile及原temporal失败用例通过，canonical完整增量构建及第二次no-op通过。
+原8/42产品复测三项均exit 0：prefill 63.351秒、Q2 80.104秒、Q1两步561.213秒（并行主机单样本，非匹配性能结论）。
+新产物位于`build/test/attention-layout-fix/reused-proofs/`；命令、工具/源码身份、完整日志及results同时保留。
+Prefill和Q2完整package与证明复用前逐字节相同，Q2完整TargetModel仍通过；Q1两步均完成fresh构包/no-card。
+三项fresh source-program与前一检查点逐文件相同，各步逐Tile GEMM/循环签名不变。
+Q1第一步相比分解前静态GS 2984→2980、120,131,968→120,104,320 bytes，动态GS 3756→3749、
+188,030,336→187,978,112 bytes；NCC均199。相对退化检查点，该步winner由candidate 29变为13，
+部分DTE切回DDR，故NCC由144回到199；没有增加循环内join，不能将通信方案变化归因于private copy消除。
+第二步保留candidate 29及144次NCC，静态GS 3903→3687、112,179,584→112,125,696 bytes，
+动态GS 5214→4782、180,241,792→180,134,016 bytes。各步steady-state NCC均0。
+实际计数、静态计数及逐Tile签名分别见`resumed/actual-work-comparison.json`、`static-work-comparison.json`和
+`fixed-structure-comparison.json`。本轮layout修复无未解释搬运增长，第1、2步主机边界闭合，不扩大搜索预算。
+Q1主机第二步使用reference KV；本轮尚未验证板端actual KV接续、guard和匹配设备耗时。
+这不表示第3至6步已完成，也不登记设备健康或新增实卡资格。
 
 接续前必须区分三个边界：
 

@@ -35,9 +35,10 @@ def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
   let summary = "target-abstract tile element-type conversion";
   let description = [{
     `wafer.tile.compute.convert` changes the element type of one tile-local SPM
-    tensor while preserving its logical shape and tensor layout.  It records
-    the numeric cast before instruction lowering selects a target conversion
-    route and any route-specific parameter.
+    tensor while preserving its logical coordinates. Source and result may
+    carry different selected layouts when their physical element traversals
+    are compatible. It records the numeric cast before instruction lowering
+    selects a target conversion route and any route-specific parameter.
   }];
 
   let arguments = (ins Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source);

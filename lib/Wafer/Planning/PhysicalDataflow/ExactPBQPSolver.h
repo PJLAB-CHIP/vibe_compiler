@@ -52,16 +52,17 @@ struct ExactPBQPSolveOptions {
   uint32_t semanticTieVariableCount = std::numeric_limits<uint32_t>::max();
   /// Optional complete assignment constructed by the caller from its typed
   /// domains. The solver validates it against every unary cost and factor.
-  /// If exact optimization exhausts its work budget, this assignment is
-  /// returned with Feasible status; it is never treated as Optimal.
+  /// It seeds the complete incumbent. Budget exhaustion retains the best
+  /// validated complete assignment found, including solved components and
+  /// numeric optima whose semantic tie-break has not finished, as Feasible.
   std::optional<std::vector<uint32_t>> initialFeasibleAssignment;
 };
 
 /// Splits disconnected components, propagates one-state variables at any
 /// degree, applies exact degree-0/1/2 PBQP reductions, then exhaustively solves
 /// each residual core with stable semantic tie-breaking. `workLimit` is a
-/// compiler resource bound. Exhaustion returns Feasible when the caller
-/// supplied a valid complete assignment, otherwise Indeterminate; it never
+/// compiler resource bound. Exhaustion returns Feasible when a complete
+/// assignment was supplied or found, otherwise Indeterminate; it never
 /// turns resource exhaustion into NoSolution.
 /// `semanticTieVariableCount` limits the lexicographic tie to the leading
 /// externally meaningful variables; trailing auxiliary-factor variables are

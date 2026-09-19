@@ -16,6 +16,9 @@ namespace wafer::compiler::detail {
 /// Boundary movement uses the same predicate to retain readable DDR inputs.
 bool isScalarIntegerMap(mlir::Operation *operation);
 
+/// Scalar target vocabulary shared with pre-layout payload materialization.
+bool isSupportedElementwiseScalarOperation(mlir::Operation *operation);
+
 enum class StructuredToTileFailureKind : uint8_t {
   None,
   Unsupported,

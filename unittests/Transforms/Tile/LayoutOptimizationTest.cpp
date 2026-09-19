@@ -1,6 +1,7 @@
 //===- LayoutOptimizationTest.cpp --------------------------------------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
@@ -1569,7 +1570,6 @@ TEST_F(LayoutOptimizationTest,
   EXPECT_GT(firstResult.statistics.pbqpFactors,
             firstResult.statistics.tupleVariables);
   EXPECT_GT(firstResult.statistics.solverWork, 0u);
-  EXPECT_GT(firstResult.statistics.dominatedLayoutStatesPruned, 0u);
   EXPECT_EQ(firstResult.statistics.selectedMaterializations, 2u);
   EXPECT_EQ(firstResult.statistics.layoutMaterializationsAfter, 2u);
   EXPECT_EQ(countOps<LayoutMaterializeOp>(first->getOperation()), 2u);
@@ -1605,9 +1605,6 @@ TEST_F(LayoutOptimizationTest,
                  static_cast<int>(firstResult.statistics.pbqpFactors));
   RecordProperty("layout_pbqp_solver_work",
                  static_cast<int>(firstResult.statistics.solverWork));
-  RecordProperty(
-      "layout_dominated_states_pruned",
-      static_cast<int>(firstResult.statistics.dominatedLayoutStatesPruned));
   RecordProperty("layout_wall_ms", static_cast<int>(wallMilliseconds));
 }
 
@@ -1689,7 +1686,6 @@ TEST_F(LayoutOptimizationTest,
   EXPECT_EQ(countOps<mlir::memref::CollapseShapeOp>(first->getOperation()), 3u);
   EXPECT_EQ(firstResult.statistics.bufferizationInvocations, 1u);
   EXPECT_EQ(firstResult.statistics.redundantPublicationCopies, 0u);
-  EXPECT_GT(firstResult.statistics.dominatedLayoutStatesPruned, 0u);
   EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*first)));
   EXPECT_TRUE(mlir::succeeded(
       checkStructuredBufferRelationsCurrent(*first, firstRelations)));
@@ -2830,6 +2826,314 @@ TEST_F(LayoutOptimizationTest,
       auto lowered = lowerStructuredComputeToTile(*module, relations);
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
       ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
+TEST_F(LayoutOptimizationTest, PointwiseChainsRetainEveryLegalLayoutChoice) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (auto layout : {MemLayout::Tensor, MemLayout::NCx}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(static_cast<unsigned>(layout));
+      std::string type = "tensor<2x" + std::to_string(extent) + "x64xf16>";
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+         << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+         << "func.func @entry(%unused: " << type << ") { "
+         << "%r = wafer.tile.region(%unused : " << type << ") -> (" << type
+         << ") { ^bb0(%a: " << type << "): "
+         << "%one = arith.constant 1.0 : f16 "
+         << "%v0 = bufferization.alloc_tensor() copy(%a) {memory_space = "
+         << "#wafer.memory<spm, " << stringifyMemLayout(layout)
+         << ">} : " << type;
+      for (unsigned i = 1; i <= 3; ++i) {
+        ir << " %e" << i << " = ";
+        if (i == 3)
+          ir << "bufferization.alloc_tensor() {memory_space = "
+             << "#wafer.memory<spm, " << stringifyMemLayout(layout) << ">}";
+        else
+          ir << "tensor.empty()";
+        ir << " : " << type << " %v" << i
+           << " = linalg.generic {indexing_maps = [#id,#id], "
+              "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+           << "ins(%v" << i - 1 << " : " << type << ") outs(%e" << i << " : "
+           << type << ") { ^bb" << i << "(%x: f16, %old: f16): "
+           << "%sum = arith.addf %x, %one : f16 linalg.yield %sum : f16 } -> "
+           << type;
+      }
+      ir << " wafer.tile.yield %v3 : " << type << " } return } } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto relations = outputRelation(*module);
+      auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_EQ(result.status, ExactPBQPStatus::Optimal) << result.detail;
+      EXPECT_EQ(result.statistics.layoutMaterializationsAfter,
+                layout == MemLayout::Tensor ? 0u : 1u);
+      unsigned pointwise = 0;
+      module->walk([&](mlir::linalg::GenericOp op) {
+        ++pointwise;
+        auto type =
+            mlir::cast<mlir::MemRefType>(op.getDpsInits().front().getType());
+        auto source =
+            mlir::cast<mlir::MemRefType>(op.getDpsInputs().front().getType());
+        auto identity = analysis::IndexRelation::identity(type.getShape());
+        ASSERT_TRUE(identity.isExact());
+        EXPECT_TRUE(mlir::succeeded(
+            analysis::TransferRealizability::provePhysicalTraversal(
+                source, type, type.getShape(), *identity.get(),
+                *identity.get())));
+        // Aligned encodings can have identical element order. Ragged shapes
+        // distinguish the blocked choice from the compact one.
+        if (extent != 1024 || layout == MemLayout::Tensor) {
+          EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), layout);
+        }
+      });
+      EXPECT_EQ(pointwise, 3u);
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 3u);
+      EXPECT_EQ(countOps<LayoutMaterializeOp>(*module),
+                layout == MemLayout::Tensor ? 0u : 1u);
+      module->walk([&](ComputeElementwiseOp op) {
+        auto type = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+        if (extent != 1024 || layout == MemLayout::Tensor) {
+          EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), layout);
+        }
+        EXPECT_TRUE(mlir::isa<mlir::FloatType>(op.getInputs()[1].getType()));
+      });
+    }
+}
+
+TEST_F(LayoutOptimizationTest, PayloadSSAExposesCompactPredicatesAndCasts) {
+  for (auto element : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(extent);
+      std::string shape = "2x" + std::to_string(extent);
+      std::string input = "tensor<" + shape + "x64xf16>";
+      std::string row = "tensor<" + shape + "xf32>";
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+         << "#row = affine_map<(b,m,k)->(b,m)>\n"
+         << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+         << "func.func @entry(%arg: " << input << ", %row: " << row << ") { "
+         << "%r = wafer.tile.region(%arg, %row : " << input << ", " << row
+         << ") -> (" << input << ") { ^bb0(%a: " << input << ", %b: " << row
+         << "): %z = arith.constant 0.0 : f32 "
+         << "%e = tensor.empty() : " << input
+         << " %v = linalg.generic {indexing_maps = [#id,#row,#id], "
+            "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+         << "ins(%a, %b : " << input << ", " << row << ") outs(%e : " << input
+         << ") { ^bb1(%x: f16, %y: f32, %old: f16): "
+         << "%scalar_exp = math.exp %z : f32 "
+         << "%c = arith.cmpf ogt, %y, %z : f32 "
+         << "%wide = arith.extf %x : f16 to f32 "
+         << "%sub = arith.subf %wide, %y : f32 "
+         << "%exp = math.exp %sub : f32 "
+         << "%masked = arith.select %c, %exp, %scalar_exp : f32 "
+         << "%narrow = arith.truncf %masked : f32 to f16 "
+         << "linalg.yield %narrow : f16 } -> " << input
+         << " wafer.tile.yield %v : " << input << " } return } } }";
+      for (size_t at = 0; (at = text.find("f16", at)) != std::string::npos;) {
+        text.replace(at, 3, element);
+        at += std::char_traits<char>::length(element);
+      }
+      SCOPED_TRACE(element);
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto relations = outputRelation(*module);
+      auto unprepared = queryCurrentLayoutAssignment(*module);
+      EXPECT_FALSE(unprepared.query);
+      auto prepared = prepareCurrentLayoutInput(*module, relations);
+      ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+      unsigned steps = 0, predicates = 0, scalarComputes = 0;
+      module->walk([&](mlir::linalg::GenericOp op) {
+        ++steps;
+        EXPECT_EQ(op.getBody()->getOperations().size(), 2u);
+        auto type =
+            mlir::cast<mlir::RankedTensorType>(op.getResult(0).getType());
+        if (type.getRank() == 0) {
+          ++scalarComputes;
+          EXPECT_TRUE(mlir::isa<mlir::math::ExpOp>(op.getBody()->front()));
+        }
+        if (type.getElementType().isInteger(1)) {
+          ++predicates;
+          EXPECT_EQ(type.getShape(), (llvm::ArrayRef<int64_t>{2, extent}));
+        }
+      });
+      EXPECT_EQ(steps, 7u);
+      EXPECT_EQ(predicates, 1u);
+      EXPECT_EQ(scalarComputes, 1u);
+      auto query = queryCurrentLayoutAssignment(*module);
+      ASSERT_TRUE(query.query) << query.outcome.detail;
+      auto assignment = query.query->solve(1048576);
+      auto layout = query.query->apply(*module, relations, assignment);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeConvertOp>(*module), 2u);
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 5u);
+      EXPECT_EQ(countOps<LayoutMaterializeOp>(*module),
+                layout.statistics.layoutMaterializationsAfter);
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      ASSERT_EQ(standalone->size(), 1u);
+      auto &tile = standalone->front();
+      TileRegionToInstrLoweringSession session(*context);
+      llvm::SmallVector<TileRegionOp> regions;
+      tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+      for (auto region : regions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      EXPECT_EQ(countOps<InstrConvertOp>(*tile.module), 2u);
+      EXPECT_GT(countOps<InstrBit2FpOp>(*tile.module), 0u);
+      TileMemoryPlanningFailure failure;
+      auto planned = planTileMemory(std::move(tile.module), &failure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+    }
+}
+
+TEST_F(LayoutOptimizationTest, BlockedPredicateUsesSupportedMappedTraversal) {
+  for (auto element : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(element);
+      SCOPED_TRACE(extent);
+      std::string type =
+          "tensor<1x" + std::to_string(extent) + "x128x" + element + ">";
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+         << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+         << "func.func @entry(%arg: " << type << ") { "
+         << "%r = wafer.tile.region(%arg : " << type << ") -> (" << type
+         << ") { ^bb0(%a: " << type << "): "
+         << "%zero = arith.constant 0.0 : " << element
+         << " %input = bufferization.alloc_tensor() copy(%a) "
+            "{memory_space = #wafer.memory<spm, ncx>} : "
+         << type
+         << " %e = bufferization.alloc_tensor() "
+            "{memory_space = #wafer.memory<spm, ncx>} : "
+         << type
+         << " %v = linalg.generic {indexing_maps = [#id,#id], "
+            "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+         << "ins(%input : " << type << ") outs(%e : " << type
+         << ") { ^bb1(%x: " << element << ", %old: " << element << "): "
+         << "%predicate = arith.cmpf ogt, %x, %zero : " << element
+         << " %masked = arith.select %predicate, %zero, %x : " << element
+         << " linalg.yield %masked : " << element << " } -> " << type
+         << " wafer.tile.yield %v : " << type << " } return } } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto relations = outputRelation(*module);
+      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 2u);
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      ASSERT_EQ(standalone->size(), 1u);
+      auto &tile = standalone->front();
+      TileRegionToInstrLoweringSession session(*context);
+      llvm::SmallVector<TileRegionOp> regions;
+      tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+      for (auto region : regions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(
+          convertBufferizationCopiesToInstr(*tile.module, session)));
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+      EXPECT_EQ(countOps<InstrBit2FpOp>(*tile.module), 1u);
+      EXPECT_EQ(countOps<InstrMaskMoveOp>(*tile.module), 1u);
+      tile.module->walk([&](InstrBit2FpOp op) {
+        auto source = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+        auto destination = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+        auto identity = analysis::IndexRelation::identity(source.getShape());
+        ASSERT_TRUE(identity.isExact());
+        EXPECT_TRUE(mlir::succeeded(
+            analysis::TransferRealizability::provePhysicalTraversal(
+                source, destination, source.getShape(), *identity.get(),
+                *identity.get())));
+      });
+      TileMemoryPlanningFailure failure;
+      auto planned = planTileMemory(std::move(tile.module), &failure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+    }
+}
+
+TEST_F(LayoutOptimizationTest, CastSeparatesCoordinatesAndFixedPublication) {
+  for (int64_t extent : {1024, 1031})
+    for (bool transpose : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(transpose);
+      std::string input = "tensor<2x" +
+                          (transpose ? "64x" + std::to_string(extent)
+                                     : std::to_string(extent) + "x64") +
+                          "xf16>";
+      std::string output = "tensor<2x" + std::to_string(extent) + "x64xf32>";
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+         << "func.func @entry(%arg: " << input << ") { "
+         << "%r = wafer.tile.region(%arg : " << input << ") -> (" << output
+         << ") { ^bb0(%a: " << input << "): "
+         << "%e = bufferization.alloc_tensor() {memory_space = "
+            "#wafer.memory<spm, ncx>} : "
+         << output
+         << " %v = linalg.generic {indexing_maps = [affine_map<(b,m,k)->(b,"
+         << (transpose ? "k,m" : "m,k")
+         << ")>,affine_map<(b,m,k)->(b,m,k)>], "
+            "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+         << "ins(%a : " << input << ") outs(%e : " << output
+         << ") { ^bb1(%x: f16, %old: f32): "
+         << "%wide = arith.extf %x : f16 to f32 "
+         << "linalg.yield %wide : f32 } -> " << output
+         << " wafer.tile.yield %v : " << output << " } return } } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto relations = outputRelation(*module);
+      auto prepared = prepareCurrentLayoutInput(*module, relations);
+      ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+      EXPECT_EQ(countOps<mlir::linalg::GenericOp>(*module), 2u);
+      auto query = queryCurrentLayoutAssignment(*module);
+      ASSERT_TRUE(query.query) << query.outcome.detail;
+      auto assignment = query.query->solve(1048576);
+      auto layout = query.query->apply(*module, relations, assignment);
+      ASSERT_TRUE(layout.succeeded()) << layout.detail;
+      auto lowered = lowerStructuredComputeToTile(*module, relations);
+      ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+      EXPECT_EQ(countOps<ComputeConvertOp>(*module), 1u);
+      module->walk([&](ComputeConvertOp op) {
+        auto source = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+        auto result = mlir::cast<mlir::MemRefType>(op.getResult().getType());
+        EXPECT_EQ(source.getShape(), result.getShape());
+        auto identity = analysis::IndexRelation::identity(result.getShape());
+        ASSERT_TRUE(identity.isExact());
+        EXPECT_TRUE(mlir::succeeded(
+            analysis::TransferRealizability::provePhysicalTraversal(
+                source, result, result.getShape(), *identity.get(),
+                *identity.get())));
+      });
+      auto movement = materializeTileBoundaryMovement(*module, relations);
+      ASSERT_TRUE(movement.succeeded()) << movement.detail;
+      TileRegionToInstrLoweringSession session(*context);
+      llvm::SmallVector<TileRegionOp> regions;
+      module->walk([&](TileRegionOp region) { regions.push_back(region); });
+      for (auto region : regions)
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      EXPECT_EQ(countOps<InstrConvertOp>(*module), 1u);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
     }
 }
 
