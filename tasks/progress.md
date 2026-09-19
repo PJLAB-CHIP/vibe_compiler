@@ -36,6 +36,9 @@
 已停止设备执行并保存现场；当前进行安装包、实际固件/driver/runtime和历史故障的离线审计。
 已还原实际AP fatal bit 12→TDMA handler→EID上报路径，确认发行handler没有故障packet/PC快照；
 尚未取得故障命令，根因和修复未闭合。下一次设备执行须先准备能缩小问题的采集，不能直接重开矩阵。
+用户随后再次授权重启后尽快做单case观测。只读PMU采集器的16 Tile离线映射/数据/拒绝路径验证及
+所选当前BF16 4K 28-head prefill的fresh no-card已完成；等待新boot确认后，先验证真实寄存器读取，再单次执行。
+这一步不改firmware、driver或runtime清理，不将观测准备签作真实采集或根因修复。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。

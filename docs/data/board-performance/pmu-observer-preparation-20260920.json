@@ -1,0 +1,222 @@
+{
+  "date": "2026-09-20",
+  "scope": "单个当前BF16 4K 28-head prefill的只读PMU采集准备；实际设备读取尚未执行",
+  "artifact_root": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer",
+  "case": "attention-prefill-28-heads-4096",
+  "dtype": "bfloat16",
+  "spec": {
+    "pmu_base": 5832704,
+    "tile_stride": 8388608,
+    "registers": [
+      {
+        "name": "SCT_NCC_FIRST_CATCH",
+        "offset": 504
+      },
+      {
+        "name": "SCT_NCC_TDMA_LAST_CMD_INFO_31_0",
+        "offset": 636
+      },
+      {
+        "name": "SCT_NCC_TDMA_LAST_CMD_INFO_37_32",
+        "offset": 640
+      },
+      {
+        "name": "SCT_NCC_CAUGHT_EXCEPTION_STOP",
+        "offset": 644
+      },
+      {
+        "name": "SCT_NCC_LSU_TIMEOUT",
+        "offset": 652
+      },
+      {
+        "name": "SCT_NCC_LSU_TDMA_EXCEPTION_ENABLE",
+        "offset": 672
+      },
+      {
+        "name": "SCT_NCC_TDMA_EXE_TIME_31_0",
+        "offset": 356
+      },
+      {
+        "name": "SCT_NCC_TDMA_EXE_TIME_63_32",
+        "offset": 360
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_RAW_31_0",
+        "offset": 508
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_RAW_63_32",
+        "offset": 512
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_STAT_31_0",
+        "offset": 516
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_STAT_63_32",
+        "offset": 520
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_MASK_31_0",
+        "offset": 524
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_MASK_63_32",
+        "offset": 528
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_CMD_ID_31_0",
+        "offset": 532
+      },
+      {
+        "name": "SCT_NCC_WORKER0_EXCEPTION_CMD_ID_63_32",
+        "offset": 536
+      },
+      {
+        "name": "SCT_NCC_WORKER0_TDMA_INST_NUMS",
+        "offset": 32
+      },
+      {
+        "name": "SCT_NCC_WORKER0_TDMA_BLOCKING_TIME",
+        "offset": 56
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_RAW_31_0",
+        "offset": 540
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_RAW_63_32",
+        "offset": 544
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_STAT_31_0",
+        "offset": 548
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_STAT_63_32",
+        "offset": 552
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_MASK_31_0",
+        "offset": 556
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_MASK_63_32",
+        "offset": 560
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_CMD_ID_31_0",
+        "offset": 564
+      },
+      {
+        "name": "SCT_NCC_WORKER1_EXCEPTION_CMD_ID_63_32",
+        "offset": 568
+      },
+      {
+        "name": "SCT_NCC_WORKER1_TDMA_INST_NUMS",
+        "offset": 80
+      },
+      {
+        "name": "SCT_NCC_WORKER1_TDMA_BLOCKING_TIME",
+        "offset": 104
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_RAW_31_0",
+        "offset": 572
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_RAW_63_32",
+        "offset": 576
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_STAT_31_0",
+        "offset": 580
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_STAT_63_32",
+        "offset": 584
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_MASK_31_0",
+        "offset": 588
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_MASK_63_32",
+        "offset": 592
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_CMD_ID_31_0",
+        "offset": 596
+      },
+      {
+        "name": "SCT_NCC_WORKER2_EXCEPTION_CMD_ID_63_32",
+        "offset": 600
+      },
+      {
+        "name": "SCT_NCC_WORKER2_TDMA_INST_NUMS",
+        "offset": 128
+      },
+      {
+        "name": "SCT_NCC_WORKER2_TDMA_BLOCKING_TIME",
+        "offset": 152
+      }
+    ],
+    "header_sha256": "9d98194d9e73762ff607e5ae0e534facfb5c4d56cf3bcd36678b344e74ea7580"
+  },
+  "offline_validation": {
+    "passed": true,
+    "checks": [
+      "16 Tiles x 38 registers x 2 samples exact",
+      "read-only fixture sha256 unchanged",
+      "missing window rejected",
+      "wrong target rejected",
+      "unaligned base rejected",
+      "duplicate window rejected",
+      "offset 1 rejected",
+      "offset 4096 rejected",
+      "short mapping rejected"
+    ],
+    "fixture_sha256": "c6cdab740d1a2b5bc68962a84e60f1d19a8680dd753c0e81b17b894fce845e3c",
+    "samples": 2,
+    "reads_verified": 1216,
+    "live_board_execution": false
+  },
+  "no_card_preparation": {
+    "exit_code": 0,
+    "case": "attention-prefill-28-heads-4096",
+    "dtype": "bfloat16",
+    "board_execution": false,
+    "prepared": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card"
+  },
+  "artifacts": [
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/pmu_reader.c",
+      "sha256": "7e643ee7261c9d76ccf6cd873e1daee6bec1fdd39f02170b1aaf801a3ca4ba89"
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/pmu_reader.so",
+      "sha256": "4b2d550c1f5b47ac06db2a3012c3be1f5b106566e5e19aca5e6b37bb836bc094"
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/capture_pmu.py",
+      "sha256": "47555ee26f4b1eebf000736c8b74434532b5913903d3cef805268e86bf1ce35e"
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/registers.json",
+      "sha256": "5032f2bc58863610839bac331cbedaaabfe3cc7d5ecdb266f540eccc9f743c1a"
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/verify_offline.py",
+      "sha256": "16016c7b4ceee07aa2c335607e6912ff6c5e87e8330f96d6543f5465bacd3fd9"
+    }
+  ],
+  "excluded_boot": "67de7cfd-6440-408b-8a18-8627516a5626",
+  "hardware_read_validated": false,
+  "device_execution": false,
+  "limitations": [
+    "采样不是原子快照，每条保存起止单调时间",
+    "只读PMU不保证保存首个故障packet或PC",
+    "诊断采样可影响总线时序，不签性能",
+    "真实读取、Tile身份或占用检查不通过时不launch"
+  ]
+}

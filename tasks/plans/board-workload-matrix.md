@@ -76,6 +76,30 @@ canonical完整增量构建及随后Ninja no-op通过。初版遗漏必填compar
 详见[硬件定位事实](../../docs/tx81-tdma-fault-localization.md)、
 [本轮证据](../../docs/data/board-performance/tdma-firmware-localization-20260920.json)及统一板端结果。
 
+### 重启后单case寄存器观测准备（2026-09-20）
+
+用户再次明确愿意重启并要求尽快推进。原现场已保存，可由用户重启；本步骤覆盖上文“今晚不再执行设备”的安排，
+但设备调用仍须确认新boot、占用空闲及采集访问验证通过。只运行当前BF16 4K 28-head prefill一次，不重开矩阵。
+
+Pipeline position：输入是当前driver的实际ATU表、SDK PMU寄存器定义、已验证的当前package及fresh输入；
+当前职责是只读采集普通Tile-local NCC PMU寄存器并与单次执行窗口关联；输出为带单调时钟、boot、Tile及原始字的快照，
+直接下游是TDMA故障定位。入口为本轮独立诊断脚本和现有PyTorch board runner。
+Non-goals：不改firmware、driver、runtime清理、寄存器配置、IR或指令流；不把PMU raw word解释为未经确认的PC/packet。
+
+只读采集使用host BAR4的实际ATU窗口，volatile 32-bit load读取PMU白名单；不用Kcore专用NCC command地址。
+采集器只打开PCI resource只读映射，不打开runtime设备context、不提交kernel；计算进程仍只有现有单case runner。
+运行前先检查全系统占用与boot；采集失败、全ones或映射身份不符时不launch。采样可能影响总线时序，此轮不签性能。
+
+本步覆盖矩阵：离线16 Tile稀疏文件验证ATU边界、每Tile偏移与完整原始输出；错误ATU/不对齐offset/短文件拒绝，
+fixture前后摘要相同；新boot只读访问正例实际通过后，才能单次launch并保存窗口内kernel/firmware和PMU采样。
+完成条件是得到可解释的现场，或明确记录本次采集不能捕获的原因；单次未复现不签根因修复或连续稳定。
+
+准备已完成：只读映射helper使用`O_RDONLY`、`PROT_READ`及volatile 32-bit load；16 Tile × 38寄存器 × 2采样
+共1,216项离线读取exact通过，fixture摘要不变，缺窗口/错误target/不对齐/重复窗口/越页/短映射拒绝。
+所选BF16 case已重新生成source/input/reference，与prepared source一致后通过本轮fresh no-card；未执行真实读取或launch。
+当前等待用户重启完成，旧boot被采集入口拒绝。证据及脚本摘要见
+[采集准备记录](../../docs/data/board-performance/pmu-observer-preparation-20260920.json)。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
