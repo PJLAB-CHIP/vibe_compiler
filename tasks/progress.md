@@ -51,9 +51,15 @@ Q2还通过完整TargetModel输出。相同逐Tile GEMM/循环结构下，本轮
 这不表示scalar数学统一由CT执行。后续已补current Instr的CPU scalar计费和独立register-only F32算术候选，
 两种执行方案沿同一actual leaf比较；定向layout/cost/search、正式target LLVM及完整Driver回归已通过。
 TargetModel同步接入四种F32算术，精确位型、拒绝边界及完整Simulator/SystemC/lit回归通过。
-三个产品已fresh no-card通过，Q2完整TargetModel通过；完整source/package与已提交layout版本逐字节相同。
+三个定向产品已fresh no-card通过，Q2完整TargetModel通过；完整source/package与已提交layout版本逐字节相同。
 CPU先验仍未校准，prefill的条件内动态工作量仍可为unknown，不能把其counter占位零当作无CPU开销。
-本轮整批board-ready且设备恢复核实前不启动实卡，不自动重试或复位；下文更早的Add通过记录不解除这次新异常后的阻塞。
+最终代码`3a1dbc5a`的82项主机配置已全部完成fresh source/package/no-card；对应76项实卡配置，
+另已准备72项可重新执行的历史对照。两项ViT对照保留相同原模型边界和参数，但导出bytecode不同，分别记录该限制。
+重启后的runtime API1400、PCI设备、16 Tile映射及当前boot日志已核实；全系统占用仅有已核对身份的日志服务。
+本轮Q2两种dtype已完成完整数值、guard及三次匹配计时；对照为旧none方案，不能据此签同预算search收益。
+新版BF16普通Q1两步的完整输出、actual KV接续、旧prefix exact及guard通过，尚只有一次资格样本。
+随后旧standard对照包首步在北京时间2026-09-19 22:46:48报告Tile-2 `NPU LSU TDMA Timeout`（XID12）；
+已立即停止整批，无retry/reset。根因仍unknown，尚余73项配置未启动，新版Q1重复计时及全矩阵性能保护未完成。
 主机验证结果及版本边界见同一实施计划。
 
 用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
@@ -115,7 +121,7 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT的数值和性能资格按记录版本保留。本轮attention composite、宽状态、causal分块、方向/layout/broadcast及packed mask路径已接入，主机完整lit/component与滑窗TargetModel通过；28-head双dtype及原32-head 4K、GQA、长cache和保护项已有中间版本首轮实卡，原32-head的64 GiB workspace阻塞已消除。ViT1025本轮出现TDMA Timeout，批次停止，根因未知。attention性能目标仍未达到，实卡guard、至少三次匹配计时及最终同版本全矩阵未闭合。完整LM S1024/1025、decode性能恢复、搜索性能回归/deep收益及三轮模型调优仍保留未完成；原最好可复现目标不重置。具体范围、版本和证据见同一计划及板端记录。 | `tasks/plans/board-workload-matrix.md` |
+| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留。Attention、layout与CPU成本修改后的`3a1dbc5a`已完成82项同版本fresh构包/no-card；Q2双dtype实卡数值/guard/三次配对计时通过，BF16普通Q1两步actual KV及guard单次通过。重启后运行旧standard Q1对照首步时再次出现Tile-2 TDMA Timeout，整批已停止，根因未知，无retry/reset。73项配置尚未启动，Q1重复计时、attention性能目标及最终全矩阵保护未闭合。完整LM S1024/1025、搜索性能回归/deep收益及三轮模型调优仍未完成；原最好可复现目标不重置。具体范围、版本和证据见同一计划及板端记录。 | `tasks/plans/board-workload-matrix.md` |
 | 3 | `mesh-communication-materialization` | `queued` | 06、13、14、16 | verified card-local TensorProgram、抽象 collective participant/payload/combine 语义、layout-resolved current TileRegion；target transport 只消费已物化 peer IR | 通用Ring/recursive-doubling/ordered AllToAll/reduction算法与TX81 transport分层；execution/residency、layout/bufferization、frontend helper和search cost的current-IR合同闭合；focused current-IR、SystemC与host/no-card witness通过。真实板测及PyTorch验收由独立板测项拥有 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `production-host-readiness` | `queued` | Q53 / 16 | `mesh-communication-materialization`产出的 current-IR 与 target-independent/target transport 分界、frontend、interface、package/runtime | 历史主纵向与smoke通过不能代签current模型资格；模型扩展暴露的prefill/decode/LLaMA问题已由board-testing统一修复并完成限定矩阵的FP16实卡验收。等待前置通信实现边界闭合后，按本项合同重签完整source/IR/package/oracle/runner/no-card/SystemC矩阵；板端证据见统一归档，本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |

@@ -115,7 +115,7 @@ Q1第一步相比分解前静态GS 2984→2980、120,131,968→120,104,320 bytes
 Q1主机第二步使用reference KV；本轮尚未验证板端actual KV接续、guard和匹配设备耗时。
 这不表示第3至6步已完成，也不登记设备健康或新增实卡资格。
 
-第1、2步修复已提交为`0e231204`。后续CPU成本及执行选择的主机检查点如下，尚未签发新版整批board-ready：
+第1、2步修复已提交为`0e231204`。后续CPU成本及执行选择已提交为`3a1dbc5a`，主机检查点如下：
 
 - 06号CostModel新增current非constant scalar Arith工作，按实际loop/branch分别记录site、exact/upper bound和unknown；
   与runtime issue分开计费，CPU先验1 ns明确未校准，不推算LLVM未来指令或更改SPM准入。
@@ -140,6 +140,29 @@ Q1主机第二步使用reference KV；本轮尚未验证板端actual KV接续、
 - 后续同版本准备覆盖31项attention可执行配置、6项probability-rounding主机数值配置，以及受通用layout/cost影响的
   51项已通过standard保护配置；去重后共82项主机配置、76项实卡配置。该集合保留原S16整网保护，
   不重启已取消的deep、独立完整LM S1024/1025或模型三轮优化。大产物使用独立数据盘，主工程仍只有canonical `build/`。
+
+整批主机准备现已完成：冻结`3a1dbc5a`及四个compiler/runner摘要后，82/82项fresh构包/no-card通过，
+覆盖31项attention可执行配置、6项probability-rounding主机配置及去重后的standard保护集合；实卡配置共76项。
+普通/长cache Q1、Q2和滑窗两种dtype的完整TargetModel、6项probability-rounding主机数值均通过；其余no-card不冒充算术执行。
+输入与原module reference为本轮重新生成，Q1主机第二步仍使用reference KV，实卡必须重新用actual输出接续。
+证据根目录为`build/test/attention-current/`；`matrix/identity.json`、`matrix/results.json`、`matrix/host-ready.json`
+及`host-work.json`记录工具身份、逐项结果、编译work/time/RSS和实际IR计数。
+
+实卡对照准备共72项：70项具有相同source，另两项ViT保持相同原模型边界、输入位置及全部参数bytes，
+但导出bytecode不同，不登记为同source比较；所有对照均以本轮fresh payload完成no-card。
+noncausal两种dtype的旧包已被覆盖，sliding-window两种dtype没有健康旧实卡对照，这4项仅报告本轮绝对耗时。
+搜索配置不同的对照单独标注，不能据此签同预算search收益；旧prefill 1.563 ms最好目标保持。
+重启后的runtime API1400、PCI设备、16 Tile映射及设备日志已核实；逐次launch继续检查全部用户和容器的占用，
+记录kernel cursor与固件增量。数值资格之后保留至少三次普通计时，decode每个样本独立使用actual KV接续。
+本轮19次launch中前18次健康：Q2两种dtype各8次（新版/对照资格及三组普通配对计时），
+新版BF16普通Q1两步各1次。Q2 BF16/FP16新版中位数为1.609/1.706 ms，旧none对照为1.894/1.895 ms；
+这是相同source、同一环境的新旧产品比较，不签同预算search收益。新版Q1两步为5.318/5.217 ms，
+全部输出、actual KV接续、旧prefix逐bit及guard通过，但尚无三次重复计时。
+第19次运行旧standard Q1 BF16对照首步，2026-09-19 22:46:48 +0800内核报告XID12、
+`NPU LSU TDMA Timeout`，固件标明Tile-2；虽然runner完成readback/guard/cleanup，health wrapper仍以90拒绝资格。
+整批已停止，没有retry/reset；故障PC及具体packet未取得，根因仍unknown。对照的13.155 ms不作健康性能样本，
+离线完整数值诊断满足原门限也不能抵消设备异常。其余73项配置未启动，全矩阵仍未完成。
+证据和全部原始样本见[本轮板端记录](../../docs/board-performance-results.md#2026-09-19最终主机矩阵与重启后设备异常)。
 
 交接时曾区分以下三个边界；表内待做项由上文接续结果更新，不代表当前仍未构建：
 
@@ -203,8 +226,9 @@ Q1主机第二步使用reference KV；本轮尚未验证板端actual KV接续、
 更早保留的独立完整LM S1024/1025、搜索性能回归/deep收益及模型三轮调优不随本次授权自动开启。
 不得把整批长验证或此前停止的其它搜索批次插到上述两处退化修复之前。
 
-用户计划在离开前人工重启，实际恢复状态尚未核实。先按第1至5步完成主机修改、整批fresh package/no-card和所需数值模型，
-再按第6步执行已授权的实卡验证；保留既有实现、原始实测及最好健康目标。主机完成不改变本项实卡完成条件。
+用户已完成重启；本轮主机修改及第5步整批fresh package/no-card和所需数值模型已完成，设备身份与日志已核实。
+第6步实卡验证在旧Q1对照的Tile-2 TDMA异常后停止；设备恢复核实前不得接续launch。
+保留既有实现、原始实测及最好健康目标。主机完成不改变本项实卡完成条件。
 
 输入为当前structured/Tile/Instr及已冻结的健康对照；输出为同一产品路径的verified Instr、TargetCall和包。
 直接下游为completion、actual SPM规划、CRT及TargetModel；不新增旁路后端、mapped-SPM数据生成或运行时任务队列。

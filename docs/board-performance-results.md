@@ -2788,3 +2788,47 @@ action=`RESET_BM`。wrapper以90拒绝资格，批次停止，未自动retry/res
 canonical完整增量构建通过，随后无源码变化的构建为Ninja no-op。七项workload corpus均两次fresh导出、
 验证原input/parameter/reference payload不变，再执行XLA全输出并按原门限通过；仅五项source bytecode digest更新。
 日志、当前工具身份及滑窗产物身份收录于同一证据文件的`host_validation`，这些主机结果不改变上述实卡资格和性能结论。
+
+## 2026-09-19：最终主机矩阵与重启后设备异常
+
+代码`3a1dbc5a`包含layout完整合法域、逐元素SSA、物理遍历证明复用及current CPU scalar成本/执行选择。
+冻结compiler和runner后，82项配置全部完成本轮source→package→fresh no-card，覆盖76项实卡配置及6项主机专用配置。
+普通/长cache Q1、Q2和滑窗双dtype以及6项probability-rounding共14项配置另通过完整TargetModel数值。
+Canonical完整增量构建、随后Ninja no-op及受影响component/lit已通过；各阶段原失败和修复后复测日志均保留。
+编译时间/RSS、actual指令与搬运、SPM和search work均收录于[本轮证据](data/board-performance/attention-final-host-device-stop-20260919.json)。
+动态次数的known标志保持，不能把unknown计数的零占位值解释为没有工作；CPU的1 ns先验仍未校准。
+
+本轮重新准备72项可执行历史对照。70项source逐文件相同；另两项ViT的原模型边界、输入位置及参数bytes一致，
+导出bytecode不同，未声称source相同。Noncausal双dtype的旧包已被覆盖，滑窗双dtype缺健康旧对照。
+旧raw/output没有作为本轮输入或reference；所有比较使用本轮fresh输入与原module oracle，Q1后续reference消费本轮actual KV。
+
+用户重启后的boot为`84fd0597-b3a7-4718-882c-f5611d86d301`，runtime API1400、PCI `0000:3b:00.0`及16 Tile映射确认一致。
+上板前已完成整批主机准备；每次launch检查全部用户和容器的设备占用，仅排除已核实exe/UID/cgroup的日志服务。
+本轮使用普通TX事件计时及`--memory-guards`，逐次保存kernel cursor、固件增量、完整输出和正常清理结果。
+
+| Q2 decode | 新版三次/ms | 对照三次/ms | 新版/对照中位数/ms | 变化 |
+| --- | --- | --- | --- | ---: |
+| BF16 | 1.687 / 1.596 / 1.609 | 1.886 / 1.894 / 1.909 | 1.609 / 1.894 | −15.05% |
+| FP16 | 1.554 / 1.706 / 1.722 | 1.895 / 1.886 / 1.930 | 1.706 / 1.895 | −9.97% |
+
+每种dtype先各运行新版/对照一次资格样本，再按B1/C1、C2/B2、B3/C3取得上述计时。
+全部16次完整数值、guard和运行窗口健康检查通过；新版每次实际检查55,680 guard bytes。
+新版最大relative L2分别为0.001494281和0.000240693，原cosine/relative-L2门槛保持。
+这里对照是历史`none`产品，新版是standard 8/42，虽然source与输入一致，仍不能把变化签作同预算search收益。
+
+随后新版BF16普通Q1两步各执行一次，耗时5.318/5.217 ms；全部hidden/K/V输出、actual KV接续、旧prefix逐bit及guard通过。
+两步分别检查159,296/116,574 guard bytes。Guard覆盖program-data整体和invocation child间隙，不覆盖compiler workspace内部对象。
+这两次仅为资格样本，不能代替三次匹配普通计时。
+
+第19次launch运行历史standard Q1 BF16对照首步，窗口为UTC 14:46:46.442470至14:46:48.604186。
+北京时间22:46:48内核报告`rpu=0 pid=3628 xid=12`、eid=`0x0D00C005`、`NPU LSU TDMA Timeout`、action=`RESET_BM`；
+固件报告`fatal_err=4096`及Tile-2 LSU TDMA timeout。该包manifest SHA256为
+`706502a16c437e1e2a3fe74f27c1a5a984fe847ff485ef99c93c6f401fadbc5a`，module SHA256为
+`e51c4cdbe318f6375b87b78b298529c5d375482a92e2317e6c288e5a486c684e`。
+Runner返回0并完成readback、192,128 guard bytes和cleanup，health wrapper仍以90拒绝资格；13.155 ms不作健康样本。
+离线检查全部8,392,704元素无非有限值、最大relative L2为0.006827547、旧KV prefix逐bit一致；该诊断不能抵消设备异常。
+
+整批立即停止，没有继续launch、retry或发出reset命令。只读快照保存内核、55个固件日志文件、占用和包/输入摘要。
+目前没有故障PC或具体packet，不能从Tile-2告警判定compiler、包、runtime或硬件根因，也不能据旧包本次失败外推新版健康性。
+剩余73项配置未启动，Q1配对计时及prefill/4K/GQA/长cache/LLaMA/GEMM/ViT等保护尚未完成；原prefill 1.563 ms目标不重置。
+`board-testing`保持未完成，设备恢复核实后才能接续剩余实卡工作。
