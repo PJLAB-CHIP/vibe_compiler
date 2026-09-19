@@ -17,9 +17,10 @@ func.func @invalid_attention_roles(
       outs(%out : tensor<2x3x6xf16>)
       algorithm(#wafer.attention_algorithm<flash_attention>)
       indexing_maps = [#q, #bad_k, #v, #s, #o] score {
-  ^bb0(%attention_0_dot: f16, %attention_0_scale: f16):
-    %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f16
-    wafer.linalg_ext.attention.yield %attention_0_scaled : f16
+  ^bb0(%attention_0_dot: f32, %attention_0_scale: f16):
+    %attention_0_scale_wide = arith.extf %attention_0_scale : f16 to f32
+    %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale_wide : f32
+    wafer.linalg_ext.attention.yield %attention_0_scaled : f32
   }
       -> tensor<2x3x6xf16>
   return %result : tensor<2x3x6xf16>

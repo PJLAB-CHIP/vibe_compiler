@@ -138,6 +138,10 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
+  if (op.getInputs().size() == 2 &&
+      !isTargetElementwiseLogic(std::get<TargetElementwiseOperation>(
+          getTargetCallDescriptor(op.getKind()).semantic)))
+    appendI32(op.getLoc(), args, op.getRhsUnitElements());
   emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
               op.getWorker());
   return mlir::success();

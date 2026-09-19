@@ -10,7 +10,14 @@
       "name": "PyTorch/XLA StableHLO",
       "version": "2.5.0",
       "git_repository": "https://github.com/pytorch/xla.git",
-      "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"
+      "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a",
+      "patch": {
+        "file": "utils/deps/patches/pytorch-xla-composite-region-captures.patch",
+        "sha256": "c947f608eff288be9d011981a6eae8e3089b3ea3860637e5e039338010e605bb",
+        "modified_files": {
+          "torch_xla/csrc/runtime/stablehlo_composite_helper.cc": "ebf1b83eae1fde97d95ee8261246929c53658a1dfc1b5d9294c273f227f5cccc"
+        }
+      }
     },
     "model_source": "repository-owned declarative workload cases"
   },
@@ -46,7 +53,7 @@
         "parameters": "sha256:9f7b1dafc4b0def2ecc6f2b949a4c76839408a9881c55d4807bf2ffcc3019182",
         "reference_output": "sha256:5df7b540e3156218ae841ff471009c56ac60542d517206fe847bf41a8d04cb6b",
         "reference_output_quantized": "sha256:cc799117f5bb3ad8f4e37c6c0fae2f411fbe8044e9a988cb2807426e6d579b0c",
-        "exported_program": "sha256:2b4a63277d8e699caa98759df367a907e5b440dfda65317530cda0050d4f1f51"
+        "exported_program": "sha256:20bfc70790ac4f2ca0d697753caa82d49428ffeceb7e4c283cdc549db4cbb308"
       },
       "reference": {
         "implementation": "independent NumPy matmul/bias/tanh/residual",
@@ -83,7 +90,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:f2ec78248a995ffc4edc20f9e32d8f2ab8448f722d6bfb84d768a901527e996a",
         "reference_output_quantized": "sha256:f2ec78248a995ffc4edc20f9e32d8f2ab8448f722d6bfb84d768a901527e996a",
-        "exported_program": "sha256:d838c660a65291b31efc5de1d3235d6c58f156f895a6bc0f6cfd37856a8fece1"
+        "exported_program": "sha256:7a9be54c7759618cb62c2f1ae77f1fcdb10dab58e11141073fbff8b9a3235607"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation with f16 destination rounding",
@@ -109,7 +116,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:cc0d527e19452f4482162a0777b05706245c5cabf6d9946ed28b6a276b958b4d",
         "reference_output_quantized": "sha256:cc0d527e19452f4482162a0777b05706245c5cabf6d9946ed28b6a276b958b4d",
-        "exported_program": "sha256:2c75bc511fa45cdfcace0426e9ed895f8e7d84ab9004e56dde8cab1d87ba5c24"
+        "exported_program": "sha256:6a78e0f81e8ff26cf4ac1a7e740f329a432f6f7e51300157e60ea91fd1649a67"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation with bf16 destination rounding",
@@ -146,7 +153,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:2bb5ec1b51a6fb3ec7aa6dde5998ec1886e060f7e5df471a5ef40f0e3fd6ba9b",
         "reference_output_quantized": "sha256:2bb5ec1b51a6fb3ec7aa6dde5998ec1886e060f7e5df471a5ef40f0e3fd6ba9b",
-        "exported_program": "sha256:5ec9567a0a7853bca196bcd15158d1c48feadfef24f98cc94634e96c1ac92585"
+        "exported_program": "sha256:0423f826e424b5dfcc110b811e7e18e5600fedf0087722e1a62a6477a075c336"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation",
@@ -183,7 +190,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:f1b1847347be627eca4de3bda4f8ad0f5bfc4316a083187548afa83bc464fcc4",
         "reference_output_quantized": "sha256:f1b1847347be627eca4de3bda4f8ad0f5bfc4316a083187548afa83bc464fcc4",
-        "exported_program": "sha256:f8719785d03957fea0e6f45acaada4d5482f48f6c7ed6055620c8c45f387d1a4"
+        "exported_program": "sha256:69a2f810dd496ff7450561b069aaefc31a8e57302e89a3de0518f156d9de73ac"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation with f16 destination rounding",

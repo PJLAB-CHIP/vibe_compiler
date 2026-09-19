@@ -1,0 +1,22 @@
+diff --git a/torch_xla/csrc/runtime/stablehlo_composite_helper.cc b/torch_xla/csrc/runtime/stablehlo_composite_helper.cc
+--- a/torch_xla/csrc/runtime/stablehlo_composite_helper.cc
++++ b/torch_xla/csrc/runtime/stablehlo_composite_helper.cc
+@@ -10,5 +10,6 @@
+ #include "mlir/Analysis/TopologicalSortUtils.h"
+ #include "mlir/IR/IRMapping.h"
+ #include "mlir/Support/LogicalResult.h"
++#include "mlir/Transforms/RegionUtils.h"
+ #include "single_include/nlohmann/json.hpp"
+ #include "stablehlo/dialect/StablehloOps.h"
+@@ -369,5 +370,10 @@
+       impl_ops_setvec.insert(curr_op);
+-      for (mlir::Value value : curr_op->getOperands()) {
++      llvm::SetVector<mlir::Value> dependencies;
++      dependencies.insert(curr_op->operand_begin(), curr_op->operand_end());
++      // A region can use enclosing constants without listing them as operands.
++      // Clone their definitions before cloning the owning operation.
++      mlir::getUsedValuesDefinedAbove(curr_op->getRegions(), dependencies);
++      for (mlir::Value value : dependencies) {
+         mlir::Operation* def_op = value.getDefiningOp();
+         if (def_op == nullptr) {
+           // Terminal condition: global function arg

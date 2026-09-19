@@ -17,6 +17,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -314,6 +315,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   const auto &argumentBindings = boundary->argumentBindings;
   const auto &ddrBindings = boundary->ddrBindings;
   const auto &outputBindings = boundary->outputBindings;
+  llvm::BitVector deadConstants(originalArgumentCount);
 
   prepared.slots.reserve(originalArgumentCount + resultCount + 3);
   auto appendSlot = [&](const ProgramResourceBinding &binding, mlir::Type type,
@@ -368,6 +370,14 @@ prepareTargetABI(const TileExecutable &tileExecutable,
 
   for (unsigned index = 0; index < originalArgumentCount; ++index) {
     if (const ProgramResourceBinding *binding = argumentBindings[index]) {
+      // A semantic composite can consume a captured framework constant only
+      // in its portable decomposition. Once actual lowering has removed every
+      // use, no device tensor or target format is needed for that argument.
+      if (binding->role == ProgramResourceRole::Constant &&
+          function.getArgument(index).use_empty()) {
+        deadConstants.set(index);
+        continue;
+      }
       if (mlir::failed(appendSlot(*binding,
                                   function.getArgument(index).getType(),
                                   getTileEntryArgumentKind(binding->role))))
@@ -607,6 +617,17 @@ prepareTargetABI(const TileExecutable &tileExecutable,
       ddrDeclarations.push_back(global);
   for (mlir::memref::GlobalOp global : ddrDeclarations)
     global.erase();
+
+  // The source binding indices keep their program identities. Only the
+  // target-owned clone's ABI argument order is compacted, matching slots.
+  unsigned removed = deadConstants.count();
+  deadConstants.resize(function.getNumArguments());
+  function.eraseArguments(deadConstants);
+  prepared.defaultDDRArenaArgumentIndex -= removed;
+  if (prepared.transportStatusArgumentIndex >= 0)
+    prepared.transportStatusArgumentIndex -= removed;
+  if (prepared.profileRecordArgumentIndex >= 0)
+    prepared.profileRecordArgumentIndex -= removed;
 
   if (mlir::failed(mlir::verify(*prepared.module)))
     return mlir::failure();

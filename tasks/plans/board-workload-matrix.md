@@ -19,7 +19,7 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 [08号layout](../08-physical-realization.md#22-layout-assignment-与cleanup)、
 [10号compute/movement](../10-compute-movement.md#4-compute-contracts)及
 [16号module reference](../16-verification-contract.md#attention的原module宽精度reference)拥有。
-本节记录实施方案和必须执行的矩阵，不表示case已注册、已构包或已经通过；本次文档变更不运行设备。
+本节记录实施方案和必须执行的矩阵；实际checkpoint及剩余验证见本节末尾，不从计划条目推断通过。
 前文搜索优化的reference不变约束只适用于搜索改动；本节单独调整独立attention reference，阈值和整网reference保持不变。
 
 ### 输入、边界与完成合同
@@ -93,6 +93,7 @@ Convert分别检查score往返、state缩放、PV概率窄化和最终输出转�
 | 原普通两步decode及长cache 4094→4095→4096 | FP16、BF16；沿用原shape并补齐缺少的dtype注册 | 原完整module.forward；下一步消费本轮actual KV，旧prefix exact，全部hidden/KV端口 | 每步实卡、actual接续和耗时，不能仅在CPU接续 |
 | 多token causal decode，past KV长度1024，新Q/K/V长度2，单head、D64 | FP16、BF16 | Q位置1024/1025，更新后KV长度1026；第一个query不能看后一个新token；完整module调用与输出 | 两种dtype的实卡数值/耗时；区别于仅Q长度1的decode |
 | padding/有效长度及任意additive mask，沿用上述≥1024规模 | FP16、BF16 | 由原module定义各有效域/数值；合法全屏蔽行为按专项oracle，特殊值不走有限相似度放行 | 每个可执行语义分支实卡；错误位置/非法配置另作主机拒绝负例 |
+| 滑窗，Q=`[1,1,1025,64]`、K/V=`[1,1,1031,64]`，query绝对位置6..1030，窗口64 | FP16、BF16 | 原SDPA消费实际bool mask；逐query覆盖前缀、完整窗口和尾行，不从mask值恢复typed causal | 两种dtype的fresh no-card、全输出实卡与健康计时 |
 | LLaMA block S16，hidden4096；大GEMM4096³；GEMM4097³尾块 | block与4096³为FP16/BF16，4097³为FP16 | 原module及既有reference、全输出；通用修改不得破坏原好性能 | 各项fresh no-card、完整实卡及匹配重复计时，任何稳定退化阻止验收 |
 | ViT EncoderBlock S1024/1025 | 原配置FP16 | 完整原module.forward及全部tokens；非causal、多head与残差 | 两个尺寸实卡数值与匹配性能，不以独立attention代签 |
 | 其它受共用pass影响的既有通过case | 各自原dtype/shape | 原完整reference与全部端口；保留既有任务未完成项 | 逐case重签实卡数值/性能，不能用平均加速抵消单项退化 |
@@ -112,6 +113,45 @@ Convert分别检查score往返、state缩放、PV概率窄化和最终输出转�
 最终要求attention有超过测量波动的可重复收益，所有保护项无可确认退化；新增case没有健康旧基线时报告当前绝对耗时，
 不虚构加速比。缺编译、缺no-card、缺实卡或未判明的性能项保持未完成。
 逐次结果写入现有板端性能记录，包含compiler/source/config/输入/reference身份和本轮原始样本；不在本计划填虚构实测。
+
+### 本轮实施checkpoint
+
+composite导出/SPMD/structured消费、F32状态、causal跳块、batched NN/NT/TN/TT、pointwise/convert PBQP成本、
+unit广播的Instr/CRT/numeric model，以及原module reference已接通。新增28-head、双token、noncausal、padding、
+全屏蔽与有效KV case已注册；bool payload按原manifest LSB-first位格式打包。
+主机真实规模回归覆盖四方向逐坐标、source显式rounding、条件completion、mask和actual SPM容量。
+
+本轮22项none配置全部完成fresh no-card和一次完整实卡，普通decode两步消费actual KV；
+原32-head 4K另完成standard 8/42/no-card与首轮实卡。数值与实际计时见
+[首轮记录](../../docs/board-performance-results.md#2026-09-19attention改进首轮数值验证)。
+这些结果来自实现期间的包，尚不构成同版本最终资格。扩大component测试发现遗漏的SystemC binary-call参数与
+旧窄Accumulator断言，已同步并重测；standard numeric model暴露dead constant仍要求target绑定，
+该consumer及声明/类型/重复输入负例已修复并通过；numeric model进一步发现blocked predicate padding未初始化，
+已用physical-domain false fill修复并通过六项probability-rounding完整数值。ViT内部MultiheadAttention的SDPA边界遗漏已修复，
+四项真实规模frontend数值及完整ViT两个长度的构包/no-card通过。GQA两种长度/两种dtype、长cache两步/两种dtype、
+LLaMA block两种dtype、三项大GEMM及ViT1024均已完成首轮完整实卡；尚无匹配三次性能资格。
+重复select与已证明NoAlias的mapped elementwise临时写回已减少，普通prefill当前FP16/BF16单次为2.363/2.228 ms，
+仍未达到历史最好健康目标。滑窗case已注册；其非字节对齐BOOL读取按10号实际解包路径修复，
+FP16/BF16 × none/search四项fresh构包、完整TargetModel数值及启用memory guards的no-card均通过。
+48组packed读取配置逐坐标覆盖1024/1025/1031、全部8种bit residue、静态/动态offset和tail；
+actual scratch owner、Instr、SPM/DDR规划及target消费均已检查。所有后续变更必须重签直接受影响矩阵。
+
+主机验收：完整304项lit及66项C++/SystemC component均实际执行通过，无skip/unsupported。
+后续guard和packed范围检查完成后，直接受影响的Conversion/Package/Runtime/RunBoardIO四项component再次通过；
+canonical完整增量构建及后续Ninja no-op通过，board runner使用同一build的当前library重新链接。
+workload corpus按pinned revision、受控patch及修改文件hash验证来源；七个case各两次fresh导出可重现，
+全部原input/parameter/reference payload及阈值不变，重新执行XLA全输出通过，仅更新五项确实改变的source bytecode digest。
+15号allocation guard已接入原planner、runtime及runner，覆盖alignment/capacity、正常读回、六类破坏和poison；
+这里的no-card与fake provider结果不代签实卡guard。详细日志及hash见统一板端证据中的host_validation。
+
+ViT1025本轮launch正常返回完整output后，执行窗口内核报告`NPU LSU TDMA Timeout`（`0x0D00C005`、`RESET_BM`）。
+批次立即停止，未自动retry/reset。离线全输出relative L2为0.000214803，但设备异常使该次资格及计时无效；
+根因仍unknown，不能从输出正确推断设备健康。主机定位继续，后续实卡须先处理这一阻塞。
+
+剩余：standard全部attention与GQA/长cache、新旧健康配对至少三次计时、LLaMA block/大GEMM/ViT及其它受影响
+已通过case保护、实际指令/搬运/编译成本归因、实卡guard资格和最终同版本全矩阵。任何缺测或可确认性能退化仍阻止完成。
+当前actual Instr仍在边界分支内重复构造局部坐标；其跨worker访问对应的completion不能直接删除。
+后续性能修改须沿通用不变量/alias/effect owner证明并物化，再重新验证，不在attention展开中添加专用hoist。
 
 ## 搜索组织修改的性能验收
 

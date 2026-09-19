@@ -171,9 +171,10 @@ def Wafer_ComputeElementwiseIntoOp : Wafer_Op<"tile.elementwise_into", [
   ]> {
   let summary = "target-abstract in-place tile elementwise compute";
   let description = [{
-    `wafer.tile.elementwise_into` applies one map-free elementwise operation
-    to already materialized SPM values and writes the result into an explicit
-    destination. The destination may be one of the inputs. This form owns
+    `wafer.tile.elementwise_into` applies one elementwise operation with the
+    same indexing-map contract as the functional form, and writes the result
+    into an explicit SPM destination. Map-free pointwise operands may include
+    the destination itself. This form owns
     explicit storage updates, including reduction accumulators across a
     temporal loop backedge and proven direct destination writes. Ordinary
     functional elementwise values continue to use `wafer.tile.elementwise`.
@@ -182,7 +183,8 @@ def Wafer_ComputeElementwiseIntoOp : Wafer_Op<"tile.elementwise_into", [
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
     Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs,
-    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$dest
+    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$dest,
+    OptionalAttr<AffineMapArrayAttr>:$indexing_maps
   );
   let hasVerifier = 1;
   let assemblyFormat =

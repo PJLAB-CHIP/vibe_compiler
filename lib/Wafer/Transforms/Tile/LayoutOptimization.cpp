@@ -45,6 +45,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -1520,6 +1521,67 @@ tupleStateIsLegal(mlir::linalg::LinalgOp operation,
   return true;
 }
 
+// Polymorphic pointwise operations accept each layout, but acceptance does
+// not mean that differently blocked inputs can share a physical traversal.
+// Price the explicit movement used by StructuredToTile/TileToInstr. These
+// finite costs rank choices only; actual lowering and SPM own legality.
+static ExactPBQPCost getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
+                                               mlir::OpOperand &input,
+                                               mlir::RankedTensorType source,
+                                               mlir::RankedTensorType output,
+                                               MemLayout sourceLayout,
+                                               MemLayout outputLayout) {
+  if (!source || !output)
+    return 1;
+  auto resultMap =
+      operation.getMatchingIndexingMap(operation.getDpsInitOperand(0));
+  if (!resultMap.isPermutation())
+    return 1;
+  auto map = operation.getMatchingIndexingMap(&input).compose(
+      mlir::inversePermutation(resultMap));
+  auto sourceRelation = analysis::IndexRelation::fromAffineMap(
+      map, output.getShape(), source.getShape());
+  auto destinationRelation =
+      analysis::IndexRelation::identity(output.getShape());
+  if (!sourceRelation.isExact() || !destinationRelation.isExact())
+    return 1;
+  auto sourceType = getMemRefType(source, MemorySpace::SPM, sourceLayout);
+  auto outputType = getMemRefType(output, MemorySpace::SPM, outputLayout);
+  if (mlir::succeeded(analysis::TransferRealizability::provePhysicalTraversal(
+          sourceType, outputType, output.getShape(), *sourceRelation.get(),
+          *destinationRelation.get())))
+    return 0;
+  if (operation.getNumDpsInputs() == 2 &&
+      operation.getBlock()->getOperations().size() == 2) {
+    mlir::Operation &scalar = operation.getBlock()->front();
+    bool commutative =
+        mlir::isa<mlir::arith::AddFOp, mlir::arith::MulFOp,
+                  mlir::arith::MaximumFOp, mlir::arith::MinimumFOp,
+                  mlir::arith::MaxNumFOp, mlir::arith::MinNumFOp>(scalar);
+    bool binary =
+        commutative || mlir::isa<mlir::arith::SubFOp, mlir::arith::DivFOp,
+                                 mlir::arith::CmpFOp>(scalar);
+    auto argument = operation.getBlock()->getArgument(input.getOperandNumber());
+    if (binary && (commutative || scalar.getOperand(1) == argument) &&
+        mlir::succeeded(
+            analysis::TransferRealizability::proveUnitVectorBroadcast(
+                sourceType, outputType, *sourceRelation.get())))
+      return 0;
+  }
+  if (source.getElementType() != output.getElementType() && map.isIdentity()) {
+    ExactPBQPCost cost = 0;
+    if (sourceLayout != MemLayout::Tensor)
+      cost = getLayoutMaterializationCost(source, MemLayout::Tensor, operation);
+    if (outputLayout != MemLayout::Tensor)
+      cost = addCost(
+          cost, getLayoutMaterializationCost(output, outputLayout, operation));
+    return cost;
+  }
+  auto mappedType =
+      mlir::RankedTensorType::get(output.getShape(), source.getElementType());
+  return getLayoutMaterializationCost(mappedType, outputLayout, operation);
+}
+
 static bool hasOnlyReadUses(LayoutMaterializeOp operation) {
   return llvm::all_of(
       operation.getResult().getUses(), [](mlir::OpOperand &use) {
@@ -1535,6 +1597,80 @@ static bool hasOnlyReadUses(LayoutMaterializeOp operation) {
                      instance.getEffect());
                });
       });
+}
+
+static void refineConditionalBufferTypes(mlir::ModuleOp module) {
+  mlir::IRRewriter rewriter(module.getContext());
+  module.walk<mlir::WalkOrder::PostOrder>([&](mlir::scf::IfOp branch) {
+    if (branch.getElseRegion().empty())
+      return;
+    for (auto result : branch.getResults()) {
+      auto original = mlir::dyn_cast<mlir::MemRefType>(result.getType());
+      if (!original)
+        continue;
+      unsigned index = result.getResultNumber();
+      llvm::SmallVector<mlir::Value> values;
+      for (auto yield : {branch.thenYield(), branch.elseYield()}) {
+        mlir::Value value = yield.getOperand(index);
+        while (auto cast = value.getDefiningOp<mlir::memref::CastOp>())
+          value = cast.getSource();
+        values.push_back(value);
+      }
+      auto lhs = mlir::dyn_cast<mlir::MemRefType>(values[0].getType());
+      auto rhs = mlir::dyn_cast<mlir::MemRefType>(values[1].getType());
+      if (!lhs || !rhs || lhs.getShape() != original.getShape() ||
+          rhs.getShape() != original.getShape() ||
+          lhs.getMemorySpace() != original.getMemorySpace() ||
+          rhs.getMemorySpace() != original.getMemorySpace())
+        continue;
+      llvm::SmallVector<int64_t> leftStrides, rightStrides;
+      int64_t leftOffset, rightOffset;
+      if (mlir::failed(
+              mlir::getStridesAndOffset(lhs, leftStrides, leftOffset)) ||
+          mlir::failed(
+              mlir::getStridesAndOffset(rhs, rightStrides, rightOffset)))
+        continue;
+      for (auto [left, right] : llvm::zip_equal(leftStrides, rightStrides))
+        if (left != right)
+          left = mlir::ShapedType::kDynamic;
+      if (leftOffset != rightOffset)
+        leftOffset = mlir::ShapedType::kDynamic;
+      auto refined = mlir::MemRefType::get(
+          original.getShape(), original.getElementType(),
+          mlir::StridedLayoutAttr::get(module.getContext(), leftOffset,
+                                       leftStrides),
+          original.getMemorySpace());
+      if (lhs == rhs)
+        refined = lhs;
+      if (refined == original ||
+          !mlir::memref::CastOp::areCastCompatible(mlir::TypeRange{refined},
+                                                   mlir::TypeRange{original}))
+        continue;
+      for (auto [yield, value] : llvm::zip_equal(
+               llvm::SmallVector<mlir::scf::YieldOp>{branch.thenYield(),
+                                                     branch.elseYield()},
+               values)) {
+        rewriter.setInsertionPoint(yield);
+        if (value.getType() != refined)
+          value = rewriter.create<mlir::memref::CastOp>(yield.getLoc(), refined,
+                                                        value);
+        rewriter.modifyOpInPlace(yield,
+                                 [&] { yield->setOperand(index, value); });
+      }
+      rewriter.modifyOpInPlace(branch, [&] { result.setType(refined); });
+      rewriter.setInsertionPointAfter(branch);
+      auto cast = rewriter.create<mlir::memref::CastOp>(branch.getLoc(),
+                                                        original, result);
+      rewriter.replaceAllUsesExcept(result, cast.getResult(), cast);
+    }
+  });
+  // These consumers accept arbitrary compatible memref layouts. Structured
+  // control-flow signatures retain their explicit boundary casts.
+  module.walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::linalg::LinalgOp, mlir::memref::CopyOp>(operation))
+      rewriter.modifyOpInPlace(
+          operation, [&] { (void)mlir::memref::foldMemRefCast(operation); });
+  });
 }
 
 static bool hasNoInterveningWrite(LayoutMaterializeOp prior,
@@ -2310,6 +2446,32 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module,
     }
   }
   result.statistics.conversionActivations = activations.size();
+  module.walk([&](mlir::linalg::LinalgOp operation) {
+    if (isFixedComputeLayoutOp(operation) || operation.getNumDpsInits() != 1 ||
+        operation->getNumResults() != 1)
+      return;
+    auto output = groupByValue.find(operation->getResult(0));
+    if (output == groupByValue.end())
+      return;
+    const auto &outputGroup = groups[output->second];
+    auto outputType = getLayoutCostType(operation->getResult(0));
+    for (auto *operand : operation.getDpsInputOperands()) {
+      if (!isTensorValue(operand->get()))
+        continue;
+      auto source = groupByValue.find(operand->get());
+      if (source == groupByValue.end())
+        continue;
+      const auto &sourceGroup = groups[source->second];
+      auto sourceType = getLayoutCostType(operand->get());
+      factors.add(sourceGroup.variable, outputGroup.variable,
+                  [&](uint32_t sourceState, uint32_t outputState) {
+                    return getPointwiseTraversalCost(
+                        operation, *operand, sourceType, outputType,
+                        sourceGroup.layouts[sourceState],
+                        outputGroup.layouts[outputState]);
+                  });
+    }
+  });
   factors.appendTo(problem);
   result.statistics.pbqpVariables = problem.variables.size();
   result.statistics.pbqpFactors = problem.factors.size();
@@ -2691,6 +2853,11 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
     ++result.statistics.selectedMaterializations;
   }
 
+  // A requested copy owns one allocation after the conditional. In particular,
+  // publishing a state for communication must not turn that allocation into
+  // branch-local roots. Refine common branch strides after bufferization so
+  // the ordinary copy lowering can consume this actual merged value.
+
   mlir::bufferization::OneShotBufferizationOptions options;
   options.bufferizeFunctionBoundaries = true;
   options.allowUnknownOps = true;
@@ -2839,13 +3006,53 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
           return result;
         }
       }
-      assignmentRewriter.setInsertionPoint(binding.yield);
-      auto bound = assignmentRewriter
-                       .create<mlir::bufferization::MaterializeInDestinationOp>(
-                           binding.yield.getLoc(), source, binding.destination);
-      selectedLayouts.try_emplace(bound.getResult(), binding.layout);
+      // Publish on each actual control-flow edge. A conditional result may
+      // choose between a compact allocation and a strided state slice; joining
+      // their memref types first loses the exact copy geometry. The single-use
+      // requirement preserves any independent observer of the original value.
+      bool createdBinding = false;
+      std::function<mlir::Value(mlir::Value, mlir::Operation *)>
+          bindDestination =
+              [&](mlir::Value value, mlir::Operation *before) -> mlir::Value {
+        auto resultValue = mlir::dyn_cast<mlir::OpResult>(value);
+        auto branch =
+            resultValue
+                ? mlir::dyn_cast<mlir::scf::IfOp>(resultValue.getOwner())
+                : mlir::scf::IfOp{};
+        if (branch && value.hasOneUse()) {
+          for (mlir::scf::YieldOp yield :
+               {branch.thenYield(), branch.elseYield()}) {
+            unsigned index = resultValue.getResultNumber();
+            auto bound = bindDestination(yield.getOperand(index), yield);
+            assignmentRewriter.modifyOpInPlace(
+                yield, [&] { yield->setOperand(index, bound); });
+          }
+          return value;
+        }
+        if (value == binding.destination)
+          return value;
+        if (auto prior = value.getDefiningOp<
+                         mlir::bufferization::MaterializeInDestinationOp>())
+          if (prior.getDest() == binding.destination)
+            return value;
+        assignmentRewriter.setInsertionPoint(before);
+        auto bound =
+            assignmentRewriter
+                .create<mlir::bufferization::MaterializeInDestinationOp>(
+                    before->getLoc(), value, binding.destination);
+        selectedLayouts.try_emplace(bound.getResult(), binding.layout);
+        createdBinding = true;
+        return bound.getResult();
+      };
+      auto bound = bindDestination(source, binding.yield);
+      if (!createdBinding) {
+        result.status = ExactPBQPStatus::BrokenContract;
+        result.detail =
+            "conditional state destination did not establish equivalence";
+        return result;
+      }
       assignmentRewriter.modifyOpInPlace(binding.yield, [&] {
-        binding.yield->setOperand(binding.index, bound.getResult());
+        binding.yield->setOperand(binding.index, bound);
       });
     }
   }
@@ -2869,6 +3076,8 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
     result.detail = std::move(detail);
     return result;
   }
+
+  refineConditionalBufferTypes(module);
 
   if (mlir::failed(
           convertLayoutCopies(module, relations, result.statistics, detail))) {

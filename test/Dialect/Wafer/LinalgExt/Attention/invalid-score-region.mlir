@@ -13,9 +13,9 @@ module {
       ins(%q, %k, %v, %scale : tensor<2x1025x128xf16>, tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
       outs(%init : tensor<2x1025x64xf16>) algorithm(<flash_attention>)
       indexing_maps = [#q,#k,#v,#s,#o] score {
-      ^bb0(%dot: f16, %scale_arg: f32):
-        %wide = arith.extf %dot : f16 to f32
-        %scaled = arith.mulf %wide, %scale : f32
+      ^bb0(%dot: f32, %scale_arg: f32):
+
+        %scaled = arith.mulf %dot, %scale : f32
         wafer.linalg_ext.attention.yield %scaled : f32
       } -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
@@ -37,8 +37,9 @@ module {
       ins(%q, %k, %v, %scale : tensor<2x1025x128xf16>, tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
       outs(%init : tensor<2x1025x64xf16>) algorithm(<flash_attention>)
       indexing_maps = [#q,#k,#v,#s,#o] score {
-      ^bb0(%dot: f32, %scale_arg: f32):
-        %scaled = arith.mulf %dot, %scale_arg : f32
+      ^bb0(%dot: f32, %scale_arg: f16):
+        %wide = arith.extf %scale_arg : f16 to f32
+        %scaled = arith.mulf %dot, %wide : f32
         wafer.linalg_ext.attention.yield %scaled : f32
       } -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
@@ -60,10 +61,9 @@ module {
       ins(%q, %k, %v, %scale : tensor<2x1025x128xf16>, tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
       outs(%init : tensor<2x1025x64xf16>) algorithm(<flash_attention>)
       indexing_maps = [#q,#k,#v,#s,#o] score {
-      ^bb0(%dot: f16, %scale_arg: f32):
+      ^bb0(%dot: f32, %scale_arg: f32):
         %buffer = memref.alloc() : memref<1024xf32>
-        %wide = arith.extf %dot : f16 to f32
-        wafer.linalg_ext.attention.yield %wide : f32
+        wafer.linalg_ext.attention.yield %dot : f32
       } -> tensor<2x1025x64xf16>
     return %result : tensor<2x1025x64xf16>
   }

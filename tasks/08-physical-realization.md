@@ -103,9 +103,9 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 
 #### Attention链路暴露的布局覆盖补齐
 
-下述为与05号4.5节配套的待实施合同，保留现有PBQP solver及query/assignment失效边界。
-当前普通elementwise/convert的部分输入输出关系未进入完整layout tuple/use成本；须按实际指令可接受的layout和
-既有physical traversal证明补齐，不能仅建SSA变量就宣称覆盖完整。Shape/dtype用于现有物理关系与转换字节计算，
+与05号4.5节配套，保留现有PBQP solver及query/assignment失效边界。
+普通elementwise/convert按实际指令可接受的layout及既有physical traversal证明建立输入输出关系成本；
+物理遍历一致或10号证明可直接使用unit广播时成本为0，否则计入该实际转换的字节成本。Shape/dtype用于现有物理关系与转换字节计算，
 不把数值算法、广播展开或GEMM方向选择交给PBQP，也不新增统一计算能力查询层。
 
 输入仍是已完成attention展开的actual structural IR，输出仍是同一个layout assignment及其实际materialization，

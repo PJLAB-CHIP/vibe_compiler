@@ -33,6 +33,54 @@ namespace wafer::xla_spmd_helper {
 constexpr std::string_view kMhloShardingAttr = "mhlo.sharding";
 constexpr std::string_view kStablehloShardingAttr = "stablehlo.sharding";
 
+namespace {
+
+class CompositePartitioningVisitor final
+    : public xla::spmd::SpmdPartitioningVisitor {
+public:
+  using SpmdPartitioningVisitor::SpmdPartitioningVisitor;
+
+  absl::Status HandleCall(xla::HloInstruction *call) override {
+    TF_RETURN_IF_ERROR(SpmdPartitioningVisitor::HandleCall(call));
+    if (!call->is_composite())
+      return absl::OkStatus();
+    xla::HloInstruction *partitioned = GetPartitionedHlo(call).hlo();
+    // The pinned visitor creates a new Call but drops the composite identity.
+    // Preserve it at the actual rewrite boundary, using its existing mapping.
+    // A sharded signature needs a composite-specific semantic transformation;
+    // copying global positions or other attributes to a shard is not valid.
+    if (partitioned->shape() != call->shape())
+      return absl::UnimplementedError(
+          "partitioning a composite result requires local composite semantics");
+    for (int64_t i = 0; i < call->operand_count(); ++i)
+      if (partitioned->operand(i)->shape() != call->operand(i)->shape())
+        return absl::UnimplementedError("partitioning a composite input "
+                                        "requires local composite semantics");
+    partitioned->set_is_composite(true);
+    partitioned->set_frontend_attributes(call->frontend_attributes());
+    return absl::OkStatus();
+  }
+};
+
+class CompositeSpmdPartitioner final : public xla::spmd::SpmdPartitioner {
+public:
+  using SpmdPartitioner::SpmdPartitioner;
+
+  std::unique_ptr<xla::spmd::SpmdPartitioningVisitor>
+  CreateVisitor(xla::HloComputation *computation, int64_t numPartitions,
+                int64_t numReplicas,
+                const xla::spmd::SPMDCollectiveOpsCreator &collectives,
+                int64_t *nextChannelId, xla::spmd::SpmdLogger *logger,
+                xla::spmd::SpmdPartitionerOptions options,
+                const xla::CallGraph &callGraph) override {
+    return std::make_unique<CompositePartitioningVisitor>(
+        computation, numPartitions, numReplicas, collectives, nextChannelId,
+        logger, std::move(options), this, callGraph);
+  }
+};
+
+} // namespace
+
 static std::optional<std::string>
 canonicalizeSequentialIotaSharding(std::string_view sharding) {
   std::string_view text = absl::StripAsciiWhitespace(sharding);
@@ -196,8 +244,8 @@ absl::Status runSpmdPartitioner(xla::HloModule *module,
                                                 /*num_replicas=*/1);
 
   xla::HloPassPipeline pipeline("wafer-spmd-partitioning");
-  pipeline.AddPass<xla::spmd::SpmdPartitioner>(
-      numPartitions, /*num_replicas=*/1, options, collectiveOpsCreator);
+  pipeline.AddPass<CompositeSpmdPartitioner>(numPartitions, /*num_replicas=*/1,
+                                             options, collectiveOpsCreator);
   pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
                                      /*allow_mixed_precision=*/false);
   TF_RETURN_IF_ERROR(pipeline.Run(module).status());

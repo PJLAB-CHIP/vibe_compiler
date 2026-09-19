@@ -3,6 +3,14 @@
 #ifndef WAFER_CONVERSION_STABLEHLOTOLINALG_PASSES_TD
 #define WAFER_CONVERSION_STABLEHLOTOLINALG_PASSES_TD
 
+def ConvertStablehloAttentionToLinalgPass
+    : Pass<"wafer-convert-stablehlo-attention-to-linalg", "mlir::func::FuncOp"> {
+  let summary = "Preserve SDPA composite semantics as structured attention";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::tensor::TensorDialect",
+                           "wafer::WaferDialect"];
+}
+
 def ConvertStablehloGatherToTensorPass
     : Pass<"wafer-convert-stablehlo-gather-to-tensor", "mlir::func::FuncOp"> {
   let summary = "Preserve full-slice StableHLO gathers as explicit tensor gathers";

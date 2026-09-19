@@ -11,6 +11,10 @@ mlir::Value castAttentionFloatScalar(mlir::Value value, mlir::Type targetType,
                                      mlir::OpBuilder &builder,
                                      mlir::Location location);
 
+mlir::Value computeAttentionExponential(mlir::Value value, mlir::Value maximum,
+                                        mlir::OpBuilder &builder,
+                                        mlir::Location location);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_TRANSFORMS_LINALG_ATTENTIONMATH_H

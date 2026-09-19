@@ -27,7 +27,12 @@
 顺序为composite接入→宽状态/causal局部展开→GEMM/layout/movement修正→原PyTorch/HF module新reference→完整实卡与性能保护。
 新增Q/K/V均为`[1,28,4096,128]`的causal prefill，FP16/BF16分别验收；全部列出可执行正例都须上板。
 独立attention新reference在实现更新后才启用，旧实现通过它不是前置；整网reference和既定门限保持。
-本次只完成方案文档，新增case尚未注册或执行，不代签实现、no-card、实卡或此前未闭合门槛。
+用户已授权按方案推进实现及完整验收；composite/SPMD、宽状态、causal局部展开、batched方向及native广播已接入。
+本轮22项none配置和原32-head 4K standard配置已完成fresh no-card与首轮完整实卡数值；
+随后GQA两种长度/两种dtype、长cache两步/两种dtype、LLaMA block两种dtype、三项大GEMM及ViT1024完成首轮完整实卡；
+ViT1025本轮launch窗口出现`NPU LSU TDMA Timeout`，批次已停止，未retry/reset，不签该项通过。
+主机已闭合滑窗packed BOOL读取、完整TargetModel数值、guard规划与故障注入，完整lit及component回归通过。
+attention性能目标仍未达到；匹配重复计时、实卡guard及最终同版本全矩阵未完成，设备异常处理后才能继续实卡。
 
 用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
 [06号搜索合同](06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)及
@@ -88,7 +93,7 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 53项范围中50项已按记录版本实卡完整数值通过；其中完整单层LM S16两种dtype、未融合图数值修复和LLaMA block/大GEMM性能恢复均已闭合。最新低精度attention导出保留原reference和精度门槛，ViT S1024/1025经默认8/42构包、fresh no-card后各三次完整实卡通过；五项LLaMA/GEMM新source及完整包与最新恢复性能版本逐byte一致。第4项剩完整LM S1024/1025编译边界及4K prefill实际workspace容量问题；4K已构包/no-card，但64.0078125 GiB workspace在设备allocation/launch前被拒绝。第3项decode剩余性能和TDMA专项按用户要求暂缓，历史超时根因未知，不由后续通过外推为已修复。第5项及最终同版本全矩阵、三轮性能仍未完成；原最好可复现目标不重置。受影响主机回归已通过，此前扩大lit的六项既有失败仍单独保留。版本、数值、故障及逐次性能证据统一见板测记录。 | `tasks/plans/board-workload-matrix.md` |
+| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT的数值和性能资格按记录版本保留。本轮attention composite、宽状态、causal分块、方向/layout/broadcast及packed mask路径已接入，主机完整lit/component与滑窗TargetModel通过；28-head双dtype及原32-head 4K、GQA、长cache和保护项已有中间版本首轮实卡，原32-head的64 GiB workspace阻塞已消除。ViT1025本轮出现TDMA Timeout，批次停止，根因未知。attention性能目标仍未达到，实卡guard、至少三次匹配计时及最终同版本全矩阵未闭合。完整LM S1024/1025、decode性能恢复、搜索性能回归/deep收益及三轮模型调优仍保留未完成；原最好可复现目标不重置。具体范围、版本和证据见同一计划及板端记录。 | `tasks/plans/board-workload-matrix.md` |
 | 3 | `mesh-communication-materialization` | `queued` | 06、13、14、16 | verified card-local TensorProgram、抽象 collective participant/payload/combine 语义、layout-resolved current TileRegion；target transport 只消费已物化 peer IR | 通用Ring/recursive-doubling/ordered AllToAll/reduction算法与TX81 transport分层；execution/residency、layout/bufferization、frontend helper和search cost的current-IR合同闭合；focused current-IR、SystemC与host/no-card witness通过。真实板测及PyTorch验收由独立板测项拥有 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `production-host-readiness` | `queued` | Q53 / 16 | `mesh-communication-materialization`产出的 current-IR 与 target-independent/target transport 分界、frontend、interface、package/runtime | 历史主纵向与smoke通过不能代签current模型资格；模型扩展暴露的prefill/decode/LLaMA问题已由board-testing统一修复并完成限定矩阵的FP16实卡验收。等待前置通信实现边界闭合后，按本项合同重签完整source/IR/package/oracle/runner/no-card/SystemC矩阵；板端证据见统一归档，本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |

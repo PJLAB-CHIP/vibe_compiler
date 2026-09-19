@@ -2,11 +2,11 @@
 
 #include "Wafer/Simulator/Invocation/TargetCallExecution.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Simulator/Invocation/TargetModelInvocation.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/CodeGen/LLVM/TargetCodeGenInternal.h"
-#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/Target/TargetIdentity.h"
 
@@ -53,6 +53,92 @@
 #include <vector>
 
 namespace {
+
+TEST(TargetModelInvocationTest, OmitsOnlyDeclaredDeadConstantPayloads) {
+  using namespace wafer;
+  using namespace wafer::compiler;
+  using namespace wafer::model;
+  auto context = std::make_shared<mlir::MLIRContext>();
+  mlir::DialectRegistry registry;
+  registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::arith::ArithDialect,
+                  mlir::memref::MemRefDialect, mlir::LLVM::LLVMDialect,
+                  mlir::cf::ControlFlowDialect, mlir::scf::SCFDialect>();
+  mlir::registerBuiltinDialectTranslation(registry);
+  mlir::registerLLVMDialectTranslation(registry);
+  context->appendDialectRegistry(registry);
+  context->loadAllAvailableDialects();
+  auto config = llvm::cantFail(ExecutionConfig::createForSingleCard(1));
+  auto launch = llvm::cantFail(RuntimeLaunchContract::createKernel(
+      KernelLaunchForm::Grid, KernelEntryABI::TileMajorPointerTable,
+      {RuntimeLaunchPhaseRole::Main}));
+  ProgramResourceBinding constant{};
+  constant.role = ProgramResourceRole::Constant;
+  constant.index = 0;
+  constant.programIndex = 0;
+  constant.dtype = ProgramElementType::F64;
+  ProgramResourceBinding input{};
+  input.role = ProgramResourceRole::UserInput;
+  input.index = 1;
+  input.programIndex = 0;
+  input.dtype = ProgramElementType::F16;
+  input.localShape = input.globalShape = {2, 1025, 64};
+  std::vector<TileExecutable> tiles;
+  std::vector<ProgramTileInvocation> calls;
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    // No computation is required for this ABI boundary/negative oracle.
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(%constant: memref<f64, #wafer.memory<ddr, tensor>>
+      {wafer.program_argument = #wafer.program_argument<0>},
+      %input: memref<2x1025x64xf16, #wafer.memory<ddr, tensor>>
+      {wafer.program_argument = #wafer.program_argument<1>}) { return }
+})mlir",
+                                                          context.get());
+    ASSERT_TRUE(module);
+    tiles.push_back(DeviceExecutableBuilder::makeTileExecutable(
+        CardId(0), TileId(tile), LaunchSlotId(tile), std::move(module), "main",
+        {constant, input}, TransportContract::None));
+    auto captured = llvm::cantFail(ProgramTensor::create(
+        ProgramElementType::F64, {}, std::vector<uint8_t>(8)));
+    auto tensor = llvm::cantFail(
+        ProgramTensor::create(ProgramElementType::F16, input.localShape,
+                              std::vector<uint8_t>(2 * 1025 * 64 * 2)));
+    calls.push_back({CardId(0),
+                     TileId(tile),
+                     LaunchSlotId(tile),
+                     {{ProgramResourceRole::Constant, 0, std::move(captured)},
+                      {ProgramResourceRole::UserInput, 1, std::move(tensor)}}});
+  }
+  auto executable = DeviceExecutableBuilder::makeDeviceExecutable(
+      config, std::move(launch), context, std::move(tiles),
+      std::make_unique<wafer::compiler::ProgramDataHandoff>());
+  std::string diagnostics;
+  llvm::raw_string_ostream stream(diagnostics);
+  auto target = compileDeviceExecutableToTargetLLVMModules(executable, stream);
+  ASSERT_TRUE(bool(target))
+      << diagnostics << llvm::toString(target.takeError());
+  auto prepared = prepareTargetModelInvocation(executable, *target, calls);
+  ASSERT_TRUE(bool(prepared)) << llvm::toString(prepared.takeError());
+  for (unsigned corruption = 0; corruption < 4; ++corruption) {
+    auto invalid = calls;
+    auto &extra = invalid.front().inputs.front();
+    if (corruption == 0)
+      extra.index = 17;
+    else if (corruption == 1)
+      extra.role = ProgramResourceRole::Parameter;
+    else if (corruption == 2)
+      extra.tensor = llvm::cantFail(ProgramTensor::create(
+          ProgramElementType::F32, {}, std::vector<uint8_t>(4)));
+    else
+      invalid.front().inputs.push_back(extra);
+    auto rejected = prepareTargetModelInvocation(executable, *target, invalid);
+    ASSERT_FALSE(bool(rejected));
+    EXPECT_NE(
+        llvm::toString(rejected.takeError()).find("absent from the Kernel ABI"),
+        std::string::npos);
+  }
+}
 
 std::vector<uint64_t>
 makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor);
@@ -332,16 +418,12 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     }
     return arguments;
   }
-  if (std::holds_alternative<wafer::TargetElementwiseOperation>(
-          descriptor.semantic)) {
-    const size_t payloadSize =
-        arguments.size() -
-        (descriptor.issueDomain &&
-                 descriptor.issueDomain->nccWorkerArgument.has_value()
-             ? 1
-             : 0);
-    arguments[payloadSize - 1] =
-        supportedF32Code(wafer::TargetFormatEngine::CT);
+  if (auto *operation = std::get_if<wafer::TargetElementwiseOperation>(
+          &descriptor.semantic)) {
+    unsigned arity = wafer::getTargetElementwiseArity(*operation);
+    arguments[arity + 2] = supportedF32Code(wafer::TargetFormatEngine::CT);
+    if (arity == 2 && !wafer::isTargetElementwiseLogic(*operation))
+      arguments[5] = 32;
     return arguments;
   }
   if (std::holds_alternative<wafer::TargetReduceOperation>(
@@ -706,6 +788,8 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
     }
     EXPECT_EQ(value.destination, arguments[unary ? 1 : 2]);
     EXPECT_EQ(value.elementCount, u32(unary ? 2 : 3));
+    EXPECT_EQ(value.rhsUnitElements,
+              !unary && !wafer::isTargetElementwiseLogic(*kind) ? u32(5) : 0);
     expectFormat(value.format);
     return;
   }
@@ -981,7 +1065,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetElementwiseOperation::Add)
           .arguments.size(),
-      6u);
+      7u);
   EXPECT_EQ(wafer::getTargetCallDescriptor(
                 wafer::TargetConvolutionOperation::Convolution)
                 .arguments.size(),

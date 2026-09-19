@@ -299,6 +299,23 @@ current kernel执行：
 
 workspace内部的compiler-managed地址仍是compiled `workspaceBase + wafer.ddr.offset`；runtime不得看到或重新pack内部对象。
 
+显式`--memory-guards`验证模式仍使用同一invocation planner和两块allocation。输入是verified package、原bindings及
+guard policy；planner在每个非空invocation child range前后保留至少256 B guard并保持原alignment，
+program-data仅在完整只读payload外保留guard，TargetTensor file offset不变。输出为同一plan中的实际allocation bytes、
+payload base offset及guard ranges，直接由原board runtime初始化、完成后回读；no-card只验证该plan，不声称guard已执行。
+普通模式的地址与provider调用保持原合同。guard模式不插kernel、wait或barrier，不改compiler内部SPM/DDR offset、
+不检查module loader私有allocation，也不把外部guard称作workspace内部每个对象的red-zone。
+
+guard使用按allocation offset确定的非均匀字节图案，H2D在launch前，D2H在可信completion后、cleanup前，
+均在普通device event计时区间之外。任何guard mismatch或回读失败使本次invocation失败；已知完成时仍正常清理，
+provider poison时仍禁止后续provider调用。只有全部guard实际比较成功，typed result和CLI才报告检查的字节数。
+aggregate capacity、溢出和alignment检查包含guard，不额外逐tensor分配，不退回无guard执行。
+
+覆盖矩阵：空/非空program data、Grid/Cluster两种launch、TileMajor/TileRow参数、input/output/shared及per-Tile workspace、
+profile/status、1024/1025/1031字节与alignment gap；检查所有地址、non-overlap、guard完整覆盖及normal路径不变。
+fake provider分别破坏首guard、末guard和child间guard，验证typed失败、正常cleanup；超时/poison验证不回读、不继续provider调用。
+真实板测必须显式启用该模式并留下检查字节数，完整数值通过不能替代guard。
+
 ### 6.3 Completion、readback与cleanup
 
 - 等待使用一个absolute deadline，不为每个Tile重置timeout；

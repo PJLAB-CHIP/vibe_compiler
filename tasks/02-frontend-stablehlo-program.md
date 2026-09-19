@@ -226,22 +226,24 @@ FP32，convolution和bias加法在FP32完成，整个算子结果再转换回原
 
 ### 2.4 Safe-softmax 的导出表示
 
-输入是原始module直接XLA抓图时的typed `aten._safe_softmax`调用。按用户指定的导出策略，复用pinned
-PyTorch/XLA `stablehlo._run_decompositions`的同一映射，将该调用交给`torch.softmax`，保留dim、dtype和
-普通softmax的opmath；FP16/BF16结果使用F32内部softmax并在结果处转回所需dtype，
-不生成额外的`eq(-Inf) → all → where`。输出是普通StableHLO softmax图，直接交既有
-source verifier及05号attention识别；唯一用户入口仍为`export_pytorch_program`。
+输入是原始module直接XLA抓图时的typed `aten._safe_softmax`调用。复用pinned PyTorch官方decomposition，
+保留dim、显式dtype与全屏蔽行归零语义；FP16/BF16使用F32内部opmath，再转回调用的输出dtype。
+普通`torch.softmax`仍保持自己的非有限值行为，不把它替换为safe-softmax。输出是普通StableHLO SSA，
+由source verifier、SPMD及05号structured入口消费；SDPA内部的展开同时保存在2.6节composite定义中。
 
-这是明确的source语义选择：全为负无穷的行按普通softmax产生NaN，不保留`_safe_softmax`额外归零行为。
-不删除模型显式编写的mask、比较或select，不修改原module、参数、输入及CPU reference，不改已有portable source，
-不扩展attention IR或按模型名分派。普通有限输入及每行有有限值的masked输入与原算子比较；全负无穷行只验证
-上述普通softmax合同，不能声称与原safe-softmax等价。
+安全分解的region capture必须成为composite展开函数的真实operand。Pinned PyTorch/XLA的边界收集按
+`getUsedValuesDefinedAbove`遍历region，不能因顶层op没有直接operand而漏掉归约region使用的外部constant。
+必要capture保留在portable函数signature中；target ABI只在证明参数无use后删除对应device参数，不删source binding。
 
-完成矩阵：rank3/4、1024/1025/1031、FP16/BF16/F32、显式dim/dtype及attention调用，检查导出无额外布尔归约、
-原mask保留、完整XLA数值及caller state不变；原ViT S1024/1025重新导出后进入当前正式compiler。
-导出或局部attention识别通过不代签完整package/no-card或板端完成。
-映射依据为[PyTorch/XLA 2.5官方导出器](https://github.com/pytorch/xla/blob/v2.5.0/torch_xla/stablehlo.py)，
-实际接口以本仓pinned源码确认。
+覆盖rank3/4、1024/1025/1031、FP16/BF16/F32、显式dim/dtype、普通有限行、部分mask和全负无穷行。
+检查官方safe-softmax完整数值、全屏蔽exact zero、原mask和caller state不变；普通softmax的NaN行为单独检查。
+导出/识别通过不代签package、no-card或板端完成。分解以仓库pinned PyTorch/XLA源码及真实capture回归为准。
+
+导出器的受控源码身份为pinned PyTorch/XLA revision加仓内`pytorch-xla-composite-region-captures.patch`。
+该补丁让composite closure包含owned region引用的外部SSA定义；不改变framework算术或reference。
+构建入口幂等应用同一补丁，corpus provenance记录补丁与修改文件的SHA-256；来源检查要求整个checkout的
+tracked变化集合及各文件字节均与记录相等，并拒绝其它变化或untracked文件。完成覆盖包含原revision缺补丁、
+额外文件、补丁哈希错误、补丁文件之外的修改，以及真实corpus的重复导出和固定reference。
 
 ### 2.5 Attention 的低精度导出
 
@@ -250,10 +252,11 @@ source verifier及05号attention识别；唯一用户入口仍为`export_pytorch
 由原SDPA math实现保留输入精度，继续处理scale、causal、mask及head/batch关系；不在已导出的IR上删除转换。
 该选项只拥有SDPA内部的自动提升策略，显式F32输入及其它算术保持原dtype；普通softmax继续遵循2.4节的F32 opmath，
 普通低精度score的概率在PV前恢复低精度，不把softmax指数与归约一并降精度。
-显式F32 additive mask引入的F32 score/PV提升仍保留；这类调用不自动取得低精度target资格。
+展开定义保留框架对显式F32 additive mask的算术；02号不自行删cast。05号在composite边界应用统一宽状态合同，
+Q/K/V保持原storage，mask进入F32 score，概率只在PV输入处窄化。
 用`finally`恢复调用方原设置，包括导出失败；独立CPU reference始终在capture之外由原module生成。
 
-输出为同一portable StableHLO program directory，低精度GEMM及其转换直接进入SSA，
+输出为同一portable StableHLO program directory，低精度GEMM及其转换进入composite展开定义的SSA，
 下游仍为原source verifier、SPMD、05号attention识别和正式compiler；唯一入口为`export_pytorch_program`。
 不增加模型/shape特判、依赖版本、精度开关CLI、第二条导出形式或后端dtype fallback；不放宽数值标准，
 不改已有portable source、module、参数或reference。硬件累加/psum支持继续由当前target合同约束。
@@ -264,7 +267,7 @@ source verifier及05号attention识别；唯一用户入口仍为`export_pytorch
 
 | 覆盖 | exact要求 | 完成条件与直接下游 |
 | --- | --- | --- |
-| rank3/4、1024/1025/1031，FP16/BF16 SDPA及F32对照 | 两次dot的输入dtype、输出dtype正确；boolean/additive mask、负scale和causal保留；显式F32 mask继续提升PV；原输入及框架设置不变 | 真实portable export/source verifier及XLA完整输出对原PyTorch相似度验收 |
+| rank3/4、1024/1025/1031，FP16/BF16 SDPA及F32对照 | 两次dot的输入dtype、输出dtype正确；boolean/additive mask、负scale和causal保留；展开定义保留显式F32 mask语义；原输入及框架设置不变 | 真实portable export/source verifier及XLA完整输出对原PyTorch相似度验收 |
 | 调用方选项原为开/关，合法导出与异常退出 | capture采用唯一策略，退出恢复原状态；显式F32算术不被降精度 | 产品API回归及失败后合法导出 |
 | 原ViT S1024/1025与LLaMA/大GEMM保护 | 原reference和既定门槛不变，所有完整输出参与比较 | 默认8/42正式构包、fresh no-card、串行实卡；变化的保护包做完整数值及匹配性能 |
 
@@ -272,9 +275,8 @@ source verifier及05号attention识别；唯一用户入口仍为`export_pytorch
 
 ### 2.6 Attention composite 导出合同
 
-本节是下一次attention实现迁移的目标合同，不表示现有入口已经支持；实施顺序及实卡矩阵见
-[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)。2.5节描述迁移前的已实现路径，
-新路径闭合时同步替换相关producer/consumer，不保留两套Wafer attention协议。
+产品capture在typed SDPA调用处建立本节唯一composite；2.5节定义其框架展开策略，05号定义structured消费合同。
+实施和实卡资格见[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)，不由本设计代签。
 
 - Upstream IR / input：原始eval PyTorch/HF module及同一份静态typed输入，attention调用处仍可取得causal、位置和有效长度。
 - Current stage responsibility：通过现有产品capture保留逻辑attention的`stablehlo.composite`边界；
@@ -289,14 +291,23 @@ source verifier及05号attention识别；唯一用户入口仍为`export_pytorch
   本节正例继续到package/no-card及实卡，不能由composite打印成功代签。
 
 Q/K/V、scale、必要的additive mask及GQA head关系必须可由输入type、SSA与明确属性解释。
-静态causal配置用属性，运行时位置/有效长度用SSA operand；bool mask、padding与任意浮点bias不得混同。
-普通causal不再以完整`[S,S]`mask作为产品输入；当前adapter在导出前生成mask的做法须在调用边界调整，
-保留真正的规则和位置。任意additive mask仍是实际输入，不根据某次三角形payload改写成causal。
+当前composite名为`wafer.scaled_dot_product_attention`，version为0；唯一属性集合为
+`is_causal`、`scale`、`has_mask`、`enable_gqa`、`query_start`、`key_start`、`key_valid_end`。
+Q/K/V及可选mask在前，框架展开的scalar captures在后。Static shape与typed `CausalBias`给出位置；
+upper-left及lower-right遵循原框架描述，descriptor可为module字段或在forward中构造。普通causal位置从0开始。
+05号把位置属性变为index SSA；任意运行时mask保留真实tensor输入，不从payload恢复位置/有效长度。
+KV有效prefix由原module切片表达；bool mask、padding与任意浮点bias不得混同。
+普通causal不再以完整`[S,S]`mask作为产品输入。任意additive mask仍是实际输入，不根据某次三角形payload改写成causal。
 导出、SPMD和导入都须保留这些事实；composite的展开语义与属性不得矛盾，未知或不完整合同明确拒绝。
 
 选用[StableHLO composite](https://openxla.org/stablehlo/spec#composite)是因为它保留融合边界并携带等价展开定义；
 `custom_call`仅由实现约定语义。本仓pinned StableHLO已有CompositeOp、pinned PyTorch/XLA已有
-`StableHLOCompositeBuilder`；API存在不等于本仓端到端已接入，须验证当前直接XLA capture路径，不能另建Dynamo入口。
+`StableHLOCompositeBuilder`；直接XLA capture和SPMD传递同一调用，SPMD无法保持已分片composite的shape合同时明确拒绝。
+ATen dispatch作用域限定在Tensor API调用内，避免pinned PyTorch的descriptor构造与dispatch mode冲突；
+实际Tensor计算、mutation/host逃逸检查和官方分解仍由同一capture负责，不能另建Dynamo入口。
+`MultiheadAttention`的Python functional body会在override dispatch期间关闭外层mode。
+capture复用pinned原函数code，仅在其私有globals副本中跳过已消费的override入口检查，重新启用同一mode捕获内部SDPA；
+不修改框架全局函数、参数或模型数学。FP16/BF16、1024/1025由原module完整输出及structured attention witness共同验证。
 composite本身不授权浮点重排；05号拥有attention混合精度及online重排边界，16号拥有独立module reference。
 
 | 输入等价类/分支 | exact要求或typed failure | 直接下游witness |

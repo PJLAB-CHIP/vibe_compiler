@@ -40,6 +40,66 @@
 
 namespace {
 
+TEST(TargetABIPreparationTest, DeadCapturedConstantCompactsOnlyTheDeviceABI) {
+  using namespace wafer::compiler;
+  mlir::DialectRegistry registry;
+  detail::registerCompilationDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(
+      %captured: memref<f64, #wafer.memory<ddr, tensor>>
+          {wafer.program_argument = #wafer.program_argument<0>},
+      %input: memref<2x1031x64xf16, #wafer.memory<ddr, tensor>>
+          {wafer.program_argument = #wafer.program_argument<1>}) {
+    %workspace = memref.alloc() {alignment = 256 : i64,
+      wafer.ddr.offset = #wafer.ddr_offset<0>}
+        : memref<1024xf32, #wafer.memory<ddr, tensor>>
+    return
+  }
+})mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  ProgramResourceBinding captured{};
+  captured.role = ProgramResourceRole::Constant;
+  captured.index = 0;
+  captured.programIndex = 0;
+  captured.dtype = wafer::ProgramElementType::F64;
+  ProgramResourceBinding input{};
+  input.role = ProgramResourceRole::UserInput;
+  input.index = 1;
+  input.programIndex = 0;
+  input.dtype = wafer::ProgramElementType::F16;
+  input.localShape = {2, 1031, 64};
+  input.globalShape = input.localShape;
+  auto tile = DeviceExecutableBuilder::makeTileExecutable(
+      wafer::CardId(0), wafer::TileId(0), wafer::LaunchSlotId(0),
+      std::move(module), "main", {captured, input},
+      wafer::TransportContract::None);
+  auto config = ExecutionConfig::createForSingleCard(1);
+  ASSERT_TRUE(static_cast<bool>(config));
+  auto prepared = detail::prepareTargetABI(tile, *config, false,
+                                           detail::ProfileCaptureKind::Count);
+  ASSERT_TRUE(mlir::succeeded(prepared));
+  ASSERT_EQ(prepared->slots.size(), 3u);
+  EXPECT_EQ(prepared->slots[0].kind, TileEntryArgumentKind::ExternalInput);
+  EXPECT_EQ(prepared->defaultDDRArenaArgumentIndex, 1);
+  EXPECT_EQ(prepared->profileRecordArgumentIndex, 2);
+  auto original = tile.getModule().lookupSymbol<mlir::func::FuncOp>("main");
+  EXPECT_EQ(original.getNumArguments(), 2u);
+  EXPECT_TRUE(original.getArgument(0).use_empty());
+  // A live F64 capture still has no target tensor format; deadness must be an
+  // actual SSA fact, never a rule based on dtype or constant role alone.
+  mlir::OpBuilder builder =
+      mlir::OpBuilder::atBlockBegin(&original.getBody().front());
+  builder.create<mlir::memref::LoadOp>(original.getLoc(),
+                                       original.getArgument(0));
+  mlir::ScopedDiagnosticHandler diagnostics(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  EXPECT_TRUE(mlir::failed(detail::prepareTargetABI(tile, *config, false)));
+}
+
 TEST(TargetABIPreparationTest,
      ProgramArgumentIdentityMatchesTheActualBoundary) {
   mlir::DialectRegistry registry;

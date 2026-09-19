@@ -229,17 +229,25 @@ static std::optional<bool> getReentryCondition(mlir::Value value,
   }
 }
 
-static bool isUnconditionallyNestedInStaticFor(mlir::Operation *operation,
-                                               mlir::scf::ForOp outer) {
+static bool
+isUnconditionallyNestedInStaticFor(mlir::Operation *operation,
+                                   mlir::scf::ForOp outer,
+                                   mlir::Operation *onPathOf = nullptr) {
   for (auto *parent = operation ? operation->getParentOp() : nullptr; parent;
        operation = parent, parent = parent->getParentOp()) {
     if (parent == outer)
       return true;
     if (auto condition = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
       auto value = getReentryCondition(condition.getCondition(), outer);
-      if (!value ||
-          operation->getParentRegion() != (*value ? &condition.getThenRegion()
-                                                  : &condition.getElseRegion()))
+      if (!value) {
+        // An unknown branch can still guarantee a completion for an observer
+        // in that same branch. Other paths retain their pending worker state.
+        if (!onPathOf || !operation->getParentRegion()->isAncestor(
+                             onPathOf->getParentRegion()))
+          return false;
+      } else if (operation->getParentRegion() !=
+                 (*value ? &condition.getThenRegion()
+                         : &condition.getElseRegion()))
         return false;
       continue;
     }
@@ -2954,6 +2962,7 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
   });
 
   llvm::SmallVector<bool, 4> exactlyOrderedAccesses;
+  llvm::SmallVector<mlir::Operation *, 4> conditionalCompletions;
   exactlyOrderedAccesses.reserve(issueAccesses.size());
   for (const PendingAccess *pending : issueAccesses) {
     // A read that remains in flight across the backedge is harmless until a
@@ -2968,6 +2977,10 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
         dataflow.timeline.lookup(candidate);
     if (!candidatePoint ||
         !candidatePoint->path.compatibleWith(bodyPoint->path))
+      continue;
+    if (llvm::any_of(conditionalCompletions, [&](mlir::Operation *join) {
+          return isUnconditionallyNestedInStaticFor(join, forOp, candidate);
+        }))
       continue;
     bool unconditionalInBody =
         candidatePoint->path.implies(bodyPoint->path) &&
@@ -2985,12 +2998,21 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
         return true;
       // A conditional completion is safe on the path where it executes, but
       // cannot prove the other next-iteration paths.
+      conditionalCompletions.push_back(candidate);
       continue;
     }
+    // A join for another participant neither observes this stream's storage
+    // nor completes it. Keep its pending accesses for subsequent observers.
+    if (candidateContract.kind == NCCCompletionKind::ParticipantJoin)
+      continue;
 
     if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
-      if (isStaticallyNonEmpty(nestedFor) &&
-          isUnconditionallyNestedInStaticFor(candidate, forOp))
+      // A conditional static loop is not itself a memory observer. Its actual
+      // operations occur below with their path predicates; conflicting Kcore,
+      // DTE or cross-worker accesses still reject the proof there. Requiring
+      // this container on every path would turn a skipped disjoint initializer
+      // into an artificial completion boundary.
+      if (isStaticallyNonEmpty(nestedFor))
         continue;
       return false;
     }
@@ -3406,7 +3428,7 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
           continue;
 
         if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
-          if (!isStaticallyNonEmpty(nestedFor) || !unconditionalInBody)
+          if (!isStaticallyNonEmpty(nestedFor))
             invalidateFallback(activeStates);
           continue;
         }

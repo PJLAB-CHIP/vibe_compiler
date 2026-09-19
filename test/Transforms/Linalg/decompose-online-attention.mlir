@@ -13,16 +13,16 @@ module {
     func.func @entry(%query: tensor<2x1025x64xf16>,
                      %key: tensor<2x1031x64xf16>,
                      %value: tensor<2x1031x128xf16>)
-        -> tensor<2x1025x128xf16> {
+        -> tensor<2x1025x128xf32> {
       %result = wafer.tile.region(
           %query, %key, %value : tensor<2x1025x64xf16>,
           tensor<2x1031x64xf16>, tensor<2x1031x128xf16>)
-          -> (tensor<2x1025x128xf16>) {
+          -> (tensor<2x1025x128xf32>) {
       ^bb0(%query_arg: tensor<2x1025x64xf16>,
            %key_arg: tensor<2x1031x64xf16>,
            %value_arg: tensor<2x1031x128xf16>):
         %scale = arith.constant 1.0 : f32
-        %accumulator = tensor.empty() : tensor<2x1025x128xf16>
+        %accumulator = tensor.empty() : tensor<2x1025x128xf32>
         %maximum = tensor.empty() : tensor<2x1025xf32>
         %sum = tensor.empty() : tensor<2x1025xf32>
         %next_accumulator, %next_maximum, %next_sum =
@@ -30,19 +30,19 @@ module {
             ins(%query_arg, %key_arg, %value_arg, %scale :
                 tensor<2x1025x64xf16>, tensor<2x1031x64xf16>,
                 tensor<2x1031x128xf16>, f32)
-            outs(%accumulator, %maximum, %sum : tensor<2x1025x128xf16>,
+            outs(%accumulator, %maximum, %sum : tensor<2x1025x128xf32>,
                 tensor<2x1025xf32>, tensor<2x1025xf32>)
             indexing_maps = [#q, #k, #v, #s, #acc, #row, #row] score {
-            ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
-              %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
-              %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+            ^bb0(%attention_0_dot: f32, %attention_0_scale: f32):
+
+              %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f32
               wafer.linalg_ext.attention.yield %attention_0_scaled : f32
             }
-            -> (tensor<2x1025x128xf16>, tensor<2x1025xf32>,
+            -> (tensor<2x1025x128xf32>, tensor<2x1025xf32>,
                 tensor<2x1025xf32>)
-        wafer.tile.yield %next_accumulator : tensor<2x1025x128xf16>
+        wafer.tile.yield %next_accumulator : tensor<2x1025x128xf32>
       }
-      return %result : tensor<2x1025x128xf16>
+      return %result : tensor<2x1025x128xf32>
     }
   }
 }

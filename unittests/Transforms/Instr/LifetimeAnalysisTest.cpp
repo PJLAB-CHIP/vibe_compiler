@@ -1489,6 +1489,73 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
+       ConditionalCoordinateLoopRequiresCompletionOnlyForAnActualConflict) {
+  enum class JoinSite { Absent, BeforeObserver, OtherBranch, OtherWorker };
+  for (bool conflicting : {false, true})
+    for (auto site : {JoinSite::Absent, JoinSite::BeforeObserver,
+                      JoinSite::OtherBranch, JoinSite::OtherWorker}) {
+      SCOPED_TRACE(std::to_string(conflicting) + " " +
+                   std::to_string(static_cast<unsigned>(site)));
+      bool joined = site == JoinSite::BeforeObserver;
+      std::string source = R"mlir(
+module {
+  func.func @main(%condition: i1) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %end = arith.constant 1025 : index
+    %zero = arith.constant 0.0 : f32
+    %data = memref.alloc() : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>
+    %coordinates = memref.alloc() : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>
+    scf.for %outer = %c0 to %c2 step %c1 {
+      scf.if %condition {
+        scf.for %inner = %c0 to %end step %c1 {
+          memref.store %zero, %coordinates[%c0, %inner, %c0]
+              : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>
+        }
+      }
+      wafer.instr.fill %data, %zero
+          : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>, f32
+    }
+    wafer.instr.ncc_join [0]
+    return
+  }
+})mlir";
+      if (conflicting)
+        source.replace(source.find("%coordinates["),
+                       std::string("%coordinates").size(), "%data");
+      if (joined || site == JoinSite::OtherWorker)
+        source.insert(source.find("scf.for %inner"),
+                      joined ? "wafer.instr.ncc_join [0]\n        "
+                             : "wafer.instr.ncc_join [1]\n        ");
+      if (site == JoinSite::OtherBranch)
+        source.insert(
+            source.find("scf.if %condition"),
+            "scf.if %condition {} else { wafer.instr.ncc_join [0] }\n      ");
+      auto module = parse(source);
+      ASSERT_TRUE(module);
+      auto function = getOnlyFunction(*module);
+      auto timeline = StructuredTimeline::build(function);
+      ASSERT_TRUE(mlir::succeeded(timeline));
+      llvm::SmallVector<LifetimeDemand, 2> demands;
+      function.walk([&](mlir::memref::AllocOp allocation) {
+        demands.push_back({allocation, 2 * 1025 * 64 * 4, 256,
+                           static_cast<unsigned>(demands.size())});
+      });
+      LifetimeDataflow dataflow(*timeline, demands, [](mlir::Type type) {
+        return wafer::isWaferSPMMemRefType(type);
+      });
+      LocalCompletionTracker completion;
+      LifetimeFailure failure;
+      EXPECT_EQ(mlir::succeeded(dataflow.run(function, &completion, &failure)),
+                !conflicting || joined);
+      if (conflicting && !joined) {
+        EXPECT_EQ(failure.kind, LifetimeFailureKind::LoopBackedgeCompletion);
+      }
+    }
+}
+
+TEST_F(LifetimeAnalysisTest,
        DisjointMultiWorkerStreamsDoNotNeedLoopBodyJoin) {
   auto module = parse(R"mlir(
 module {
@@ -1650,8 +1717,6 @@ module {
     return
   }
 }
-
-
 )mlir");
   ASSERT_TRUE(module);
   mlir::func::FuncOp function = getOnlyFunction(*module);

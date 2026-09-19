@@ -942,6 +942,8 @@ def _read_only_attention(
     num_heads: int = 1,
     num_key_value_heads: int | None = None,
     head_dim: int = ATTENTION_HEAD_DIM,
+    mask_mode: str = "none",
+    valid_length: int | None = None,
 ) -> PyTorchBoardCase:
     if dtype not in {torch.float16, torch.bfloat16}:
         raise RuntimeError(
@@ -952,57 +954,28 @@ def _read_only_attention(
     if (num_heads <= 0 or num_key_value_heads <= 0
             or num_heads % num_key_value_heads):
         raise ValueError("attention requires positive Q/KV heads with Q divisible by KV")
-    try:
-        from transformers import LlamaConfig
-        from transformers.masking_utils import create_causal_mask
-        from transformers.models.llama.modeling_llama import (
-            LlamaAttention,
-            eager_attention_forward,
-        )
-    except ImportError as error:
-        raise RuntimeError(
-            "read-only attention board cases require the pinned Hugging Face "
-            "Transformers importer dependency"
-        ) from error
+    if mask_mode not in {"none", "additive", "padding", "fully-masked", "sliding-window"}:
+        raise ValueError("unknown attention mask mode")
+    if causal and mask_mode != "none":
+        raise ValueError("explicit attention masks require a noncausal case")
+    if valid_length is not None and not 0 < valid_length <= key_value_length:
+        raise ValueError("valid KV length must be a nonempty prefix of storage")
 
-    config = LlamaConfig(
-        hidden_size=num_heads * head_dim,
-        intermediate_size=num_heads * head_dim * 4,
-        num_attention_heads=num_heads,
-        num_key_value_heads=num_key_value_heads,
-        max_position_embeddings=key_value_length,
-        attention_dropout=0.0,
-    )
-    config._attn_implementation = "eager"
-
-    class HuggingFaceLlamaEagerAttention(torch.nn.Module):
-        """Export adapter around the official HF Llama eager backend."""
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.attention = LlamaAttention(config, layer_idx=0).eval()
-
+    class ScaledDotProductAttention(torch.nn.Module):
+        """The same original framework module owns source and F32 reference."""
         def forward(
             self,
             query: torch.Tensor,
             key: torch.Tensor,
             value: torch.Tensor,
-            attention_mask: torch.Tensor,
+            attention_mask: torch.Tensor | None = None,
         ) -> torch.Tensor:
-            output, _ = eager_attention_forward(
-                self.attention,
-                query,
-                key,
-                value,
-                attention_mask,
-                scaling=self.attention.scaling,
-                dropout=0.0,
+            if valid_length is not None:
+                key, value = key[..., :valid_length, :], value[..., :valid_length, :]
+            return torch.nn.functional.scaled_dot_product_attention(
+                query, key, value, attn_mask=attention_mask, is_causal=causal,
+                dropout_p=0.0, enable_gqa=num_heads != num_key_value_heads,
             )
-            # HF returns [batch, query, heads, dim]. The case observes the
-            # canonical [batch, heads, query, dim] layout; this adapter is only
-            # a layout view around the official backend and contains no
-            # attention arithmetic.
-            return output.transpose(1, 2).contiguous()
 
     generator = torch.Generator(device="cpu").manual_seed(seed)
     query = _random_tensor(
@@ -1020,41 +993,43 @@ def _read_only_attention(
         dtype=dtype,
         generator=generator,
     )
-    if causal:
-        positions = torch.arange(query_length, dtype=torch.long).unsqueeze(0)
-        mask_input = query.transpose(1, 2).reshape(
-            1, query_length, num_heads * head_dim
-        )
-        additive_mask = create_causal_mask(
-            config=config,
-            inputs_embeds=mask_input,
-            attention_mask=None,
-            past_key_values=None,
-            position_ids=positions,
-        )
-        if not isinstance(additive_mask, torch.Tensor):
-            raise RuntimeError(
-                "the official HF eager prefill path did not produce an "
-                "additive tensor mask"
-            )
-    else:
-        additive_mask = torch.zeros(
-            (1, 1, query_length, key_value_length), dtype=dtype
-        )
-    module = HuggingFaceLlamaEagerAttention().eval()
-    inputs = (query, key, value, additive_mask)
+    inputs = (query, key, value)
+    effective_length = key_value_length if valid_length is None else valid_length
+    if mask_mode == "additive":
+        mask = torch.randn((1, 1, query_length, effective_length),
+                           generator=generator, dtype=torch.float32) * .125
+        inputs += (mask,)
+    elif mask_mode in {"padding", "fully-masked"}:
+        mask = torch.zeros((1, 1, 1, effective_length), dtype=torch.bool)
+        if mask_mode == "padding":
+            mask[..., :effective_length - 7] = True
+        inputs += (mask,)
+    elif mask_mode == "sliding-window":
+        query_position = (torch.arange(query_length) +
+                          effective_length - query_length)[:, None]
+        key_position = torch.arange(effective_length)[None, :]
+        mask = ((key_position <= query_position) &
+                (key_position > query_position - 64))[None, None, ...]
+        inputs += (mask,)
+    module = ScaledDotProductAttention().eval()
 
     def expected_outputs_factory() -> tuple[torch.Tensor, ...]:
         with torch.no_grad():
-            expected = module(*inputs)
+            wide_inputs = tuple(value.float() if value.is_floating_point() else value
+                                for value in inputs)
+            expected = module(*wide_inputs).to(dtype)
         if expected.dtype != dtype or not torch.isfinite(expected).all():
             raise RuntimeError(
-                f"PyTorch {name} eager reference must be finite and preserve dtype"
+                f"PyTorch {name} module reference must be finite and preserve dtype"
             )
         return (expected,)
 
     def export_program(output: pathlib.Path) -> None:
         _save_exported_program(output, module, inputs)
+
+    def validate_fully_masked(actual: tuple[torch.Tensor, ...]) -> None:
+        torch.testing.assert_close(actual[0], torch.zeros_like(actual[0]),
+                                   rtol=0, atol=0)
 
     return PyTorchBoardCase(
         name=name,
@@ -1065,6 +1040,7 @@ def _read_only_attention(
         export_program=export_program,
         comparison_policy=ATTENTION_COMPARISON,
         prefill_extent=query_length if causal else None,
+        validate_actual_outputs=validate_fully_masked if mask_mode == "fully-masked" else None,
     )
 
 
@@ -1113,6 +1089,46 @@ def _attention_gqa(
         name="attention-gqa" if extent == 1024 else f"attention-gqa-tail-{extent}",
         query_length=extent, key_value_length=extent, causal=True,
         num_heads=32, num_key_value_heads=8, head_dim=128,
+    )
+
+
+def _attention_causal_decode_two_tokens(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
+    from torch.nn.attention.bias import causal_lower_right
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("causal decode requires FP16 or BF16 inputs")
+
+    class FunctionalDecode(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bias = causal_lower_right(2, 1026)
+
+        def forward(self, query, key, value, past_key, past_value):
+            keys = torch.cat((past_key, key), dim=-2)
+            values = torch.cat((past_value, value), dim=-2)
+            output = torch.nn.functional.scaled_dot_product_attention(
+                query, keys, values, self.bias, dropout_p=0.0)
+            return output, keys, values
+
+    generator = torch.Generator().manual_seed(seed)
+    inputs = tuple(_random_tensor((1, 1, length, 64), dtype=dtype,
+                                  generator=generator) * .125
+                   for length in (2, 2, 2, 1024, 1024))
+    module = FunctionalDecode().eval()
+
+    def reference():
+        with torch.no_grad():
+            return tuple(module(*inputs))
+
+    def validate(actual):
+        for updated, prefix in zip(actual[1:], inputs[3:], strict=True):
+            torch.testing.assert_close(updated[..., :1024, :], prefix, rtol=0, atol=0)
+
+    return PyTorchBoardCase(
+        name="attention-causal-decode-two-tokens", num_partitions=1, dtype=dtype,
+        inputs=inputs, expected_outputs_factory=reference,
+        export_program=lambda output: _save_exported_program(output, module, inputs),
+        comparison_policy=ATTENTION_COMPARISON, validate_actual_outputs=validate,
     )
 
 
@@ -1452,6 +1468,29 @@ CASE_FACTORIES: dict[
     ),
     "attention-prefill": _attention_prefill,
     "attention-prefill-llama-2-7b": _llama_2_7b_attention_prefill,
+    "attention-prefill-28-heads-4096": lambda dtype, seed: _read_only_attention(
+        dtype, seed, name="attention-prefill-28-heads-4096",
+        query_length=4096, key_value_length=4096, causal=True,
+        num_heads=28, head_dim=128,
+    ),
+    "attention-causal-decode-two-tokens": _attention_causal_decode_two_tokens,
+    **{
+        name: (lambda dtype, seed, name=name, mode=mode: _read_only_attention(
+            dtype, seed, name=name, query_length=1024, key_value_length=33,
+            causal=False, mask_mode=mode))
+        for name, mode in (("attention-noncausal", "none"),
+                           ("attention-noncausal-additive", "additive"),
+                           ("attention-padding", "padding"),
+                           ("attention-fully-masked", "fully-masked"))
+    },
+    "attention-valid-kv-prefix": lambda dtype, seed: _read_only_attention(
+        dtype, seed, name="attention-valid-kv-prefix", query_length=1025,
+        key_value_length=1031, valid_length=1024, causal=True,
+    ),
+    "attention-sliding-window": lambda dtype, seed: _read_only_attention(
+        dtype, seed, name="attention-sliding-window", query_length=1025,
+        key_value_length=1031, causal=False, mask_mode="sliding-window",
+    ),
     "attention-gqa": _attention_gqa,
     "attention-gqa-tail-1025": lambda dtype, seed: _attention_gqa(
         dtype, seed, extent=1025

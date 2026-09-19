@@ -2,6 +2,8 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -17,6 +19,64 @@
 using namespace wafer;
 
 namespace {
+
+mlir::Type getComputeType(mlir::Type storage) {
+  auto floating = mlir::dyn_cast<mlir::FloatType>(storage);
+  return floating && floating.getWidth() < 32
+             ? mlir::Float32Type::get(storage.getContext())
+             : storage;
+}
+
+template <typename Op>
+mlir::LogicalResult verifyPositions(Op op,
+                                    const AttentionIterationRoles &roles) {
+  if (op.getPositions().empty()) {
+    if (op.getCausal() || op.getPositionMapAttr())
+      return op.emitOpError(
+          "causal attention and position_map require positions");
+    return mlir::success();
+  }
+  auto positionMap = op.getPositionMapAttr();
+  if (op.getPositions().size() != 3 || !positionMap)
+    return op.emitOpError(
+        "positions requires query start, key start, key end and position_map");
+  auto map = positionMap.getValue();
+  if (map.getNumDims() != op.getIterationDomainRank() ||
+      map.getNumResults() != 2 || !map.isProjectedPermutation() ||
+      map.getNumSymbols() != 0 ||
+      !llvm::is_contained(
+          roles.query,
+          mlir::cast<mlir::AffineDimExpr>(map.getResult(0)).getPosition()) ||
+      !llvm::is_contained(
+          roles.keyValueReduction,
+          mlir::cast<mlir::AffineDimExpr>(map.getResult(1)).getPosition()))
+    return op.emitOpError(
+        "position_map must project query and K2 sequence coordinates");
+  for (mlir::Value position : op.getPositions())
+    if (auto constant = mlir::getConstantIntValue(position);
+        constant && *constant < 0)
+      return op.emitOpError("attention positions must be nonnegative");
+  return mlir::success();
+}
+
+llvm::SmallVector<mlir::Value, 3>
+tilePositions(mlir::OpBuilder &builder, mlir::Location location,
+              mlir::ValueRange positions, mlir::AffineMapAttr positionMap,
+              llvm::ArrayRef<mlir::OpFoldResult> offsets) {
+  if (positions.empty())
+    return {};
+  llvm::SmallVector<mlir::Value, 3> result(positions);
+  for (auto [index, expression] :
+       llvm::enumerate(positionMap.getValue().getResults())) {
+    unsigned dimension =
+        mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+    mlir::Value offset = mlir::getValueOrCreateConstantIndexOp(
+        builder, location, offsets[dimension]);
+    result[index] = builder.createOrFold<mlir::arith::AddIOp>(
+        location, result[index], offset);
+  }
+  return result;
+}
 
 mlir::Type getScoreResultType(mlir::Region &region) {
   if (!llvm::hasSingleElement(region) || region.front().empty())
@@ -295,6 +355,8 @@ LinalgExtAttentionOp::getIndexingMapsArray() {
   maps.reserve(getIndexingMaps().size());
   for (mlir::Attribute attribute : getIndexingMaps())
     maps.push_back(mlir::cast<mlir::AffineMapAttr>(attribute).getValue());
+  maps.append(getPositions().size(),
+              mlir::AffineMap::get(maps.front().getNumDims(), 0, getContext()));
   return maps;
 }
 
@@ -309,8 +371,9 @@ llvm::SmallVector<int64_t> LinalgExtAttentionOp::getStaticLoopRanges() {
 
 mlir::FailureOr<AttentionIterationRoles>
 LinalgExtAttentionOp::getIterationRoles() {
-  return inferAttentionIterationRoles(getIndexingMapsArray(),
-                                      static_cast<bool>(getMask()));
+  auto maps = getIndexingMapsArray();
+  maps.resize(maps.size() - getPositions().size());
+  return inferAttentionIterationRoles(maps, static_cast<bool>(getMask()));
 }
 
 mlir::LogicalResult LinalgExtAttentionOp::verify() {
@@ -326,6 +389,8 @@ mlir::LogicalResult LinalgExtAttentionOp::verify() {
   if (mlir::failed(roles))
     return emitOpError(
         "indexing maps must form complete B/M/K1/K2/N attention roles");
+  if (mlir::failed(verifyPositions(*this, *roles)))
+    return mlir::failure();
   mlir::FailureOr<llvm::SmallVector<int64_t, 8>> extents =
       getStaticIterationExtents(*this);
   if (mlir::failed(extents))
@@ -344,10 +409,14 @@ mlir::LogicalResult LinalgExtAttentionOp::verify() {
       !mlir::isa<mlir::FloatType>(getScale().getType()) ||
       (getMask() &&
        !mlir::isa<mlir::FloatType>(
-           mlir::cast<mlir::ShapedType>(getMask().getType()).getElementType())))
+           mlir::cast<mlir::ShapedType>(getMask().getType())
+               .getElementType()) &&
+       !mlir::cast<mlir::ShapedType>(getMask().getType())
+            .getElementType()
+            .isInteger(1)))
     return emitOpError(
         "query, key, value, and output must share one floating storage type; "
-        "scale and mask must also be floating");
+        "scale must be floating and mask must be floating or i1");
 
   const bool tensorSemantics =
       mlir::isa<mlir::RankedTensorType>(getQuery().getType());
@@ -379,12 +448,20 @@ mlir::LogicalResult LinalgExtAttentionOp::verify() {
       return emitOpError(
           "flash_decoding requires at least two nonempty K2 pieces");
   }
-  return verifyScoreRegion(getOperation(), getScoreRegion(), elementType,
-                           getScale().getType(), getMask());
+  if (getScoreType() != getComputeType(elementType))
+    return emitOpError("score result must use the attention compute type");
+  return verifyScoreRegion(getOperation(), getScoreRegion(),
+                           getComputeType(elementType), getScale().getType(),
+                           getMask());
 }
 
 mlir::Type LinalgExtAttentionOp::getScoreType() {
   return getScoreResultType(getScoreRegion());
+}
+
+mlir::Type LinalgExtAttentionOp::getAccumulatorType() {
+  return getComputeType(
+      mlir::cast<mlir::ShapedType>(getOutput().getType()).getElementType());
 }
 
 mlir::Type LinalgExtOnlineAttentionOp::getScoreType() {
@@ -478,6 +555,8 @@ LinalgExtAttentionOp::getTiledImplementation(
   if (mlir::failed(output))
     return mlir::failure();
   operands.push_back(*output);
+  llvm::append_range(operands, tilePositions(builder, getLoc(), getPositions(),
+                                             getPositionMapAttr(), offsets));
 
   llvm::SmallVector<mlir::Type, 1> resultTypes;
   if (mlir::isa<mlir::RankedTensorType>(output->getType()))
@@ -581,8 +660,7 @@ LinalgExtAttentionOp::getCoupledReductionDescription() {
   CoupledReductionDescription description;
   description.reductionIterators = roles->keyValueReduction;
   mlir::Type stateElementType = getScoreType();
-  mlir::Type accumulatorElementType =
-      mlir::cast<mlir::ShapedType>(getOutput().getType()).getElementType();
+  mlir::Type accumulatorElementType = getAccumulatorType();
   description.components.push_back(
       {CoupledReductionComponentKind::Maximum, rowMap, stateElementType});
   description.components.push_back(
@@ -602,6 +680,8 @@ LinalgExtOnlineAttentionOp::getIndexingMapsArray() {
   maps.reserve(getIndexingMaps().size());
   for (mlir::Attribute attribute : getIndexingMaps())
     maps.push_back(mlir::cast<mlir::AffineMapAttr>(attribute).getValue());
+  maps.append(getPositions().size(),
+              mlir::AffineMap::get(maps.front().getNumDims(), 0, getContext()));
   return maps;
 }
 
@@ -631,6 +711,8 @@ mlir::LogicalResult LinalgExtOnlineAttentionOp::verify() {
   if (mlir::failed(roles))
     return emitOpError(
         "indexing maps must form complete B/M/K1/K2/N attention roles");
+  if (mlir::failed(verifyPositions(*this, *roles)))
+    return mlir::failure();
   if (mlir::failed(getStaticIterationExtents(*this, /*requireStatic=*/false)))
     return emitOpError(
         "requires positive and mutually consistent known iterator extents");
@@ -652,23 +734,27 @@ mlir::LogicalResult LinalgExtOnlineAttentionOp::verify() {
   if (!mlir::isa<mlir::FloatType>(storageElementType) ||
       getKey().getType().getElementType() != storageElementType ||
       getValue().getType().getElementType() != storageElementType ||
-      getAccumulator().getType().getElementType() != storageElementType ||
+      getAccumulator().getType().getElementType() !=
+          getComputeType(storageElementType) ||
+      getScoreType() != getComputeType(storageElementType) ||
       !mlir::isa<mlir::FloatType>(getScale().getType()) ||
       getMaximum().getType().getElementType() != getScoreType() ||
       getSum().getType().getElementType() != getScoreType() ||
       (getMask() &&
-       !mlir::isa<mlir::FloatType>(getMask().getType().getElementType())))
-    return emitOpError(
-        "query, key, value, and accumulator must share one floating storage "
-        "type; maximum and sum must use the score result type; mask must be "
-        "floating");
+       !mlir::isa<mlir::FloatType>(getMask().getType().getElementType()) &&
+       !getMask().getType().getElementType().isInteger(1)))
+    return emitOpError("query, key, and value must share one floating storage "
+                       "type; accumulator, maximum and sum must use the "
+                       "compute type; mask must be "
+                       "floating or i1");
 
   if (getUpdatedAccumulator().getType() != getAccumulator().getType() ||
       getUpdatedMaximum().getType() != getMaximum().getType() ||
       getUpdatedSum().getType() != getSum().getType())
     return emitOpError(
         "each result type must equal its destination state type");
-  return verifyScoreRegion(getOperation(), getScoreRegion(), storageElementType,
+  return verifyScoreRegion(getOperation(), getScoreRegion(),
+                           getComputeType(storageElementType),
                            getScale().getType(), getMask());
 }
 
@@ -757,6 +843,8 @@ LinalgExtOnlineAttentionOp::getTiledImplementation(
       operands[operands.size() - 3].getType(),
       operands[operands.size() - 2].getType(),
       operands[operands.size() - 1].getType()};
+  llvm::append_range(operands, tilePositions(builder, getLoc(), getPositions(),
+                                             getPositionMapAttr(), offsets));
   mlir::Operation *tiled =
       mlir::clone(builder, getOperation(), resultTypes, operands);
   return mlir::TilingResult{

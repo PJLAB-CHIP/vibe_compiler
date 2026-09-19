@@ -8,6 +8,7 @@ import os
 import pathlib
 import shutil
 import tempfile
+import types
 from typing import Any
 
 
@@ -21,6 +22,8 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
     from torch.overrides import TorchFunctionMode
     from torch.utils._python_dispatch import TorchDispatchMode
     from torch.utils._pytree import tree_flatten
+    from torch_xla.experimental.mark_pattern_utils import StableHLOCompositeBuilder
+    from torch.nn.attention.bias import CausalBias, CausalVariant
 
     if any(child.training for child in module.modules()):
         raise ValueError("direct XLA export requires an eval module")
@@ -41,7 +44,29 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
 
     # Preserve the caller's CPU module, including buffers, aliases and Python
     # state. Nothing in the lazy graph may refer back to the caller's tensors.
-    captured = copy.deepcopy(module)
+    # CausalBias is a descriptor Tensor subclass whose framework dispatch only
+    # implements SDPA, including no Tensor.__deepcopy__. Copy its public typed
+    # descriptor rather than attempting a tensor operation or materializing it.
+    descriptor_copies = {}
+    visited = set()
+
+    def copy_descriptors(value):
+        if id(value) in visited:
+            return
+        visited.add(id(value))
+        if isinstance(value, CausalBias):
+            descriptor_copies[id(value)] = CausalBias(
+                value.variant, value.seq_len_q, value.seq_len_kv)
+        elif isinstance(value, dict):
+            for child in value.values():
+                copy_descriptors(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                copy_descriptors(child)
+
+    for child in module.modules():
+        copy_descriptors(vars(child))
+    captured = copy.deepcopy(module, descriptor_copies)
     if any(not name or name in (".", "..") or "/" in name or "\\" in name
            for name in state(captured)):
         raise ValueError("module state name is not a safe data filename")
@@ -96,26 +121,89 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
         return output, mean.to(input.dtype), rstd.to(input.dtype)
 
     decompositions[native_layer_norm] = cpu_layer_norm_results
-    def ordinary_softmax(input, dim, dtype=None):
+    safe_softmax = get_decompositions((torch.ops.aten._safe_softmax.default,))[
+        torch.ops.aten._safe_softmax.default]
+
+    def capture_safe_softmax(input, dim, dtype=None):
         output_dtype = input.dtype if dtype is None else dtype
         compute_dtype = (torch.float32 if output_dtype in
                          (torch.float16, torch.bfloat16) else output_dtype)
         # An explicit dtype converts the input before the softmax opmath.
-        return torch.softmax(input.to(output_dtype), dim,
-                             dtype=compute_dtype).to(output_dtype)
+        return safe_softmax(input.to(output_dtype).to(compute_dtype), dim,
+                            dtype=compute_dtype).to(output_dtype)
 
-    # Match pinned PyTorch/XLA's ordinary-softmax source policy, including NaN
-    # for an all-negative-inf row. Keep CPU half/BF16 softmax opmath in F32
-    # even when SDPA retains low-precision Q/K/V and probability buffers.
-    decompositions[torch.ops.aten._safe_softmax.default] = ordinary_softmax
+    # Preserve SDPA's zero result for fully masked rows in its decomposition.
+    # Ordinary softmax calls retain their own framework behavior.
+    decompositions[torch.ops.aten._safe_softmax.default] = capture_safe_softmax
     average_pools = (
         torch.ops.aten.avg_pool2d.default,
         torch.ops.aten._adaptive_avg_pool2d.default,
     )
 
+    # MultiheadAttention is a Python composite whose initial override dispatch
+    # disables this mode for its entire body. Redispatch the pinned framework
+    # body with that already-consumed guard removed, then re-enter the mode for
+    # its nested Tensor API calls (including SDPA). The framework code and all
+    # other globals remain unchanged; no global function is monkey-patched.
+    multihead = torch.nn.functional.multi_head_attention_forward
+    multihead_body = types.FunctionType(
+        multihead.__code__, dict(multihead.__globals__,
+                                 has_torch_function=lambda tensors: False),
+        multihead.__name__, multihead.__defaults__, multihead.__closure__)
+    multihead_body.__kwdefaults__ = multihead.__kwdefaults__
+
     class CompositeOpmath(TorchFunctionMode):
         def __torch_function__(self, func, types, args=(), kwargs=None):
+            # Scope ATen capture to tensor API calls. Descriptor constructors
+            # such as CausalBias use Tensor.__new__, which the pinned PyTorch
+            # cannot execute under a Python dispatch mode. Their construction
+            # has no graph effect; their SDPA use is captured below normally.
+            with Capture():
+                return self.capture(func, types, args, kwargs)
+
+        def capture(self, func, types, args=(), kwargs=None):
             kwargs = kwargs or {}
+            if func is multihead:
+                with self:
+                    return multihead_body(*args, **kwargs)
+            if func in (torch.nn.functional.scaled_dot_product_attention,
+                        torch.ops.aten.scaled_dot_product_attention.default):
+                arguments = dict(zip(("query", "key", "value", "attn_mask",
+                                      "dropout_p", "is_causal"), args))
+                arguments.update(kwargs)
+                query, key, value = (arguments[name] for name in
+                                     ("query", "key", "value"))
+                dropout = arguments.get("dropout_p", 0.0)
+                causal = arguments.get("is_causal", False)
+                if dropout != 0.0 or not isinstance(causal, bool):
+                    raise ValueError("attention capture requires zero dropout and static causality")
+                mask = arguments.get("attn_mask")
+                query_start = key_start = 0
+                structured_bias = isinstance(mask, CausalBias)
+                if structured_bias:
+                    if causal or (mask.seq_len_q, mask.seq_len_kv) != (query.shape[-2], key.shape[-2]):
+                        raise ValueError("causal bias must match Q/K lengths and cannot combine with is_causal")
+                    if mask.variant == CausalVariant.LOWER_RIGHT:
+                        offset = mask.seq_len_kv - mask.seq_len_q
+                        query_start, key_start = max(offset, 0), max(-offset, 0)
+                    elif mask.variant != CausalVariant.UPPER_LEFT:
+                        raise ValueError("unsupported causal bias variant")
+                    causal = True
+                scale = arguments.get("scale")
+                if scale is None:
+                    scale = query.shape[-1] ** -0.5
+                composite = StableHLOCompositeBuilder(
+                    "wafer.scaled_dot_product_attention", {
+                        "is_causal": causal, "scale": float(scale),
+                        "has_mask": mask is not None and not structured_bias,
+                        "enable_gqa": arguments.get("enable_gqa", False),
+                        "query_start": query_start, "key_start": key_start,
+                        "key_valid_end": key_start + key.shape[-2],
+                    })
+                operands = (query, key, value) + (() if mask is None or structured_bias else (mask,))
+                marked = composite.mark_inputs(*operands)
+                arguments.update(zip(("query", "key", "value", "attn_mask"), marked))
+                return composite.mark_outputs(func(**arguments))
             native = torch.ops.aten.native_layer_norm.default
             # CompositeImplicitAutograd can lower LayerNorm to a training
             # BatchNorm before Python dispatch sees it. Preserve the original
@@ -179,7 +267,7 @@ def _capture_xla_module(torch: Any, stablehlo: Any, module: Any,
     math_sdp = torch.backends.cuda.fp16_bf16_reduction_math_sdp_allowed()
     try:
         torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(True)
-        with torch.no_grad(), Capture(), CompositeOpmath():
+        with torch.no_grad(), CompositeOpmath():
             result = captured(*xla_inputs)
     finally:
         torch.backends.cuda.allow_fp16_bf16_reduction_math_sdp(math_sdp)

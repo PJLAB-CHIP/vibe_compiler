@@ -37,6 +37,9 @@ void buildNormalizeAttentionPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(
+      createConvertStablehloAttentionToLinalgPass());
+  pm.addPass(mlir::createSymbolDCEPass());
   // The program contract permits private pure helpers behind one public
   // entry. Inline them before StableHLO legalization so downstream Tensor IR
   // and physical-dataflow stages retain their single-function boundary.

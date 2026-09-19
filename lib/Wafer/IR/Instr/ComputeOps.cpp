@@ -438,7 +438,7 @@ static unsigned getInstrElementwiseArity(InstrElementwiseKind kind) {
 
 static mlir::LogicalResult verifySimpleInstrElementwiseContract(
     mlir::Operation *op, InstrElementwiseKind kind, mlir::ValueRange inputs,
-    mlir::Type destType) {
+    mlir::Type destType, int64_t rhsUnitElements = 0) {
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(destType);
   if (!destTensor)
@@ -453,19 +453,20 @@ static mlir::LogicalResult verifySimpleInstrElementwiseContract(
            << expectedArity << " operand(s), got " << inputs.size();
 
   std::optional<mlir::RankedTensorType> firstInputTensor;
-  for (mlir::Value input : inputs) {
+  for (auto [index, input] : llvm::enumerate(inputs)) {
+    bool isUnit = index == 1 && rhsUnitElements != 0;
     std::optional<mlir::RankedTensorType> inputTensor =
         getLogicalTensorType(input.getType());
     if (!inputTensor)
       return op->emitOpError("expects Wafer buffer operands");
-    if (getWaferLayout(input.getType()) != destLayout)
+    if (!isUnit && getWaferLayout(input.getType()) != destLayout)
       return op->emitOpError(
           "elementwise operands must use the dest layout family");
     if (!firstInputTensor)
       firstInputTensor = inputTensor;
-    if (mlir::failed(verifySameShape(
-            op, *inputTensor, *destTensor,
-            "elementwise operand shapes must match dest shape")))
+    if (!isUnit && mlir::failed(verifySameShape(
+                       op, *inputTensor, *destTensor,
+                       "elementwise operand shapes must match dest shape")))
       return mlir::failure();
     if (isInstrRelationKind(kind)) {
       if (!destTensor->getElementType().isInteger(1))
@@ -773,6 +774,29 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
   for (auto [index, input] : llvm::enumerate(getInputs())) {
     if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(), "input")))
       return mlir::failure();
+  }
+  if (int64_t unit = getRhsUnitElements()) {
+    bool supportedKind = isInstrRelationKind(getKind()) ||
+                         getKind() == InstrElementwiseKind::Add ||
+                         getKind() == InstrElementwiseKind::Sub ||
+                         getKind() == InstrElementwiseKind::Mul ||
+                         getKind() == InstrElementwiseKind::Max ||
+                         getKind() == InstrElementwiseKind::Min;
+    if (unit < 1 || unit > 64 || !supportedKind || getInputs().size() != 2)
+      return emitOpError("rhs_unit_elements requires a floating binary "
+                         "arithmetic/relation operation and a unit in [1, 64]");
+    auto rhs = mlir::cast<mlir::MemRefType>(getInputs()[1].getType());
+    auto elementType = rhs.getElementType();
+    auto info = computeWaferPhysicalTensorInfo(rhs);
+    if (!(elementType.isF16() || elementType.isBF16() || elementType.isF32()) ||
+        !info || info->physicalElements != unit)
+      return emitOpError("rhs unit must have exactly rhs_unit_elements "
+                         "physical F16/BF16/F32 elements");
+    if (mlir::failed(verifySimpleInstrElementwiseContract(
+            getOperation(), getKind(), getInputs(), getDest().getType(), unit)))
+      return mlir::failure();
+    return verifyStaticPhysicalElementCountFitsUInt32(
+        getOperation(), getDest().getType(), "elementwise dest");
   }
   std::optional<ComputeElementwiseKind> computeKind =
       toComputeElementwiseKind(getKindAttr().getValue());

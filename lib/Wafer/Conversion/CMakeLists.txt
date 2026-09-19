@@ -2,6 +2,7 @@ add_mlir_conversion_library(WaferTileToInstr
   TileToInstr/ComputeLowering.cpp
   TileToInstr/MovementLowering.cpp
   TileToInstr/MovementSupport.cpp
+  TileToInstr/PackedMovementLowering.cpp
   TileToInstr/PeerLowering.cpp
   TileToInstr/TileToInstr.cpp
 
@@ -79,6 +80,7 @@ target_include_directories(WaferInstrToLLVM PRIVATE
   ${PROJECT_SOURCE_DIR}/lib)
 
 add_mlir_conversion_library(WaferStableHLOToLinalg
+  StableHLOToLinalg/ConvertStablehloAttentionToLinalg.cpp
   StableHLOToLinalg/ConvertStablehloGatherToTensor.cpp
   StableHLOToLinalg/FoldConvolutionInputCasts.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp

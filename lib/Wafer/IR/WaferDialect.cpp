@@ -204,6 +204,10 @@ getStaticStridedElementSpan(mlir::MemRefType type) {
   for (auto [dim, stride] : llvm::zip(type.getShape(), strides)) {
     if (dim == 0)
       return 0;
+    // The only in-bounds coordinate of a unit dimension is zero. Its stride
+    // contributes no address bits, including when control flow merged it.
+    if (dim == 1)
+      continue;
     if (dim < 0 || stride == mlir::ShapedType::kDynamic || stride < 0)
       return std::nullopt;
     int64_t dimSpan = 0;
@@ -343,6 +347,8 @@ MemoryAttr::getPhysicalLayoutPieces(mlir::MemRefType type) const {
       return mlir::failure();
     mlir::AffineExpr bitOffset = mlir::getAffineConstantExpr(0, context);
     for (auto [dim, stride] : llvm::enumerate(elementStrides)) {
+      if (shape[dim] == 1)
+        continue;
       int64_t strideBits = 0;
       if (stride == mlir::ShapedType::kDynamic || stride < 0 ||
           !checkedMul(stride, strideUnitBits, strideBits))
@@ -598,6 +604,10 @@ createSharedOffsetCalculator(mlir::MemRefType type,
             mlir::getStridesAndOffset(type, elementStrides, ignoredOffset)) ||
         elementStrides.size() != static_cast<size_t>(type.getRank()))
       return std::nullopt;
+    for (auto [extent, stride] :
+         llvm::zip_equal(type.getShape(), elementStrides))
+      if (extent == 1)
+        stride = 0;
   }
   return StaticPhysicalTensorOffsetCalculator::create(
       projectPhysicalTensorGeometry(info), type.getShape(), elementStrides);

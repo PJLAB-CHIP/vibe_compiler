@@ -1988,6 +1988,23 @@ static ContractionExample multiAxisExample(int64_t extent, unsigned variant) {
   case 5:
     return {
         {8, 8, 2, extent}, {1, 0}, {2, 1, 3}, {3, 0, 2}, {}, {0}, {2, 3}, 1};
+  case 7:
+  case 8:
+  case 9:
+  case 10: {
+    bool lhsTranspose = (variant - 7) & 2;
+    bool rhsTranspose = (variant - 7) & 1;
+    return {{2, extent, 8, 16},
+            lhsTranspose ? llvm::SmallVector<unsigned>{0, 2, 1}
+                         : llvm::SmallVector<unsigned>{0, 1, 2},
+            rhsTranspose ? llvm::SmallVector<unsigned>{0, 3, 2}
+                         : llvm::SmallVector<unsigned>{0, 2, 3},
+            {0, 1, 3},
+            {0},
+            {1},
+            {3},
+            2};
+  }
   default:
     return {{2, 2, 2, extent, 8, 2, 8},
             {3, 0, 4, 2, 1},
@@ -2079,7 +2096,7 @@ traceContractionElement(mlir::Value value, mlir::Value anchor, int64_t index) {
 TEST_F(StructuredToTileTest,
        MultiAxisContractionsPreserveEveryLogicalCoordinate) {
   for (int64_t extent : {1024, 1025, 1031})
-    for (unsigned variant = 0; variant < 7; ++variant)
+    for (unsigned variant = 0; variant < 11; ++variant)
       for (llvm::StringRef element : {"f16", "bf16"}) {
         SCOPED_TRACE(::testing::Message()
                      << extent << "/" << variant << "/" << element.str());
@@ -2113,6 +2130,14 @@ TEST_F(StructuredToTileTest,
         ASSERT_TRUE(gemm);
         ASSERT_TRUE(published);
         ASSERT_TRUE(gemm.getPsum());
+        if (variant >= 7) {
+          EXPECT_EQ(gemm.getLhsOrientation().value_or(GemmOrientation::Normal),
+                    (variant - 7) & 2 ? GemmOrientation::Transpose
+                                      : GemmOrientation::Normal);
+          EXPECT_EQ(gemm.getRhsOrientation().value_or(GemmOrientation::Normal),
+                    (variant - 7) & 1 ? GemmOrientation::Transpose
+                                      : GemmOrientation::Normal);
+        }
         EXPECT_TRUE(mlir::cast<mlir::MemRefType>(gemm.getResult().getType())
                         .getElementType()
                         .isF32());
@@ -2155,19 +2180,31 @@ TEST_F(StructuredToTileTest,
           auto shape = mlir::cast<mlir::MemRefType>(value.getType());
           int64_t rows = operand == 1 ? k : m;
           int64_t cols = operand == 0 ? k : n;
+          bool transposed =
+              operand < 2 && (operand == 0 ? gemm.getLhsOrientation()
+                                           : gemm.getRhsOrientation())
+                                     .value_or(GemmOrientation::Normal) ==
+                                 GemmOrientation::Transpose;
+          int64_t logicalRows = rows, logicalCols = cols;
+          if (transposed)
+            std::swap(rows, cols);
           ASSERT_EQ(shape.getShape(),
                     (llvm::ArrayRef<int64_t>{batch, rows, cols}));
           for (int64_t i = 0; i < batch * rows * cols; ++i) {
             llvm::SmallVector<int64_t> coordinates(example.extents.size(), 0);
             unpack(i / (rows * cols), example.batch, coordinates);
+            int64_t row = transposed ? i % cols : (i / cols) % rows;
+            int64_t col = transposed ? (i / cols) % rows : i % cols;
+            ASSERT_LT(row, logicalRows);
+            ASSERT_LT(col, logicalCols);
             if (operand == 1)
-              coordinates[example.k] = (i / cols) % rows;
+              coordinates[example.k] = row;
             else
-              unpack((i / cols) % rows, example.m, coordinates);
+              unpack(row, example.m, coordinates);
             if (operand == 0)
-              coordinates[example.k] = i % cols;
+              coordinates[example.k] = col;
             else
-              unpack(i % cols, example.n, coordinates);
+              unpack(col, example.n, coordinates);
             int64_t expected = project(dims, coordinates);
             auto actual = traceContractionElement(value, anchor, i);
             ASSERT_TRUE(mlir::succeeded(actual));

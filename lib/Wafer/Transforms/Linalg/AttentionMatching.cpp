@@ -1,6 +1,7 @@
 //===- AttentionMatching.cpp - Structured attention graph proof --------===//
 
 #include "AttentionMatching.h"
+#include "AttentionMath.h"
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1169,6 +1170,16 @@ bool isValueAncestor(mlir::Value ancestor, mlir::Value value) {
   return false;
 }
 
+bool supportsWideScore(mlir::Operation *operation) {
+  return mlir::isa<
+      mlir::arith::ConstantOp, mlir::arith::AddFOp, mlir::arith::SubFOp,
+      mlir::arith::MulFOp, mlir::arith::DivFOp, mlir::arith::NegFOp,
+      mlir::arith::MaximumFOp, mlir::arith::MinimumFOp, mlir::arith::MaxNumFOp,
+      mlir::arith::MinNumFOp, mlir::arith::CmpFOp, mlir::arith::SelectOp,
+      mlir::arith::ExtFOp, mlir::arith::TruncFOp, mlir::linalg::YieldOp>(
+      operation);
+}
+
 bool hasClosedScalarScore(const AttentionMatch &match) {
   llvm::DenseSet<mlir::Value> visited;
   std::function<bool(mlir::Value)> check = [&](mlir::Value value) {
@@ -1187,7 +1198,8 @@ bool hasClosedScalarScore(const AttentionMatch &match) {
           !llvm::all_of(generic.getDpsInputs(), check))
         return false;
       for (mlir::Operation &scalar : generic.getRegion().front()) {
-        if (scalar.getNumRegions() != 0 || !mlir::isMemoryEffectFree(&scalar))
+        if (!supportsWideScore(&scalar) || scalar.getNumRegions() != 0 ||
+            !mlir::isMemoryEffectFree(&scalar))
           return false;
         for (mlir::Value operand : scalar.getOperands()) {
           if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand)) {
@@ -1207,7 +1219,7 @@ bool hasClosedScalarScore(const AttentionMatch &match) {
       mlir::Value source = getTransparentSource(definition);
       return source && check(source);
     }
-    return definition->getNumRegions() == 0 &&
+    return supportsWideScore(definition) && definition->getNumRegions() == 0 &&
            mlir::isMemoryEffectFree(definition) &&
            llvm::all_of(definition->getResultTypes(),
                         [](mlir::Type type) {
@@ -1570,6 +1582,16 @@ collectAttentionMatches(mlir::func::FuncOp function) {
   return matches;
 }
 
+AttentionAlgorithm classifyAttentionAlgorithm(LinalgExtAttentionOp operation) {
+  auto function = operation->getParentOfType<mlir::func::FuncOp>();
+  auto roles = operation.getIterationRoles();
+  if (!function || mlir::failed(roles))
+    return AttentionAlgorithm::FlashAttention;
+  return classifyAlgorithm(function, operation.getKey(), operation.getValue(),
+                           operation.getKeyMap(), operation.getValueMap(),
+                           roles->keyValueReduction);
+}
+
 mlir::LogicalResult materializeAttentionScoreRegion(mlir::OpBuilder &builder,
                                                     const AttentionMatch &match,
                                                     mlir::Region &region,
@@ -1579,17 +1601,23 @@ mlir::LogicalResult materializeAttentionScoreRegion(mlir::OpBuilder &builder,
   mlir::OpBuilder::InsertionGuard guard(builder);
   mlir::Block *block = builder.createBlock(&region);
   mlir::Location location = match.root->getLoc();
-  auto dotType =
-      mlir::cast<mlir::ShapedType>(match.rawScores.getType()).getElementType();
+  auto storage =
+      mlir::cast<mlir::ShapedType>(match.query.getType()).getElementType();
+  mlir::Type dotType = mlir::cast<mlir::FloatType>(storage).getWidth() < 32
+                           ? builder.getF32Type()
+                           : storage;
   mlir::IRMapping mapping;
   mapping.map(match.rawScores, block->addArgument(dotType, location));
   auto scaleArgument = block->addArgument(scaleType, location);
   if (match.scale)
-    mapping.map(match.scale, scaleArgument);
+    mapping.map(match.scale, compiler::detail::castAttentionFloatScalar(
+                                 scaleArgument, dotType, builder, location));
   if (match.mask) {
     auto maskType =
         mlir::cast<mlir::ShapedType>(match.mask.getType()).getElementType();
-    mapping.map(match.mask, block->addArgument(maskType, location));
+    auto argument = block->addArgument(maskType, location);
+    mapping.map(match.mask, compiler::detail::castAttentionFloatScalar(
+                                argument, dotType, builder, location));
   }
   std::function<mlir::Value(mlir::Value)> clone = [&](mlir::Value value) {
     if (auto mapped = mapping.lookupOrNull(value))
@@ -1622,7 +1650,49 @@ mlir::LogicalResult materializeAttentionScoreRegion(mlir::OpBuilder &builder,
     for (mlir::Value operand : definition->getOperands())
       if (!clone(operand))
         return mlir::Value{};
-    auto *cloned = builder.clone(*definition, mapping);
+    // Preserve explicit source rounding even though arithmetic now consumes
+    // the wide QK result. Extra users continue to read the original graph.
+    if (auto conversion = mlir::dyn_cast<mlir::arith::TruncFOp>(definition)) {
+      mlir::Value scalar = mapping.lookup(conversion.getIn());
+      if (scalar.getType() != conversion.getType()) {
+        auto narrowed = builder.create<mlir::arith::TruncFOp>(
+            location, conversion.getType(), scalar);
+        narrowed.setRoundingmodeAttr(conversion.getRoundingmodeAttr());
+        scalar = narrowed;
+      }
+      mapping.map(value, scalar);
+      return scalar;
+    }
+    if (mlir::isa<mlir::arith::ExtFOp>(definition)) {
+      mlir::Value scalar = mapping.lookup(definition->getOperand(0));
+      scalar = compiler::detail::castAttentionFloatScalar(scalar, dotType,
+                                                          builder, location);
+      mapping.map(value, scalar);
+      return scalar;
+    }
+    if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(definition)) {
+      if (auto number = mlir::dyn_cast<mlir::FloatAttr>(constant.getValue())) {
+        llvm::APFloat widened = number.getValue();
+        bool losesInfo = false;
+        widened.convert(
+            mlir::cast<mlir::FloatType>(dotType).getFloatSemantics(),
+            llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+        mlir::Value scalar = builder.create<mlir::arith::ConstantOp>(
+            location, builder.getFloatAttr(dotType, widened));
+        mapping.map(value, scalar);
+        return scalar;
+      }
+    }
+    mlir::IRMapping arithmeticMapping(mapping);
+    for (mlir::Value operand : definition->getOperands())
+      if (mlir::isa<mlir::FloatType>(operand.getType()))
+        arithmeticMapping.map(
+            operand, compiler::detail::castAttentionFloatScalar(
+                         mapping.lookup(operand), dotType, builder, location));
+    auto *cloned = builder.clone(*definition, arithmeticMapping);
+    for (mlir::Value result : cloned->getResults())
+      if (mlir::isa<mlir::FloatType>(result.getType()))
+        result.setType(dotType);
     for (auto [source, result] :
          llvm::zip_equal(definition->getResults(), cloned->getResults()))
       mapping.map(source, result);

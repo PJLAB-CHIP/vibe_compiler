@@ -1,4 +1,5 @@
 add_mlir_library(WaferLinalgTransforms
+  AttentionVisibility.cpp
   AttentionMath.cpp
   AttentionMatching.cpp
   CommunicationRegionClosure.cpp

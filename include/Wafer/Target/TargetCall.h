@@ -98,6 +98,7 @@ struct TargetElementwiseCommand {
   uint64_t destination;
   uint32_t elementCount;
   LogicalFormat format;
+  uint32_t rhsUnitElements = 0;
 };
 
 struct TargetReduceCommand {

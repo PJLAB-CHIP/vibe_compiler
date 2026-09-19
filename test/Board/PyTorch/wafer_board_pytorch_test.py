@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-trace-event-limit", type=int)
     parser.add_argument("--device-timing", action="store_true")
+    parser.add_argument("--memory-guards", action="store_true")
     parser.add_argument(
         "--qualify-communication",
         choices=(
@@ -1413,6 +1414,8 @@ def main() -> int:
         )
 
         command = base_runtime_command(args.wafer_run, package)
+        if args.memory_guards:
+            command.append("--memory-guards")
         if args.profile_trace_event_limit is not None:
             command.extend(["--profile-trace-event-limit", str(args.profile_trace_event_limit)])
         # Direct DTE is selected by the common card search, so a
@@ -1482,6 +1485,9 @@ def main() -> int:
                     result.stdout + result.stderr
                 )
                 print(result.stdout, end="")
+                guard_match = re.search(r"^memory_guards: checked_bytes=(\d+)$", result.stdout, re.MULTILINE)
+                if args.memory_guards and (guard_match is None or int(guard_match[1]) == 0):
+                    raise RuntimeError("board runtime did not check the requested memory guards")
                 verify_board(
                     result.stdout,
                     current_case,
@@ -1502,6 +1508,7 @@ def main() -> int:
                     "search_trials": args.search_trials,
                     "manifest_sha256": file_sha256(package / "manifest.json"),
                     "comparison_passed": True,
+                    "memory_guard_bytes": int(guard_match[1]) if guard_match else None,
                     "comparison": dataclasses.asdict(current_case.comparison_policy),
                     "inputs": {path.name: file_sha256(path) for path in sorted(
                         (step_dir / "raw").glob("*user_input*")

@@ -12,6 +12,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SmallVector.h"
@@ -211,8 +213,10 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
     eraseDeadPrivateFills(region.getOperation(), listener);
   }
-  llvm::SmallVector<mlir::memref::SubViewOp, 8> subviews;
-  region.walk([&](mlir::memref::SubViewOp view) { subviews.push_back(view); });
+  llvm::SmallVector<mlir::Operation *, 8> views;
+  region.walk([&](mlir::ViewLikeOpInterface view) {
+    views.push_back(view.getOperation());
+  });
   mlir::IRRewriter rewriter(region.getContext(), listener);
   // The choice has already been materialized. Iteration coordinates are not
   // instruction, allocation, or completion facts.
@@ -222,8 +226,8 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
         operation->removeAttr(kIterationCoordinatesAttrName);
       });
   });
-  for (auto view : llvm::reverse(subviews))
-    if (view->use_empty())
+  for (auto *view : llvm::reverse(views))
+    if (mlir::isOpTriviallyDead(view))
       rewriter.eraseOp(view);
   return mlir::success();
 }

@@ -435,7 +435,6 @@ static void eliminateElementwiseWritebacks(
     if (!elementwise || !elementwise.getResult().hasOneUse() ||
         elementwise->getNextNode() != copy.getOperation() ||
         copy.getSource().getType() != copy.getDest().getType() ||
-        !hasMapFreeEquivalent(elementwise) ||
         pipelineOperations.contains(elementwise) ||
         pipelineOperations.contains(copy))
       return;
@@ -446,15 +445,19 @@ static void eliminateElementwiseWritebacks(
     // Construct fresh analysis for this IR epoch, before making any mutation.
     {
       mlir::AliasAnalysis aliases(module);
+      const bool allowExactDestination =
+          hasMapFreeEquivalent(elementwise) &&
+          elementwise.getKind() != ComputeElementwiseKind::Select;
       for (mlir::Value input : elementwise.getInputs())
-        if (input != copy.getDest() &&
+        if (!(allowExactDestination && input == copy.getDest()) &&
             !aliases.alias(input, copy.getDest()).isNo())
           return;
     }
     rewriter.setInsertionPoint(elementwise);
     rewriter.create<ComputeElementwiseIntoOp>(
         elementwise.getLoc(), elementwise.getKindAttr(),
-        elementwise.getInputs(), copy.getDest());
+        elementwise.getInputs(), copy.getDest(),
+        elementwise.getIndexingMapsAttr());
     rewriter.eraseOp(copy);
     rewriter.eraseOp(elementwise);
   });
@@ -497,7 +500,7 @@ materializeLoopCarriedDestinations(mlir::ModuleOp module,
             mlir::dyn_cast<ComputeElementwiseOp>(rewrite.operation)) {
       rewriter.create<ComputeElementwiseIntoOp>(
           elementwise.getLoc(), elementwise.getKindAttr(),
-          elementwise.getInputs(), rewrite.destination);
+          elementwise.getInputs(), rewrite.destination, mlir::ArrayAttr{});
       rewriter.replaceOp(elementwise, rewrite.destination);
       continue;
     }

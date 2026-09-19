@@ -1,0 +1,3850 @@
+{
+  "date": "2026-09-19",
+  "scope": "首轮attention正确性checkpoint；非最终同版本性能验收",
+  "seed": 20260803,
+  "runtime_api": 1400,
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "device": "/dev/accel/dev-0",
+  "pci": "0000:3b:00.0",
+  "tile_count": 16,
+  "reference": "独立QKV使用原module的F32输入/计算后转回输出dtype；functional decode保持原完整低精度module.forward及actual KV接续。",
+  "limitations": [
+    "实现期间陆续构包，前22项未在launch前单独记录compiler二进制SHA；保留package/source/input完整身份，不能据此签最终同版本资格。",
+    "各case仅一次普通计时；没有匹配基线，不签性能改善或保护。",
+    "这些实卡记录未启用allocation red-zone guard；新增--memory-guards已通过主机规划和故障注入，尚无真实设备guard资格。",
+    "compiler_tool_sha256_at_launch仅标识launch时工具，不作为此前prepared package的producer身份；最终冻结版本须单独记录实际编译时身份。",
+    "ViT1025 launch窗口出现TDMA Timeout，结果不签通过，当前板测批次停止；未retry/reset。"
+  ],
+  "records": [
+    {
+      "tag": "causal-decode-two-tokens-bf16",
+      "case": "attention-causal-decode-two-tokens",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:53:34.862849+00:00",
+      "finished_utc": "2026-09-18T22:53:42.239882+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/causal-decode-two-tokens-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-causal-decode-two-tokens",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "3d61bd0b4f063d7cba57e4cefb31c629dc442a5e5e7caa921a642febb1cb4c5c",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "144acb99639299cb8b575f505e5e1cb8eb3a989d426f41385c4f81ed304f91ad",
+              "card_00_user_input_1.bf16.raw": "6992fd634e40f59621dc09745cbcd9fb49d4b4f2df3bac2722704c2e79d76ba7",
+              "card_00_user_input_2.bf16.raw": "272bacf0d1cd4106b348bb52e0c366b759492b74f2d4d1f9ccc37d36ee4d37f3",
+              "card_00_user_input_3.bf16.raw": "4855fbb484aea716cafbb962c260d5075bcdcab108bac0d921dac1a29f6276b3",
+              "card_00_user_input_4.bf16.raw": "845914b214cefbcefbcdd4771418b7c457a5057c0851b09a4850adcb870a1936"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 128,
+                "max_abs_error": 6.103515625e-05,
+                "cosine_similarity": 0.9999970456056395,
+                "relative_l2_error": 0.0024408861256722003,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.102483555674553e-06
+              },
+              {
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65664,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              },
+              {
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65664,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1952000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "442f05e30abaca5e10c0d1c0f4736fd8e62617f3c2650a20fa7d2a438c1e723a",
+        "source-program/functions/forward.stablehlo.bc": "72b7138e893fcdb9e780551736f91f3dcda23a535ab8e857407f645d754de10d"
+      },
+      "log": "build/test/attention-improvement/causal-decode-two-tokens-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "a8b51e0f9d329f6896d6e3ec8686f057bb3c46f22aa151328b904374c4dea448",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "decode-kv-cache-bf16",
+      "case": "attention-decode-kv-cache",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:54:05.270306+00:00",
+      "finished_utc": "2026-09-18T22:54:26.664834+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/decode-kv-cache-bf16-board/step_01/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "e1e51d40a0459fab3145857406b3fb9294ef8ca08a444e8b204190952fa5998d",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "3c311e1abcb0850eadf68cf4dee196a05dfb15e1d04c50ce1b08fdf71bf1a61a",
+              "card_00_user_input_1.bf16.raw": "e574e7cc1b0282c46caef940bba7bc7ad413ce9e3bea6f4400b7a754c576756f",
+              "card_00_user_input_2.bf16.raw": "22af10024614b27fa73248c1dfe2cb33b1febe7a2dd18b6a11efb8d3dd28fab8",
+              "card_00_user_input_3.bf16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4096,
+                "max_abs_error": 0.000244140625,
+                "cosine_similarity": 0.9999930393407219,
+                "relative_l2_error": 0.0037338929129514613,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 4.2651941839721985e-05
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4194304,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4194304,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999999999077,
+                "relative_l2_error": 4.814531837336412e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.530384790588869e-10
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=10102000"
+            ]
+          }
+        },
+        {
+          "path": "build/test/attention-improvement/decode-kv-cache-bf16-board/step_02/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache-continuation",
+            "step": 2,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "558e74b38c04a8244e9f270feb66e706a7dff3a98b26d7a15c257fa07b3b5ed0",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "1b5e26f3877b7a76c6f0854c98a3085e7304253ccb9acf71501001818d7b4016",
+              "card_00_user_input_1.bf16.raw": "e304b8018ad64f0a7ce104995f038de551068b9d37c081e74a27f11196d981e4",
+              "card_00_user_input_2.bf16.raw": "21f252b38964acdd8aa47f192ae03104b0302af12dbc0f47aaa80bbc29929429",
+              "card_00_user_input_3.bf16.raw": "382e008e5bc647359ed6f41cb932f732b000a96c6048edd3cae85e65df04c175"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4096,
+                "max_abs_error": 0.000244140625,
+                "cosine_similarity": 0.9999940977320225,
+                "relative_l2_error": 0.0034357712124921114,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.836683481495129e-05
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4198400,
+                "max_abs_error": 0.00048828125,
+                "cosine_similarity": 0.9999999999934391,
+                "relative_l2_error": 3.6290313009395712e-06,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.015512792075553e-10
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4198400,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999999998922,
+                "relative_l2_error": 5.13225760211442e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.85249533304354e-10
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9319000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "step_01/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_01/source-program/data/attention.k_proj.weight": "4891f15612f8d624ea3f23928098be9d91e220bc266cf900d1398ade13566214",
+        "step_01/source-program/data/attention.o_proj.weight": "41f008dc36fa38f6dfb45dd83d6b1bfe1a4e11ce519848fb5d7bec1fe72e93d6",
+        "step_01/source-program/data/attention.q_proj.weight": "d311df27a7d58f20a5a18b08dc7a0b97627820d8f48c2ed0372866678f807088",
+        "step_01/source-program/data/attention.v_proj.weight": "4530234c5cf70cbe4f47929c09c95e346f4acf1e0fb906420d6f0c3a68b3cc1e",
+        "step_01/source-program/data/rotary_cos": "4dc75f38d7335d87f1c1cc0ce3e5b793c9a7037c1c4e1b7535b60ef42794d234",
+        "step_01/source-program/data/rotary_sin": "48a706c35db08e9dbc6609b37c8cac23f6793fd232e32bc012c6f453229439b2",
+        "step_01/source-program/functions/forward.meta": "e6c1c9805f574facdf8a12da8bdea5127038da2a75dbdef12295ade7c6c90a6d",
+        "step_01/source-program/functions/forward.stablehlo.bc": "d3a5f30ec16e961f39769ca148ae663f8c5db425ae1aec3665866e77c5af7ba6",
+        "step_02/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_02/source-program/data/attention.k_proj.weight": "4891f15612f8d624ea3f23928098be9d91e220bc266cf900d1398ade13566214",
+        "step_02/source-program/data/attention.o_proj.weight": "41f008dc36fa38f6dfb45dd83d6b1bfe1a4e11ce519848fb5d7bec1fe72e93d6",
+        "step_02/source-program/data/attention.q_proj.weight": "d311df27a7d58f20a5a18b08dc7a0b97627820d8f48c2ed0372866678f807088",
+        "step_02/source-program/data/attention.v_proj.weight": "4530234c5cf70cbe4f47929c09c95e346f4acf1e0fb906420d6f0c3a68b3cc1e",
+        "step_02/source-program/data/rotary_cos": "23b0d70c2e8360de6916f59b0541ca60996cc1b68cfe6b0fedb0e3a313a4d4aa",
+        "step_02/source-program/data/rotary_sin": "d2e726f931a9de645eb56d8a13256fe6fc94ff29fb82bcaff54ec905c3467d28",
+        "step_02/source-program/functions/forward.meta": "5b60ab92874991ef5b2271b0dd64ba3ecca4e22b5cba4a078f47723de1437287",
+        "step_02/source-program/functions/forward.stablehlo.bc": "fac5caf7ca73c9e0905e9ae763dd9254e7415c8fda8356b63610c4c8e780c22b"
+      },
+      "log": "build/test/attention-improvement/decode-kv-cache-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "e8f9c078d4214bfc25473475e365634ea6ed98aed7df63d1c9904d257cc8660c",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "decode-kv-cache-fp16",
+      "case": "attention-decode-kv-cache",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:53:42.347322+00:00",
+      "finished_utc": "2026-09-18T22:54:05.159158+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/decode-kv-cache-fp16-board/step_01/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "74b2ae0b6a53978ce04a8e99475ca415eae9ebed94911b0486d7fdfb5d4bf245",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+              "card_00_user_input_1.f16.raw": "3982fec6b3245fa9f711adb7c9e91b80e4c88f579374e77fc0238bb6f0e843dd",
+              "card_00_user_input_2.f16.raw": "66f159274ddd2df81dc0af4eba87a5f072597b974dc5a6dfa30acef58cb2f618",
+              "card_00_user_input_3.f16.raw": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.float16",
+                "elements": 4096,
+                "max_abs_error": 3.0517578125e-05,
+                "cosine_similarity": 0.9999998815621868,
+                "relative_l2_error": 0.0004868213247932423,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.593872629106045e-06
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 4194304,
+                "max_abs_error": 0.0001220703125,
+                "cosine_similarity": 0.9999999999993954,
+                "relative_l2_error": 1.1659907865463165e-06,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.9398173612426035e-10
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 4194304,
+                "max_abs_error": 6.103515625e-05,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 1.0808032926152984e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.816022970364429e-10
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=10067000"
+            ]
+          }
+        },
+        {
+          "path": "build/test/attention-improvement/decode-kv-cache-fp16-board/step_02/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache-continuation",
+            "step": 2,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "bf054d5f85d9247aa1c01571b43db9a9c1fd835774e973719dd6bae9b6e1a257",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "720290da4654d41418b64ee61449cbb8c6612bb18ae6b69f4702678dd1e9a3ea",
+              "card_00_user_input_1.f16.raw": "250c21ea9d405ccdd0847ab31f1f9dd29fbcdec205c061e69775594d5fc29950",
+              "card_00_user_input_2.f16.raw": "32827052832674fdfbd5ee1cb1665e1a3eb9a8453f4050eabaa81684b03da637",
+              "card_00_user_input_3.f16.raw": "382e008e5bc647359ed6f41cb932f732b000a96c6048edd3cae85e65df04c175"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.float16",
+                "elements": 4096,
+                "max_abs_error": 3.0517578125e-05,
+                "cosine_similarity": 0.9999998935644246,
+                "relative_l2_error": 0.0004613865679332567,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.204259650781751e-06
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 4198400,
+                "max_abs_error": 6.103515625e-05,
+                "cosine_similarity": 0.9999999999997813,
+                "relative_l2_error": 7.667483509047694e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.340231908530724e-10
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 4198400,
+                "max_abs_error": 0.0001220703125,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 1.393931204201155e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.0644203922370585e-10
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9352000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "step_01/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_01/source-program/data/attention.k_proj.weight": "91d141638cb63fc8bfb88abf6089d17261d080d61966e90e1a25e0ba7c23b843",
+        "step_01/source-program/data/attention.o_proj.weight": "ae3dae03624df50cc219937b6c88f91fdef1c4224780073fe14ab58990ef8a74",
+        "step_01/source-program/data/attention.q_proj.weight": "5ab7330dee8daa330271a1c5e54046e9259f37e1cdb1c5e80569e609bc65da8e",
+        "step_01/source-program/data/attention.v_proj.weight": "32c7295e4b9ca1110e5f7e46ca1e997881c1117ef7c0dffa169d8562776f6f2c",
+        "step_01/source-program/data/rotary_cos": "0667eb3734d602182ae49ce0a128e898d3b4570373421f7d20d37ca003a5df96",
+        "step_01/source-program/data/rotary_sin": "9611a26774987676f7e9652461e026825edda2d15677ecd0f2626e7362f4346f",
+        "step_01/source-program/functions/forward.meta": "66b7a9ec010cf68327cb191a63a783694df117878c8b53ee39a4f4cddd10857b",
+        "step_01/source-program/functions/forward.stablehlo.bc": "fe86e498ecff10fb4e0b09aece9c93c189db16ce30056d09624b8b9ea4daa20a",
+        "step_02/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_02/source-program/data/attention.k_proj.weight": "91d141638cb63fc8bfb88abf6089d17261d080d61966e90e1a25e0ba7c23b843",
+        "step_02/source-program/data/attention.o_proj.weight": "ae3dae03624df50cc219937b6c88f91fdef1c4224780073fe14ab58990ef8a74",
+        "step_02/source-program/data/attention.q_proj.weight": "5ab7330dee8daa330271a1c5e54046e9259f37e1cdb1c5e80569e609bc65da8e",
+        "step_02/source-program/data/attention.v_proj.weight": "32c7295e4b9ca1110e5f7e46ca1e997881c1117ef7c0dffa169d8562776f6f2c",
+        "step_02/source-program/data/rotary_cos": "9671ba743e711f3674620e0742a184ec859dc883efb6ddd0541ba473f1f2edd6",
+        "step_02/source-program/data/rotary_sin": "4f889edc4b481286ceda587814bd8775fbed1b74f08487e9020dba2e83093c50",
+        "step_02/source-program/functions/forward.meta": "e39acd6dd577de30d65a8ec02c47d4e53f09bf4113cc6f317532c7b7659a5f9f",
+        "step_02/source-program/functions/forward.stablehlo.bc": "76a69215d5dd5fa860a09c7df5588bcf6f05ff6e31366cd9978bc4edf9a5c380"
+      },
+      "log": "build/test/attention-improvement/decode-kv-cache-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "6726ed1734851d06f21d941a494e6f99ae1aff8fa96068b9adf4d286a2b8e1e0",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "fully-masked-bf16",
+      "case": "attention-fully-masked",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:53:12.165518+00:00",
+      "finished_utc": "2026-09-18T22:53:17.993389+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/fully-masked-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-fully-masked",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "fe8c722e6aa2eb68ae6d2694b1a2c2c03631a5ebdfb10709b533aaf0d4c53515",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "476131d57a30e52911e1d9c017f5faf8fcc1ec1004147329493dad7f97853f93",
+              "card_00_user_input_2.bf16.raw": "8a280bd6953b126da3e82c2da42d500e87dfa8975016e2602bf2330ab27fd081",
+              "card_00_user_input_3.bool.raw": "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1032000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "f4292657e1c152cc62270945564c180bf356a47c45467dad649f69e6de138856",
+        "source-program/functions/forward.stablehlo.bc": "e245f06cff45f73d785d8617491fc0e087ea42c5eab6dd28a92c564d176abffd"
+      },
+      "log": "build/test/attention-improvement/fully-masked-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "b8e25eab3e658ce3eb8fed6508b1a68fdd2a9dd0aded8500f3de6919c60bbe0a",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "fully-masked-fp16",
+      "case": "attention-fully-masked",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:53:06.633075+00:00",
+      "finished_utc": "2026-09-18T22:53:12.062323+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/fully-masked-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-fully-masked",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "fbb232c2aa87159ac89694c619cd1f7e375afb63604cfce2e8bddce71e209b06",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "3f13fb575e801be3767883d01932f65ae5ae5db78b0e6ca82b405e0e6f37513f",
+              "card_00_user_input_2.f16.raw": "11ba3d3a73a7b4fc3ccc96f73512f4e8bf965040cb8e23a30146ff6c3ac3ed01",
+              "card_00_user_input_3.bool.raw": "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1037000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "f385884125f25cdda86496853f0d8df76997e9d09caa52980e75e2e8687b63a9",
+        "source-program/functions/forward.stablehlo.bc": "9450fa8007ae9bbb03207e6ca0c0b1ab18f988c9524171f9de0a089ec808b1a9"
+      },
+      "log": "build/test/attention-improvement/fully-masked-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "1c014bdfd2d52fd58585758f65b682ccb1101ccbe1655eec9cd247449f9e6801",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "heads28-bf16",
+      "case": "attention-prefill-28-heads-4096",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:51:07.919969+00:00",
+      "finished_utc": "2026-09-18T22:51:16.663764+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/heads28-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-28-heads-4096",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "804f8d809cbe075094238e9587105a94364569912b4a03f415401e5e50e49e21",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "9b8fb19689b251d560d4d8378ec1022e3ee9694ec447090c68601176fcd2c5b7",
+              "card_00_user_input_1.bf16.raw": "12efe0a577e2ccd06e0f24b5b88f07819beb6750558b53509285bf96e6dfac20",
+              "card_00_user_input_2.bf16.raw": "3a5e267dce6e862a904aa3c0d887f88779a135094f9a865baae0c674d2e53c3d"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 14680064,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981099914875,
+                "relative_l2_error": 0.0019443221247542287,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.8325064219273427e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=424993988"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "d36bd80083357f1b478cb2f350fac618933abfb3693db81bdc2263180626a815",
+        "source-program/functions/forward.stablehlo.bc": "aa35d8ed2c86f4afbadd9d612f0448c75d60b4dc5b3f0b302773a3efa99abce1"
+      },
+      "log": "build/test/attention-improvement/heads28-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "d9ef9c8ea88aecd6313b7fa4e042be3d094cfbc37dfb791421538aef34c1a82e",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "heads28-fp16",
+      "case": "attention-prefill-28-heads-4096",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:49:25.981689+00:00",
+      "finished_utc": "2026-09-18T22:49:34.967150+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/heads28-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-28-heads-4096",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "f5be7dc7e57af073d5ef88e92f0b4e21adba5c39dacb181b739ea04dc373582d",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "167048dda716901f2ffed05ec70e7a7a792525da5137b786802b082410dcba80",
+              "card_00_user_input_1.f16.raw": "734dfa6251c44d5ad8f612adeb808e5a39127c8ca93054bd09c29a06ea3430ba",
+              "card_00_user_input_2.f16.raw": "22c0351179b351ccd3d0b5e127629286bcd1ae6a8468ff31adcd8f82e5cd231c"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 14680064,
+                "max_abs_error": 0.001953125,
+                "cosine_similarity": 0.9999999705582687,
+                "relative_l2_error": 0.00024266202987629972,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.5682915202934443e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=423035004"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "2ebc4e8b8a501e03bf0cc5a726edc610a78ebea12575fb1be5bb6458781fe654",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "1cb451d282429f0d9a28381116181904d87bd90dfbc48a6dc3503985a83aec98",
+        "source-program/functions/forward.stablehlo.bc": "67d20a95886290b8810d1e46bc4e28e458f6d8c742c4e31d2e80e5dfea259af1"
+      },
+      "log": "build/test/attention-improvement/heads28-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "2ce66c503c6c191f0a278161e46c5bb47936160f13c21eb53861d310f8d98dea",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "heads32-fp16",
+      "case": "attention-prefill-llama-2-7b",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:59:00.456864+00:00",
+      "finished_utc": "2026-09-18T22:59:12.004084+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/heads32-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-llama-2-7b",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "e43c3799787b1231d43238059aa0c99cdc88234dfd805547c0fe770ae8fce792",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "09ac500ff6f47422cee86f5f8c79164fe8e3c6e79334e92ddac3bcf9186d54f0",
+              "card_00_user_input_1.f16.raw": "032057f25bd5cc45fe4953e2978b0a19b8dcaeccdf215ec2ea516ee6a0efed04",
+              "card_00_user_input_2.f16.raw": "8205f432bf79c825241af66edd95ead04eccd78fc59413393dc15d408cc3ea08"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 16777216,
+                "max_abs_error": 0.001953125,
+                "cosine_similarity": 0.9999999706058357,
+                "relative_l2_error": 0.0002424732110858523,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.56656347477724e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=441334015"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "2ebc4e8b8a501e03bf0cc5a726edc610a78ebea12575fb1be5bb6458781fe654",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "5d0c2d8c0e141bf9a7c1b75853c8ca3c7cbc3535a38285e00726cb5223fbd742",
+        "source-program/functions/forward.stablehlo.bc": "c5e6ef3a6e78fe23173996fed751767734771d91b59b0a45ca16f52b7178755b"
+      },
+      "log": "build/test/attention-improvement/heads32-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "d0bcfc1bb4f20f58149c81d656b71e8e34c88c06fb1981d5cae1028b80d18c91",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "noncausal-additive-bf16",
+      "case": "attention-noncausal-additive",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:53:00.909802+00:00",
+      "finished_utc": "2026-09-18T22:53:06.521589+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/noncausal-additive-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-noncausal-additive",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "9afaeb5b272e52b88e52abc0f2adb2fc9c73150434a5b11cdb300fb0236ed77e",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "476131d57a30e52911e1d9c017f5faf8fcc1ec1004147329493dad7f97853f93",
+              "card_00_user_input_2.bf16.raw": "8a280bd6953b126da3e82c2da42d500e87dfa8975016e2602bf2330ab27fd081",
+              "card_00_user_input_3.f32.raw": "536af60b953f12d726d382e59afa9078021c77fb988f4d553226f981e9b8d6b4"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.00390625,
+                "cosine_similarity": 0.999997080487979,
+                "relative_l2_error": 0.002416469953461854,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.00019763140107897925
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1088000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/1": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "872355e29c2dc3329d116ced31b1dcd44f1ae1afe833230969256d4fc91a7315",
+        "source-program/functions/forward.stablehlo.bc": "aed45eb723ed01d25e859bbd5b8a1822b295ac1ac32de30ca0e3fc9d7107644f"
+      },
+      "log": "build/test/attention-improvement/noncausal-additive-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "43aef07b3d052e3cf00d6793cf3b9f436d54eb45d61ee2a7e068fc1011310253",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "noncausal-additive-fp16",
+      "case": "attention-noncausal-additive",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:52:55.096193+00:00",
+      "finished_utc": "2026-09-18T22:53:00.808898+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/noncausal-additive-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-noncausal-additive",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "dc8ab47d064ea025f6bafe967c9d85f6836944a62bd0ab7420a22fecfffa8283",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "3f13fb575e801be3767883d01932f65ae5ae5db78b0e6ca82b405e0e6f37513f",
+              "card_00_user_input_2.f16.raw": "11ba3d3a73a7b4fc3ccc96f73512f4e8bf965040cb8e23a30146ff6c3ac3ed01",
+              "card_00_user_input_3.f32.raw": "536af60b953f12d726d382e59afa9078021c77fb988f4d553226f981e9b8d6b4"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.000244140625,
+                "cosine_similarity": 0.9999999595397188,
+                "relative_l2_error": 0.00028446895579003107,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.427595063636545e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=997000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/1": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "5d053ca4d490a3ee3cb231cba09ae396bfaf307621e970c3e02f9e5ed22865ce",
+        "source-program/functions/forward.stablehlo.bc": "e29e8b9a59697a286e3e61da6ec09502253bcf13bf5ecd7e2166109a190a917e"
+      },
+      "log": "build/test/attention-improvement/noncausal-additive-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "fe439cdfe25cfcd15d4b6cc488e61250d1a43e5caee6f1ce369e4b0208ccf1cb",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "noncausal-bf16",
+      "case": "attention-noncausal",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:52:49.293398+00:00",
+      "finished_utc": "2026-09-18T22:52:54.980671+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/noncausal-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-noncausal",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "12e6c22424caea622eb4391738d5bd38249700705a54d505eedc5c692441783e",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "476131d57a30e52911e1d9c017f5faf8fcc1ec1004147329493dad7f97853f93",
+              "card_00_user_input_2.bf16.raw": "8a280bd6953b126da3e82c2da42d500e87dfa8975016e2602bf2330ab27fd081"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.00390625,
+                "cosine_similarity": 0.999997730184845,
+                "relative_l2_error": 0.002130642653816523,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.00015680779142712709
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1003000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/1": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "fe4836f10e760a20883524d44e107ee56c07b01ffe83dba4ecb3a42b7f512d4d",
+        "source-program/functions/forward.stablehlo.bc": "a95dc5302d96c1cf225916d4bd83db61d663a47f48025e9264a1c454c24997d1"
+      },
+      "log": "build/test/attention-improvement/noncausal-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "ad75d8be56b6fe82a077bf119df04ef9ae31c4f5e4e3b9671d3d989fd9208372",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "noncausal-fp16",
+      "case": "attention-noncausal",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:52:43.456545+00:00",
+      "finished_utc": "2026-09-18T22:52:49.185832+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/noncausal-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-noncausal",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "a60127c0ffe7301b99a6ebbf53084d8c3a3c8e756e67b89f76d8337989e10f09",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "3f13fb575e801be3767883d01932f65ae5ae5db78b0e6ca82b405e0e6f37513f",
+              "card_00_user_input_2.f16.raw": "11ba3d3a73a7b4fc3ccc96f73512f4e8bf965040cb8e23a30146ff6c3ac3ed01"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.000244140625,
+                "cosine_similarity": 0.9999999672620439,
+                "relative_l2_error": 0.0002558897321125485,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 1.9763187083299272e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=993000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/1": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "24954be311b532000439f366f11e08cb1cc13e6a6167ea706dc33e81483ffabf",
+        "source-program/functions/forward.stablehlo.bc": "a6a1dc3b7f1a189d1add58da4dae66eff282a084c2f6d1bf0a40f15ee3c4e763"
+      },
+      "log": "build/test/attention-improvement/noncausal-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "27925c5911968061fb86f5b5f8964371ab10feaafafea48ee2557fd1600696fc",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "padding-bf16",
+      "case": "attention-padding",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:53:29.500968+00:00",
+      "finished_utc": "2026-09-18T22:53:34.751572+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/padding-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-padding",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "fe8c722e6aa2eb68ae6d2694b1a2c2c03631a5ebdfb10709b533aaf0d4c53515",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "476131d57a30e52911e1d9c017f5faf8fcc1ec1004147329493dad7f97853f93",
+              "card_00_user_input_2.bf16.raw": "8a280bd6953b126da3e82c2da42d500e87dfa8975016e2602bf2330ab27fd081",
+              "card_00_user_input_3.bool.raw": "d84dab6c70b7ffe07dae76b25e52e6ec64e2838e2c0d12c871713730010228d8"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.001953125,
+                "cosine_similarity": 0.9999974713034653,
+                "relative_l2_error": 0.0022489306466926557,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0001758072871780314
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1059000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "f4292657e1c152cc62270945564c180bf356a47c45467dad649f69e6de138856",
+        "source-program/functions/forward.stablehlo.bc": "e245f06cff45f73d785d8617491fc0e087ea42c5eab6dd28a92c564d176abffd"
+      },
+      "log": "build/test/attention-improvement/padding-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "padding-fp16",
+      "case": "attention-padding",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:46:25.014960+00:00",
+      "finished_utc": "2026-09-18T22:46:30.970356+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/padding-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-padding",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "fbb232c2aa87159ac89694c619cd1f7e375afb63604cfce2e8bddce71e209b06",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "3f13fb575e801be3767883d01932f65ae5ae5db78b0e6ca82b405e0e6f37513f",
+              "card_00_user_input_2.f16.raw": "11ba3d3a73a7b4fc3ccc96f73512f4e8bf965040cb8e23a30146ff6c3ac3ed01",
+              "card_00_user_input_3.bool.raw": "d84dab6c70b7ffe07dae76b25e52e6ec64e2838e2c0d12c871713730010228d8"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.000244140625,
+                "cosine_similarity": 0.9999999705320487,
+                "relative_l2_error": 0.0002427802782738868,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.2466138034360483e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1061000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "f385884125f25cdda86496853f0d8df76997e9d09caa52980e75e2e8687b63a9",
+        "source-program/functions/forward.stablehlo.bc": "9450fa8007ae9bbb03207e6ca0c0b1ab18f988c9524171f9de0a089ec808b1a9"
+      },
+      "log": "build/test/attention-improvement/padding-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "1797830bc0bc36f6e7615be91ecf059a20066216a50358e17d8d0d1b5df8f0f1",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "prefill-bf16",
+      "case": "attention-prefill",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:44:48.483920+00:00",
+      "finished_utc": "2026-09-18T22:44:53.595586+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "ceda38de2d4d47eef05ff9022044d9a661286992627b203d53a57dde02b0f1f7",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "0c5049cd4883cd13e38ff268fe949a3123c330582c34b37badb7d24fc51d19c9",
+              "card_00_user_input_2.bf16.raw": "ca73c97ac0f735da19465e68b99b35609dd5a25cf2555197d47c1515f76a39e0"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.00390625,
+                "cosine_similarity": 0.9999981507227028,
+                "relative_l2_error": 0.001923439455568355,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.5224071559223376e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3288000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "65181e4ef438971dee9f7e03c8d291551336ed9374c6ef87e19cb87fea72d98c",
+        "source-program/functions/forward.stablehlo.bc": "d3fd381ca31fe12feba3737c12fed21e6cd8b38b4189619b3f1474406507cb0a"
+      },
+      "log": "build/test/attention-improvement/prefill-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "ccfda4c08969300ad9fdfa54c1eee8ba0f751ef6f30090ec74af8b7e9c0d9f79",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "prefill-fp16",
+      "case": "attention-prefill",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:31:00.413084+00:00",
+      "finished_utc": "2026-09-18T22:31:05.299704+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "a05b1e00ba86f4a380ff9cbf653013ccf785002781836f9193c4bd169062a659",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "d716550f19b6d693a99752c3f06821918a599b3c6225b2917c34344a20ff959a",
+              "card_00_user_input_2.f16.raw": "0b6c743a61b8ef61075ec409eb3015054ccfe643b8cd0c0fcdb7afaeb103e83d"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999658712497,
+                "relative_l2_error": 0.00026144227666049743,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.094859938661102e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3481000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "111dc52b31f7e446486c72e99af741f4c76dc95277f6469fe75289c3a05bff80",
+        "source-program/functions/forward.stablehlo.bc": "b860507a5bbca301bd7b59354fa116b7bb69eca80bb26004e8c0f9b4f519dd64"
+      },
+      "log": "build/test/attention-improvement/prefill-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "1e1fc055a7a370d618cacbe68dc5acef3234c8bcf97a796c3fdab2eb455e78be",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "prefill-tail-1025-bf16",
+      "case": "attention-prefill-tail-1025",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:52:25.822363+00:00",
+      "finished_utc": "2026-09-18T22:52:31.876912+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-tail-1025-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-tail-1025",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "876a50a2c48a833f69df7c56c8b8d7a1930ff07ea1a9d4e674e442f6b68e3666",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "0306865719669d6db0cd6a45b2712b4c1fbd915cec89776e0471933f7a698d3d",
+              "card_00_user_input_1.bf16.raw": "b282ee4bcae56339e40c415f2916ceae96d7e0c0b23189062f0756b0e3572d19",
+              "card_00_user_input_2.bf16.raw": "ab229e484ec994a6a764665a9363f0a7bda3aa5aaf56c1505c068c5221ede76a"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65600,
+                "max_abs_error": 0.0078125,
+                "cosine_similarity": 0.9999982084262014,
+                "relative_l2_error": 0.0018932166315319711,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.5269425274895095e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9769000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "1d7b9a5c9cd5110327d2ccc29e8d3b65a551233a73d5963a978d1d739975aaa6",
+        "source-program/functions/forward.stablehlo.bc": "9f5e094f085d38398a3931992682aec3b93fc920b417b6d2b0b214ff85e70efe"
+      },
+      "log": "build/test/attention-improvement/prefill-tail-1025-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "2df874da481a67e4beaccb3699f12933c34e5b67277bd8b626929ecc9d04f17d",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "prefill-tail-1025-fp16",
+      "case": "attention-prefill-tail-1025",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:52:19.650979+00:00",
+      "finished_utc": "2026-09-18T22:52:25.696666+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-tail-1025-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-tail-1025",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "02bd3589040a408727cf00e82d96435062cdede862f2bc41df1a3416e1a721e0",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "185b9a60972940a87ac1b0e835898f50ea8b5c1f1c286929cf8bdd9d1c65dcaa",
+              "card_00_user_input_1.f16.raw": "a6127787a4f38405be8bf19ae9b34d20257d8f5bb86bd764ddd8d1a8189a9756",
+              "card_00_user_input_2.f16.raw": "13068ca12c08e8290314cd56342be39e30b94f816deaf495e860a486cf64806b"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65600,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999704870264,
+                "relative_l2_error": 0.00024304066976180185,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 6.900578737258911e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9801000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "810a87b199741d8967608ea039c08c4f5167a5e23462b733595952dfc151211f",
+        "source-program/functions/forward.stablehlo.bc": "50118affaace93cbed33bce687fdf28c16ba0d045f9ed7be228107a1af8ca799"
+      },
+      "log": "build/test/attention-improvement/prefill-tail-1025-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "acb21ea917bcb198377fb33d31a18afb2c55282821f926403a7a0d35c78ef033",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "prefill-tail-1031-bf16",
+      "case": "attention-prefill-tail-1031",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:52:37.799140+00:00",
+      "finished_utc": "2026-09-18T22:52:43.347971+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-tail-1031-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-tail-1031",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "730bd77069ced43f772778c2136a81726a4a8b538bb3f200a798ee1684a8f79a",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "5f7d3b2b2e3cb0e00ee6e50218b0e627fe05576eafb964e62b217e747e6d7aca",
+              "card_00_user_input_1.bf16.raw": "c7b630e32f8b6b4952be930f1c52ca5bbd218545e15addf6fe7b374eaeac45d1",
+              "card_00_user_input_2.bf16.raw": "fe945ad00b67030c5864ac48141fa30f5413fdb9239f38162a367f6880c93fed"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65984,
+                "max_abs_error": 0.0078125,
+                "cosine_similarity": 0.9999979973127344,
+                "relative_l2_error": 0.00200320800192507,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.543049787117889e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9731000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "dee6b19ed6b70f35db5c5b90ab832d5c8d698689091548c142780aa5730c18a9",
+        "source-program/functions/forward.stablehlo.bc": "1c53f2a27b8a21b782e90a113bf6e2782949ed260b7aff59e563e7a54fb5a557"
+      },
+      "log": "build/test/attention-improvement/prefill-tail-1031-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "742e9b60b10dce5b48d7e9e7131fd5d5f14bbb7ffd3f2fad1dccc36ed49e02a8",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "prefill-tail-1031-fp16",
+      "case": "attention-prefill-tail-1031",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:52:31.983983+00:00",
+      "finished_utc": "2026-09-18T22:52:37.691039+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-tail-1031-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill-tail-1031",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "9d9652fdd78f443391823e1f4524aecbeca5e5eb5bcaea3e8ef4044947b11b92",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "7e871d2736f1d3b2130721fbeb0b9c248542379dd0b530a8723546a48dbe3b7c",
+              "card_00_user_input_1.f16.raw": "556099a0c70620cda6b66e1950b64135ce4e6b286440b7beb5f0e17f73232529",
+              "card_00_user_input_2.f16.raw": "049f6158cd7f0b1f52f66ac3c13dfe66375820696ce5b31ab0f1f42f5781c854"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65984,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999690737484,
+                "relative_l2_error": 0.00024880554931079,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.17206456121256e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9849000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "ae5999066fa4f016574042215c1d5803f59a286219729a174eca42d027fc2bf8",
+        "source-program/functions/forward.stablehlo.bc": "9cdecb18f27f9de79aa56a61b6d111b1fbdbf6bd032104c531270557823706a9"
+      },
+      "log": "build/test/attention-improvement/prefill-tail-1031-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "7ced3896607a8fdb10f83bf2a233c3f61cf3bccefb04af152785a5604d55fc48",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "two-token-fp16",
+      "case": "attention-causal-decode-two-tokens",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:48:35.707369+00:00",
+      "finished_utc": "2026-09-18T22:48:40.725739+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/two-token-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-causal-decode-two-tokens",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "b98fcbaf5b4a936acecfc9bc51afa640ee72843a4429507c0de58a572a95e340",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "82ffbeaed47eafa162cf48825ec7d9e18dd0bd85e8f85912d1ad8e2d4ea95f67",
+              "card_00_user_input_1.f16.raw": "5f13c6d01a4a4dca718044773f36f37056aa2d206115d2bbbdebf8c1e78d793b",
+              "card_00_user_input_2.f16.raw": "88bcdb22e7455c70e55c74af2c183c19b16e58ae9fb841595db7c2fcbbfec97b",
+              "card_00_user_input_3.f16.raw": "9b240ce32b756b4c084e7a864816a00c3cd6d2e437d4c213c3baeb8ea525c05c",
+              "card_00_user_input_4.f16.raw": "e5161fdb958c6a856bcb181cbee36cf20b3ee427311a8f90d391ecac89cd49ad"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 128,
+                "max_abs_error": 3.814697265625e-06,
+                "cosine_similarity": 0.999999965003893,
+                "relative_l2_error": 0.000264598751472047,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.6438148021698e-07
+              },
+              {
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65664,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              },
+              {
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65664,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1944000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "8f8a4a0d11b089b64336c2973b380d8473fdeacfb220c943483616ee12735a95",
+        "source-program/functions/forward.stablehlo.bc": "84f3e8489dccc246b4f76e45155a853050c13a4d8401270516b072b07d492c78"
+      },
+      "log": "build/test/attention-improvement/two-token-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "e52844aeb88ce029b844e13a7d4c3c5d1ff67aed15a9075b81f318a53d2fb930",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "valid-kv-prefix-bf16",
+      "case": "attention-valid-kv-prefix",
+      "dtype": "bfloat16",
+      "started_utc": "2026-09-18T22:53:23.412239+00:00",
+      "finished_utc": "2026-09-18T22:53:29.391045+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/valid-kv-prefix-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-valid-kv-prefix",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "b0a65825b6761ff6c7ff2e6dac7625245b16407bad73ff841acdb92accfb3a3b",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "0306865719669d6db0cd6a45b2712b4c1fbd915cec89776e0471933f7a698d3d",
+              "card_00_user_input_1.bf16.raw": "01e18e211eb7f5bdc5ecd743332efa00dd1e802be9775f0714f78dc1c12729ef",
+              "card_00_user_input_2.bf16.raw": "46f4684563ff21d64fb788c7fbb7ad26c3341b2b2552e273b6275f4b8802ea8f"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65600,
+                "max_abs_error": 0.0078125,
+                "cosine_similarity": 0.9999981546364282,
+                "relative_l2_error": 0.00192136914281099,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.540389828838226e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3480000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "0d4666aadde49da1b0faa2b8aa46fdc1710bc031b93954d619e13172739fc402",
+        "source-program/functions/forward.stablehlo.bc": "b271991954437460057831a7a405fd87eda7c0d8509f6e8d1c7c419173fdd1cd"
+      },
+      "log": "build/test/attention-improvement/valid-kv-prefix-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "585dab2bf924c5fdd9458c94938e958fcbf3c22a64aeccdd5a8fabba6c08eefe",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "tag": "valid-kv-prefix-fp16",
+      "case": "attention-valid-kv-prefix",
+      "dtype": "float16",
+      "started_utc": "2026-09-18T22:53:18.095339+00:00",
+      "finished_utc": "2026-09-18T22:53:23.309448+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": null,
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/valid-kv-prefix-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-valid-kv-prefix",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "aa40b8b78834a25e62e398c6204d9dc6276b93b5484e4ec78fc754f470eb3ba2",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "185b9a60972940a87ac1b0e835898f50ea8b5c1f1c286929cf8bdd9d1c65dcaa",
+              "card_00_user_input_1.f16.raw": "bfd2f679f763abf1a99a02c341b28cc1f5ad010f0876d6478e1088864c32093e",
+              "card_00_user_input_2.f16.raw": "6565f4a4b0a445e383e458acab4ae2c99b5d9b7bdf621c26ed60882e5e078a8a"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65600,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999648756465,
+                "relative_l2_error": 0.0002654904490594987,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.06570631847149e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3540000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "af565b88a9add242345bd9de6e09e584c3746857539542b5db77617615ac05d1",
+        "source-program/functions/forward.stablehlo.bc": "538cbfc593dd1530db175bad32210169fd322a1b6cf1dc91469dacc0833ad420"
+      },
+      "log": "build/test/attention-improvement/valid-kv-prefix-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "9358bbc3d1596de481dfaf2f1ec7fddf5ed777bb8339bcd0ec337a318d0b9179",
+      "compiler_tool_sha256_at_launch": null,
+      "qualification": "first_complete_numeric_pass"
+    },
+    {
+      "started_utc": "2026-09-18T23:27:27.785490+00:00",
+      "finished_utc": "2026-09-18T23:27:33.488725+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "destination-attention-fully-masked-bf16",
+      "case": "attention-fully-masked",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/destination-attention-fully-masked-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-fully-masked",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "58c03102bfcfd321b976073b75cd26710c7e3fa03bec1ae3af1c4cf2483e5d16",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "476131d57a30e52911e1d9c017f5faf8fcc1ec1004147329493dad7f97853f93",
+              "card_00_user_input_2.bf16.raw": "8a280bd6953b126da3e82c2da42d500e87dfa8975016e2602bf2330ab27fd081",
+              "card_00_user_input_3.bool.raw": "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1039000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "f4292657e1c152cc62270945564c180bf356a47c45467dad649f69e6de138856",
+        "source-program/functions/forward.stablehlo.bc": "e245f06cff45f73d785d8617491fc0e087ea42c5eab6dd28a92c564d176abffd"
+      },
+      "log": "build/test/attention-improvement/destination-attention-fully-masked-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "bb45b3591dec018ecdbbbe4a34b37485990162a7fd05e4d28410be69b753ae1a"
+    },
+    {
+      "started_utc": "2026-09-18T23:27:21.705982+00:00",
+      "finished_utc": "2026-09-18T23:27:27.370279+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "destination-attention-fully-masked-fp16",
+      "case": "attention-fully-masked",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/destination-attention-fully-masked-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-fully-masked",
+            "step": 1,
+            "policy": "none",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "165c9f0d10b0aecfe8016d019da4560c3b9bce1ebcc97ca0a0506eab5ed7fcdb",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "3f13fb575e801be3767883d01932f65ae5ae5db78b0e6ca82b405e0e6f37513f",
+              "card_00_user_input_2.f16.raw": "11ba3d3a73a7b4fc3ccc96f73512f4e8bf965040cb8e23a30146ff6c3ac3ed01",
+              "card_00_user_input_3.bool.raw": "8855508aade16ec573d21e6a485dfd0a7624085c1a14b5ecdd6485de0c6839a4"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.0,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 0.0,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 0.0
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=1051000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "f385884125f25cdda86496853f0d8df76997e9d09caa52980e75e2e8687b63a9",
+        "source-program/functions/forward.stablehlo.bc": "9450fa8007ae9bbb03207e6ca0c0b1ab18f988c9524171f9de0a089ec808b1a9"
+      },
+      "log": "build/test/attention-improvement/destination-attention-fully-masked-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "37949fbe1fcc27626b8fb6ead005be218b6f22dfb680bccc7b09fa6b0e74eca8"
+    },
+    {
+      "started_utc": "2026-09-18T23:27:40.020799+00:00",
+      "finished_utc": "2026-09-18T23:27:45.681232+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "destination-attention-prefill-bf16",
+      "case": "attention-prefill",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/destination-attention-prefill-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "55bbc7f1fa2ae608a8c7814000c90e5a43878ebe9117b9e19db8af45a7b06bb9",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa",
+              "card_00_user_input_1.bf16.raw": "0c5049cd4883cd13e38ff268fe949a3123c330582c34b37badb7d24fc51d19c9",
+              "card_00_user_input_2.bf16.raw": "ca73c97ac0f735da19465e68b99b35609dd5a25cf2555197d47c1515f76a39e0"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.00390625,
+                "cosine_similarity": 0.9999981659940466,
+                "relative_l2_error": 0.0019154461752517908,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.490776590022506e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=2228000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "65181e4ef438971dee9f7e03c8d291551336ed9374c6ef87e19cb87fea72d98c",
+        "source-program/functions/forward.stablehlo.bc": "d3fd381ca31fe12feba3737c12fed21e6cd8b38b4189619b3f1474406507cb0a"
+      },
+      "log": "build/test/attention-improvement/destination-attention-prefill-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "26bb95978e6d38287e6768d57b91a270d035a9f34c70ee0c823ff60a13b261f5"
+    },
+    {
+      "started_utc": "2026-09-18T23:27:33.941513+00:00",
+      "finished_utc": "2026-09-18T23:27:39.611388+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "destination-attention-prefill-fp16",
+      "case": "attention-prefill",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/destination-attention-prefill-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "7a7bac0daca9b11b0c7c296f9472e341e87da37e32e7643c497536e5212d40f7",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "d716550f19b6d693a99752c3f06821918a599b3c6225b2917c34344a20ff959a",
+              "card_00_user_input_2.f16.raw": "0b6c743a61b8ef61075ec409eb3015054ccfe643b8cd0c0fcdb7afaeb103e83d"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.999999965866654,
+                "relative_l2_error": 0.00026147527052801356,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.1141885200631805e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=2363000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "111dc52b31f7e446486c72e99af741f4c76dc95277f6469fe75289c3a05bff80",
+        "source-program/functions/forward.stablehlo.bc": "b860507a5bbca301bd7b59354fa116b7bb69eca80bb26004e8c0f9b4f519dd64"
+      },
+      "log": "build/test/attention-improvement/destination-attention-prefill-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "10e4b4c22ef476274030c3f0088c24fe7a5e31d91fd4d510ed0266ce6d136e12"
+    },
+    {
+      "started_utc": "2026-09-18T23:01:11.908407+00:00",
+      "finished_utc": "2026-09-18T23:01:18.209219+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "prefill-standard-fp16",
+      "case": "attention-prefill",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/prefill-standard-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-prefill",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "0a2a191a9d1d7fee46784437799615933fafe12dc14c5f7b41a289544bb47f5e",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079",
+              "card_00_user_input_1.f16.raw": "d716550f19b6d693a99752c3f06821918a599b3c6225b2917c34344a20ff959a",
+              "card_00_user_input_2.f16.raw": "0b6c743a61b8ef61075ec409eb3015054ccfe643b8cd0c0fcdb7afaeb103e83d"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999658712497,
+                "relative_l2_error": 0.00026144227666049743,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.094859938661102e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3369000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "111dc52b31f7e446486c72e99af741f4c76dc95277f6469fe75289c3a05bff80",
+        "source-program/functions/forward.stablehlo.bc": "b860507a5bbca301bd7b59354fa116b7bb69eca80bb26004e8c0f9b4f519dd64"
+      },
+      "log": "build/test/attention-improvement/prefill-standard-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "1ae956281daa01ff37ac1b75f705b24f336a06554d18d06d0c69109f96bd2935"
+    },
+    {
+      "started_utc": "2026-09-18T23:12:02.829569+00:00",
+      "finished_utc": "2026-09-18T23:12:10.116495+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-attention-gqa-bf16",
+      "case": "attention-gqa",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-attention-gqa-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-gqa",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "921ed07ebc16cffee2d172ca14210918595b56d4fa07727493d43a6872eff65b",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "a0874e6df2339e29abd578c2bd96e8f18e24315a1aba2c44f1a90bf1260e55e5",
+              "card_00_user_input_1.bf16.raw": "f839b6fd814d81971385a6b7cbaadf015800050d3d9b163731df0b220da5c13b",
+              "card_00_user_input_2.bf16.raw": "0f2df4a156b69075afa97a5798ae1335c16d6583dfaa16e31170e7b863378861"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4194304,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981684590519,
+                "relative_l2_error": 0.001913931781411614,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.4730894073762304e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=115649002"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "59cb797325c9d46d6fc393ed5ffd49a57eb59bc17ac508c49ab080d7a73362cd",
+        "source-program/functions/forward.stablehlo.bc": "d29aec22305a3da8f27a12e4497dc85f25e7b4395a809a33b0943d307e213759"
+      },
+      "log": "build/test/attention-improvement/standard-attention-gqa-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "87a966781a729dbc427cc1eac1ed2a7066bca4e0a81d6a30d68ab2f73e4a6557"
+    },
+    {
+      "started_utc": "2026-09-18T23:11:55.466617+00:00",
+      "finished_utc": "2026-09-18T23:12:02.400428+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-attention-gqa-fp16",
+      "case": "attention-gqa",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-attention-gqa-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-gqa",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "d27a6d1cb0297b3edd316add8ffcab05f00cdef2bbf2d2795d8737b41d6e8332",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "3aa20f9f333d429856446dd766b8718823da9cbd44c8a8f5ff8259bac38217db",
+              "card_00_user_input_1.f16.raw": "d1a203ac8a54b4fa8df26aa6dbd58d05c3362bb406547c49826dc65333f4ee98",
+              "card_00_user_input_2.f16.raw": "8bc3a4e010140cae596a5a5da19bcd92c91154b4b30dae672963b9f000deb7b5"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 4194304,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999999714170477,
+                "relative_l2_error": 0.00023909533592343505,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 6.879087692368557e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=115445999"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "2ebc4e8b8a501e03bf0cc5a726edc610a78ebea12575fb1be5bb6458781fe654",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "bb7d1ecbb87897cfee6cd36252bbf19e01939f3a2256bb02e5f2ca1f17f814a9",
+        "source-program/functions/forward.stablehlo.bc": "fcbc22821882df0d1b8d00c6445c22fa1da2bff77ad7a94aee7f173d9f497b8f"
+      },
+      "log": "build/test/attention-improvement/standard-attention-gqa-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "edd0201c6ebbf920e5fa13affb6f211bd1bda522c6d9f6e45104069b60d77582"
+    },
+    {
+      "started_utc": "2026-09-18T23:36:31.831212+00:00",
+      "finished_utc": "2026-09-18T23:36:37.582998+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-attention-gqa-tail-1025-bf16",
+      "case": "attention-gqa-tail-1025",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-attention-gqa-tail-1025-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-gqa-tail-1025",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "ea1548449bedc1fe8cdc5d0a2907c15f91dbbdae059eb0804f014268bdd0b34f",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "8a6f2ba4155d375772e0e44e4e81539d4301452bf4346cb3b1125fd6450928b7",
+              "card_00_user_input_1.bf16.raw": "8c72e46a26a25df712740e64b4840c84d953e463d8394a3c579ec39a16275344",
+              "card_00_user_input_2.bf16.raw": "15c38085ac52d78e136c96c0f29f112647d053e90db15a164c700536a64cae09"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4198400,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981748268175,
+                "relative_l2_error": 0.001910689874677414,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 5.44932399648493e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=129837006"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "ac0fb02918a3be4c760a6aa52c64d153f236d0e5546db0e46c65d6ff5fa33b1a",
+        "source-program/functions/forward.stablehlo.bc": "f35f84644daf51ca3f80945e9d4057ffa86cc5fc981c3e7b306134addd591419"
+      },
+      "log": "build/test/attention-improvement/standard-attention-gqa-tail-1025-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "41abd95dd17909be05ea484cb6e6200e7769ce053cb24ed9251ca7bc328e391e"
+    },
+    {
+      "started_utc": "2026-09-18T23:36:25.602550+00:00",
+      "finished_utc": "2026-09-18T23:36:31.434045+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-attention-gqa-tail-1025-fp16",
+      "case": "attention-gqa-tail-1025",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-attention-gqa-tail-1025-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "attention-gqa-tail-1025",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "c471fc6730ec66a07e5008a81d2a9a10c49700272984a3b18e7f022289b0fc30",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "56558f0775365a6f84274ffe3d8a64fc27b3d97fc431392639e067cd689381ae",
+              "card_00_user_input_1.f16.raw": "38805284eedf6b1c21bea71e3d8178934e5dcab54929af9ad4149f0f2144ba63",
+              "card_00_user_input_2.f16.raw": "fc6cdd6719078e44f779a0e95b3df872afff688fa17bea126efb8754686d94e9"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 4198400,
+                "max_abs_error": 0.001953125,
+                "cosine_similarity": 0.999999971187311,
+                "relative_l2_error": 0.00024005499961533077,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 6.8888858545617e-06
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=129100998"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "2ebc4e8b8a501e03bf0cc5a726edc610a78ebea12575fb1be5bb6458781fe654",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "3a2c25484bb4768ae7af004241d623dbec11d65c7496f139214500f5f0e9fea2",
+        "source-program/functions/forward.stablehlo.bc": "1da0ea22f4a5f0722913c82c5f4bd9db9eea76c1c284bcbe954f835742db3948"
+      },
+      "log": "build/test/attention-improvement/standard-attention-gqa-tail-1025-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "ae1e79d5cde5f5b243649c61fc01a9f7948690b93a14a52cafa5986e58dac2e9"
+    },
+    {
+      "started_utc": "2026-09-18T23:12:42.365440+00:00",
+      "finished_utc": "2026-09-18T23:13:09.130061+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-llama-2-7b-block-bf16",
+      "case": "llama-2-7b-block",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-llama-2-7b-block-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "llama-2-7b-block",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "368e222133fc96f8cff4fe874a35268fb27bb61d6b61a408dd8cac17118b3431",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b71fb428ed5b421a1e95cc93095b89d71cededc3f8aa89ef4b0f58ec4d5d11fa"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 65536,
+                "max_abs_error": 0.0078125,
+                "cosine_similarity": 0.9999892055138717,
+                "relative_l2_error": 0.004646470561913622,
+                "elementwise_mismatches": 39,
+                "mean_abs_error": 0.0006796348170610145
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=9153000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "source-program/constants/1": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "source-program/data/causal_mask": "bd81d80d7c61eca3951b2937e3e3219e0e3b378b875e88c8c22727a8f3004ad1",
+        "source-program/data/decoder_layer.input_layernorm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "source-program/data/decoder_layer.mlp.down_proj.weight": "6cfc2c99c78c0694fcda2e66865c2a7d6a3edf2bb3a793e664e85a87ccf25c01",
+        "source-program/data/decoder_layer.mlp.gate_proj.weight": "f766bebe4ab992da97d6656af02bb256c96e3f08e4f4defac839bbf3a9c27b8e",
+        "source-program/data/decoder_layer.mlp.up_proj.weight": "16162222f7bde09323c2605614ebdcee56a47007caaa35870a635a203a80d8bf",
+        "source-program/data/decoder_layer.post_attention_layernorm.weight": "55dd0b10719d8b4cba89a53127cc0bcd67affb1e2a8c401927e4c244638fcd53",
+        "source-program/data/decoder_layer.self_attn.k_proj.weight": "d07574255d2e3f0473fa095027697dc786f3fabe55b632c43bd76134d783e51b",
+        "source-program/data/decoder_layer.self_attn.o_proj.weight": "6d952b3e6c88935c9780694fdac30210e30c65cb92c9b4f82d3905b832ee7a03",
+        "source-program/data/decoder_layer.self_attn.q_proj.weight": "e4af72b2f7db3b900b6ab65571bc890004ff8102bae0f8f669219d09d8c476e0",
+        "source-program/data/decoder_layer.self_attn.v_proj.weight": "1ab43ca0b034366aa519bf0785ed8596d77e9173d023b7c31aee42cd4f6fc2bd",
+        "source-program/data/rotary_cos": "0b694d49581c7176db5bbd3bed96490e8d6d3802834941d527b262369f7499d9",
+        "source-program/data/rotary_sin": "345d8f8dbdac52f54f2538ea5d52cbf8153af7d48879e876f450f1fa15deb399",
+        "source-program/functions/forward.meta": "08676c1da2ba0df3064de1b66ae0bda03c5d2d8ff6483051b89bbf4d7404acbe",
+        "source-program/functions/forward.stablehlo.bc": "b92166417e5ef82297a0566517b4c368f9f21fc3251cac0ffbce1c480a529a74"
+      },
+      "log": "build/test/attention-improvement/standard-llama-2-7b-block-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "79de960eed6052ad48a483dfe801da3dfca0bbb2ac478e60600a269734da3648"
+    },
+    {
+      "started_utc": "2026-09-18T23:12:10.723253+00:00",
+      "finished_utc": "2026-09-18T23:12:41.884196+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-llama-2-7b-block-fp16",
+      "case": "llama-2-7b-block",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-llama-2-7b-block-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "llama-2-7b-block",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "be146874e57fd45a9635944df6fa5043418f806c7ffe167693ead53943052b86",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.002,
+              "atol": 0.004,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "6734fc1351671ecb8dbac4e93796185004a846ffd741b9ce0d70db8306060079"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "torch.float16",
+                "elements": 65536,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 0.9999998265995309,
+                "relative_l2_error": 0.0005890659784592119,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 8.771133434493095e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=8872000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+        "source-program/constants/1": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "source-program/data/causal_mask": "b740811b018c5f9475a9eb0fb66b7d8a5575eebee9ea4bda09edc119b24d5660",
+        "source-program/data/decoder_layer.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "source-program/data/decoder_layer.mlp.down_proj.weight": "96d484288765fca7de26af46c3c0c8b72472debf705c281363739f4ce85f05d0",
+        "source-program/data/decoder_layer.mlp.gate_proj.weight": "a91cd6c53e9d63632326e1f896af0715cd4703b05583f56534a7dc21c4f54eb6",
+        "source-program/data/decoder_layer.mlp.up_proj.weight": "3d3c844e34e48f2ffa659d62f723f69cb4afc1035824913eb9bc09dffb2f26cc",
+        "source-program/data/decoder_layer.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+        "source-program/data/decoder_layer.self_attn.k_proj.weight": "a4a39d6ae3a10e987a066f494228bb21a3733c3d7f0ce521bdb523592782f580",
+        "source-program/data/decoder_layer.self_attn.o_proj.weight": "7b63445913aa4bb614985cbc9fe35c2fd9fd9959e28ecb6466f719cbaf2a8ede",
+        "source-program/data/decoder_layer.self_attn.q_proj.weight": "92abec4a65167155b7b198e90a428958ab516f076b53d6b8588e11982436f749",
+        "source-program/data/decoder_layer.self_attn.v_proj.weight": "5a6e7e3a10bb3ac590ffd3015c5575a704a553f63aa6483b3c5c2ce9729dc343",
+        "source-program/data/rotary_cos": "d0693beede6522765b791aa9d2e97ef57abf04e5822b5a2963f23309ba22c757",
+        "source-program/data/rotary_sin": "e9d9c61b56004e882c1559ddb5d286f86c3e31973bdb387d275d84cbd4233e47",
+        "source-program/functions/forward.meta": "9961bcd0e32dd27272f858b02b7067ca2f0d341cd4f9c13cd0cad40dd34072e0",
+        "source-program/functions/forward.stablehlo.bc": "af800628d0c12c6c7b74aeedb448f4cc3e2756435d7b4d3ddf0fed02e57efc75"
+      },
+      "log": "build/test/attention-improvement/standard-llama-2-7b-block-fp16-board.log",
+      "kernel_log_sha256": "a7b30a5d112a4cd46cf6dd86ea19a908ed76191a4427a56b396147ae0b21dc33",
+      "firmware_log_sha256": "0d902260361aadcaf6d0eebbe941087695e2f389701ba66880edf9863ba8d997"
+    },
+    {
+      "started_utc": "2026-09-18T23:30:58.811175+00:00",
+      "finished_utc": "2026-09-18T23:31:22.537374+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-long-cache-bf16",
+      "case": "attention-decode-kv-cache-long-4096",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-long-cache-bf16-board/step_01/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache-long-4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "0bd05adf07a79f909572ea20c307ecd92e01262cce262fb6794807742808db2b",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "3c311e1abcb0850eadf68cf4dee196a05dfb15e1d04c50ce1b08fdf71bf1a61a",
+              "card_00_user_input_1.bf16.raw": "ee5abe7bc0e919c51a379e53d2942a819fb16e3cf783c9861a30ecc23d271bb3",
+              "card_00_user_input_2.bf16.raw": "e560633f462c2922fb2e4a74f87c99eb46840b48c9ea54d7535f23699fb3c432",
+              "card_00_user_input_3.bf16.raw": "56a0eb2668dbacb079c42f5780da609b26b53d79a432d5b293802a1f65ce9796"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4096,
+                "max_abs_error": 0.0001220703125,
+                "cosine_similarity": 0.9999928233258576,
+                "relative_l2_error": 0.0037896243562477038,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.1653589101333637e-05
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16773120,
+                "max_abs_error": 0.000244140625,
+                "cosine_similarity": 0.9999999999999245,
+                "relative_l2_error": 4.988125192822923e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.00137696132264e-11
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16773120,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 2.407704902486942e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 6.327506777931627e-11
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=12994000"
+            ]
+          }
+        },
+        {
+          "path": "build/test/attention-improvement/standard-long-cache-bf16-board/step_02/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache-long-4096-continuation",
+            "step": 2,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "dbd32ee8cb349be91656817d17e235da00f614b3a2c22cd703d6ec04291d64a4",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "1b5e26f3877b7a76c6f0854c98a3085e7304253ccb9acf71501001818d7b4016",
+              "card_00_user_input_1.bf16.raw": "7a1ea022768994da8b027166c8db4ad72872eb51c5a91c2d1d13d89faf736a6b",
+              "card_00_user_input_2.bf16.raw": "d79ea3a3c947b7e494a0829f2b7464e4cbae8e934836d49afbd80ea91362d28a",
+              "card_00_user_input_3.bf16.raw": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 4096,
+                "max_abs_error": 0.0001220703125,
+                "cosine_similarity": 0.9999929580987542,
+                "relative_l2_error": 0.0037528653787022494,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.1495409328053938e-05
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 0.00048828125,
+                "cosine_similarity": 0.9999999999992105,
+                "relative_l2_error": 1.2948551564166475e-06,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 8.185452315956354e-11
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 0.0009765625,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 2.566601822315686e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 9.640643838793039e-11
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=12984000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "step_01/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_01/source-program/data/attention.k_proj.weight": "4891f15612f8d624ea3f23928098be9d91e220bc266cf900d1398ade13566214",
+        "step_01/source-program/data/attention.o_proj.weight": "41f008dc36fa38f6dfb45dd83d6b1bfe1a4e11ce519848fb5d7bec1fe72e93d6",
+        "step_01/source-program/data/attention.q_proj.weight": "d311df27a7d58f20a5a18b08dc7a0b97627820d8f48c2ed0372866678f807088",
+        "step_01/source-program/data/attention.v_proj.weight": "4530234c5cf70cbe4f47929c09c95e346f4acf1e0fb906420d6f0c3a68b3cc1e",
+        "step_01/source-program/data/rotary_cos": "973a8d1d5d5013064dc5210da781be078a604c39c23c3ed499cec9be25594329",
+        "step_01/source-program/data/rotary_sin": "0508c58a262fef0fd1ac5528dac8389b078830ee6acc91339b21b2bc20e22c10",
+        "step_01/source-program/functions/forward.meta": "79bfb7228eb1812f30de97eff0e74d7c71584ce071ace84c1616f135c02a0099",
+        "step_01/source-program/functions/forward.stablehlo.bc": "95c11d573bb252bfac7a5f478ed6ab2c6ad82a6ec5f8b03e8739042a86e9c07f",
+        "step_02/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_02/source-program/data/attention.k_proj.weight": "4891f15612f8d624ea3f23928098be9d91e220bc266cf900d1398ade13566214",
+        "step_02/source-program/data/attention.o_proj.weight": "41f008dc36fa38f6dfb45dd83d6b1bfe1a4e11ce519848fb5d7bec1fe72e93d6",
+        "step_02/source-program/data/attention.q_proj.weight": "d311df27a7d58f20a5a18b08dc7a0b97627820d8f48c2ed0372866678f807088",
+        "step_02/source-program/data/attention.v_proj.weight": "4530234c5cf70cbe4f47929c09c95e346f4acf1e0fb906420d6f0c3a68b3cc1e",
+        "step_02/source-program/data/rotary_cos": "146997817d24b8f7db61366f13460cbbefead124ef1e684e15a82b92d9778769",
+        "step_02/source-program/data/rotary_sin": "dfe6089d139ec91587becc601d0f081be0e353b7728d41fab571aaeebcb5dcc7",
+        "step_02/source-program/functions/forward.meta": "486b3ba24d69a789a3e1cc7db4c875c2119347fd4cb370f28271120bb8bc940c",
+        "step_02/source-program/functions/forward.stablehlo.bc": "ec4285f8e851d30d9194688291796812217f53990e57c10190ee8dbfb990cb6f"
+      },
+      "log": "build/test/attention-improvement/standard-long-cache-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "3252967cadffcf601f5676ba2232c013ebc731fc9b2149ff693ac9447965e84e"
+    },
+    {
+      "started_utc": "2026-09-18T23:30:32.946391+00:00",
+      "finished_utc": "2026-09-18T23:30:58.357461+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-long-cache-fp16",
+      "case": "attention-decode-kv-cache-long-4096",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-long-cache-fp16-board/step_01/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache-long-4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "a9f64d2a142f6483c57246b883afe4fc6ab0bc71ce55dcbe90226014d53a5e07",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "b7994926db73037524b5a45b805941e6887b8dd53aeda7b7528c99196e241ad6",
+              "card_00_user_input_1.f16.raw": "df873a039939acc108f55e60ccbbe66165a9bd11e1e0b8e32aff35783b342614",
+              "card_00_user_input_2.f16.raw": "2cab627a4c51b8309cbb71a94b01909ad9597baeafcb59d3504c668c9e792e68",
+              "card_00_user_input_3.f16.raw": "56a0eb2668dbacb079c42f5780da609b26b53d79a432d5b293802a1f65ce9796"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.float16",
+                "elements": 4096,
+                "max_abs_error": 1.52587890625e-05,
+                "cosine_similarity": 0.9999998879787293,
+                "relative_l2_error": 0.0004736422614087932,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.759348717518151e-06
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 16773120,
+                "max_abs_error": 0.0001220703125,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 6.60328536717664e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 1.1524974717616453e-10
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 16773120,
+                "max_abs_error": 6.103515625e-05,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 5.403654077957709e-08,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.041776609653663e-11
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=13068000"
+            ]
+          }
+        },
+        {
+          "path": "build/test/attention-improvement/standard-long-cache-fp16-board/step_02/numeric-audit-01.json",
+          "result": {
+            "case": "attention-decode-kv-cache-long-4096-continuation",
+            "step": 2,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "16481ad18b9cbd27a934154ca81f2bb968c5b4c0fde25fd761273330520993c6",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "720290da4654d41418b64ee61449cbb8c6612bb18ae6b69f4702678dd1e9a3ea",
+              "card_00_user_input_1.f16.raw": "605ee8b2c2f141d5595abc326932ee255eecb5cac949de985860eb72d64838ad",
+              "card_00_user_input_2.f16.raw": "0280cc642e2cb4bff1753349ecbccb9794e097e06cf953b76f451b15a91ccbb7",
+              "card_00_user_input_3.f16.raw": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "torch.float16",
+                "elements": 4096,
+                "max_abs_error": 1.52587890625e-05,
+                "cosine_similarity": 0.9999998926263222,
+                "relative_l2_error": 0.0004636370377078384,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 2.708067768253386e-06
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 16777216,
+                "max_abs_error": 6.103515625e-05,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 4.4315316750111125e-07,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 6.964739895920502e-11
+              },
+              {
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "torch.float16",
+                "elements": 16777216,
+                "max_abs_error": 0.0001220703125,
+                "cosine_similarity": 1.0,
+                "relative_l2_error": 6.96920190982985e-08,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 7.668532475690881e-11
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=13051000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "step_01/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_01/source-program/data/attention.k_proj.weight": "91d141638cb63fc8bfb88abf6089d17261d080d61966e90e1a25e0ba7c23b843",
+        "step_01/source-program/data/attention.o_proj.weight": "ae3dae03624df50cc219937b6c88f91fdef1c4224780073fe14ab58990ef8a74",
+        "step_01/source-program/data/attention.q_proj.weight": "5ab7330dee8daa330271a1c5e54046e9259f37e1cdb1c5e80569e609bc65da8e",
+        "step_01/source-program/data/attention.v_proj.weight": "32c7295e4b9ca1110e5f7e46ca1e997881c1117ef7c0dffa169d8562776f6f2c",
+        "step_01/source-program/data/rotary_cos": "9d1f3deb2be051df1e615904f38ddfc3f50750a1e893d3cf180f84e4372c8fd6",
+        "step_01/source-program/data/rotary_sin": "79504a831689d164e20d92a85938c5918812741c1424fe362b882ee5d4dd22e7",
+        "step_01/source-program/functions/forward.meta": "a3f09514449f8733348a2591e3dc02153c438b84170f8ff77eb0f3de8ec07f6b",
+        "step_01/source-program/functions/forward.stablehlo.bc": "2385a95c7e0e5febbcdfc174ae4f405eff37d35255e97bbbbf3f0e601a8f842e",
+        "step_02/source-program/constants/0": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+        "step_02/source-program/data/attention.k_proj.weight": "91d141638cb63fc8bfb88abf6089d17261d080d61966e90e1a25e0ba7c23b843",
+        "step_02/source-program/data/attention.o_proj.weight": "ae3dae03624df50cc219937b6c88f91fdef1c4224780073fe14ab58990ef8a74",
+        "step_02/source-program/data/attention.q_proj.weight": "5ab7330dee8daa330271a1c5e54046e9259f37e1cdb1c5e80569e609bc65da8e",
+        "step_02/source-program/data/attention.v_proj.weight": "32c7295e4b9ca1110e5f7e46ca1e997881c1117ef7c0dffa169d8562776f6f2c",
+        "step_02/source-program/data/rotary_cos": "6f33af611f87f5b8a5acd3d6c77e7a199d95100496a8080b13be8c6993475182",
+        "step_02/source-program/data/rotary_sin": "644e246f9af6a5c82670578d3365ab309ad6a73ce2eaa7dffbccabfcb4382ba9",
+        "step_02/source-program/functions/forward.meta": "18b7e2d6dc6f4d079689fbdf1684fee0dbd97895b415340dcc898f1dbaebb8ec",
+        "step_02/source-program/functions/forward.stablehlo.bc": "9605a4b0e89128736592fe3a19479f4a3e833489686d793b3fac4a54d8ead865"
+      },
+      "log": "build/test/attention-improvement/standard-long-cache-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "2cc54aaec80bddbea8dc4dd4681d0d89a1bdfc84ef45858f8c413dcc4b37b2c9"
+    },
+    {
+      "started_utc": "2026-09-18T23:20:28.528667+00:00",
+      "finished_utc": "2026-09-18T23:20:38.473500+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-single-card-gemm-4096-bf16",
+      "case": "single-card-gemm-4096",
+      "dtype": "bfloat16",
+      "compiler_tool_sha256_at_launch": "f3aad5e85fe198578cd188f8aefaa862366cc512339e5ded7729a342c6f141f2",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-single-card-gemm-4096-bf16-board/numeric-audit-01.json",
+          "result": {
+            "case": "single-card-gemm-m4096-k4096-n4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "35375c4d87894b305a41884452eee532effbe65ebafa5bd6c434840d56d98cf1",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+              "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 1.0,
+                "cosine_similarity": 0.9999999873937028,
+                "relative_l2_error": 0.00015884460990067264,
+                "elementwise_mismatches": 1310,
+                "mean_abs_error": 0.00024054590936373188
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=6910000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/functions/forward.meta": "6cdfbd1680fd9543dd287efde185d12a2366d3300240abb8e28befa5c8ac1cb0",
+        "source-program/functions/forward.stablehlo.bc": "bcd022f90de143ace20093fd2acc522cbe66049eb3288de26d8843832cee0c1a"
+      },
+      "log": "build/test/attention-improvement/standard-single-card-gemm-4096-bf16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "2176487dac1a841d60c35e0b5eddabbe576ce056f36e8048974311ec91566d9c"
+    },
+    {
+      "started_utc": "2026-09-18T23:13:09.591629+00:00",
+      "finished_utc": "2026-09-18T23:20:28.092737+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-single-card-gemm-4096-fp16",
+      "case": "single-card-gemm-4096",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "e006c37614d30ce88b752eb717e954d0fe50ee2897ee809366d829e76b301a85",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-single-card-gemm-4096-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "single-card-gemm-m4096-k4096-n4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "30a6362b42e350e4d00fee3c024630337978d84ce7a2e5104ae85c6c570b2981",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.001,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+              "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.float16",
+                "elements": 16777216,
+                "max_abs_error": 0.25,
+                "cosine_similarity": 0.9999999980989868,
+                "relative_l2_error": 6.18928546096879e-05,
+                "elementwise_mismatches": 29626,
+                "mean_abs_error": 0.00030439076586930014
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=6999000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/functions/forward.meta": "902aa6d51ba7e700d15451474a86bf66659ae3f300aa806bebafe4078cef874c",
+        "source-program/functions/forward.stablehlo.bc": "9458e730d6db3067f8570743725503ee3e512099e46debde21ab69e1bebe485d"
+      },
+      "log": "build/test/attention-improvement/standard-single-card-gemm-4096-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "c873f4aa2cc6920ffaa4a0adc644307ed816cbd5d423b9fb1ab1ab871b0b121d"
+    },
+    {
+      "started_utc": "2026-09-18T23:20:38.876609+00:00",
+      "finished_utc": "2026-09-18T23:26:59.773418+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-single-card-gemm-tail-4097-fp16",
+      "case": "single-card-gemm-tail-4097",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "f3aad5e85fe198578cd188f8aefaa862366cc512339e5ded7729a342c6f141f2",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-single-card-gemm-tail-4097-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "single-card-gemm-m4097-k4097-n4097",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "1f1cd86d3172df95032abf76c2bbce0295b91a163425fef4378f3f4e270f2786",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.001,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "3a919ad8845c73b2a15a7c68de55534d58e85f799902ee628d38987ec5c1470f",
+              "card_00_user_input_1.f16.raw": "c6e6dd086a7e934aa2aa54336d13f5e8b5ff5970bc4432265ba61c28232b558f"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4097,
+                  4097
+                ],
+                "dtype": "torch.float16",
+                "elements": 16785409,
+                "max_abs_error": 0.25,
+                "cosine_similarity": 0.9999999980578864,
+                "relative_l2_error": 6.256246309311977e-05,
+                "elementwise_mismatches": 29461,
+                "mean_abs_error": 0.00030822417685369484
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=8646000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/functions/forward.meta": "9c083b4428da5fe73fd590d03847ca0ecb55454e39aeb8b1ec89abbadbd285d3",
+        "source-program/functions/forward.stablehlo.bc": "8d04d9c70898810c603d80f099fc3adb88da088af2f2574511d43c65678cfce2"
+      },
+      "log": "build/test/attention-improvement/standard-single-card-gemm-tail-4097-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "dcac320bf228fbc3c2929db319f3a0aad9dffd0985c46b5b0af683c23addef5e"
+    },
+    {
+      "started_utc": "2026-09-18T23:36:37.974990+00:00",
+      "finished_utc": "2026-09-18T23:36:56.909985+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-vit-encoder-block-fp16",
+      "case": "vit-encoder-block",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "first_complete_numeric_pass",
+      "audits": [
+        {
+          "path": "build/test/attention-improvement/standard-vit-encoder-block-fp16-board/numeric-audit-01.json",
+          "result": {
+            "case": "vit-encoder-block-1024",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "ab09342a58c810f75be6758c5f152f62cf603b2257c9a2a658469c1517642175",
+            "comparison_passed": true,
+            "comparison": {
+              "rtol": 0.001,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.f16.raw": "4476320128b6ac83d79a433ebc420d871d2d5ea0350639a9ddb2ddf227297704"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  1024,
+                  768
+                ],
+                "dtype": "torch.float16",
+                "elements": 786432,
+                "max_abs_error": 0.00390625,
+                "cosine_similarity": 0.9999999771264911,
+                "relative_l2_error": 0.00021388814303090404,
+                "elementwise_mismatches": 45720,
+                "mean_abs_error": 8.05934708599428e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=41272000"
+            ]
+          }
+        }
+      ],
+      "source_sha256": {
+        "source-program/constants/0": "f90ac752f6389c03003bf82ca5f82c837ef0ac733f588390fbe31a393eb325b2",
+        "source-program/constants/1": "45a3af7b7140dd6aa5ba5179358e9884702e31376ca2f0462bb6f922eb501113",
+        "source-program/constants/2": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/3": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/constants/4": "f6f19fc81a7243330acb879fceb09956252191f875ec804cca18e45d1252fe46",
+        "source-program/data/ln_1.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "source-program/data/ln_1.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+        "source-program/data/ln_2.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "source-program/data/ln_2.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+        "source-program/data/mlp.0.bias": "5ecd36358ef2b296c1937bfa305471c0976fd98f2955dc5e5d77091f731c9ba7",
+        "source-program/data/mlp.0.weight": "e771ee2c6ea6a5cddfc54d73b9e7fccfa9c75a76b809d9943800a422f2e6e45e",
+        "source-program/data/mlp.3.bias": "5f7ab4b262f5966beccb919e8d586672d59bb26309202d665d39106323552b8c",
+        "source-program/data/mlp.3.weight": "6125ce13de6bf757f35f9d3fbab4bdf952d254b8c4d07c78734c43619cd3a999",
+        "source-program/data/self_attention.in_proj_bias": "29f18070ac1594a87ea114e193c9683669f8107763144e9d76c4db9c5f5c040b",
+        "source-program/data/self_attention.in_proj_weight": "84fa6f95ea5e9d137548a9824397ae4a3d44ac1c3d40fd6d76ede4dde0595dcb",
+        "source-program/data/self_attention.out_proj.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "source-program/data/self_attention.out_proj.weight": "8dab6a985560a49aaebcd9a3e00db94d00063edefbaa8606727112969211c795",
+        "source-program/functions/forward.meta": "5a4b71f6c7cdcacb2c2b2ff5a2bb6cb6d9dcd081589fa049637d012a0cdf16f6",
+        "source-program/functions/forward.stablehlo.bc": "a716e9649a13b96e3dffaff24ab3c33e348bbf64ae9fcd2ab4fda680b598ff0b"
+      },
+      "log": "build/test/attention-improvement/standard-vit-encoder-block-fp16-board.log",
+      "kernel_log_sha256": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+      "firmware_log_sha256": "0ee30622f760e971ce885b7a727ca9871b8b9abcb9fbcba2d7af72e707902491"
+    },
+    {
+      "started_utc": "2026-09-18T23:36:57.344753+00:00",
+      "finished_utc": "2026-09-18T23:37:15.935564+00:00",
+      "boot": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+      "runner_sha256": "076105a7d8fc226d8bd972774c70a5c037a061e096a13e8f974e1fdc8c244f05",
+      "tag": "standard-vit-encoder-block-tail-1025-fp16",
+      "case": "vit-encoder-block-tail-1025",
+      "dtype": "float16",
+      "compiler_tool_sha256_at_launch": "d54548f8b1c11c50b431efe7494098d25956bb41fc48d2021bf482b1ddf6409c",
+      "qualification": "device_health_failure",
+      "audits": [],
+      "source_sha256": {
+        "source-program/constants/0": "f90ac752f6389c03003bf82ca5f82c837ef0ac733f588390fbe31a393eb325b2",
+        "source-program/constants/1": "45a3af7b7140dd6aa5ba5179358e9884702e31376ca2f0462bb6f922eb501113",
+        "source-program/constants/2": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565",
+        "source-program/constants/3": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/constants/4": "f6f19fc81a7243330acb879fceb09956252191f875ec804cca18e45d1252fe46",
+        "source-program/data/ln_1.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "source-program/data/ln_1.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+        "source-program/data/ln_2.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "source-program/data/ln_2.weight": "457278b185fd74450da159bf1a9a01fe5b1352167171512476fa68ec90b662a6",
+        "source-program/data/mlp.0.bias": "5ecd36358ef2b296c1937bfa305471c0976fd98f2955dc5e5d77091f731c9ba7",
+        "source-program/data/mlp.0.weight": "e771ee2c6ea6a5cddfc54d73b9e7fccfa9c75a76b809d9943800a422f2e6e45e",
+        "source-program/data/mlp.3.bias": "5f7ab4b262f5966beccb919e8d586672d59bb26309202d665d39106323552b8c",
+        "source-program/data/mlp.3.weight": "6125ce13de6bf757f35f9d3fbab4bdf952d254b8c4d07c78734c43619cd3a999",
+        "source-program/data/self_attention.in_proj_bias": "29f18070ac1594a87ea114e193c9683669f8107763144e9d76c4db9c5f5c040b",
+        "source-program/data/self_attention.in_proj_weight": "84fa6f95ea5e9d137548a9824397ae4a3d44ac1c3d40fd6d76ede4dde0595dcb",
+        "source-program/data/self_attention.out_proj.bias": "adb8dba97347136daf3818ded5c5bc296a80659429677b9c3ff7d9c24a044d43",
+        "source-program/data/self_attention.out_proj.weight": "8dab6a985560a49aaebcd9a3e00db94d00063edefbaa8606727112969211c795",
+        "source-program/functions/forward.meta": "3f4ad9f33ea1856baf3372817c0126aff43895721013b4c70969f2593e5046ac",
+        "source-program/functions/forward.stablehlo.bc": "acccc4922b66a054586844631f30f29bc76edd86dc8f663bce4cc7387b7e60d2"
+      },
+      "log": "build/test/attention-improvement/standard-vit-encoder-block-tail-1025-fp16-board.log",
+      "kernel_log_sha256": "0047b15f15ffc551f5a95acbf2c3a7624f97f7b668f9dcfb9aea72cf58d1d9a5",
+      "firmware_log_sha256": "db28f18bf9870e0d0bbf45d633512dbfe8e0c960923492eadcd64e84816e4cc6",
+      "failure": {
+        "kernel": "Sep 19 07:37:14 ubuntu kernel: accel 0000:3b:00.0: rpu=0 pid=3628 xid=12 category=XID_NPU_ERROR eid=\"0x0D00C005\" detail=\"NPU LSU TDMA Timeout\" action=\"RESET_BM\"",
+        "launch": {
+          "start": 1789774634.4742799,
+          "end": 1789774635.146089,
+          "command": [
+            "--package-dir",
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/test/pytorch-product/wafer-runtime-pytorch-vit-encoder-block-tail-1025-fp16-optimization-search-no-card/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/home/ubuntu/hxf_dev/vibe_compiler/build/test/attention-improvement/standard-vit-encoder-block-tail-1025-fp16-board/raw/card_00_output_0.capture.f16.raw",
+            "--resource",
+            "0=/home/ubuntu/hxf_dev/vibe_compiler/build/test/attention-improvement/standard-vit-encoder-block-tail-1025-fp16-board/raw/card_00_user_input_0.f16.raw"
+          ],
+          "returncode": 0
+        },
+        "kernel_sha256": "0047b15f15ffc551f5a95acbf2c3a7624f97f7b668f9dcfb9aea72cf58d1d9a5",
+        "recovery_attempted": false,
+        "qualified": false,
+        "offline_output_relative_l2": 0.00021480311643718477,
+        "capture_sha256": "73e8f20361f408add6b22ebbce45a7fbbed05c84967a25a655120097cb7d01ee",
+        "expected_sha256": "bba0e064abce78bb4f395246545a21b36f5ea31107556f960cbe0ad480b677cd",
+        "launch_start_utc": "2026-09-18T23:37:14.474280+00:00",
+        "kernel_display_timezone": "Asia/Shanghai (UTC+08:00)"
+      }
+    }
+  ],
+  "host_validation": {
+    "recorded_utc": "2026-09-19T00:29:02.434489+00:00",
+    "scope": "分阶段主机回归；不代签最终同版本实卡/guard/性能资格。全量component后追加guard，直接受影响四项component已重测。",
+    "source_parent": "9138abdabae1e8af7658608bf656590305be7349",
+    "current_tools": [
+      {
+        "path": "build/bin/wafer-compile",
+        "sha256": "d5e6d8eaf309a9e4b1e642a82f65da3c936c51993124d7fb66ffa2a8e9d9cb4e"
+      },
+      {
+        "path": "build/bin/wafer-opt",
+        "sha256": "68d1f6d846dbdf7822bd445fcf080b7dc729315901f4c9015a837df72f5b09dc"
+      },
+      {
+        "path": "build/bin/wafer-run",
+        "sha256": "daf5b613b9eba828c7e5099bf4f17bac562544ed33a000cde444ce7a6634f36c"
+      },
+      {
+        "path": "build/board-bin/wafer-run",
+        "sha256": "06e772a7fb5c2ce4646537062ab01d572826e904b9fea487e20a2ca19ab952d7"
+      }
+    ],
+    "canonical_full_incremental_build": "passed",
+    "canonical_next_build": "ninja_no_work_to_do",
+    "lit": {
+      "discovered": 304,
+      "passed": 304,
+      "skipped_or_unsupported": 0
+    },
+    "cpp_systemc_ctest": {
+      "executed": 66,
+      "passed": 66
+    },
+    "final_affected_components": {
+      "executed": 4,
+      "passed": 4,
+      "names": [
+        "WaferConversionUnitTests",
+        "WaferPackageUnitTests",
+        "WaferRuntimeUnitTests",
+        "WaferRunBoardIOUnitTests"
+      ]
+    },
+    "packed_read": {
+      "configurations": 48,
+      "extents": [
+        1024,
+        1025,
+        1031
+      ],
+      "bit_residues": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "static_and_dynamic_offsets": true,
+      "actual_instruction_memory_target_witness": true
+    },
+    "sliding_window": [
+      {
+        "case": "wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card",
+        "result": "passed",
+        "output_elements": 65600,
+        "target_model_full_output_comparison": true,
+        "memory_guard_plan_bytes": 11519,
+        "memory_guard_device_readback": false,
+        "package": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/package/data/program-data.bin",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/package/manifest.json",
+            "sha256": "23f200c6ebf0cfa0e6ddd67835673c00e8d91527dad4793b25a254b09fe111ee"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/package/modules/module_00000.so",
+            "sha256": "9637f23d712f12dff3591012db3ba02ebf810c180e1bd4bbdfa8dba1e439ec1b"
+          }
+        ],
+        "source": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/source-program/constants/0",
+            "sha256": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/source-program/constants/1",
+            "sha256": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/source-program/constants/2",
+            "sha256": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/source-program/functions/forward.meta",
+            "sha256": "baddb3a8e0cbeca66726826f41cf2b2926ad9b47414e8b41e760e9305eb1a197"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/source-program/functions/forward.stablehlo.bc",
+            "sha256": "30e2203e0dce2249133f494eaf5f68aad984d8d92e7d26ea75e7ba55fa912eeb"
+          }
+        ],
+        "payload": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/raw/card_00_output_0.expected.bf16.raw",
+            "sha256": "6f3981284a59f7ee44f9aedcc68a4c202d7498ffa00da3a711ab40528909e797"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/raw/card_00_user_input_0.bf16.raw",
+            "sha256": "0306865719669d6db0cd6a45b2712b4c1fbd915cec89776e0471933f7a698d3d"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/raw/card_00_user_input_1.bf16.raw",
+            "sha256": "01e18e211eb7f5bdc5ecd743332efa00dd1e802be9775f0714f78dc1c12729ef"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/raw/card_00_user_input_2.bf16.raw",
+            "sha256": "46f4684563ff21d64fb788c7fbb7ad26c3341b2b2552e273b6275f4b8802ea8f"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-none-no-card/raw/card_00_user_input_3.bool.raw",
+            "sha256": "2e2c43b41a195e2cc9b2b8c23a83a04caa47377b70f3bc8d9553fad7b74c25fe"
+          }
+        ]
+      },
+      {
+        "case": "wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card",
+        "result": "passed",
+        "output_elements": 65600,
+        "target_model_full_output_comparison": true,
+        "memory_guard_plan_bytes": 11519,
+        "memory_guard_device_readback": false,
+        "package": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/package/data/program-data.bin",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/package/manifest.json",
+            "sha256": "0acd05781016db69dd76c6149f4e89c9152e5be3d9c44476458a68691e4e1092"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/package/modules/module_00000.so",
+            "sha256": "6cc1748121b337795653597eab1aa570dc82c5a3a52b390380697b7a995cd70d"
+          }
+        ],
+        "source": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/source-program/constants/0",
+            "sha256": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/source-program/constants/1",
+            "sha256": "289f22169923c24bf33ca64000f6b64fce00b623e761d7faaf7adf401e7c901f"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/source-program/constants/2",
+            "sha256": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/source-program/functions/forward.meta",
+            "sha256": "baddb3a8e0cbeca66726826f41cf2b2926ad9b47414e8b41e760e9305eb1a197"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/source-program/functions/forward.stablehlo.bc",
+            "sha256": "30e2203e0dce2249133f494eaf5f68aad984d8d92e7d26ea75e7ba55fa912eeb"
+          }
+        ],
+        "payload": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/raw/card_00_output_0.expected.bf16.raw",
+            "sha256": "6f3981284a59f7ee44f9aedcc68a4c202d7498ffa00da3a711ab40528909e797"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/raw/card_00_user_input_0.bf16.raw",
+            "sha256": "0306865719669d6db0cd6a45b2712b4c1fbd915cec89776e0471933f7a698d3d"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/raw/card_00_user_input_1.bf16.raw",
+            "sha256": "01e18e211eb7f5bdc5ecd743332efa00dd1e802be9775f0714f78dc1c12729ef"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/raw/card_00_user_input_2.bf16.raw",
+            "sha256": "46f4684563ff21d64fb788c7fbb7ad26c3341b2b2552e273b6275f4b8802ea8f"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-bf16-optimization-search-no-card/raw/card_00_user_input_3.bool.raw",
+            "sha256": "2e2c43b41a195e2cc9b2b8c23a83a04caa47377b70f3bc8d9553fad7b74c25fe"
+          }
+        ]
+      },
+      {
+        "case": "wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card",
+        "result": "passed",
+        "output_elements": 65600,
+        "target_model_full_output_comparison": true,
+        "memory_guard_plan_bytes": 11519,
+        "memory_guard_device_readback": false,
+        "package": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/package/data/program-data.bin",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/package/manifest.json",
+            "sha256": "eaaae1cc343d668b36f9c8cf9472ff3fe0d9766b9003fa0b897a2738c8559c36"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/package/modules/module_00000.so",
+            "sha256": "91f37f1947c1baba77098b8905bc5976a598c9d89848f2b27f56fdfd1ce4f14d"
+          }
+        ],
+        "source": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/source-program/constants/0",
+            "sha256": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/source-program/constants/1",
+            "sha256": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/source-program/constants/2",
+            "sha256": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/source-program/functions/forward.meta",
+            "sha256": "70413b4f00ba4fec6007921afa3b486f86613dcbb92d80f2cba70669fed98f65"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/source-program/functions/forward.stablehlo.bc",
+            "sha256": "50a55c9f65073bb7e79cecde8a8ada71361c16f661494c39fb5af948ed6b6df1"
+          }
+        ],
+        "payload": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/raw/card_00_output_0.expected.f16.raw",
+            "sha256": "d6458e43839ff846de7402f43eb55d1e9af06bec1f3c60b2b1f068468280cfaa"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/raw/card_00_user_input_0.f16.raw",
+            "sha256": "185b9a60972940a87ac1b0e835898f50ea8b5c1f1c286929cf8bdd9d1c65dcaa"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/raw/card_00_user_input_1.f16.raw",
+            "sha256": "bfd2f679f763abf1a99a02c341b28cc1f5ad010f0876d6478e1088864c32093e"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/raw/card_00_user_input_2.f16.raw",
+            "sha256": "6565f4a4b0a445e383e458acab4ae2c99b5d9b7bdf621c26ed60882e5e078a8a"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-none-no-card/raw/card_00_user_input_3.bool.raw",
+            "sha256": "2e2c43b41a195e2cc9b2b8c23a83a04caa47377b70f3bc8d9553fad7b74c25fe"
+          }
+        ]
+      },
+      {
+        "case": "wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card",
+        "result": "passed",
+        "output_elements": 65600,
+        "target_model_full_output_comparison": true,
+        "memory_guard_plan_bytes": 11519,
+        "memory_guard_device_readback": false,
+        "package": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/package/data/program-data.bin",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/package/manifest.json",
+            "sha256": "ec65374021c06dabeaa3d6273c584e453d130e0bef5925dae19c24e82b1a3677"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/package/modules/module_00000.so",
+            "sha256": "ed1d0a109038780bd74f55d5d8182153bca0e2c49323b4348d83fe9498f3e3af"
+          }
+        ],
+        "source": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/source-program/constants/0",
+            "sha256": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/source-program/constants/1",
+            "sha256": "f8e5dd1f1758eeca78049b262a8858623d724fdc02bcfb2e60c1c95dd67a2565"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/source-program/constants/2",
+            "sha256": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/source-program/functions/forward.meta",
+            "sha256": "70413b4f00ba4fec6007921afa3b486f86613dcbb92d80f2cba70669fed98f65"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/source-program/functions/forward.stablehlo.bc",
+            "sha256": "50a55c9f65073bb7e79cecde8a8ada71361c16f661494c39fb5af948ed6b6df1"
+          }
+        ],
+        "payload": [
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/raw/card_00_output_0.expected.f16.raw",
+            "sha256": "d6458e43839ff846de7402f43eb55d1e9af06bec1f3c60b2b1f068468280cfaa"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/raw/card_00_user_input_0.f16.raw",
+            "sha256": "185b9a60972940a87ac1b0e835898f50ea8b5c1f1c286929cf8bdd9d1c65dcaa"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/raw/card_00_user_input_1.f16.raw",
+            "sha256": "bfd2f679f763abf1a99a02c341b28cc1f5ad010f0876d6478e1088864c32093e"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/raw/card_00_user_input_2.f16.raw",
+            "sha256": "6565f4a4b0a445e383e458acab4ae2c99b5d9b7bdf621c26ed60882e5e078a8a"
+          },
+          {
+            "path": "build/test/pytorch-product/wafer-runtime-pytorch-attention-sliding-window-fp16-optimization-search-no-card/raw/card_00_user_input_3.bool.raw",
+            "sha256": "2e2c43b41a195e2cc9b2b8c23a83a04caa47377b70f3bc8d9553fad7b74c25fe"
+          }
+        ]
+      }
+    ],
+    "corpus_reexport": [
+      {
+        "spec": "single-card-vertical.json",
+        "case": "linear-residual-mlp-f32",
+        "old": "sha256:2b4a63277d8e699caa98759df367a907e5b440dfda65317530cda0050d4f1f51",
+        "new": "sha256:20bfc70790ac4f2ca0d697753caa82d49428ffeceb7e4c283cdc549db4cbb308",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      },
+      {
+        "spec": "single-card-vertical.json",
+        "case": "simple-gemm-f16",
+        "old": "sha256:d838c660a65291b31efc5de1d3235d6c58f156f895a6bc0f6cfd37856a8fece1",
+        "new": "sha256:7a9be54c7759618cb62c2f1ae77f1fcdb10dab58e11141073fbff8b9a3235607",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      },
+      {
+        "spec": "single-card-vertical.json",
+        "case": "simple-gemm-bf16",
+        "old": "sha256:2c75bc511fa45cdfcace0426e9ed895f8e7d84ab9004e56dde8cab1d87ba5c24",
+        "new": "sha256:6a78e0f81e8ff26cf4ac1a7e740f329a432f6f7e51300157e60ea91fd1649a67",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      },
+      {
+        "spec": "single-card-vertical.json",
+        "case": "large-gemm-f32",
+        "old": "sha256:5ec9567a0a7853bca196bcd15158d1c48feadfef24f98cc94634e96c1ac92585",
+        "new": "sha256:0423f826e424b5dfcc110b811e7e18e5600fedf0087722e1a62a6477a075c336",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      },
+      {
+        "spec": "single-card-vertical.json",
+        "case": "large-gemm-f16",
+        "old": "sha256:f8719785d03957fea0e6f45acaada4d5482f48f6c7ed6055620c8c45f387d1a4",
+        "new": "sha256:69a2f810dd496ff7450561b069aaefc31a8e57302e89a3de0518f156d9de73ac",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      },
+      {
+        "spec": "single-card-vertical.json",
+        "case": "tiny-llama-decoder-f32",
+        "old": "sha256:0c950457043205134f933410ab1ba7bac543b71b72c0462cd8b9643db3032b74",
+        "new": "sha256:0c950457043205134f933410ab1ba7bac543b71b72c0462cd8b9643db3032b74",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      },
+      {
+        "spec": "llama-2-7b-block.json",
+        "case": "llama-2-7b-block-f16",
+        "old": "sha256:2293336da67c602c3d2f5a986746045ae7c6ad4d5db723f9c127bb9b7886b4f9",
+        "new": "sha256:2293336da67c602c3d2f5a986746045ae7c6ad4d5db723f9c127bb9b7886b4f9",
+        "reference_and_input_golden_unchanged": true,
+        "repeat_equal": true
+      }
+    ],
+    "corpus_xla_numeric": {
+      "executed": 7,
+      "passed": 7,
+      "original_reference_input_parameter_and_tolerances_preserved": true,
+      "full_outputs_compared": true
+    },
+    "logs": [
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-product-tests.log",
+        "sha256": "043b564d4cb8085449e61619c6ae1a1fa4ef67a4cf9c689869fca01a74ffb53c"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-all-components.log",
+        "sha256": "f8c74ad42299f325a81dca385b9023250e280905cbbe01e5445212fb7281643f"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-components.log",
+        "sha256": "6f6ba866594f4492a1f40ce694505dc9b609c1724658c52de1c3d79874120084"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-corpus-identity.log",
+        "sha256": "07996277afdf02ef21577e4461b4d60e753adef4006cdad3fd3f1664a0c5945f"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-corpus-numeric.log",
+        "sha256": "04b5221ee1e9be9394253eeae798f3937afa9140506263672a36668ad0f59411"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-fixture-recheck.log",
+        "sha256": "4b9031e95d38b47cbdabebc88c3e75cfa86f1c4a9ac73da85f1700d151c55c3c"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-packed-proof-unit.log",
+        "sha256": "4825a8e73661d6a3f8a5a99950c859164b9d87319c921d1704c2be4a167a198a"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-configure.log",
+        "sha256": "db8e62547db0eb896ab00a6e52aedd504dcc68b1dcb5b31d39e0f2edcd715bb2"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-build.log",
+        "sha256": "6436c04861815a0f11323fc3c25da8bbe73b368b0f4e6d618be8345bf67beb74"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-build-noop.log",
+        "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-build-after-configure.log",
+        "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-board-runner-build.log",
+        "sha256": "1a3e4707a37d70518cc6cb6b94c165574d07265cdbf9066322073dd17c1859d0"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-rounding-current.log",
+        "sha256": "1dc541450bfb9214296871d4dcb088e2ca07f3b003175247e6d4a801ee4b705a"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-vit-recheck.log",
+        "sha256": "06e941675d8180ede8fe77cdfea5e3217ce6ee912b14558a11e7e16413c45e74"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/ctest-final-product-details.log",
+        "sha256": "79681a796cfc4d50a6db1cf670c83fd67ecea70be51edf397b59da6d222bc842"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-noop-verification.log",
+        "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/wafer-attention-final-lit-after-patch-format.log",
+        "sha256": "89ca1fc80c7c2e02d9041f7523130c211c80c1c085afaf1010992ae028ebb9d1"
+      },
+      {
+        "path": "build/test/attention-improvement/host-validation/ctest-final-lit-details.log",
+        "sha256": "b44a04237396effc3249f604b9e695e8d4902cc36cac29d3a9169f135e9abf1a"
+      }
+    ],
+    "remaining": [
+      "ViT1025设备故障处理与根因定位",
+      "attention设备性能目标",
+      "同版本完整实卡与guard",
+      "至少三次健康匹配计时及全部保护项"
+    ],
+    "exporter_patch": {
+      "file": "utils/deps/patches/pytorch-xla-composite-region-captures.patch",
+      "sha256": "c947f608eff288be9d011981a6eae8e3089b3ea3860637e5e039338010e605bb",
+      "modified_files": {
+        "torch_xla/csrc/runtime/stablehlo_composite_helper.cc": "ebf1b83eae1fde97d95ee8261246929c53658a1dfc1b5d9294c273f227f5cccc"
+      }
+    },
+    "exporter_patch_forward_reverse_check": "通过；去除patch空行context前后的实际patched source逐byte相同。"
+  }
+}

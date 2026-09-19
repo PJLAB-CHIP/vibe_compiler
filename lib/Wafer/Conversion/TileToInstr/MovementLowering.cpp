@@ -209,10 +209,22 @@ getPackedCopyDescriptors(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   return MovementDescriptorPair{*read, *write};
 }
 
+static bool requiresPackedReadMaterialization(mlir::Value source) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  return type && type.getElementType().isInteger(1) &&
+         (mlir::failed(
+              memory_planning::detail::proveByteAlignedPackedView(source)) ||
+          mlir::failed(
+              analysis::TransferRealizability::provePackedByteRows(type)));
+}
+
 class TileLoadLowering : public mlir::OpRewritePattern<StorageLoadOp> {
 public:
-  TileLoadLowering(mlir::MLIRContext *context)
-      : mlir::OpRewritePattern<StorageLoadOp>(context) {}
+  TileLoadLowering(mlir::MLIRContext *context,
+                   TileRegionToInstrBufferRecorder *bufferRecorder,
+                   MovementDescriptorCache *descriptorCache)
+      : mlir::OpRewritePattern<StorageLoadOp>(context),
+        bufferRecorder(bufferRecorder), descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
   matchAndRewrite(StorageLoadOp op,
@@ -232,6 +244,14 @@ public:
         return mlir::failure();
       createRDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
                  *descriptor);
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+    if (requiresPackedReadMaterialization(op.getSource())) {
+      if (mlir::failed(materializePackedRead(op, op.getSource(), op.getDest(),
+                                             rewriter, bufferRecorder,
+                                             descriptorCache)))
+        return mlir::failure();
       rewriter.eraseOp(op);
       return mlir::success();
     }
@@ -262,6 +282,10 @@ public:
     rewriter.eraseOp(op);
     return mlir::success();
   }
+
+private:
+  TileRegionToInstrBufferRecorder *bufferRecorder;
+  MovementDescriptorCache *descriptorCache;
 };
 
 class TileStoreLowering : public mlir::OpRewritePattern<StorageStoreOp> {
@@ -597,6 +621,18 @@ public:
     if (!relation.isExact())
       return failPattern(rewriter, op,
                          "memref.copy identity relation is not exact");
+
+    if (sourceMemory.getSpace() == MemorySpace::DDR &&
+        destMemory.getSpace() == MemorySpace::SPM &&
+        !canCopyPackedBytes(op.getSource(), op.getTarget()) &&
+        requiresPackedReadMaterialization(op.getSource())) {
+      if (mlir::failed(materializePackedRead(op, op.getSource(), op.getTarget(),
+                                             rewriter, bufferRecorder,
+                                             descriptorCache)))
+        return mlir::failure();
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
 
     auto source = resolveMovementEndpoint(op.getSource());
     auto destination = resolveMovementEndpoint(op.getTarget());
@@ -1349,7 +1385,8 @@ void wafer::tile_region_to_instr::populateMovementLoweringPatterns(
     TileRegionToInstrBufferRecorder *bufferRecorder,
     MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<TileLoadLowering, InstrTDMADataMoveLowering>(context);
+  patterns.add<InstrTDMADataMoveLowering>(context);
+  patterns.add<TileLoadLowering>(context, bufferRecorder, descriptorCache);
   patterns.add<TileStoreLowering>(context, descriptorCache);
   patterns.add<TileCopyIntoLowering>(context, bufferRecorder, descriptorCache);
   patterns.add<MemRefCopyLowering>(context, bufferRecorder, descriptorCache);

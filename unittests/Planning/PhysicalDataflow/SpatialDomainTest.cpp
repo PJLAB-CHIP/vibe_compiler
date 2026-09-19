@@ -775,9 +775,9 @@ module {
             tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
         outs(%e0 : tensor<2x1025x64xf16>)
         algorithm(<flash_attention>) indexing_maps = [#q, #k, #v, #s, #o] score {
-    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
-      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
-      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+    ^bb0(%attention_0_dot: f32, %attention_0_scale: f32):
+
+      %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f32
       wafer.linalg_ext.attention.yield %attention_0_scaled : f32
     }
         -> tensor<2x1025x64xf16>
@@ -787,9 +787,9 @@ module {
             tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
         outs(%e1 : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>) indexing_maps = [#q, #k, #v, #s, #o] score {
-    ^bb0(%attention_1_dot: f16, %attention_1_scale: f32):
-      %attention_1_converted = arith.extf %attention_1_dot : f16 to f32
-      %attention_1_scaled = arith.mulf %attention_1_converted, %attention_1_scale : f32
+    ^bb0(%attention_1_dot: f32, %attention_1_scale: f32):
+
+      %attention_1_scaled = arith.mulf %attention_1_dot, %attention_1_scale : f32
       wafer.linalg_ext.attention.yield %attention_1_scaled : f32
     }
         -> tensor<2x1025x64xf16>
@@ -898,9 +898,9 @@ module {
         outs(%empty : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>)
         indexing_maps = [#q, #k, #v, #s, #mask, #o] score {
-    ^bb0(%attention_2_dot: f16, %attention_2_scale: f32, %attention_2_mask: f16):
-      %attention_2_converted = arith.extf %attention_2_dot : f16 to f32
-      %attention_2_scaled = arith.mulf %attention_2_converted, %attention_2_scale : f32
+    ^bb0(%attention_2_dot: f32, %attention_2_scale: f32, %attention_2_mask: f16):
+
+      %attention_2_scaled = arith.mulf %attention_2_dot, %attention_2_scale : f32
       %attention_2_converted_mask = arith.extf %attention_2_mask : f16 to f32
       %attention_2_masked = arith.addf %attention_2_scaled, %attention_2_converted_mask : f32
       wafer.linalg_ext.attention.yield %attention_2_masked : f32

@@ -48,6 +48,8 @@ struct Options {
   std::vector<wafer::runtime::cli::PortFile> outputFiles;
   bool supportsHostWatchdog = false;
   bool deviceTiming = false;
+  wafer::runtime::RuntimeMemoryGuardPolicy memoryGuardPolicy =
+      wafer::runtime::RuntimeMemoryGuardPolicy::Disabled;
   uint32_t profileTraceEventLimit = 0;
   bool noCard = false;
   bool board = false;
@@ -56,11 +58,12 @@ struct Options {
 void printUsage(llvm::raw_ostream &output) {
   output << "usage:\n"
             "  wafer-run --package-dir <path> --no-card "
-            "[--profile-trace-event-limit <events>] "
+            "[--profile-trace-event-limit <events>] [--memory-guards] "
             "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
             "--supports-host-watchdog]\n"
             "  wafer-run --package-dir <path> --board "
-            "[--device-id <id>] --expected-runtime-version <decimal> "
+            "[--device-id <id>] [--memory-guards] --expected-runtime-version "
+            "<decimal> "
             "--expected-device-name <name> --expected-pci-bus-id <bdf> "
             "--expected-tile-count <count> "
             "--expected-runtime-library-sha256 <hex> "
@@ -238,6 +241,11 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       options.deviceTiming = true;
       continue;
     }
+    if (argument == "--memory-guards") {
+      options.memoryGuardPolicy =
+          wafer::runtime::RuntimeMemoryGuardPolicy::Check;
+      continue;
+    }
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "unknown option: " + argument);
   }
@@ -343,7 +351,8 @@ int runNoCard(
   environment.supportsHostWatchdog = options.supportsHostWatchdog;
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> invocationPlan =
       wafer::runtime::planRuntimeInvocation(package.getVerifiedManifest(),
-                                            bindings, environment);
+                                            bindings, environment,
+                                            options.memoryGuardPolicy);
   if (!invocationPlan)
     return fail(invocationPlan.takeError());
 
@@ -362,6 +371,15 @@ int runNoCard(
   for (const wafer::runtime::RuntimeSessionPlan &tile : invocationPlan->tiles)
     printNoCardTilePlan(tile);
   llvm::outs() << "invocation_tiles: " << invocationPlan->tileCount << "\n";
+  if (options.memoryGuardPolicy ==
+      wafer::runtime::RuntimeMemoryGuardPolicy::Check) {
+    uint64_t bytes = 0;
+    for (const auto &range : invocationPlan->programDataGuards)
+      bytes += range.bytes;
+    for (const auto &range : invocationPlan->invocationGuards)
+      bytes += range.bytes;
+    llvm::outs() << "memory_guards: planned_bytes=" << bytes << "\n";
+  }
   if (profileInstrumentation)
     llvm::outs() << "profile_instrumentation: ready cards="
                  << profileInstrumentation->getCardCount()
@@ -388,6 +406,7 @@ int runBoard(const Options &options,
   wafer::runtime::BoardRuntimeInvocationRequest request;
   request.deviceId = options.deviceId;
   request.completionTimeoutMilliseconds = options.completionTimeoutMilliseconds;
+  request.memoryGuardPolicy = options.memoryGuardPolicy;
   if (options.deviceTiming)
     request.deviceTimingPolicy =
         wafer::runtime::BoardDeviceTimingPolicy::StreamEvents;
@@ -511,6 +530,9 @@ int runBoard(const Options &options,
                         tile.completion)
                  << " tile_id=" << tile.tileId.getValue() << "\n";
   llvm::outs() << "invocation_tiles: " << result->tiles.size() << "\n";
+  if (result->checkedMemoryGuardBytes)
+    llvm::outs() << "memory_guards: checked_bytes="
+                 << *result->checkedMemoryGuardBytes << "\n";
   if (options.deviceTiming && result->deviceExecutionNanoseconds)
     llvm::outs() << "board_timing: kind=tx-stream-events device_elapsed_ns="
                  << *result->deviceExecutionNanoseconds << "\n";

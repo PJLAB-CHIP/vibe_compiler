@@ -87,7 +87,11 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
          getTargetElementwiseOperations())
       addVoid(("elementwise_" + stringifyTargetElementwiseOperation(operation))
                   .str(),
-              signature(getTargetElementwiseArity(operation) == 1 ? 2 : 3, 2),
+              signature(getTargetElementwiseArity(operation) == 1 ? 2 : 3,
+                        getTargetElementwiseArity(operation) == 2 &&
+                                !isTargetElementwiseLogic(operation)
+                            ? 3
+                            : 2),
               operation);
 
     for (TargetReduceOperation operation : getTargetReduceOperations())

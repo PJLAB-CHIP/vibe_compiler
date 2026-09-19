@@ -306,9 +306,10 @@ module {
         algorithm(#wafer.attention_algorithm<flash_attention>)
         indexing_maps = [#attention_q, #attention_k, #attention_v,
                          #attention_s, #attention_o] score {
-    ^bb0(%attention_0_dot: f16, %attention_0_scale: f16):
-      %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f16
-      wafer.linalg_ext.attention.yield %attention_0_scaled : f16
+    ^bb0(%attention_0_dot: f32, %attention_0_scale: f16):
+    %attention_0_scale_wide = arith.extf %attention_0_scale : f16 to f32
+      %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale_wide : f32
+      wafer.linalg_ext.attention.yield %attention_0_scaled : f32
     }
         -> tensor<2x1025x128xf16>
     %transpose_init = tensor.empty() : tensor<2x128x1025xf16>

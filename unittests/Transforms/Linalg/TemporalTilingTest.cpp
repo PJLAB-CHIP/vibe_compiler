@@ -2361,7 +2361,7 @@ TEST(TemporalTilingTest, OnlineK2CarriesThreeStatesThroughMainAndTail) {
            << "x128xf16>\n"
               "        %scale = arith.constant 1.0 : f32\n"
               "        %accumulator = tensor.empty() : "
-              "tensor<2x4x1025x128xf16>\n"
+              "tensor<2x4x1025x128xf32>\n"
               "        %maximum = tensor.empty() : tensor<2x4x1025xf32>\n"
               "        %sum = tensor.empty() : tensor<2x4x1025xf32>\n"
               "        %value, %next_maximum, %next_sum =\n"
@@ -2372,7 +2372,7 @@ TEST(TemporalTilingTest, OnlineK2CarriesThreeStatesThroughMainAndTail) {
            << keyValueExtent << "x64xf16>, tensor<2x4x" << keyValueExtent
            << "x128xf16>, f32)\n"
               "            outs(%accumulator, %maximum, %sum : "
-              "tensor<2x4x1025x128xf16>,\n"
+              "tensor<2x4x1025x128xf32>,\n"
               "                tensor<2x4x1025xf32>, "
               "tensor<2x4x1025xf32>)\n"
               "            indexing_maps = [\n"
@@ -2389,16 +2389,16 @@ TEST(TemporalTilingTest, OnlineK2CarriesThreeStatesThroughMainAndTail) {
               "(b, h, m)>,\n"
               "              affine_map<(b, h, m, k1, k2, n) -> "
               "(b, h, m)>]\n"
-              "            score { ^bb0(%dot: f16, %scale_arg: f32):\n"
-              "              %wide = arith.extf %dot : f16 to f32\n"
-              "              %scaled = arith.mulf %wide, %scale_arg : f32\n"
+              "            score { ^bb0(%dot: f32, %scale_arg: f32):\n"
+              "              "
+              "              %scaled = arith.mulf %dot, %scale_arg : f32\n"
               "              wafer.linalg_ext.attention.yield %scaled : f32\n"
               "            }\n"
-              "            -> (tensor<2x4x1025x128xf16>, "
+              "            -> (tensor<2x4x1025x128xf32>, "
               "tensor<2x4x1025xf32>,\n"
               "                tensor<2x4x1025xf32>)";
     auto module = parseModule(*context, stream.str(), "tensor<2x4x1025x64xf16>",
-                              "tensor<2x4x1025x128xf16>");
+                              "tensor<2x4x1025x128xf32>");
     ASSERT_TRUE(module);
     TileRegionOp region = findRegion(*module);
     TemporalDomainResult domain = buildTemporalDomain(region);
@@ -2656,9 +2656,9 @@ createOnlineFinalizerModule(mlir::MLIRContext &context, int64_t extent,
         affine_map<(b, h, m, k1, k2, n) -> (b, h, k2, n)>,
         affine_map<(b, h, m, k1, k2, n) -> ()>,
         affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>] score {
-    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
-      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
-      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+    ^bb0(%attention_0_dot: f32, %attention_0_scale: f32):
+
+      %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f32
       wafer.linalg_ext.attention.yield %attention_0_scaled : f32
     }
       -> tensor<1x2x4096x128xf16>)mlir";
@@ -2686,7 +2686,8 @@ createOnlineFinalizerModule(mlir::MLIRContext &context, int64_t extent,
     sizes.push_back(builder.getIndexAttr(size));
   auto state = materializeOnlineAttentionTile(
       attention, attention.getQuery(), attention.getKey(), attention.getValue(),
-      attention.getScale(), {}, offsets, sizes, builder);
+      attention.getScale(), {}, attention.getPositions(), offsets, sizes,
+      builder);
   if (mlir::failed(state))
     return {};
   auto output = materializeOnlineAttentionFinalize(attention, *state, builder);

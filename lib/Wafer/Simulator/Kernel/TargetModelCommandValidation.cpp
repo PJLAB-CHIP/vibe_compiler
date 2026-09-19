@@ -167,6 +167,13 @@ llvm::Error validateElementwise(const target::TargetElementwiseCommand &value) {
                        "elementwise rhs presence differs from operation arity");
   const bool logic = isTargetElementwiseLogic(value.operation);
   const bool relation = isTargetElementwiseRelation(value.operation);
+  if (value.rhsUnitElements &&
+      (!binary || logic || value.rhsUnitElements > 64 ||
+       (value.format != LogicalFormat::F16 &&
+        value.format != LogicalFormat::BF16 &&
+        value.format != LogicalFormat::F32)))
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                       "elementwise RHS unit requires 1..64 floating elements");
   if (logic != (value.format == LogicalFormat::Bool) ||
       (relation && value.format == LogicalFormat::Bool))
     return kernelError(

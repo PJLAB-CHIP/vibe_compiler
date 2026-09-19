@@ -1081,24 +1081,32 @@ void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
     TsmDeleteArith(arith);                                                     \
   }
 
-#define WAFER_DEFINE_ARITH_BINARY(SYMBOL, METHOD)                              \
+#define WAFER_DEFINE_ARITH_BINARY(SYMBOL, METHOD, UNIT_METHOD)                 \
   void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
-              uint32_t format, uint32_t worker) {                              \
+              uint32_t format, uint32_t rhs_unit_elements, uint32_t worker) {  \
     TsmArithInstr instr = {0};                                                 \
     TsmArith *arith = TsmNewArith();                                           \
-    arith->METHOD(&instr, lhs, rhs, dst, elem_count, RND_NEAREST_EVEN,         \
-                  wafer_format(format));                                       \
+    if (rhs_unit_elements)                                                     \
+      arith->UNIT_METHOD(&instr, lhs, rhs, dst, elem_count, rhs_unit_elements, \
+                         RND_NEAREST_EVEN, wafer_format(format));              \
+    else                                                                       \
+      arith->METHOD(&instr, lhs, rhs, dst, elem_count, RND_NEAREST_EVEN,       \
+                    wafer_format(format));                                     \
     wafer_execute_ct(&instr, worker);                                          \
     TsmDeleteArith(arith);                                                     \
   }
 
-#define WAFER_DEFINE_RELATION(SYMBOL, BOOL_METHOD)                             \
+#define WAFER_DEFINE_RELATION(SYMBOL, BOOL_METHOD, UNIT_METHOD)                \
   void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
-              uint32_t format, uint32_t worker) {                              \
+              uint32_t format, uint32_t rhs_unit_elements, uint32_t worker) {  \
     TsmRelationInstr instr = {0};                                              \
     TsmRelation *relation = TsmNewRelation();                                  \
-    relation->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count,                   \
-                          wafer_format(format));                               \
+    if (rhs_unit_elements)                                                     \
+      relation->UNIT_METHOD(&instr, lhs, rhs, dst, elem_count,                 \
+                            rhs_unit_elements, wafer_format(format));          \
+    else                                                                       \
+      relation->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count,                 \
+                            wafer_format(format));                             \
     wafer_execute_ct(&instr, worker);                                          \
     TsmDeleteRelation(relation);                                               \
   }
@@ -1155,17 +1163,20 @@ WAFER_DEFINE_ARITH_UNARY(wafer_tx81_elementwise_square, SquareVV)
 WAFER_DEFINE_ARITH_UNARY(wafer_tx81_elementwise_sqrt, SqrtVV)
 WAFER_DEFINE_ARITH_UNARY(wafer_tx81_elementwise_rsqrt, RsqrtVV)
 WAFER_DEFINE_ARITH_UNARY(wafer_tx81_elementwise_neg, NegVV)
-WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_max, MaxVV)
-WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_min, MinVV)
-WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_add, AddVV)
-WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_sub, SubVV)
-WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_mul, MulVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_eq, BoolEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ne, BoolUnEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ge, BoolGreaterEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_gt, BoolGreaterVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_le, BoolLessEqualVV)
-WAFER_DEFINE_RELATION(wafer_tx81_elementwise_lt, BoolLessThenVV)
+WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_max, MaxVV, MaxVuV)
+WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_min, MinVV, MinVuV)
+WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_add, AddVV, AddVuV)
+WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_sub, SubVV, SubVuV)
+WAFER_DEFINE_ARITH_BINARY(wafer_tx81_elementwise_mul, MulVV, MulVuV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_eq, BoolEqualVV, BoolEqualVuV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ne, BoolUnEqualVV, BoolUnEqualVuV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_ge, BoolGreaterEqualVV,
+                      BoolGreaterEqualVuV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_gt, BoolGreaterVV, BoolGreaterVuV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_le, BoolLessEqualVV,
+                      BoolLessEqualVuV)
+WAFER_DEFINE_RELATION(wafer_tx81_elementwise_lt, BoolLessThenVV,
+                      BoolLessThenVuV)
 WAFER_DEFINE_LOGIC_UNARY(wafer_tx81_elementwise_logic_not, NotV, BoolNotV)
 WAFER_DEFINE_LOGIC_BINARY(wafer_tx81_elementwise_logic_and, AndVV, BoolAndV)
 WAFER_DEFINE_LOGIC_BINARY(wafer_tx81_elementwise_logic_or, OrVV, BoolOrV)

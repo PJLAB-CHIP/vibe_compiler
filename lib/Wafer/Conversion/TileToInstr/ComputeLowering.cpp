@@ -14,6 +14,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 
 using namespace wafer;
 using namespace wafer::tile_region_to_instr;
@@ -397,8 +398,9 @@ getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
 static mlir::LogicalResult
 emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
                       mlir::Value dest, mlir::PatternRewriter &rewriter,
-                      TileRegionToInstrBufferRecorder *recorder) {
-  auto type = mlir::cast<mlir::MemRefType>(dest.getType());
+                      TileRegionToInstrBufferRecorder *recorder,
+                      int64_t rhsUnitElements = 0) {
+  auto type = mlir::cast<mlir::MemRefType>(inputs[1].getType());
   auto scratchType = mlir::MemRefType::get(
       type.getShape(), type.getElementType(), mlir::MemRefLayoutAttrInterface{},
       type.getMemorySpace());
@@ -418,6 +420,8 @@ emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
                                     InstrElementwiseKind::Mul),
       mlir::ValueRange{inputs[0], *reciprocal}, dest,
       getDefaultNCCWorkerAttr(rewriter));
+  if (rhsUnitElements)
+    multiply.setRhsUnitElements(rhsUnitElements);
   if (recorder) {
     recorder->recordLoweredOperation(owner, recip);
     recorder->recordLoweredOperation(owner, multiply);
@@ -425,7 +429,8 @@ emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
   return mlir::success();
 }
 
-class ElementwiseLowering : public mlir::OpRewritePattern<ComputeElementwiseOp>,
+template <typename OpTy>
+class ElementwiseLowering : public mlir::OpRewritePattern<OpTy>,
                             private ScratchRecorderHolder {
 public:
   struct MappedInputRewrite {
@@ -439,36 +444,38 @@ public:
   ElementwiseLowering(mlir::MLIRContext *context,
                       TileRegionToInstrBufferRecorder *bufferRecorder,
                       MovementDescriptorCache *descriptorCache)
-      : mlir::OpRewritePattern<ComputeElementwiseOp>(context),
+      : mlir::OpRewritePattern<OpTy>(context),
         ScratchRecorderHolder(bufferRecorder),
         descriptorCache(descriptorCache) {}
 
   mlir::LogicalResult
-  matchAndRewrite(ComputeElementwiseOp op,
-                  mlir::PatternRewriter &rewriter) const final {
+  matchAndRewrite(OpTy op, mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
+    mlir::Value output;
+    if constexpr (std::is_same_v<OpTy, ComputeElementwiseOp>)
+      output = op.getResult();
+    else
+      output = op.getDest();
     if (op.getKind() == ComputeElementwiseKind::Select) {
       if (op.getInputs().size() != 3)
         return failPattern(
             rewriter, op,
             "target select lowering requires predicate, true and false "
             "operands");
-      auto destType =
-          mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+      auto destType = mlir::dyn_cast<mlir::MemRefType>(output.getType());
       if (!destType || !mlir::isa<mlir::FloatType>(destType.getElementType()))
         return failPattern(
             rewriter, op,
             "target select lowering currently requires floating-point values");
     }
 
-    auto resultType =
-        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(output.getType());
     if (!resultType)
       return failPattern(rewriter, op,
                          "tile.elementwise lowering requires a memref result");
 
     if (std::optional<ConstantPredicateSelectPlan> constantSelect =
-            getConstantPredicateSelectPlan(op)) {
+            getConstantSelect(op)) {
       analysis::IndexRelationResult relation =
           analysis::IndexRelation::identity(resultType.getShape());
       if (!relation.isExact())
@@ -484,15 +491,15 @@ public:
       if (mlir::failed(descriptors))
         return mlir::failure();
 
-      mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-          op.getLoc(), resultType, rewriter, op, bufferRecorder);
+      mlir::FailureOr<mlir::Value> dest =
+          getDestination(op, resultType, rewriter);
       if (mlir::failed(dest))
         return mlir::failure();
       if (mlir::failed(emitGatherScatterDescriptorPlan(
               rewriter, op.getLoc(), op, constantSelect->selectedInput, *dest,
               **descriptors, bufferRecorder)))
         return mlir::failure();
-      rewriter.replaceOp(op, *dest);
+      retireSource(op, *dest, rewriter);
       // In rollback-enabled dialect conversion, a source fill and its legal
       // replacement can temporarily coexist. Erase the replacement and let
       // the conversion driver retire its already-scheduled source root. If the
@@ -513,6 +520,8 @@ public:
     llvm::SmallVector<MappedInputRewrite, 3> inputRewrites;
     inputRewrites.reserve(op.getInputs().size());
     mlir::ArrayAttr indexingMaps = op.getIndexingMapsAttr();
+    std::optional<unsigned> unitInput;
+    int64_t rhsUnitElements = 0;
     if (indexingMaps) {
       if (indexingMaps.size() != op.getInputs().size() + 1)
         return failPattern(
@@ -576,6 +585,44 @@ public:
             identity.isExact() &&
             descriptorCache->hasOrProveIdentityPhysicalTraversal(sourceType,
                                                                  resultType)) {
+          inputRewrites.push_back(std::move(inputRewrite));
+          continue;
+        }
+      }
+
+      bool commutative = op.getKind() == ComputeElementwiseKind::Add ||
+                         op.getKind() == ComputeElementwiseKind::Mul ||
+                         op.getKind() == ComputeElementwiseKind::Max ||
+                         op.getKind() == ComputeElementwiseKind::Min ||
+                         op.getKind() == ComputeElementwiseKind::Eq ||
+                         op.getKind() == ComputeElementwiseKind::Ne;
+      bool binaryFloat = commutative ||
+                         op.getKind() == ComputeElementwiseKind::Sub ||
+                         op.getKind() == ComputeElementwiseKind::Div ||
+                         op.getKind() == ComputeElementwiseKind::Lt ||
+                         op.getKind() == ComputeElementwiseKind::Le ||
+                         op.getKind() == ComputeElementwiseKind::Gt ||
+                         op.getKind() == ComputeElementwiseKind::Ge;
+      if (!unitInput && binaryFloat && op.getInputs().size() == 2 &&
+          (index == 1 || commutative)) {
+        auto relation = analysis::IndexRelation::fromAffineMap(
+            inputMap, resultType.getShape(), sourceType.getShape());
+        auto unit =
+            relation.isExact()
+                ? analysis::TransferRealizability::proveUnitVectorBroadcast(
+                      sourceType, resultType, *relation.get())
+                : mlir::FailureOr<int64_t>(mlir::failure());
+        // Division first computes a compact reciprocal of the same RHS.
+        auto reciprocalType = mlir::MemRefType::get(
+            sourceType.getShape(), sourceType.getElementType(),
+            mlir::MemRefLayoutAttrInterface{}, sourceType.getMemorySpace());
+        bool reciprocalCompatible =
+            op.getKind() != ComputeElementwiseKind::Div ||
+            descriptorCache->hasOrProveIdentityPhysicalTraversal(
+                sourceType, reciprocalType);
+        if (mlir::succeeded(unit) && reciprocalCompatible) {
+          unitInput = index;
+          rhsUnitElements = *unit;
           inputRewrites.push_back(std::move(inputRewrite));
           continue;
         }
@@ -694,6 +741,22 @@ public:
                           op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
+      if (inputRewrite.predicateType) {
+        // MaskMove visits the complete physical traversal, including blocked
+        // channel padding that the logical gather does not write. Establish
+        // canonical false values there before placing the converted predicate.
+        auto zero = rewriter.create<mlir::arith::ConstantOp>(
+            op.getLoc(),
+            rewriter.getFloatAttr(
+                inputRewrite.materializedType.getElementType(), 0));
+        auto fill = rewriter.create<InstrFillOp>(
+            op.getLoc(), *materialized, zero.getResult(),
+            FillDomainAttr::get(rewriter.getContext(),
+                                FillDomain::PhysicalFootprint),
+            getDefaultNCCWorkerAttr(rewriter));
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, fill);
+      }
       if (inputRewrite.dynamicSubview) {
         mlir::Value dynamicOffset = materializeDynamicSubviewByteOffset(
             *inputRewrite.dynamicSubview, rewriter, op.getLoc());
@@ -713,9 +776,12 @@ public:
       inputs.push_back(*materialized);
     }
     mlir::FailureOr<mlir::Value> dest =
-        createDestAlloc(op.getLoc(), resultType, rewriter, op, bufferRecorder);
+        getDestination(op, resultType, rewriter);
     if (mlir::failed(dest))
       return mlir::failure();
+
+    if (unitInput && *unitInput == 0)
+      std::swap(inputs[0], inputs[1]);
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
       if (mlir::failed(emitGatherScatterDescriptorPlan(
@@ -738,64 +804,52 @@ public:
           rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], mask, *dest);
       if (bufferRecorder)
         bufferRecorder->recordLoweredOperation(op, maskMove);
-      rewriter.replaceOp(op, *dest);
+      retireSource(op, *dest, rewriter);
       return mlir::success();
     }
 
     if (op.getKind() == ComputeElementwiseKind::Div) {
       if (mlir::failed(emitReciprocalProduct(op, inputs, *dest, rewriter,
-                                             bufferRecorder)))
+                                             bufferRecorder, rhsUnitElements)))
         return mlir::failure();
-      rewriter.replaceOp(op, *dest);
+      retireSource(op, *dest, rewriter);
       return mlir::success();
     }
     auto instr = rewriter.create<InstrElementwiseOp>(
         op.getLoc(), instrKind, inputs, *dest,
         getDefaultNCCWorkerAttr(rewriter));
+    if (rhsUnitElements)
+      instr.setRhsUnitElements(rhsUnitElements);
     if (bufferRecorder)
       bufferRecorder->recordLoweredOperation(op, instr);
-    rewriter.replaceOp(op, *dest);
+    retireSource(op, *dest, rewriter);
     return mlir::success();
   }
 
 private:
-  MovementDescriptorCache *descriptorCache = nullptr;
-};
+  static std::optional<ConstantPredicateSelectPlan> getConstantSelect(OpTy op) {
+    if constexpr (std::is_same_v<OpTy, ComputeElementwiseOp>)
+      return getConstantPredicateSelectPlan(op);
+    return std::nullopt;
+  }
 
-class ElementwiseIntoLowering
-    : public mlir::OpRewritePattern<ComputeElementwiseIntoOp> {
-public:
-  ElementwiseIntoLowering(mlir::MLIRContext *context,
-                          TileRegionToInstrBufferRecorder *bufferRecorder)
-      : mlir::OpRewritePattern<ComputeElementwiseIntoOp>(context),
-        bufferRecorder(bufferRecorder) {}
+  mlir::FailureOr<mlir::Value>
+  getDestination(OpTy op, mlir::MemRefType type,
+                 mlir::PatternRewriter &rewriter) const {
+    if constexpr (std::is_same_v<OpTy, ComputeElementwiseIntoOp>)
+      return op.getDest();
+    return createDestAlloc(op.getLoc(), type, rewriter, op, bufferRecorder);
+  }
 
-  mlir::LogicalResult
-  matchAndRewrite(ComputeElementwiseIntoOp op,
-                  mlir::PatternRewriter &rewriter) const final {
-    ScopedLoweringPatternTiming timing(op.getOperation());
-    if (op.getKind() == ComputeElementwiseKind::Div) {
-      if (mlir::failed(emitReciprocalProduct(op, op.getInputs(), op.getDest(),
-                                             rewriter, bufferRecorder)))
-        return mlir::failure();
+  static void retireSource(OpTy op, mlir::Value destination,
+                           mlir::PatternRewriter &rewriter) {
+    if constexpr (std::is_same_v<OpTy, ComputeElementwiseOp>)
+      rewriter.replaceOp(op, destination);
+    else
       rewriter.eraseOp(op);
-      return mlir::success();
-    }
-    mlir::FailureOr<InstrElementwiseKindAttr> instrKind =
-        getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
-    if (mlir::failed(instrKind))
-      return mlir::failure();
-    auto instr = rewriter.create<InstrElementwiseOp>(
-        op.getLoc(), *instrKind, op.getInputs(), op.getDest(),
-        getDefaultNCCWorkerAttr(rewriter));
-    if (bufferRecorder)
-      bufferRecorder->recordLoweredOperation(op, instr);
-    rewriter.eraseOp(op);
-    return mlir::success();
   }
 
-private:
-  TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
+  MovementDescriptorCache *descriptorCache = nullptr;
 };
 
 class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp>,
@@ -2349,10 +2403,11 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     TileRegionToInstrBufferRecorder *bufferRecorder,
     MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<ElementwiseIntoLowering>(context, bufferRecorder);
   patterns.add<GemmLowering>(context, bufferRecorder);
   patterns.add<PoolLowering>(context, bufferRecorder);
-  patterns.add<ConvLowering, ConvertLowering, ElementwiseLowering>(
+  patterns.add<ConvLowering, ConvertLowering,
+               ElementwiseLowering<ComputeElementwiseOp>,
+               ElementwiseLowering<ComputeElementwiseIntoOp>>(
       context, bufferRecorder, descriptorCache);
   patterns.add<ReduceLowering>(context, bufferRecorder, descriptorCache);
 }

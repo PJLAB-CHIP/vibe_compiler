@@ -4,32 +4,27 @@
 // RUN: FileCheck %s < %t.twice
 // RUN: sed 's/4096/4097/g' %s | wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' | FileCheck %s --check-prefix=TAIL
 
-// A real prefill source graph grows the relation store while reparameterizing
-// reshapes through mixed-width compute. Keep both contractions, reductions,
-// arithmetic and result shape; the old callback read freed relation storage.
-// CHECK: #{{.*}} = affine_map<(d0, d1, d2, d3) -> (0, 0, d2, d3)>
+// A real prefill source graph exercises mixed-width reshape relations. The
+// recognized contraction/reduction chain now has one attention owner; check
+// its maps and explicit source rounding through repeated graph normalization.
+// CHECK: #[[MASK_MAP:.*]] = affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d2, d4)>
 // CHECK-LABEL: func.func @main
-// CHECK: linalg.batch_matmul
-// CHECK: arith.extf
-// CHECK: arith.mulf
-// CHECK: arith.truncf
-// CHECK: arith.addf
-// CHECK: arith.extf
-// CHECK: arith.maximumf
-// CHECK: arith.subf
-// CHECK: math.exp
-// CHECK: arith.addf
-// CHECK: arith.divf
-// CHECK: arith.truncf
-// CHECK: linalg.batch_matmul
-// CHECK: tensor.expand_shape
-// CHECK: return {{.*}} : tensor<1x32x4096x128xf16>
+// CHECK: %[[MASK:.*]] = tensor.collapse_shape %arg1
+// CHECK: %[[ATTN:.*]] = wafer.linalg_ext.attention ins(%arg4, %arg3, %arg0, {{.*}}, %[[MASK]]
+// CHECK-SAME: indexing_maps = [{{.*}}#[[MASK_MAP]], {{.*}}] score {
+// CHECK: arith.extf {{.*}} : f16 to f32
+// CHECK: %[[MUL:.*]] = arith.mulf {{.*}} : f32
+// CHECK-NEXT: %[[NARROW:.*]] = arith.truncf %[[MUL]] : f32 to f16
+// CHECK-NEXT: %[[WIDE:.*]] = arith.extf %[[NARROW]] : f16 to f32
+// CHECK-NEXT: %[[ADD:.*]] = arith.addf %[[WIDE]], {{.*}} : f32
+// CHECK-NEXT: wafer.linalg_ext.attention.yield %[[ADD]] : f32
+// CHECK-NOT: linalg.batch_matmul
+// CHECK: return %[[ATTN]] : tensor<1x32x4096x128xf16>
 // TAIL-LABEL: func.func @main
-// TAIL: linalg.batch_matmul
-// TAIL: arith.maximumf
-// TAIL: math.exp
-// TAIL: arith.divf
-// TAIL: linalg.batch_matmul
+// TAIL: wafer.linalg_ext.attention
+// TAIL: arith.truncf {{.*}} : f32 to f16
+// TAIL-NEXT: arith.extf {{.*}} : f16 to f32
+// TAIL: wafer.linalg_ext.attention.yield
 // TAIL: return {{.*}} : tensor<1x32x4097x128xf16>
 
 module {

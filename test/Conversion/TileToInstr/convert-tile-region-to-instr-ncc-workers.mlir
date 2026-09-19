@@ -232,8 +232,9 @@ func.func @cross_worker_backedge(%zero: f32) {
 
 // CHECK-LABEL: func.func @cross_worker_backedge
 // CHECK: scf.for
-// CHECK: arith.cmpi ne
-// CHECK-NEXT: scf.if
+// CHECK: %[[FIRST:.+]] = arith.cmpi eq, %{{.*}}, %{{.*}} : index
+// CHECK-NEXT: %[[REENTRY:.+]] = arith.select %[[FIRST]], %{{.*}}, %{{.*}} : i1
+// CHECK-NEXT: scf.if %[[REENTRY]]
 // CHECK-NEXT: wafer.instr.ncc_join [1]
 // CHECK-NEXT: }
 // CHECK-NEXT: wafer.instr.fill

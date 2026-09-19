@@ -944,6 +944,33 @@ TEST_F(PackageManifestTest,
       }));
 }
 
+TEST_F(PackageManifestTest,
+       RuntimeGuardDemandParticipatesInCapacityBeforeEffects) {
+  auto verified = verify();
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  auto bindings = makeInputBindings(verified->getManifest());
+  auto environment = makeEnvironment(1024 * 1024);
+  auto normal = planRuntimeInvocation(*verified, bindings, environment);
+  ASSERT_TRUE(static_cast<bool>(normal)) << llvm::toString(normal.takeError());
+  EXPECT_TRUE(normal->invocationGuards.empty());
+  EXPECT_TRUE(normal->programDataGuards.empty());
+  auto guarded = planRuntimeInvocation(*verified, bindings, environment,
+                                       RuntimeMemoryGuardPolicy::Check);
+  ASSERT_TRUE(static_cast<bool>(guarded))
+      << llvm::toString(guarded.takeError());
+  EXPECT_GT(guarded->invocationBytes, normal->invocationBytes);
+  EXPECT_GT(guarded->programDataBytes, normal->programDataBytes);
+  EXPECT_EQ(guarded->targetTensorRanges.front().offset,
+            normal->targetTensorRanges.front().offset);
+  environment.maxResourceBytes = normal->invocationBytes;
+  auto rejected = planRuntimeInvocation(*verified, bindings, environment,
+                                        RuntimeMemoryGuardPolicy::Check);
+  ASSERT_FALSE(rejected);
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("invocation capacity"),
+            std::string::npos);
+}
+
 TEST_F(PackageManifestTest, RuntimeInvocationPlanningIsExactAndSideEffectFree) {
   llvm::Expected<VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))

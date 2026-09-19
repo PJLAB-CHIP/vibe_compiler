@@ -142,6 +142,13 @@ struct FormAttentionOpsPass final
 
   void runOnOperation() final {
     mlir::func::FuncOp function = getOperation();
+    // Composite formation precedes ordinary StableHLO legalization. Classify
+    // its now-structured cache SSA using the same proof as graph recognition.
+    function.walk([&](LinalgExtAttentionOp operation) {
+      if (operation.getAlgorithm() == AttentionAlgorithm::FlashAttention)
+        operation.setAlgorithm(
+            attention_normalization::classifyAttentionAlgorithm(operation));
+    });
     llvm::SmallVector<attention_normalization::AttentionMatch, 4> matches =
         attention_normalization::collectAttentionMatches(function);
     if (matches.empty())
@@ -162,7 +169,8 @@ struct FormAttentionOpsPass final
       auto attention = rewriter.create<LinalgExtAttentionOp>(
           match.root->getLoc(), mlir::TypeRange{match.outputType}, match.query,
           match.key, match.value, scale, match.mask, output, match.algorithm,
-          rewriter.getAffineMapArrayAttr(match.indexingMaps));
+          rewriter.getAffineMapArrayAttr(match.indexingMaps),
+          mlir::ValueRange{}, false, false, nullptr);
       if (mlir::failed(attention_normalization::materializeAttentionScoreRegion(
               rewriter, match, attention.getScoreRegion(), scale.getType())))
         return signalPassFailure();

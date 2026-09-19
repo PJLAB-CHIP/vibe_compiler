@@ -900,9 +900,9 @@ module {
         outs(%out : tensor<2x3x6xf16>)
         algorithm(<flash_attention>)
         indexing_maps = [#q, #k, #v, #s, #mask, #o] score {
-    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32, %attention_0_mask: f16):
-      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
-      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+    ^bb0(%attention_0_dot: f32, %attention_0_scale: f32, %attention_0_mask: f16):
+
+      %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f32
       %attention_0_converted_mask = arith.extf %attention_0_mask : f16 to f32
       %attention_0_masked = arith.addf %attention_0_scaled, %attention_0_converted_mask : f32
       wafer.linalg_ext.attention.yield %attention_0_masked : f32
@@ -959,7 +959,7 @@ module {
             wafer::CoupledReductionComponentKind::Accumulator);
   EXPECT_EQ(description.components[0].elementType, builder.getF32Type());
   EXPECT_EQ(description.components[1].elementType, builder.getF32Type());
-  EXPECT_EQ(description.components[2].elementType, builder.getF16Type());
+  EXPECT_EQ(description.components[2].elementType, builder.getF32Type());
   EXPECT_EQ(description.components[0].indexingMap,
             mlir::AffineMap::get(
                 5, 0,
@@ -1047,9 +1047,10 @@ module {
         outs(%out : memref<2x3x6xf16>)
         algorithm(<flash_attention>)
         indexing_maps = [#q, #k, #v, #s, #o] score {
-    ^bb0(%attention_1_dot: f16, %attention_1_scale: f16):
-      %attention_1_scaled = arith.mulf %attention_1_dot, %attention_1_scale : f16
-      wafer.linalg_ext.attention.yield %attention_1_scaled : f16
+    ^bb0(%attention_1_dot: f32, %attention_1_scale: f16):
+    %attention_1_scale_wide = arith.extf %attention_1_scale : f16 to f32
+      %attention_1_scaled = arith.mulf %attention_1_dot, %attention_1_scale_wide : f32
+      wafer.linalg_ext.attention.yield %attention_1_scaled : f32
     }
     return
   }

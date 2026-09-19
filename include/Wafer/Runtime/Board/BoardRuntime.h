@@ -244,6 +244,8 @@ struct BoardRuntimeInvocationRequest {
       BoardCompletionObservationPolicy::Normal;
   BoardDeviceTimingPolicy deviceTimingPolicy =
       BoardDeviceTimingPolicy::Disabled;
+  RuntimeMemoryGuardPolicy memoryGuardPolicy =
+      RuntimeMemoryGuardPolicy::Disabled;
   BoardDeviceQualification qualification;
   std::vector<BoardRuntimeBinding> bindings;
   /// Compiler-owned profiler records are the only internal workspace that a
@@ -295,6 +297,9 @@ struct BoardRuntimeInvocationResult {
   /// analysis uses this to reject latency samples whose terminal observation
   /// cadence is too coarse for the claimed comparison.
   uint64_t completionObservationResolutionNanoseconds = 0;
+  /// Present only after every requested guard byte was actually read back
+  /// and compared following trustworthy completion.
+  std::optional<uint64_t> checkedMemoryGuardBytes;
   std::vector<BoardRuntimeOutput> outputs;
   std::vector<BoardRuntimeProfilerOutput> profilerOutputs;
 };

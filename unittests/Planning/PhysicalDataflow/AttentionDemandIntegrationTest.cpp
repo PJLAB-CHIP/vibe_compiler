@@ -115,11 +115,11 @@ module {
            << "        indexing_maps = [#q, #k, #v, #s";
     if (withMask)
       stream << ", #mask";
-    stream << ", #o]\nscore { ^bb0(%dot: f16, %scale_arg: f32";
+    stream << ", #o]\nscore { ^bb0(%dot: f32, %scale_arg: f32";
     if (withMask)
       stream << ", %mask_arg: f16";
-    stream << "):\n%wide = arith.extf %dot : f16 to f32\n"
-              "%scaled = arith.mulf %wide, %scale_arg : f32\n";
+    stream << "):\n"
+              "%scaled = arith.mulf %dot, %scale_arg : f32\n";
     if (withMask)
       stream << "%mask_wide = arith.extf %mask_arg : f16 to f32\n"
                 "%masked = arith.addf %scaled, %mask_wide : f32\n"
@@ -154,9 +154,9 @@ module {
         outs(%out : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>)
         indexing_maps = [#q, #k, #v, #s, #mask, #o] score {
-    ^bb0(%attention_0_dot: f16, %attention_0_scale: f32, %attention_0_mask: f16):
-      %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
-      %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+    ^bb0(%attention_0_dot: f32, %attention_0_scale: f32, %attention_0_mask: f16):
+
+      %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f32
       %attention_0_converted_mask = arith.extf %attention_0_mask : f16 to f32
       %attention_0_masked = arith.addf %attention_0_scaled, %attention_0_converted_mask : f32
       wafer.linalg_ext.attention.yield %attention_0_masked : f32

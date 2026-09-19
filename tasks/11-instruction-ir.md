@@ -49,6 +49,14 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   relation、logic、activation 和 transcendental target kind；`select` 不存在于
   `#wafer.instr_elementwise_kind`。instruction lowering 会把 floating select 改写成 false-copy
   `wafer.instr.gather_scatter` + `wafer.instr.bit2fp` + `wafer.instr.mask_move`。
+  Predicate转换为blocked layout时，logical gather未覆盖的padding必须先由physical-domain零fill定义，
+  再写入logical predicate；MaskMove的整个physical traversal均须具有canonical 0/1 mask。
+  浮点binary arithmetic/relation可携带`rhs_unit_elements`：0表示VV，1..64表示右侧物理短向量VuV，
+  输入SPM地址保持SSA。Verifier要求左输入与destination完整shape/layout一致，右输入physicalElements与unit相等，
+  两输入dtype一致且为F16/BF16/F32；relation输出仍为i1。该属性不接受unary或logic。
+  对应CRT唯一binary arithmetic/relation签名在format后、worker前携带`i32 rhs_unit_elements`；
+  numeric model按unit周期计算并只读取右侧unit实际存储，不能将短输入按destination长度读取。
+  Tile映射到此硬件形式的证明由10号拥有；这里不保留上层indexing map，也不恢复attention或row语义。
   `wafer.instr.convert` 使用 opcode-aligned `#wafer.instr_convert_kind<...>`，覆盖硬件
   convert opcode 139..174 的 dtype pair；INT8->FP kind 携带 `zero_point`，需要 rounding 的 kind
   携带 `rounding_mode`，plain wrapper kind 不允许带这两类 attr。它不是通过 `src_dtype` /

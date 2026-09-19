@@ -414,10 +414,30 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
             {resource, std::move(*bytes), input->tensor.getBytes()});
       }
     }
-    if (!llvm::all_of(consumedInputs, [](bool consumed) { return consumed; }))
-      return invocationError(
-          TargetModelInvocationErrorCode::InvalidProgramInvocation,
-          "program invocation contains an input absent from the Kernel ABI");
+    for (auto [index, input] : llvm::enumerate(invocation.inputs)) {
+      if (consumedInputs[index])
+        continue;
+      // Source invocations retain every declared source resource. ABI
+      // preparation can omit a constant only after proving its entry argument
+      // dead. Validate that source identity and geometry here without creating
+      // a target allocation or applying a target format to the dead payload.
+      bool declaredConstant =
+          input.role == compiler::ProgramResourceRole::Constant &&
+          llvm::count_if(tile.getProgramBindings(), [&](const auto &binding) {
+            return binding.role == input.role && binding.index == input.index &&
+                   binding.dtype == input.tensor.getDType() &&
+                   llvm::ArrayRef<int64_t>(binding.localShape) ==
+                       input.tensor.getShape();
+          }) == 1;
+      bool unique =
+          llvm::count_if(invocation.inputs, [&](const auto &other) {
+            return other.role == input.role && other.index == input.index;
+          }) == 1;
+      if (!declaredConstant || !unique)
+        return invocationError(
+            TargetModelInvocationErrorCode::InvalidProgramInvocation,
+            "program invocation contains an input absent from the Kernel ABI");
+    }
     arguments.push_back(std::move(tileArguments));
   }
 

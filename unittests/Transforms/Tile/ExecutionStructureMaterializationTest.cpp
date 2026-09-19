@@ -209,15 +209,17 @@ TEST(ExecutionStructureMaterializationTest,
     PartialOverlap,
     UnknownAlias,
     Mapped,
+    MappedAlias,
     DifferentLayout,
     ExtraUse,
     InterveningRead
   };
   for (int64_t extent : {1024, 1025, 1031}) {
-    for (Case test : {Case::Disjoint, Case::InPlace, Case::Observer, Case::Loop,
-                      Case::Materialized, Case::AliasView, Case::PartialOverlap,
-                      Case::UnknownAlias, Case::Mapped, Case::DifferentLayout,
-                      Case::ExtraUse, Case::InterveningRead}) {
+    for (Case test :
+         {Case::Disjoint, Case::InPlace, Case::Observer, Case::Loop,
+          Case::Materialized, Case::AliasView, Case::PartialOverlap,
+          Case::UnknownAlias, Case::Mapped, Case::MappedAlias,
+          Case::DifferentLayout, Case::ExtraUse, Case::InterveningRead}) {
       SCOPED_TRACE(extent);
       SCOPED_TRACE(static_cast<int>(test));
       auto context = createContext();
@@ -278,7 +280,7 @@ TEST(ExecutionStructureMaterializationTest,
         observer = builder.create<mlir::memref::CastOp>(loc, type, dest);
       if (test == Case::AliasView)
         input = observer;
-      if (test == Case::InPlace)
+      if (test == Case::InPlace || test == Case::MappedAlias)
         input = dest;
       if (test == Case::Materialized) {
         auto cxType = mlir::MemRefType::get(
@@ -305,7 +307,7 @@ TEST(ExecutionStructureMaterializationTest,
       mlir::AffineMap identity =
           mlir::AffineMap::getMultiDimIdentityMap(3, context.get());
       mlir::AffineMap inputMap =
-          test == Case::Mapped
+          test == Case::Mapped || test == Case::MappedAlias
               ? mlir::AffineMap::getPermutationMap(
                     llvm::ArrayRef<unsigned>{2, 1, 0}, context.get())
               : identity;
@@ -345,7 +347,7 @@ TEST(ExecutionStructureMaterializationTest,
       });
       bool eliminate = test == Case::Disjoint || test == Case::InPlace ||
                        test == Case::Observer || test == Case::Loop ||
-                       test == Case::Materialized;
+                       test == Case::Materialized || test == Case::Mapped;
       EXPECT_EQ(updates, eliminate ? 1u : 0u);
       EXPECT_EQ(functional, eliminate && test != Case::Materialized ? 0u : 1u);
       EXPECT_EQ(copies, eliminate ? 0u : 1u);
@@ -385,11 +387,14 @@ TEST(ExecutionStructureMaterializationTest,
       region.walk([&](mlir::memref::AllocOp) { ++afterAllocations; });
       EXPECT_EQ(instructions, test == Case::Materialized ? 2u : 1u);
       EXPECT_EQ(transfers,
-                test == Case::Observer || test == Case::Materialized ? 1u : 0u);
+                test == Case::Mapped                                   ? 2u
+                : test == Case::Observer || test == Case::Materialized ? 1u
+                                                                       : 0u);
       EXPECT_EQ(afterAllocations,
-                beforeAllocations + (test == Case::Materialized ? 2u
-                                     : test == Case::Observer   ? 1u
-                                                                : 0u));
+                beforeAllocations +
+                    (test == Case::Materialized || test == Case::Mapped ? 2u
+                     : test == Case::Observer                           ? 1u
+                                                                        : 0u));
       ASSERT_TRUE(mlir::succeeded(
           rebuildRequiredNCCJoins(*materialized.materialized->module)));
       EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(

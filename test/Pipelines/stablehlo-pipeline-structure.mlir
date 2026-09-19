@@ -7,5 +7,5 @@ module {
   }
 }
 
-// CHECK: Pass Manager with 12 passes:
-// CHECK-NEXT: builtin.module(inline{{.*}},wafer-normalize-stablehlo-collectives,wafer-fold-default-stablehlo-execution-ids,wafer-fold-constant-integer-tensor-casts,wafer-lower-static-stablehlo-concatenate,func.func(wafer-promote-stablehlo-logistic),stablehlo-legalize-to-linalg{{.*}},wafer-fold-static-tensor-ops,canonicalize{{.*}},func.func(wafer-fold-convolution-input-casts),func.func(wafer-form-attention-ops),func.func(wafer-normalize-structured-tensor-graph{{.*}}))
+// CHECK: Pass Manager with 18 passes:
+// CHECK-NEXT: builtin.module(func.func(wafer-convert-stablehlo-attention-to-linalg),symbol-dce,inline{{.*}},wafer-normalize-stablehlo-collectives,wafer-fold-default-stablehlo-execution-ids,wafer-fold-constant-integer-tensor-casts,wafer-lower-static-stablehlo-concatenate,func.func(wafer-convert-stablehlo-gather-to-tensor),func.func(wafer-expand-stablehlo-batch-norm-inference),func.func(wafer-promote-stablehlo-logistic),stablehlo-legalize-to-linalg{{.*}},wafer-fold-static-tensor-ops,func.func(wafer-normalize-linalg-tensor-reads),canonicalize{{.*}},func.func(wafer-fold-convolution-input-casts),func.func(wafer-fuse-batch-norm-inference),func.func(wafer-form-attention-ops),func.func(wafer-normalize-structured-tensor-graph{{.*}}))

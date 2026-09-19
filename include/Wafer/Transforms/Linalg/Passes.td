@@ -147,6 +147,7 @@ def DecomposeOnlineAttentionOpsPass
   let summary =
       "Decompose current online attention into Linalg tensor operations";
   let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect",
                            "mlir::linalg::LinalgDialect",
                            "mlir::math::MathDialect",
                            "mlir::tensor::TensorDialect",

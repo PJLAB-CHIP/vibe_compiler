@@ -128,7 +128,8 @@ def Wafer_InstrElementwiseOp : Wafer_NCCInstrOp<"instr.elementwise", [
     Arg<Variadic<AnyMemRef>, "", [MemRead]>:$inputs,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     DefaultValuedAttr<Wafer_NCCWorkerAttr,
-                      "::wafer::NCCWorker::Worker0">:$worker
+                      "::wafer::NCCWorker::Worker0">:$worker,
+    DefaultValuedAttr<I64Attr, "0">:$rhs_unit_elements
   );
   let hasVerifier = 1;
   let assemblyFormat =

@@ -936,10 +936,13 @@ static mlir::LogicalResult
 verifyTargetCTPhysicalTraversal(mlir::Operation *op) {
   return llvm::TypeSwitch<mlir::Operation *, mlir::LogicalResult>(op)
       .Case<InstrElementwiseOp>([&](auto typedOp) {
-        for (mlir::Value input : typedOp.getInputs())
+        for (auto [index, input] : llvm::enumerate(typedOp.getInputs())) {
+          if (index == 1 && typedOp.getRhsUnitElements())
+            continue; // The verifier checks this typed physical unit.
           if (mlir::failed(verifyTargetPhysicalTraversal(
                   op, input, typedOp.getDest(), "elementwise")))
             return mlir::failure();
+        }
         auto destType =
             mlir::cast<mlir::MemRefType>(typedOp.getDest().getType());
         return mlir::succeeded(getPhysicalTraversalElementCount(

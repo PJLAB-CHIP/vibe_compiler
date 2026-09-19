@@ -316,6 +316,8 @@ func.func @unit_dimension_broadcast_is_metadata_only(%zero: f16) {
         {dimensions = array<i64>}
         : memref<f32, #wafer.memory<spm, tensor>>
        -> memref<1x1x1x1xf32, #wafer.memory<spm, tensor>>
+    %wide_fill = arith.extf %fill : f16 to f32
+    wafer.tile.fill %expanded, %wide_fill : memref<1x1x1x1xf32, #wafer.memory<spm, tensor>>, f32
     wafer.tile.yield %fill : f16
   }
   return
@@ -535,6 +537,7 @@ func.func @reshape_cx_tail_only_metadata_view(%zero: f16) {
     %reshaped = wafer.tile.reshape %source
         : memref<4x16xf16, #wafer.memory<spm, cx>>
        -> memref<8x8xf16, #wafer.memory<spm, cx>>
+    wafer.tile.fill %reshaped, %fill {fill_domain = #wafer.fill_domain<physical_footprint>} : memref<8x8xf16, #wafer.memory<spm, cx>>, f16
     wafer.tile.yield %fill : f16
   }
   return
@@ -557,6 +560,7 @@ func.func @reshape_large_cx_singleton_outer_metadata_view(%zero: f16) {
     %reshaped = wafer.tile.reshape %source
         : memref<4096x64xf16, #wafer.memory<spm, cx>>
        -> memref<1x4096x64xf16, #wafer.memory<spm, cx>>
+    wafer.tile.fill %reshaped, %fill {fill_domain = #wafer.fill_domain<physical_footprint>} : memref<1x4096x64xf16, #wafer.memory<spm, cx>>, f16
     wafer.tile.yield %fill : f16
   }
   return
@@ -579,6 +583,7 @@ func.func @reshape_ncx_singleton_hw_metadata_view(%zero: f16) {
     %reshaped = wafer.tile.reshape %source
         : memref<2x3x64xf16, #wafer.memory<spm, ncx>>
        -> memref<2x1x3x64xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.fill %reshaped, %fill {fill_domain = #wafer.fill_domain<physical_footprint>} : memref<2x1x3x64xf16, #wafer.memory<spm, ncx>>, f16
     wafer.tile.yield %fill : f16
   }
   return

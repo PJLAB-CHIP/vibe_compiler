@@ -1,6 +1,7 @@
 //===- TemporalTiling.cpp - Apply live-operation temporal choices -----===//
 
 #include "TemporalTiling.h"
+#include "AttentionVisibility.h"
 #include "Wafer/Transforms/Tile/TensorInitialization.h"
 
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
@@ -2088,12 +2089,13 @@ mlir::LogicalResult refineOnlineAttentionStaticTypes(mlir::IRRewriter &rewriter,
     }
     if (!changed)
       continue;
-    const unsigned initStart = operation.getMask() ? 5 : 4;
-    if (operands.size() != initStart + 3)
-      return mlir::failure();
-    llvm::SmallVector<mlir::Type, 3> resultTypes{
-        operands[initStart].getType(), operands[initStart + 1].getType(),
-        operands[initStart + 2].getType()};
+    llvm::SmallVector<mlir::Type, 3> resultTypes;
+    auto destination =
+        mlir::cast<mlir::DestinationStyleOpInterface>(operation.getOperation());
+    for (int64_t index = 0; index < destination.getNumDpsInits(); ++index)
+      resultTypes.push_back(
+          operands[destination.getDpsInitOperand(index)->getOperandNumber()]
+              .getType());
     rewriter.setInsertionPoint(operation);
     mlir::Operation *replacement =
         mlir::clone(rewriter, operation.getOperation(), resultTypes, operands);
@@ -3375,6 +3377,12 @@ applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
                                              relations, listener, failure);
     if (mlir::failed(applied))
       return mlir::failure();
+    mlir::IRRewriter rewriter(module.getContext(), &listener);
+    if (mlir::failed(materializeAttentionVisibility(
+            rewriter, request.domain.getRegion())))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::CompilerFailure,
+          "selected attention visibility could not be materialized");
     for (auto field : {&TemporalTilingStatistics::tiledTraversals,
                        &TemporalTilingStatistics::loops,
                        &TemporalTilingStatistics::specializedTails,

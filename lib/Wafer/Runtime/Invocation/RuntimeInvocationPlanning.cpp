@@ -71,7 +71,7 @@ PackageModuleExportRole exportRoleForPhase(RuntimeLaunchPhaseRole phase) {
 llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     const VerifiedPackageManifest &package,
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
-    const RuntimeEnvironment &environment) {
+    const RuntimeEnvironment &environment, RuntimeMemoryGuardPolicy guards) {
   const PackageManifest &manifest = package.getManifest();
   if (llvm::Error error = validateRuntimeEnvironment(manifest, environment))
     return std::move(error);
@@ -131,6 +131,18 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
   plan.programDataRequired = manifest.programData.totalBytes > 0;
   plan.programDataBytes = manifest.programData.totalBytes;
   plan.programDataAlignment = manifest.programData.baseAlignment;
+  constexpr uint64_t guardBytes = 256;
+  if (guards == RuntimeMemoryGuardPolicy::Check && plan.programDataRequired) {
+    uint64_t suffix;
+    if (!checkedAlign(guardBytes, plan.programDataAlignment,
+                      plan.programDataBaseOffset) ||
+        !checkedAdd(plan.programDataBaseOffset, plan.programDataBytes,
+                    suffix) ||
+        !checkedAdd(suffix, guardBytes, plan.programDataBytes))
+      return invalid("runtime program data guard range overflows");
+    plan.programDataGuards = {{0, plan.programDataBaseOffset},
+                              {suffix, guardBytes}};
+  }
   if (plan.programDataBytes > environment.maxResourceBytes)
     return invalid("runtime environment program data capacity is "
                    "insufficient");
@@ -150,9 +162,27 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     if (bytes == 0 || alignment == 0)
       return invalid("runtime child range has zero bytes or alignment");
     uint64_t offset = 0;
+    uint64_t guardStart = nextOffset;
+    if (guards == RuntimeMemoryGuardPolicy::Check &&
+        !checkedAdd(nextOffset, guardBytes, nextOffset))
+      return invalid("runtime invocation guard range overflows");
     if (!checkedAlign(nextOffset, alignment, offset) ||
         !checkedAdd(offset, bytes, nextOffset))
       return invalid("runtime invocation child range overflows");
+    if (guards == RuntimeMemoryGuardPolicy::Check) {
+      // Merge adjacent guards, never the payload between them. This also
+      // covers alignment padding and keeps provider transfers bounded.
+      if (!plan.invocationGuards.empty() &&
+          plan.invocationGuards.back().offset +
+                  plan.invocationGuards.back().bytes ==
+              guardStart)
+        plan.invocationGuards.back().bytes += offset - guardStart;
+      else
+        plan.invocationGuards.push_back({guardStart, offset - guardStart});
+      plan.invocationGuards.push_back({nextOffset, guardBytes});
+      if (!checkedAdd(nextOffset, guardBytes, nextOffset))
+        return invalid("runtime invocation guard range overflows");
+    }
     if (alignment > invocationAlignment)
       invocationAlignment = alignment;
     return RuntimePlannedRange{offset, bytes};

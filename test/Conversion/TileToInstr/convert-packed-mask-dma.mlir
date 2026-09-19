@@ -153,8 +153,8 @@ func.func @step_one(%input: memref<1x1x1040xi1, #wafer.memory<ddr, tensor>>) {
   }
   return
 }
-// STEP: bitpacked DDR view requires a statically byte-aligned offset or proven dynamic alignment
-// TARGET-STEP: packed subview byte alignment is not proven from current SSA
+// STEP: failed to legalize operation 'wafer.tile.load'
+// TARGET-STEP: failed to legalize operation 'wafer.tile.load'
 
 //--- strided.mlir
 func.func @strided_1024(%input: memref<1x1024x1024xi1, #wafer.memory<ddr, tensor>>) {

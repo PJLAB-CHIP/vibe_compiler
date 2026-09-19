@@ -516,17 +516,16 @@ def check_softmax_export(output_root: pathlib.Path) -> None:
                 os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
                 str(directory / "functions/forward.stablehlo.bc"),
             ], text=True)
-            if "xi1>" in text or "tensor<i1>" in text or "stablehlo.select" in text:
-                raise RuntimeError("safe-softmax boolean guard survived export")
+            if "stablehlo.select" not in text:
+                raise RuntimeError("safe-softmax lost its fully masked row guard")
             actual, = run_exported_graph(directory, (values,))
             torch.testing.assert_close(actual, model(values))
-            # The requested source policy is ordinary softmax for this row,
-            # rather than the extra all-negative-inf-to-zero behavior.
             special = values.clone()
             special[0, 0, :] = -torch.inf
             actual, = run_exported_graph(directory, (special,))
-            expected = torch.softmax(special, -1, dtype=output_dtype)
+            expected = model(special)
             torch.testing.assert_close(actual, expected, equal_nan=True)
+            assert torch.count_nonzero(actual[0, 0]) == 0
 
         query = torch.randn((1, 2, 8, 16), generator=generator).to(dtype) * .125
         key = torch.randn((1, 2, extent, 16), generator=generator).to(dtype) * .125
@@ -545,15 +544,106 @@ def check_softmax_export(output_root: pathlib.Path) -> None:
                 os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
                 str(directory / "functions/forward.stablehlo.bc"),
             ], text=True)
-            if "xi1>" in text or "tensor<i1>" in text:
-                raise RuntimeError("attention export retained a boolean softmax guard")
+            if 'stablehlo.composite "wafer.scaled_dot_product_attention"' not in text:
+                raise RuntimeError("attention lost its semantic composite boundary")
             actual, = run_exported_graph(directory, inputs)
             comparison.assert_tensor_matches(
                 actual, model(*inputs), policy=comparison.make_similarity_policy(dtype),
                 context=f"exported attention {dtype} masked={masked}")
             for tensor, original in zip(inputs, before):
                 torch.testing.assert_close(tensor, original, rtol=0, atol=0)
-    print("softmax_export: direct=8 attention=6 mask_preserved=true all_inf=ordinary_softmax")
+    print("softmax_export: direct=8 attention=6 mask_preserved=true all_inf=zero")
+
+
+def check_attention_positions(output_root: pathlib.Path) -> None:
+    from torch.nn.attention.bias import causal_lower_right
+    import wafer_pytorch_board_common as comparison
+
+    class PositionedAttention(torch.nn.Module):
+        def __init__(self, q_length, k_length, grouped, inline):
+            super().__init__()
+            self.bias = causal_lower_right(q_length, k_length)
+            self.grouped = grouped
+            self.inline = inline
+
+        def forward(self, q, k, v):
+            bias = (causal_lower_right(q.shape[-2], k.shape[-2])
+                    if self.inline else self.bias)
+            return torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, bias, enable_gqa=self.grouped)
+
+    generator = torch.Generator().manual_seed(9481)
+    count = 0
+    for dtype in (torch.float16, torch.bfloat16):
+        for q_length, k_length, heads, kv_heads in ((2, 1026, 2, 2), (1025, 1025, 4, 2)):
+            model = PositionedAttention(q_length, k_length, heads != kv_heads,
+                                        inline=q_length == 2).eval()
+            inputs = tuple(torch.randn((1, h, n, 64), generator=generator).to(dtype) * .125
+                           for h, n in ((heads, q_length), (kv_heads, k_length), (kv_heads, k_length)))
+            directory = output_root / f"positioned-attention-{dtype}-{q_length}"
+            expected = model(*inputs)
+            export_pytorch_program(model, inputs, directory)
+            comparison.assert_tensor_matches(
+                run_exported_graph(directory, inputs)[0], expected,
+                policy=comparison.make_similarity_policy(dtype),
+                context=f"positioned attention {dtype} {q_length}")
+            text = subprocess.check_output([
+                os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                str(directory / "functions/forward.stablehlo.bc")], text=True)
+            if f"query_start = {k_length - q_length} :" not in text or "has_mask = false" not in text:
+                raise RuntimeError("causal descriptor lost its original offset or became a dense input")
+            lowered = subprocess.check_output([
+                "wafer-opt", "--wafer-lower-stablehlo-to-linalg"], input=text, text=True)
+            if lowered.count("wafer.linalg_ext.attention ins") != 1 or "causal = true" not in lowered:
+                raise RuntimeError("positioned composite did not reach structured causal attention")
+            record = json.loads((directory / "functions/forward.meta").read_text())
+            if sum(location["type_"] == "input_arg" for location in record["input_locations"]) != 3:
+                raise RuntimeError("structured causality added a user mask port")
+            if model.bias.seq_len_q != q_length or model.bias.seq_len_kv != k_length:
+                raise RuntimeError("capture mutated the source descriptor")
+            count += 1
+    print(f"attention_positions: exports={count} lower_right=true gqa=true source_unchanged=true")
+
+
+def check_multihead_attention(output_root: pathlib.Path) -> None:
+    import wafer_pytorch_board_common as comparison
+
+    class Multihead(torch.nn.Module):
+        def __init__(self, dtype):
+            super().__init__()
+            self.attention = torch.nn.MultiheadAttention(
+                64, 2, batch_first=True, dtype=dtype)
+
+        def forward(self, value):
+            return self.attention(value, value, value, need_weights=False)[0]
+
+    generator = torch.Generator().manual_seed(7419)
+    original = torch.nn.functional.multi_head_attention_forward
+    for dtype in (torch.float16, torch.bfloat16):
+        for extent in (1024, 1025):
+            model = Multihead(dtype).eval()
+            value = torch.randn((1, extent, 64), generator=generator).to(dtype)
+            expected = model(value)
+            before = {name: tensor.clone() for name, tensor in model.state_dict().items()}
+            directory = output_root / f"multihead-attention-{dtype}-{extent}"
+            export_pytorch_program(model, (value,), directory)
+            text = subprocess.check_output([
+                os.environ["WAFER_STABLEHLO_TRANSLATE"], "--deserialize",
+                str(directory / "functions/forward.stablehlo.bc")], text=True)
+            if text.count('stablehlo.composite "wafer.scaled_dot_product_attention"') != 1:
+                raise RuntimeError("MultiheadAttention lost its nested SDPA boundary")
+            lowered = subprocess.check_output([
+                "wafer-opt", "--wafer-lower-stablehlo-to-linalg"], input=text, text=True)
+            if lowered.count("wafer.linalg_ext.attention ins") != 1:
+                raise RuntimeError("MultiheadAttention did not reach structured attention")
+            actual, = run_exported_graph(directory, (value,))
+            comparison.assert_tensor_matches(
+                actual, expected, policy=comparison.make_similarity_policy(dtype),
+                context=f"MultiheadAttention {dtype} {extent}")
+            assert torch.nn.functional.multi_head_attention_forward is original
+            for name, tensor in model.state_dict().items():
+                torch.testing.assert_close(tensor, before[name], rtol=0, atol=0)
+    print("multihead_attention: exports=4 numeric=4 nested_sdpa=true source_unchanged=true")
 
 
 def check_attention_precision(output_root: pathlib.Path) -> None:
@@ -623,6 +713,15 @@ def check_attention_precision(output_root: pathlib.Path) -> None:
                 exponential, = [line for line in text.splitlines() if "stablehlo.exponential" in line]
                 if not exponential.rstrip().endswith("xf32>"):
                     raise RuntimeError("attention softmax lost F32 opmath")
+                lowered = subprocess.check_output([
+                    "wafer-opt", "--wafer-lower-stablehlo-to-linalg",
+                ], input=text, text=True)
+                if lowered.count("wafer.linalg_ext.attention ins") != 1 or "stablehlo." in lowered:
+                    raise RuntimeError("composite did not reach the structured attention boundary")
+                if "zero_fully_masked = true" not in lowered:
+                    raise RuntimeError("SDPA fully masked behavior was not preserved")
+                if extent == 1031 and "causal = true" not in lowered:
+                    raise RuntimeError("causal positions did not reach structured IR")
                 actual, = run_exported_graph(exports[0], inputs)
                 comparison.assert_tensor_matches(
                     actual, expected, policy=comparison.make_similarity_policy(dtype),
@@ -676,6 +775,8 @@ def main() -> None:
     check_silu_precision(args.output_root)
     check_softmax_export(args.output_root)
     check_attention_precision(args.output_root)
+    check_attention_positions(args.output_root)
+    check_multihead_attention(args.output_root)
     check_direct_xla(args.output_root)
     try:
         export_pytorch_program(DataDependentGraphBreak(), (value,), args.output_root / "bad")

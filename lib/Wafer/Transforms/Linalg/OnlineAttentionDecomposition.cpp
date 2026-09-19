@@ -11,9 +11,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 
@@ -100,6 +102,28 @@ buildDescriptor(LinalgExtOnlineAttentionOp operation) {
     if (shaped && !shaped.hasStaticShape())
       return mlir::failure();
   }
+  // Absolute positions remain scalar index arithmetic. Vector comparisons use
+  // bounded local coordinates exactly representable in F32; this does not
+  // round absolute cache positions or require an integer vector target format.
+  int64_t coordinateRange = 0;
+  for (auto [i, position] : llvm::enumerate(operation.getPositions())) {
+    using Bounds = mlir::ValueBoundsConstraintSet;
+    auto lower =
+        Bounds::computeConstantBound(mlir::presburger::BoundType::LB,
+                                     Bounds::Variable(position), nullptr, true);
+    int64_t size =
+        i < 2 ? extents[mlir::cast<mlir::AffineDimExpr>(
+                            operation.getPositionMapAttr().getValue().getResult(
+                                i))
+                            .getPosition()]
+              : 1;
+    if (mlir::failed(lower) || *lower < 0 || size > (1 << 24))
+      return mlir::failure();
+    if (i < 2)
+      coordinateRange += size;
+  }
+  if (coordinateRange > (1 << 24))
+    return mlir::failure();
 
   const unsigned rank = operation.getIterationDomainRank();
   llvm::SmallBitVector scoreDimensions(rank, false);
@@ -168,10 +192,9 @@ mlir::Value createQK(const DecompositionDescriptor &descriptor,
                      mlir::OpBuilder &builder) {
   LinalgExtOnlineAttentionOp operation = descriptor.operation;
   mlir::Location location = operation.getLoc();
-  auto queryType =
-      mlir::cast<mlir::RankedTensorType>(operation.getQuery().getType());
-  auto scoreType = mlir::RankedTensorType::get(descriptor.scoreShape,
-                                               queryType.getElementType());
+  auto scoreType = mlir::RankedTensorType::get(
+      descriptor.scoreShape,
+      operation.getScoreRegion().front().getArgument(0).getType());
   mlir::Value score = createZeroTensor(location, scoreType, builder);
   llvm::SmallVector<mlir::AffineMap, 3> maps = mlir::compressUnusedDims(
       {operation.getQueryMap(), operation.getKeyMap(), descriptor.scoreMap});
@@ -181,8 +204,14 @@ mlir::Value createQK(const DecompositionDescriptor &descriptor,
       mlir::ValueRange{score}, maps, getReductionIteratorTypes(maps.back()),
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
           mlir::ValueRange arguments) {
-        mlir::Value product = nestedBuilder.create<mlir::arith::MulFOp>(
-            nestedLocation, arguments[0], arguments[1]);
+        mlir::Value lhs = compiler::detail::castAttentionFloatScalar(
+            arguments[0], arguments[2].getType(), nestedBuilder,
+            nestedLocation);
+        mlir::Value rhs = compiler::detail::castAttentionFloatScalar(
+            arguments[1], arguments[2].getType(), nestedBuilder,
+            nestedLocation);
+        mlir::Value product =
+            nestedBuilder.create<mlir::arith::MulFOp>(nestedLocation, lhs, rhs);
         mlir::Value result = nestedBuilder.create<mlir::arith::AddFOp>(
             nestedLocation, product, arguments[2]);
         nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation, result);
@@ -200,6 +229,67 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
     inputs.push_back(operation.getMask());
     maps.push_back(*operation.getMaskMap());
   }
+  const unsigned scoreArgumentCount = inputs.size();
+  if (!operation.getPositions().empty()) {
+    auto extents = operation.getStaticLoopRanges();
+    auto positionMap = operation.getPositionMapAttr().getValue();
+    auto loc = operation.getLoc();
+    int64_t queryExtent =
+        extents[mlir::cast<mlir::AffineDimExpr>(positionMap.getResult(0))
+                    .getPosition()];
+    int64_t keyExtent =
+        extents[mlir::cast<mlir::AffineDimExpr>(positionMap.getResult(1))
+                    .getPosition()];
+    auto boundedRelative = [&](mlir::Value position, int64_t lower,
+                               int64_t upper) -> mlir::Value {
+      auto relative = builder.createOrFold<mlir::arith::SubIOp>(
+          loc, position, operation.getPositions()[1]);
+      auto lo = builder.create<mlir::arith::ConstantIndexOp>(loc, lower);
+      auto hi = builder.create<mlir::arith::ConstantIndexOp>(loc, upper);
+      relative = builder.createOrFold<mlir::arith::MaxSIOp>(loc, relative, lo);
+      relative = builder.createOrFold<mlir::arith::MinSIOp>(loc, relative, hi);
+      auto integer = builder.createOrFold<mlir::arith::IndexCastOp>(
+          loc, builder.getI64Type(), relative);
+      return builder.createOrFold<mlir::arith::SIToFPOp>(
+          loc, builder.getF32Type(), integer);
+    };
+    inputs.push_back(
+        boundedRelative(operation.getPositions()[0], -queryExtent, keyExtent));
+    inputs.push_back(builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getF32FloatAttr(0)));
+    inputs.push_back(
+        boundedRelative(operation.getPositions()[2], 0, keyExtent));
+    maps.append(3, operation.getScaleMap());
+    for (mlir::AffineExpr expression :
+         operation.getPositionMapAttr().getValue().getResults()) {
+      unsigned dimension =
+          mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+      int64_t size = extents[dimension];
+      // Materialize the coordinates in the candidate's current IR. These
+      // values are created after program-data outlining, so a dense constant
+      // would create an unbound global at the device ABI boundary.
+      auto empty = builder.create<mlir::tensor::EmptyOp>(
+          loc, llvm::ArrayRef<int64_t>{size}, builder.getF32Type());
+      auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      auto limit = builder.create<mlir::arith::ConstantIndexOp>(loc, size);
+      auto one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      auto coordinates = builder.create<mlir::scf::ForOp>(
+          loc, zero, limit, one, mlir::ValueRange{empty},
+          [&](mlir::OpBuilder &nested, mlir::Location location,
+              mlir::Value index, mlir::ValueRange state) {
+            auto integer = nested.create<mlir::arith::IndexCastOp>(
+                location, nested.getI64Type(), index);
+            auto value = nested.create<mlir::arith::SIToFPOp>(
+                location, nested.getF32Type(), integer);
+            auto inserted = nested.create<mlir::tensor::InsertOp>(
+                location, value, state.front(), mlir::ValueRange{index});
+            nested.create<mlir::scf::YieldOp>(location, inserted.getResult());
+          });
+      inputs.push_back(coordinates.getResult(0));
+      maps.push_back(mlir::AffineMap::get(operation.getIterationDomainRank(), 0,
+                                          expression, builder.getContext()));
+    }
+  }
   maps.push_back(descriptor.scoreMap);
   maps = mlir::compressUnusedDims(maps);
   auto type = mlir::RankedTensorType::get(descriptor.scoreShape,
@@ -215,15 +305,42 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
               mlir::ValueRange arguments) {
             mlir::IRMapping mapping;
             auto &body = operation.getScoreRegion().front();
-            for (auto [source, target] : llvm::zip_equal(
-                     body.getArguments(), arguments.take_front(inputs.size())))
+            for (auto [source, target] :
+                 llvm::zip_equal(body.getArguments(),
+                                 arguments.take_front(scoreArgumentCount)))
               mapping.map(source, target);
             for (mlir::Operation &scalar : body.without_terminator())
               nested.clone(scalar, mapping);
             auto yield =
                 mlir::cast<LinalgExtAttentionYieldOp>(body.getTerminator());
-            nested.create<mlir::linalg::YieldOp>(
-                location, mapping.lookup(yield.getValue()));
+            mlir::Value score = mapping.lookup(yield.getValue());
+            if (!operation.getPositions().empty()) {
+              auto position = [&](unsigned role) {
+                return nested
+                    .create<mlir::arith::AddFOp>(
+                        location, arguments[scoreArgumentCount + 3 + role],
+                        arguments[scoreArgumentCount + role])
+                    .getResult();
+              };
+              mlir::Value key = position(1);
+              mlir::Value visible = nested.create<mlir::arith::CmpFOp>(
+                  location, mlir::arith::CmpFPredicate::OLT, key,
+                  arguments[scoreArgumentCount + 2]);
+              mlir::Value masked = nested.create<mlir::arith::ConstantOp>(
+                  location, nested.getFloatAttr(
+                                score.getType(),
+                                -std::numeric_limits<double>::infinity()));
+              score = nested.create<mlir::arith::SelectOp>(location, visible,
+                                                           score, masked);
+              if (operation.getCausal()) {
+                mlir::Value causal = nested.create<mlir::arith::CmpFOp>(
+                    location, mlir::arith::CmpFPredicate::OLE, key,
+                    position(0));
+                score = nested.create<mlir::arith::SelectOp>(location, causal,
+                                                             score, masked);
+              }
+            }
+            nested.create<mlir::linalg::YieldOp>(location, score);
           })
       .getResult(0);
 }
@@ -263,10 +380,8 @@ mlir::Value createNorm(const DecompositionDescriptor &descriptor,
       getParallelIteratorTypes(maps.front().getNumDims()),
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
           mlir::ValueRange arguments) {
-        mlir::Value difference = nestedBuilder.create<mlir::arith::SubFOp>(
-            location, arguments[0], arguments[1]);
-        mlir::Value result =
-            nestedBuilder.create<mlir::math::ExpOp>(location, difference);
+        mlir::Value result = compiler::detail::computeAttentionExponential(
+            arguments[0], arguments[1], nestedBuilder, location);
         nestedBuilder.create<mlir::linalg::YieldOp>(location, result);
       });
   return norm.getResult(0);
@@ -305,10 +420,8 @@ mlir::Value createProbability(const DecompositionDescriptor &descriptor,
       getParallelIteratorTypes(maps.front().getNumDims()),
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
           mlir::ValueRange arguments) {
-        mlir::Value difference = nestedBuilder.create<mlir::arith::SubFOp>(
-            location, arguments[0], arguments[1]);
-        mlir::Value result =
-            nestedBuilder.create<mlir::math::ExpOp>(location, difference);
+        mlir::Value result = compiler::detail::computeAttentionExponential(
+            arguments[0], arguments[1], nestedBuilder, location);
         nestedBuilder.create<mlir::linalg::YieldOp>(location, result);
       });
   return probability.getResult(0);
@@ -318,6 +431,30 @@ mlir::Value createPV(const DecompositionDescriptor &descriptor,
                      mlir::Value probability, mlir::Value scaledAccumulator,
                      mlir::OpBuilder &builder) {
   LinalgExtOnlineAttentionOp operation = descriptor.operation;
+  auto probabilityType =
+      mlir::cast<mlir::RankedTensorType>(probability.getType());
+  auto storageType = operation.getValue().getType().getElementType();
+  if (probabilityType.getElementType() != storageType) {
+    auto narrowType = probabilityType.clone(storageType);
+    mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
+        operation.getLoc(), narrowType.getShape(), storageType);
+    auto identity = builder.getMultiDimIdentityMap(probabilityType.getRank());
+    probability =
+        builder
+            .create<mlir::linalg::GenericOp>(
+                operation.getLoc(), mlir::TypeRange{narrowType},
+                mlir::ValueRange{probability}, mlir::ValueRange{empty},
+                llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+                getParallelIteratorTypes(probabilityType.getRank()),
+                [&](mlir::OpBuilder &nested, mlir::Location loc,
+                    mlir::ValueRange args) {
+                  mlir::Value value =
+                      compiler::detail::castAttentionFloatScalar(
+                          args[0], storageType, nested, loc);
+                  nested.create<mlir::linalg::YieldOp>(loc, value);
+                })
+            .getResult(0);
+  }
   llvm::SmallVector<mlir::AffineMap, 3> maps =
       mlir::compressUnusedDims({descriptor.scoreMap, operation.getValueMap(),
                                 operation.getAccumulatorMap()});

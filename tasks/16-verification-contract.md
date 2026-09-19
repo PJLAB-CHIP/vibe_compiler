@@ -41,6 +41,8 @@ Pipeline position:
 3. **No-card evidence**：真实package经strict loader与runtime validation形成完整16-Tile invocation plan，且无provider effect。
 4. **Functional model evidence**：同次owner-backed target module set经TargetCall frontend/SystemC执行，完整output与独立CPU expected比较。
 5. **Board correctness evidence**：当前构建、当前package、当前payload在真实设备完成output/guard和lifecycle检查。
+   普通模型矩阵的allocation/port间guard使用15号`--memory-guards`；no-card只证明guard plan可构造，
+   实卡结果须记录实际检查字节数。此证据不覆盖compiler workspace内部对象或module loader私有存储。
 6. **Board performance evidence**：同一source/config/payload/ABI的baseline/winner做matched、重复、可解释的A/B。
 
 只有第3层完成，且case、oracle、runner都齐全，板端任务才可写 `board-ready`。只有任务定义所需的第5/6层通过才可
@@ -132,7 +134,8 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 - Upstream IR / input：原始framework module、CPU运行时tensor tuple和同一module的全部eager输出；
   `case.dtype`只描述模型采用的计算/参数精度，各端口type由实际tensor决定。
 - Current stage responsibility：在case边界检查CPU和已支持的manifest dtype，不把整数ID或实际F32输出转换为模型dtype；
-  source metadata、payload及manifest按每个端口的shape/dtype/role逐项闭合。整数输出按exact比较，不消费浮点容差。
+  source metadata、payload及manifest按每个端口的shape/dtype/role逐项闭合。整数与bool输出按exact比较，不消费浮点容差。
+  Bool沿用既有manifest位格式，raw按LSB-first紧凑打包，尾byte的未使用bit为0；PyTorch byte-sized bool不能直接复制为payload。
 - Output IR / files：同一portable source、原dtype的raw输入和全部reference、按实际端口绑定的runner参数；无第二份dtype表。
 - Downstream consumer：生产`wafer-compile`与原`prepare_runtime_payloads`、`wafer-run`及完整PyTorch比较。
 - User-level driver / named pipeline：原PyTorch case registry和唯一board runner；source/no-card与实卡资格继续分别登记。

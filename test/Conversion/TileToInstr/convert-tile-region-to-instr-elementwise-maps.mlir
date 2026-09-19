@@ -52,15 +52,9 @@ func.func @transpose_and_row_broadcast() {
 // CHECK-LABEL: func.func @transpose_and_row_broadcast
 // CHECK: %[[TRANSPOSED:.+]] = memref.alloc() : memref<2x3xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.gather_scatter %{{.*}} to %[[TRANSPOSED]]
-// CHECK: %[[ROW:.+]] = memref.alloc() : memref<2x3xf32, #wafer.memory<spm, tensor>>
-// CHECK: wafer.instr.gather_scatter %{{.*}} to %[[ROW]]
-// CHECK-SAME: byte_count = 24 : i64
-// CHECK-SAME: dst_iterations = array<i64: 2, 1, 1>
-// CHECK-SAME: dst_strides = array<i64: 12, 0, 0>
-// CHECK-SAME: inner_bytes = 12 : i64
-// CHECK-SAME: src_iterations = array<i64: 2, 1, 1>
-// CHECK-SAME: src_strides = array<i64: 0, 0, 0>
-// CHECK: wafer.instr.elementwise <add> %[[TRANSPOSED]], %[[ROW]] into %{{.*}}
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <add> %[[TRANSPOSED]], %{{[^ ]+}} into %{{[^ ]+}}
+// CHECK-SAME: rhs_unit_elements = 3 : i64
 // CHECK: wafer.instr.ncc_join [0]
 // CHECK-NOT: indexing_maps
 
@@ -263,3 +257,72 @@ func.func @nonidentity_chosen_map_stays_dynamic() {
 // CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.bit2fp
 // CHECK: wafer.instr.mask_move
+
+// Padding participates in MaskMove's physical traversal. The predicate gather
+// only defines logical channels; false initialization must precede that gather.
+func.func @select_blocked_tail_padding() {
+  wafer.tile.region() -> () {
+    %predicate = memref.alloc() : memref<2x1025x33xi1, #wafer.memory<spm, tensor>>
+    %true = memref.alloc() : memref<2x1025x33xf32, #wafer.memory<spm, ncx>>
+    %false = memref.alloc() : memref<2x1025x33xf32, #wafer.memory<spm, ncx>>
+    %selected = wafer.tile.elementwise #wafer.elementwise_kind<select>
+        %predicate, %true, %false
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : (memref<2x1025x33xi1, #wafer.memory<spm, tensor>>, memref<2x1025x33xf32, #wafer.memory<spm, ncx>>, memref<2x1025x33xf32, #wafer.memory<spm, ncx>>)
+        -> memref<2x1025x33xf32, #wafer.memory<spm, ncx>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @select_blocked_tail_padding
+// CHECK: wafer.instr.bit2fp %{{.*}} into %[[COMPACT:[^ ]+]]
+// CHECK: %[[FALSE:[^ ]+]] = arith.constant 0.000000e+00 : f32
+// CHECK: wafer.instr.fill %[[PADDED:[^,]+]], %[[FALSE]] {fill_domain = #wafer.fill_domain<physical_footprint>} : memref<2x1025x33xf32, #wafer.memory<spm, ncx>>
+// CHECK: wafer.instr.gather_scatter %[[COMPACT]] to %[[PADDED]]
+// CHECK: wafer.instr.mask_move %{{.*}}, %[[PADDED]] into
+
+// Explicit destinations retain the same native broadcast and mapped predicate
+// lowering as functional values, with no result allocation or publication copy.
+func.func @row_broadcast_into() {
+  wafer.tile.region() -> () {
+    %input = memref.alloc() : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    %row = memref.alloc() : memref<64xf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<add> %input, %row into %dest
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>, memref<64xf16, #wafer.memory<spm, tensor>> into memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @row_broadcast_into
+// CHECK: %[[LHS:[^ ]+]] = memref.alloc()
+// CHECK: %[[RHS:[^ ]+]] = memref.alloc()
+// CHECK: %[[OUTPUT:[^ ]+]] = memref.alloc()
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <add> %[[LHS]], %[[RHS]] into %[[OUTPUT]] {rhs_unit_elements = 64 : i64}
+// CHECK-NOT: wafer.instr.gather_scatter
+
+func.func @predicate_select_into() {
+  wafer.tile.region() -> () {
+    %predicate = memref.alloc() : memref<2x1031x33xi1, #wafer.memory<spm, tensor>>
+    %true = memref.alloc() : memref<2x1031x33xbf16, #wafer.memory<spm, tensor>>
+    %false = memref.alloc() : memref<2x1031x33xbf16, #wafer.memory<spm, tensor>>
+    %dest = memref.alloc() : memref<2x1031x33xbf16, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<select> %predicate, %true, %false into %dest
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1031x33xi1, #wafer.memory<spm, tensor>>, memref<2x1031x33xbf16, #wafer.memory<spm, tensor>>, memref<2x1031x33xbf16, #wafer.memory<spm, tensor>> into memref<2x1031x33xbf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @predicate_select_into
+// CHECK: %[[PREDICATE:[^ ]+]] = memref.alloc()
+// CHECK: %[[TRUE_INPUT:[^ ]+]] = memref.alloc()
+// CHECK: %[[FALSE_INPUT:[^ ]+]] = memref.alloc()
+// CHECK: %[[OUTPUT:[^ ]+]] = memref.alloc()
+// CHECK: wafer.instr.gather_scatter %[[FALSE_INPUT]] to %[[OUTPUT]]
+// CHECK: wafer.instr.bit2fp %[[PREDICATE]] into %[[PREDICATE_FP:[^ ]+]]
+// CHECK: wafer.instr.mask_move %[[TRUE_INPUT]], %[[PREDICATE_FP]] into %[[OUTPUT]]
+// CHECK-NOT: wafer.instr.gather_scatter

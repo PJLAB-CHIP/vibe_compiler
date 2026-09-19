@@ -191,7 +191,8 @@ wafer_add_component_unit_test(WaferSimulatorUnitTests
   LINK_LIBS
     WaferFormalNumeric
     WaferSimulatorInvocation
-    WaferSimulatorMemory)
+    WaferSimulatorMemory
+    MLIRBuiltinToLLVMIRTranslation)
 
 wafer_add_component_unit_test(WaferPipelineUnitTests
   SOURCES Pipelines/PipelinesTest.cpp

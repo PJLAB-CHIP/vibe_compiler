@@ -22,10 +22,10 @@
 // HLO-NEXT: %[[Y:.*]] = stablehlo.add %[[SCALED]], %[[BIAS]] : tensor<2x4x1024xf16>
 // HLO-NEXT: return %[[Y]] : tensor<2x4x1024xf16>
 // LINALG-LABEL: func.func @feature_middle
-// LINALG: arith.addf {{.*}} : f16
-// LINALG: math.sqrt {{.*}} : f16
-// LINALG: arith.subf {{.*}} : f16
-// LINALG: arith.divf {{.*}} : f16
+// LINALG: %[[CENTER:.*]] = arith.subf {{.*}} : f16
+// LINALG-NEXT: %[[VAR:.*]] = arith.addf {{.*}} : f16
+// LINALG-NEXT: %[[STD:.*]] = math.sqrt %[[VAR]] : f16
+// LINALG-NEXT: arith.divf %[[CENTER]], %[[STD]] : f16
 // LINALG: arith.mulf {{.*}} : f16
 // LINALG: arith.addf {{.*}} : f16
 // LINALG: return {{.*}} : tensor<2x4x1024xf16>

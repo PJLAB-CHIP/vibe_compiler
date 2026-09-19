@@ -268,6 +268,49 @@ struct BoardLiveAllocation {
   BoardDeviceMemory memory;
 };
 
+enum class MemoryGuardAction { Initialize, Verify };
+
+llvm::Expected<uint64_t>
+transferMemoryGuards(BoardRuntimeDriver &driver, BoardDeviceMemory allocation,
+                     llvm::ArrayRef<RuntimePlannedRange> ranges,
+                     MemoryGuardAction action) {
+  constexpr uint64_t chunkBytes = 64 * 1024;
+  uint64_t checkedBytes = 0;
+  for (const auto &range : ranges) {
+    for (uint64_t part = 0; part < range.bytes;) {
+      uint64_t bytes = std::min(chunkBytes, range.bytes - part);
+      uint64_t offset = range.offset + part;
+      if (offset > std::numeric_limits<uintptr_t>::max() - allocation.value ||
+          bytes >
+              std::numeric_limits<uintptr_t>::max() - allocation.value - offset)
+        return invalid("memory guard device address overflows");
+      std::vector<uint8_t> expected(bytes);
+      for (uint64_t index = 0; index < bytes; ++index) {
+        uint64_t position = offset + index;
+        expected[index] =
+            static_cast<uint8_t>(position * 131 + (position >> 8) * 17 + 0xa5);
+      }
+      BoardDeviceMemory address{allocation.value + offset};
+      if (action == MemoryGuardAction::Initialize) {
+        if (llvm::Error error = driver.copyHostToDevice(address, expected))
+          return std::move(error);
+      } else {
+        std::vector<uint8_t> observed(bytes);
+        if (llvm::Error error = driver.copyDeviceToHost(observed, address))
+          return std::move(error);
+        for (uint64_t index = 0; index < bytes; ++index)
+          if (observed[index] != expected[index])
+            return invalid(
+                llvm::Twine("memory guard mismatch at allocation byte ") +
+                llvm::Twine(offset + index));
+      }
+      part += bytes;
+      checkedBytes += bytes;
+    }
+  }
+  return checkedBytes;
+}
+
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     const ExecutablePackage &package, BoardRuntimeInvocationRequest request,
     BoardRuntimeDriver &driver, const BoardDeviceInfo *qualifiedDevice,
@@ -364,8 +407,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
 
   const RuntimeEnvironment &providerEnvironment =
       driver.getProviderEnvironment();
-  llvm::Expected<RuntimeInvocationPlan> semanticPlan = planRuntimeInvocation(
-      package.getVerifiedManifest(), invocationBindings, providerEnvironment);
+  llvm::Expected<RuntimeInvocationPlan> semanticPlan =
+      planRuntimeInvocation(package.getVerifiedManifest(), invocationBindings,
+                            providerEnvironment, request.memoryGuardPolicy);
   if (!semanticPlan)
     return wrapDriverError(BoardRuntimeStage::Validation, {},
                            semanticPlan.takeError());
@@ -424,8 +468,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
 
   RuntimeEnvironment capacityEnvironment = providerEnvironment;
   capacityEnvironment.maxResourceBytes = device.freeMemoryBytes;
-  llvm::Expected<RuntimeInvocationPlan> capacityPlan = planRuntimeInvocation(
-      package.getVerifiedManifest(), invocationBindings, capacityEnvironment);
+  llvm::Expected<RuntimeInvocationPlan> capacityPlan =
+      planRuntimeInvocation(package.getVerifiedManifest(), invocationBindings,
+                            capacityEnvironment, request.memoryGuardPolicy);
   if (!capacityPlan)
     return wrapDriverError(BoardRuntimeStage::Validation, {},
                            capacityPlan.takeError());
@@ -545,7 +590,14 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                   memory.takeError());
     allocations.push_back(
         {BoardLiveAllocation::Kind::ProgramData, {}, *memory});
-    if (llvm::Error error = driver.copyHostToDevice(*memory, programDataBytes))
+    if (capacityPlan->programDataBytes >
+        std::numeric_limits<uintptr_t>::max() - memory->value)
+      return fail(BoardRuntimeStage::ResourceAllocation, {},
+                  invalid("program data allocation address overflows"));
+    if (llvm::Error error = driver.copyHostToDevice(
+            BoardDeviceMemory{memory->value +
+                              capacityPlan->programDataBaseOffset},
+            programDataBytes))
       return fail(BoardRuntimeStage::HostToDevice, {}, std::move(error));
     programDataMemory = *memory;
   }
@@ -559,13 +611,30 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                 invocationMemory.takeError());
   allocations.push_back(
       {BoardLiveAllocation::Kind::Invocation, {}, *invocationMemory});
+  if (capacityPlan->invocationBytes >
+      std::numeric_limits<uintptr_t>::max() - invocationMemory->value)
+    return fail(BoardRuntimeStage::ResourceAllocation, {},
+                invalid("invocation allocation address overflows"));
   result.completedStages.push_back(BoardRuntimeStage::ResourceAllocation);
 
   uint64_t invocationBase = invocationMemory->value;
-  uint64_t programDataBase = programDataMemory ? programDataMemory->value : 0;
+  uint64_t programDataBase =
+      programDataMemory
+          ? programDataMemory->value + capacityPlan->programDataBaseOffset
+          : 0;
   auto checkedInvocationAddress = [&](const RuntimePlannedRange &range) {
     return invocationBase + range.offset;
   };
+
+  for (const auto &allocation : allocations) {
+    auto &guards = allocation.kind == BoardLiveAllocation::Kind::ProgramData
+                       ? capacityPlan->programDataGuards
+                       : capacityPlan->invocationGuards;
+    auto initialized = transferMemoryGuards(driver, allocation.memory, guards,
+                                            MemoryGuardAction::Initialize);
+    if (!initialized)
+      return fail(BoardRuntimeStage::HostToDevice, {}, initialized.takeError());
+  }
 
   // Host-to-device: exact input bytes, profiler records, and the Direct-DTE
   // status poison pattern. Workspace is allocation-only storage.
@@ -893,6 +962,20 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       }
       result.profilerOutputs.push_back(std::move(output));
     }
+  }
+  if (request.memoryGuardPolicy == RuntimeMemoryGuardPolicy::Check) {
+    uint64_t checkedBytes = 0;
+    for (const auto &allocation : allocations) {
+      auto &guards = allocation.kind == BoardLiveAllocation::Kind::ProgramData
+                         ? capacityPlan->programDataGuards
+                         : capacityPlan->invocationGuards;
+      auto checked = transferMemoryGuards(driver, allocation.memory, guards,
+                                          MemoryGuardAction::Verify);
+      if (!checked)
+        return fail(BoardRuntimeStage::DeviceToHost, {}, checked.takeError());
+      checkedBytes += *checked;
+    }
+    result.checkedMemoryGuardBytes = checkedBytes;
   }
   result.completedStages.push_back(BoardRuntimeStage::DeviceToHost);
 

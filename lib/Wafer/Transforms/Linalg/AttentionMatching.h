@@ -29,6 +29,8 @@ struct AttentionMatch {
 llvm::SmallVector<AttentionMatch, 4>
 collectAttentionMatches(mlir::func::FuncOp function);
 
+AttentionAlgorithm classifyAttentionAlgorithm(LinalgExtAttentionOp operation);
+
 mlir::LogicalResult materializeAttentionScoreRegion(mlir::OpBuilder &builder,
                                                     const AttentionMatch &match,
                                                     mlir::Region &region,

@@ -585,14 +585,14 @@ TEST(TemporalDomainTest, RankSixOnlineAttentionKeepsK1FullAndK2InTheRawDomain) {
         %key = tensor.empty() : tensor<2x4x1031x64xf16>
         %value_input = tensor.empty() : tensor<2x4x1031x128xf16>
         %scale = arith.constant 1.0 : f32
-        %accumulator = tensor.empty() : tensor<2x4x1025x128xf16>
+        %accumulator = tensor.empty() : tensor<2x4x1025x128xf32>
         %maximum = tensor.empty() : tensor<2x4x1025xf32>
         %sum = tensor.empty() : tensor<2x4x1025xf32>
         %value, %next_maximum, %next_sum =
             wafer.linalg_ext.online_attention
             ins(%arg, %key, %value_input, %scale : tensor<2x4x1025x64xf16>,
                 tensor<2x4x1031x64xf16>, tensor<2x4x1031x128xf16>, f32)
-            outs(%accumulator, %maximum, %sum : tensor<2x4x1025x128xf16>,
+            outs(%accumulator, %maximum, %sum : tensor<2x4x1025x128xf32>,
                 tensor<2x4x1025xf32>, tensor<2x4x1025xf32>)
             indexing_maps = [
               affine_map<(b, h, m, k1, k2, n) -> (b, h, m, k1)>,
@@ -602,14 +602,14 @@ TEST(TemporalDomainTest, RankSixOnlineAttentionKeepsK1FullAndK2InTheRawDomain) {
               affine_map<(b, h, m, k1, k2, n) -> (b, h, m, n)>,
               affine_map<(b, h, m, k1, k2, n) -> (b, h, m)>,
               affine_map<(b, h, m, k1, k2, n) -> (b, h, m)>] score {
-            ^bb0(%attention_0_dot: f16, %attention_0_scale: f32):
-              %attention_0_converted = arith.extf %attention_0_dot : f16 to f32
-              %attention_0_scaled = arith.mulf %attention_0_converted, %attention_0_scale : f32
+            ^bb0(%attention_0_dot: f32, %attention_0_scale: f32):
+
+              %attention_0_scaled = arith.mulf %attention_0_dot, %attention_0_scale : f32
               wafer.linalg_ext.attention.yield %attention_0_scaled : f32
             }
-            -> (tensor<2x4x1025x128xf16>, tensor<2x4x1025xf32>,
+            -> (tensor<2x4x1025x128xf32>, tensor<2x4x1025xf32>,
                 tensor<2x4x1025xf32>))mlir",
-                      "tensor<2x4x1025x64xf16>", "tensor<2x4x1025x128xf16>");
+                      "tensor<2x4x1025x64xf16>", "tensor<2x4x1025x128xf32>");
   ASSERT_TRUE(module);
   TileRegionOp region;
   module->walk([&](TileRegionOp operation) { region = operation; });

@@ -41,6 +41,14 @@ public:
                          const IndexRelation &iterationToSource,
                          const IndexRelation &iterationToDest);
 
+  /// Prove a repeated physical RHS unit for CT VuV. The returned length is
+  /// the actual source footprint (1..64 elements), never a shape estimate.
+  /// Unknown/non-periodic mappings remain ordinary mapped movement.
+  static mlir::FailureOr<int64_t>
+  proveUnitVectorBroadcast(mlir::MemRefType sourceType,
+                           mlir::MemRefType destType,
+                           const IndexRelation &destinationToSource);
+
   static mlir::LogicalResult proveMetadataView(mlir::MemRefType sourceType,
                                                mlir::MemRefType destType,
                                                const IndexRelation &relation,

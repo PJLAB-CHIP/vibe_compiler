@@ -101,6 +101,15 @@ private:
       provenIdentityPhysicalTraversals;
 };
 
+/// Materializes a read-only packed BOOL slice as an enclosing byte read,
+/// exact 0/1 expansion, coordinate gather and repacking. All geometry is
+/// proven before emitting storage or effects; scratch belongs to `owner`.
+mlir::LogicalResult
+materializePackedRead(mlir::Operation *owner, mlir::Value source,
+                      mlir::Value destination, mlir::PatternRewriter &rewriter,
+                      TileRegionToInstrBufferRecorder *bufferRecorder,
+                      MovementDescriptorCache *descriptorCache);
+
 using CanonicalReshapeMovementRelations = analysis::CanonicalReshapeRelations;
 
 inline std::optional<CanonicalReshapeMovementRelations>

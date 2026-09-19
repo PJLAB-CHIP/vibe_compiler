@@ -269,8 +269,8 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
     wafer_dmx_gather(input, auxiliary0, 256U, 128U, 128U, 2U, 130U, 2U);
     wafer_dmx_gather(input + 256U, auxiliary0 + 128U, 4U, 2U, 8U, 2U, 130U,
                      2U);
-    wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U,
-                               Fmt_FP16, 0U);
+    wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U, Fmt_FP16,
+                               0U, 0U);
     break;
   case 10U:
     for (uint32_t batch = 0; batch < 2U; ++batch) {
@@ -280,8 +280,8 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
                        auxiliary0 + batch * 130U + 128U, 2U, 2U, 0U, 1U, 0U,
                        1U);
     }
-    wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U,
-                               Fmt_FP16, 0U);
+    wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U, Fmt_FP16,
+                               0U, 0U);
     break;
   case 11U:
     wafer_dmx_gather(input, auxiliary0, 256U, 256U, 0U, 1U, 0U, 1U);

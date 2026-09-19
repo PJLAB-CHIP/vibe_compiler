@@ -35,7 +35,7 @@ absl::Status run(const Options &options) {
       stablehloToHloModule(*inputModule, options.numPartitions));
 
   std::unique_ptr<xla::HloModule> distributedModule =
-      prePartitionModule->Clone();
+      std::move(prePartitionModule);
   TF_RETURN_IF_ERROR(prepareSpmdPartitioning(distributedModule.get()));
 
   std::vector<std::string> parameterShardings;
@@ -48,8 +48,14 @@ absl::Status run(const Options &options) {
                                      : std::string("{replicated}"));
   }
 
-  std::unique_ptr<xla::HloModule> partitionedModule =
-      distributedModule->Clone();
+  // Keep the global module for parameter-shard and boundary verification.
+  // Pinned HloInstruction::CloneWithNewOperands drops Call::is_composite;
+  // the typed HLO proto roundtrip preserves this semantic field. The local
+  // module owns the partitioned graph and is discarded on any helper failure.
+  TF_ASSIGN_OR_RETURN(
+      std::unique_ptr<xla::HloModule> partitionedModule,
+      xla::HloModule::CreateFromProto(distributedModule->ToProto(),
+                                      distributedModule->config()));
   TF_RETURN_IF_ERROR(
       runSpmdPartitioner(partitionedModule.get(), options.numPartitions));
   mlir::MLIRContext outputContext;

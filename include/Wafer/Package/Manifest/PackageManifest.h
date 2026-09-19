@@ -549,6 +549,8 @@ struct RuntimePlannedRange {
   uint64_t bytes = 0;
 };
 
+enum class RuntimeMemoryGuardPolicy { Disabled, Check };
+
 /// Where one Tile entry argument's device address points.
 enum class RuntimeArgumentAddressBase { ProgramData, Invocation };
 
@@ -588,12 +590,17 @@ struct RuntimeInvocationPlan {
   bool programDataRequired = false;
   uint64_t programDataBytes = 0;
   uint64_t programDataAlignment = 1;
+  /// Offset of the immutable file payload within its allocation. Guard mode
+  /// leaves every manifest TargetTensor offset relative to this payload.
+  uint64_t programDataBaseOffset = 0;
+  std::vector<RuntimePlannedRange> programDataGuards;
   /// TargetTensor child ranges inside the program-data allocation, indexed by
   /// TargetTensor id; each offset equals the manifest file offset.
   std::vector<RuntimePlannedRange> targetTensorRanges;
   /// The single invocation allocation requirement and its child ranges.
   uint64_t invocationBytes = 0;
   uint64_t invocationAlignment = 1;
+  std::vector<RuntimePlannedRange> invocationGuards;
   /// Input/output child ranges, indexed by PortId.
   std::vector<RuntimePlannedRange> inputRanges;
   std::vector<RuntimePlannedRange> outputRanges;
@@ -617,7 +624,8 @@ struct RuntimeInvocationPlan {
 llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     const VerifiedPackageManifest &package,
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
-    const RuntimeEnvironment &environment);
+    const RuntimeEnvironment &environment,
+    RuntimeMemoryGuardPolicy guards = RuntimeMemoryGuardPolicy::Disabled);
 
 /// Typed lookup helpers over the canonical manifest tables. They are stable
 /// package-model accessors shared by the writer, verifier, planner and

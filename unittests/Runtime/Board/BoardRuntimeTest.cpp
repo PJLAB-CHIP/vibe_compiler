@@ -348,6 +348,14 @@ public:
             completionObserved - waitBegin)
             .count();
     phaseSubmitted = false;
+    if (corruptAllocationByte &&
+        activeKernelPhase == wafer::RuntimeLaunchPhaseRole::Main) {
+      const auto &fault = *corruptAllocationByte;
+      if (fault.allocation >= allocations.size() ||
+          fault.offset >= allocations[fault.allocation].bytes.size())
+        return injected("invalid-corruption-address");
+      allocations[fault.allocation].bytes[fault.offset] ^= 1;
+    }
     const size_t observationIndex = observedDeadlines.size() - 1;
     std::optional<uint64_t> deviceExecutionNanoseconds;
     if (observationIndex < deviceExecutionNanosecondsByWait.size())
@@ -412,6 +420,11 @@ public:
   std::optional<uint32_t> transportStatusOverride;
   bool decodeTileRowArguments = false;
   bool permuteTileBindings = false;
+  struct CorruptByte {
+    size_t allocation;
+    uint64_t offset;
+  };
+  std::optional<CorruptByte> corruptAllocationByte;
 
 private:
   int64_t tileForLaunchSlot(int64_t launchSlot) const {
@@ -995,6 +1008,201 @@ TEST_F(BoardRuntimeTest,
   std::vector<uintptr_t> expectedAllocations = driver.allocatedAddresses;
   std::reverse(expectedAllocations.begin(), expectedAllocations.end());
   EXPECT_EQ(driver.freedAddresses, expectedAllocations);
+}
+
+TEST_F(BoardRuntimeTest, MemoryGuardsCoverEveryInvocationRangeAndProgramData) {
+  using namespace wafer::runtime;
+  for (bool owned : {false, true})
+    for (auto launch :
+         {TestLaunchContractCase::Grid, TestLaunchContractCase::GridTileRows,
+          TestLaunchContractCase::Cluster}) {
+      if (owned && launch != TestLaunchContractCase::Grid)
+        continue;
+      for (int64_t extent : {1024, 1025, 1031}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(owned);
+        auto manifest = owned ? makeOwnedTensorTile16Manifest()
+                              : makeTile16Manifest(launch);
+        writeProgramDataFile(owned ? ownedTensorProgramDataBytes()
+                                   : std::vector<uint8_t>{});
+        for (auto *port :
+             {&manifest.inputs.front(), &manifest.outputs.front()}) {
+          port->logicalShape = {1, extent, 1};
+          port->shape = {1, extent, 1};
+          port->bytes = extent * 4;
+        }
+        for (auto &entry : manifest.entries) {
+          entry.arguments.insert(
+              entry.arguments.begin() + 2,
+              {2,
+               SharedWorkspaceArgument{0, static_cast<uint64_t>(extent), 64,
+                                       true},
+               entry.tileId == wafer::TileId(15)
+                   ? PackageAccessMode::WriteOnly
+                   : PackageAccessMode::ReadOnly});
+          for (auto [ordinal, argument] : llvm::enumerate(entry.arguments))
+            argument.ordinal = ordinal;
+        }
+        auto package = loadPackage(std::move(manifest));
+        ASSERT_TRUE(static_cast<bool>(package))
+            << llvm::toString(package.takeError());
+        auto request = makeTile16Request(package->getManifest());
+        request.memoryGuardPolicy = RuntimeMemoryGuardPolicy::Check;
+        FakeBoardDriver driver;
+        driver.decodeTileRowArguments =
+            launch == TestLaunchContractCase::GridTileRows;
+        llvm::SmallVector<RuntimeInvocationBinding> bindings;
+        for (const auto &port : package->getManifest().inputs)
+          bindings.push_back({port.id, port.bytes, port.alignment});
+        auto plan = planRuntimeInvocation(
+            package->getVerifiedManifest(), bindings,
+            driver.getProviderEnvironment(), RuntimeMemoryGuardPolicy::Check);
+        ASSERT_TRUE(static_cast<bool>(plan))
+            << llvm::toString(plan.takeError());
+        std::vector<uint8_t> coverage(plan->invocationBytes, 0);
+        auto cover = [&](const RuntimePlannedRange &range, uint8_t kind) {
+          ASSERT_LE(range.offset + range.bytes, coverage.size());
+          for (uint64_t byte = range.offset; byte < range.offset + range.bytes;
+               ++byte) {
+            ASSERT_EQ(coverage[byte], 0);
+            coverage[byte] = kind;
+          }
+        };
+        uint64_t guardBytes = 0;
+        for (const auto &range : plan->invocationGuards) {
+          EXPECT_GE(range.bytes, 256u);
+          guardBytes += range.bytes;
+          cover(range, 1);
+        }
+        for (auto &ranges : {plan->inputRanges, plan->outputRanges,
+                             plan->sharedWorkspaceRanges, plan->pointerRows})
+          for (const auto &range : ranges)
+            cover(range, 2);
+        for (const auto &tile : plan->tileRanges)
+          for (const auto &range :
+               {tile.workspace, tile.profileRecord, tile.transportStatus})
+            if (range)
+              cover(*range, 2);
+        EXPECT_FALSE(llvm::is_contained(coverage, uint8_t(0)));
+        for (const auto &range : plan->programDataGuards)
+          guardBytes += range.bytes;
+        EXPECT_EQ(plan->programDataGuards.size(), owned ? 2u : 0u);
+        if (owned) {
+          EXPECT_EQ(plan->programDataBaseOffset, 256u);
+          EXPECT_EQ(plan->targetTensorRanges.front().offset,
+                    kOwnedTensorFileOffset);
+        }
+        auto result =
+            executeBoardInvocation(*package, std::move(request), driver);
+        ASSERT_TRUE(static_cast<bool>(result))
+            << llvm::toString(result.takeError());
+        ASSERT_TRUE(result->checkedMemoryGuardBytes);
+        EXPECT_EQ(*result->checkedMemoryGuardBytes, guardBytes);
+        EXPECT_EQ(driver.allocatedAddresses.size(), owned ? 2u : 1u);
+        EXPECT_EQ(driver.allocatedAddresses.size(),
+                  driver.freedAddresses.size());
+        ASSERT_EQ(result->outputs.size(), 1u);
+        ASSERT_EQ(result->outputs.front().bytes.size(),
+                  static_cast<size_t>(extent * 4));
+        for (size_t byte = 0; byte < result->outputs.front().bytes.size();
+             ++byte)
+          EXPECT_EQ(result->outputs.front().bytes[byte],
+                    tileInputByte(0, byte) ^ uint8_t(15));
+      }
+    }
+}
+
+TEST_F(BoardRuntimeTest,
+       MemoryGuardCorruptionRejectsResultAndCleansCompletedInvocation) {
+  using namespace wafer::runtime;
+  writeProgramDataFile(ownedTensorProgramDataBytes());
+  auto package = loadPackage(makeOwnedTensorTile16Manifest());
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  FakeBoardDriver planningDriver;
+  llvm::SmallVector<RuntimeInvocationBinding> bindings;
+  for (const auto &port : package->getManifest().inputs)
+    bindings.push_back({port.id, port.bytes, port.alignment});
+  auto plan = planRuntimeInvocation(package->getVerifiedManifest(), bindings,
+                                    planningDriver.getProviderEnvironment(),
+                                    RuntimeMemoryGuardPolicy::Check);
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  llvm::SmallVector<FakeBoardDriver::CorruptByte> faults{
+      {0, 0},
+      {0, plan->programDataBytes - 1},
+      {1, 0},
+      {1, plan->invocationBytes - 1},
+      {1, plan->inputRanges.front().offset + plan->inputRanges.front().bytes},
+      {1,
+       plan->outputRanges.front().offset + plan->outputRanges.front().bytes}};
+  for (auto fault : faults) {
+    FakeBoardDriver driver;
+    driver.corruptAllocationByte = fault;
+    auto request = makeTile16Request(package->getManifest());
+    request.memoryGuardPolicy = RuntimeMemoryGuardPolicy::Check;
+    auto result = executeBoardInvocation(*package, std::move(request), driver);
+    ASSERT_FALSE(static_cast<bool>(result));
+    auto error = llvm::toString(result.takeError());
+    EXPECT_NE(error.find("memory guard mismatch at allocation byte"),
+              std::string::npos)
+        << error;
+    EXPECT_EQ(driver.allocatedAddresses.size(), driver.freedAddresses.size());
+    EXPECT_EQ(driver.loadedHandles.size(), driver.unloadedHandles.size());
+    EXPECT_EQ(driver.getContextState(), BoardRuntimeContextState::Usable);
+  }
+}
+
+TEST_F(BoardRuntimeTest,
+       MemoryGuardsPreserveProfilerRecordsAndRejectReadbackFailure) {
+  using namespace wafer::runtime;
+  auto package = verifyTile16(TestLaunchContractCase::Grid, true);
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  for (bool failedReadback : {false, true}) {
+    auto request = makeTile16Request(package->getManifest());
+    request.memoryGuardPolicy = RuntimeMemoryGuardPolicy::Check;
+    request.profilerRecordBytes = std::vector<std::vector<uint8_t>>(
+        16, std::vector<uint8_t>(WAFER_TX81_PROFILER_MIN_BUFFER_BYTES, 0x37));
+    FakeBoardDriver driver;
+    if (failedReadback) {
+      driver.failOperation = "d2h";
+      // One output and sixteen profile records precede the guard checks.
+      driver.failIndex = 17;
+    }
+    auto result = executeBoardInvocation(*package, std::move(request), driver);
+    if (failedReadback) {
+      ASSERT_FALSE(static_cast<bool>(result));
+      EXPECT_NE(llvm::toString(result.takeError()).find("injected d2h"),
+                std::string::npos);
+    } else {
+      ASSERT_TRUE(static_cast<bool>(result))
+          << llvm::toString(result.takeError());
+      EXPECT_TRUE(result->checkedMemoryGuardBytes);
+      ASSERT_EQ(result->profilerOutputs.size(), 16u);
+      for (const auto &output : result->profilerOutputs)
+        EXPECT_TRUE(llvm::all_of(output.bytes,
+                                 [](uint8_t byte) { return byte == 0x37; }));
+    }
+    EXPECT_EQ(driver.allocatedAddresses.size(), driver.freedAddresses.size());
+  }
+}
+
+TEST_F(BoardRuntimeTest, MemoryGuardsDoNotReadBackAfterPoisonedCompletion) {
+  using namespace wafer::runtime;
+  auto package = verifyTile16();
+  ASSERT_TRUE(static_cast<bool>(package))
+      << llvm::toString(package.takeError());
+  auto request = makeTile16Request(package->getManifest());
+  request.memoryGuardPolicy = RuntimeMemoryGuardPolicy::Check;
+  FakeBoardDriver driver;
+  driver.failOperation = "wait-current-submission";
+  driver.poisonOnFailure = true;
+  auto result = executeBoardInvocation(*package, std::move(request), driver);
+  ASSERT_FALSE(static_cast<bool>(result));
+  llvm::consumeError(result.takeError());
+  EXPECT_TRUE(driver.d2hSources.empty());
+  EXPECT_TRUE(driver.freedAddresses.empty());
+  EXPECT_TRUE(driver.unloadedHandles.empty());
 }
 
 TEST_F(BoardRuntimeTest, InitializesSharedPublicationStorageBeforeEveryLaunch) {

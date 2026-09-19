@@ -2695,3 +2695,96 @@ DTE方案中位耗时为普通winner的3.235倍（增加223.54%），这次搜�
 其静态DTE send site为30，DDR读取约从6.125 MiB降至2.625 MiB，但query分块减半、Instr计数增加。
 这些结构差异说明本次是两个完整候选的比较，不能把差值全部归因于DTE通信本身；本轮未做分阶段设备归因。
 两者cost profile均未校准，估时低于实测；一次排序一致不能证明模型已准确，也不能推断所有DTE方案都更慢。
+
+
+## 2026-09-19：Attention改进首轮数值验证
+
+本轮按统一方案接入SDPA composite、结构化causal跳块、F32 score/online状态及PV累加、
+batched GEMM方向和native unit广播。独立Q/K/V case以同份量化输入转F32，直接调用原module.forward后转回原dtype；
+完整HF functional decode保持原module及reference，第二步消费本轮actual KV，旧prefix逐bit检查。
+本节是实现期间的checkpoint，不替代最终同版本全矩阵或性能资格。
+
+22项`none`配置均先完成fresh source→package/no-card，再逐case串行实卡；
+原32-head 4K prefill另已完成standard 8/42及实卡。每次launch前检查全系统设备占用，
+只排除已确认身份的常驻日志服务；执行窗口内核与固件新增日志未见异常。
+SDK/API 1400、16 Tiles，runtime及package/source/input/reference审计见
+[本轮证据](data/board-performance/attention-improvement-20260919.json)。
+
+| Case | dtype | 单次设备时间/ms（decode按两步列出） | 完整输出最大relative L2 |
+| --- | --- | ---: | ---: |
+| attention-causal-decode-two-tokens | bfloat16 | 1.952000 | 0.002440886 |
+| attention-decode-kv-cache | bfloat16 | 10.102000 / 9.319000 | 0.003733893 |
+| attention-decode-kv-cache | float16 | 10.067000 / 9.352000 | 0.000486821 |
+| attention-fully-masked | bfloat16 | 1.032000 | 0.000000000 |
+| attention-fully-masked | float16 | 1.037000 | 0.000000000 |
+| attention-prefill-28-heads-4096 | bfloat16 | 424.993988 | 0.001944322 |
+| attention-prefill-28-heads-4096 | float16 | 423.035004 | 0.000242662 |
+| attention-prefill-llama-2-7b | float16 | 441.334015 | 0.000242473 |
+| attention-noncausal-additive | bfloat16 | 1.088000 | 0.002416470 |
+| attention-noncausal-additive | float16 | 0.997000 | 0.000284469 |
+| attention-noncausal | bfloat16 | 1.003000 | 0.002130643 |
+| attention-noncausal | float16 | 0.993000 | 0.000255890 |
+| attention-padding | bfloat16 | 1.059000 | 0.002248931 |
+| attention-padding | float16 | 1.061000 | 0.000242780 |
+| attention-prefill | bfloat16 | 3.288000 | 0.001923439 |
+| attention-prefill | float16 | 3.481000 | 0.000261442 |
+| attention-prefill-tail-1025 | bfloat16 | 9.769000 | 0.001893217 |
+| attention-prefill-tail-1025 | float16 | 9.801000 | 0.000243041 |
+| attention-prefill-tail-1031 | bfloat16 | 9.731000 | 0.002003208 |
+| attention-prefill-tail-1031 | float16 | 9.849000 | 0.000248806 |
+| attention-causal-decode-two-tokens | float16 | 1.944000 | 0.000264599 |
+| attention-valid-kv-prefix | bfloat16 | 3.480000 | 0.001921369 |
+| attention-valid-kv-prefix | float16 | 3.540000 | 0.000265490 |
+
+所有数值满足原cosine>=0.9999和relative L2<=0.01；全屏蔽输出另按exact zero检查。
+28-head两种dtype各比较14,680,064个output元素，32-head比较16,777,216个；没有缩减heads或抽样比较。
+32-head当前package的workspace为每Tile 256 B，已实际完成allocation/launch，不沿用此前64 GiB workspace失败结论。
+
+这里只保留每项一次健康普通计时，不能从这些数字签性能改善。首22项未在launch前单独记录compiler二进制SHA，
+因此后续最终冻结版本仍须重新签发匹配重复计时；package、实际输入和reference身份已记录。
+这些实卡记录未启用独立allocation red-zone guard，不把完整输出比较称为guard通过。
+standard全attention、LLaMA/GEMM/ViT及其它受影响保护仍在进行，原性能目标和未闭合门槛保持。
+
+同轮继续记录如下首轮结果，均来自其prepared package及本轮新输入/reference。表中版本只区分本轮中间实现，
+不是新性能基线；工具在launch时的hash也不冒充此前构包的producer hash。
+
+| Case / 中间实现 | dtype | 单次设备时间/ms | 完整输出最大relative L2 |
+| --- | --- | ---: | ---: |
+| standard prefill，写回修复前 | FP16 | 3.369000 | 0.000261442 |
+| standard prefill，mapped写回与单select exp | FP16 | 2.363000 | 0.000261475 |
+| 同上 | BF16 | 2.228000 | 0.001915446 |
+| standard全屏蔽，同一新版 | FP16 | 1.051000 | 0（exact zero） |
+| 同上 | BF16 | 1.039000 | 0（exact zero） |
+| GQA S1024 | FP16 | 115.445999 | 0.000239095 |
+| 同上 | BF16 | 115.649002 | 0.001913932 |
+| GQA S1025 | FP16 | 129.100998 | 0.000240055 |
+| 同上 | BF16 | 129.837006 | 0.001910690 |
+| LLaMA block S16 | FP16 | 8.872000 | 0.000589066 |
+| 同上 | BF16 | 9.153000 | 0.004646471 |
+| 长cache 4094→4095→4096 | FP16 | 13.068000 / 13.051000 | 0.000473642 |
+| 同上 | BF16 | 12.994000 / 12.984000 | 0.003789624 |
+| GEMM4096³ | FP16 | 6.999000 | 0.000061893 |
+| 同上 | BF16 | 6.910000 | 0.000158845 |
+| GEMM4097³ | FP16 | 8.646000 | 0.000062562 |
+| ViT S1024 | FP16 | 41.272000 | 0.000213888 |
+
+上述新增记录的执行窗口健康检查通过；长cache第二步使用本轮actual K/V，两个dtype均检查完整旧prefix不变。
+新版prefill虽比本轮中间实现更快，仍慢于此前1.563 ms健康中位目标，不能签改善。
+三次匹配普通计时、独立guard及最终同版本保护未闭合。
+
+紧接ViT1024的ViT1025于北京时间2026-09-19 07:37:14（UTC 2026-09-18 23:37:14）运行，runtime完成readback/cleanup，
+但同一launch窗口内核报告`rpu=0 pid=3628 xid=12`、`NPU LSU TDMA Timeout`、eid=`0x0D00C005`、
+action=`RESET_BM`。wrapper以90拒绝资格，批次停止，未自动retry/reset；记录的40.967 ms不是健康性能样本。
+离线检查全部787,200项无非有限值、relative L2为0.00021480311643718477、最大绝对误差0.00390625，
+这只保留数值诊断，不抵消设备异常。没有故障PC或packet证据，根因仍unknown。
+本轮证据文件收录该失败及日志hash；后续主机滑窗packed读取修复尚未取得实卡资格。
+
+停止实卡后，滑窗FP16/BF16 × none/search四项使用当前compiler完成fresh source→package、完整TargetModel输出比较，
+并通过`--memory-guards`的no-card规划。该模式已接入原planner/runtime/runner；主机故障注入检查首尾及child间guard、
+回读失败和poison处理。它保护program-data整体及invocation child间隙，不覆盖compiler workspace内部对象。
+尚未用真实设备读回这些guard，不能签实卡guard通过。
+
+主机完整304项lit和66项C++/SystemC component通过；随后新增guard及packed范围检查对应的四项component复测通过。
+canonical完整增量构建通过，随后无源码变化的构建为Ninja no-op。七项workload corpus均两次fresh导出、
+验证原input/parameter/reference payload不变，再执行XLA全输出并按原门限通过；仅五项source bytecode digest更新。
+日志、当前工具身份及滑窗产物身份收录于同一证据文件的`host_validation`，这些主机结果不改变上述实卡资格和性能结论。

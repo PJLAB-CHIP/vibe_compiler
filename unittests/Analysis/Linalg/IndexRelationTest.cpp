@@ -645,6 +645,39 @@ TEST(PhysicalAccessRelationTest,
 }
 
 TEST(PhysicalLayoutRelationTest,
+     UnknownUnitDimensionStridesDoNotContributeAddresses) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::Tensor);
+  constexpr int64_t dynamic = mlir::ShapedType::kDynamic;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto type = mlir::MemRefType::get(
+        {1, 1, extent}, mlir::Float32Type::get(&context),
+        mlir::StridedLayoutAttr::get(&context, dynamic, {dynamic, dynamic, 1}),
+        memory);
+    auto layout = PhysicalLayoutRelation::create(type);
+    ASSERT_TRUE(mlir::succeeded(layout));
+    auto calculator = wafer::WaferStaticPhysicalOffsetCalculator::create(type);
+    ASSERT_TRUE(calculator);
+    for (int64_t index = 0; index < extent; ++index)
+      EXPECT_EQ(calculator->getByteOffset({0, 0, index}), index * 4);
+    auto identity = IndexRelation::identity(type.getShape());
+    ASSERT_TRUE(identity.isExact());
+    auto compact =
+        mlir::MemRefType::get(type.getShape(), type.getElementType(),
+                              mlir::MemRefLayoutAttrInterface{}, memory);
+    EXPECT_TRUE(mlir::succeeded(TransferRealizability::provePhysicalTraversal(
+        type, compact, type.getShape(), *identity.get(), *identity.get())));
+    auto unknown = mlir::MemRefType::get({1, 2, extent}, type.getElementType(),
+                                         type.getLayout(), memory);
+    EXPECT_TRUE(mlir::failed(PhysicalLayoutRelation::create(unknown)));
+  }
+}
+
+TEST(PhysicalLayoutRelationTest,
      NormalizesBlockedEncodingPiecesIntoExactPresburgerMap) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);

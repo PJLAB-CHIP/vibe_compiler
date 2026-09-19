@@ -17,6 +17,8 @@ def Wafer_LinalgExtAttentionYieldOp : Wafer_Op<"linalg_ext.attention.yield", [
 
 def Wafer_LinalgExtAttentionOp
     : Wafer_Op<"linalg_ext.attention", [
+        IsolatedFromAbove,
+        AttrSizedOperandSegments,
         DestinationStyleOpInterface,
         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
         DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
@@ -52,7 +54,11 @@ def Wafer_LinalgExtAttentionOp
     Optional<Wafer_AttentionShaped>:$mask,
     Wafer_AttentionShaped:$output,
     Wafer_AttentionAlgorithmAttr:$algorithm,
-    AffineMapArrayAttr:$indexing_maps
+    AffineMapArrayAttr:$indexing_maps,
+    Variadic<Index>:$positions,
+    DefaultValuedAttr<BoolAttr, "false">:$causal,
+    DefaultValuedAttr<BoolAttr, "false">:$zero_fully_masked,
+    OptionalAttr<AffineMapAttr>:$position_map
   );
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let regions = (region AnyRegion:$score_region);
@@ -65,6 +71,7 @@ def Wafer_LinalgExtAttentionOp
     `outs` `(` $output `:` type($output) `)`
     `algorithm` `(` $algorithm `)`
     `indexing_maps` `=` $indexing_maps
+    (`positions` `(` $positions^ `)`)?
     `score` $score_region
     attr-dict
     (`->` type($results)^)?
@@ -78,6 +85,7 @@ def Wafer_LinalgExtAttentionOp
     ::llvm::SmallVector<::mlir::AffineMap, 6> getIndexingMapsArray();
     ::llvm::SmallVector<int64_t> getStaticLoopRanges();
     ::mlir::Type getScoreType();
+    ::mlir::Type getAccumulatorType();
     ::mlir::FailureOr<::wafer::AttentionIterationRoles>
     getIterationRoles();
 
@@ -121,6 +129,8 @@ def Wafer_LinalgExtAttentionOp
 
 def Wafer_LinalgExtOnlineAttentionOp
     : Wafer_Op<"linalg_ext.online_attention", [
+        IsolatedFromAbove,
+        AttrSizedOperandSegments,
         DestinationStyleOpInterface,
         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
         DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
@@ -149,7 +159,11 @@ def Wafer_LinalgExtOnlineAttentionOp
     AnyRankedTensor:$accumulator,
     AnyRankedTensor:$maximum,
     AnyRankedTensor:$sum,
-    AffineMapArrayAttr:$indexing_maps
+    AffineMapArrayAttr:$indexing_maps,
+    Variadic<Index>:$positions,
+    DefaultValuedAttr<BoolAttr, "false">:$causal,
+    DefaultValuedAttr<BoolAttr, "false">:$zero_fully_masked,
+    OptionalAttr<AffineMapAttr>:$position_map
   );
   let results = (outs
     AnyRankedTensor:$updated_accumulator,
@@ -166,6 +180,7 @@ def Wafer_LinalgExtOnlineAttentionOp
     `outs` `(` $accumulator `,` $maximum `,` $sum `:`
       type($accumulator) `,` type($maximum) `,` type($sum) `)`
     `indexing_maps` `=` $indexing_maps
+    (`positions` `(` $positions^ `)`)?
     `score` $score_region
     attr-dict
     `->` `(` type($updated_accumulator) `,` type($updated_maximum) `,`

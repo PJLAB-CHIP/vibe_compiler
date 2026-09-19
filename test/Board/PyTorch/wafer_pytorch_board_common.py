@@ -13,6 +13,7 @@ import torch
 
 
 MANIFEST_DTYPES = {
+    "bool": torch.bool,
     "bf16": torch.bfloat16,
     "f16": torch.float16,
     "f32": torch.float32,
@@ -129,6 +130,8 @@ def element_bytes(dtype: torch.dtype) -> int:
 
 
 def tensor_nbytes(tensor: torch.Tensor) -> int:
+    if tensor.dtype == torch.bool:
+        return (int(tensor.numel()) + 7) // 8
     return int(tensor.numel()) * tensor.element_size()
 
 
@@ -144,6 +147,15 @@ def require_cpu_contiguous(tensor: torch.Tensor, *, context: str) -> torch.Tenso
 
 def tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
     tensor = require_cpu_contiguous(tensor, context="raw tensor")
+    if tensor.dtype == torch.bool:
+        # The manifest Bool format is packed least-significant bit first;
+        # PyTorch's in-memory bool is byte-sized.
+        flat = tensor.flatten().to(torch.uint8)
+        if flat.numel() % 8:
+            flat = torch.cat((flat, torch.zeros(8 - flat.numel() % 8,
+                                                dtype=torch.uint8)))
+        packed = (flat.reshape(-1, 8) << torch.arange(8)).sum(dim=1).to(torch.uint8)
+        return tensor_raw_bytes(packed)
     expected_bytes = tensor_nbytes(tensor)
     if (
         tensor.storage_offset() != 0
@@ -176,13 +188,20 @@ def read_tensor_raw(
     if any(dim < 0 for dim in normalized_shape):
         raise RuntimeError(f"raw tensor shape must be static: {normalized_shape}")
     raw = path.read_bytes()
-    expected_bytes = math.prod(normalized_shape) * element_bytes(dtype)
+    count = math.prod(normalized_shape)
+    expected_bytes = (count + 7) // 8 if dtype == torch.bool else count * element_bytes(dtype)
     if len(raw) != expected_bytes:
         raise RuntimeError(
             f"raw tensor byte count mismatch for {path}: "
             f"expected={expected_bytes} actual={len(raw)}"
         )
     # bytearray owns writable storage, and clone detaches the result from it.
+    if dtype == torch.bool:
+        if not raw:
+            return torch.empty(normalized_shape, dtype=dtype)
+        packed = torch.frombuffer(bytearray(raw), dtype=torch.uint8)
+        values = ((packed[:, None] >> torch.arange(8)) & 1).flatten()[:count]
+        return values.to(torch.bool).reshape(normalized_shape)
     return torch.frombuffer(bytearray(raw), dtype=dtype).clone().reshape(
         normalized_shape
     )

@@ -142,7 +142,7 @@ CT traversal长度由encoding的valid与layout padding元素决定；BOOL末字�
 地址可由current SSA的常量、SCF induction、加减乘和显式view产生。职责是证明每个DMA连续片段均为整字节、
 DDR各外层stride为整字节，再用原RDMA/WDMA的byte descriptor表达同一逻辑覆盖；不补写邻接bits。
 输出仍是原Instr DMA和memref view，直接消费者为同一DDR规划、completion和target LLVM；production driver与named lowering共用实现。
-不支持任意bit gather、partial-byte写入或未经证明的动态对齐，不增加ABI或猜测容量。
+整字节直接路径不支持任意bit gather、partial-byte写入或未经证明的动态对齐，不增加ABI或猜测容量。
 同一整字节row证明也供SPM内identity copy使用：source/destination分别生成byte descriptor，将较大的连续run拆成
 共同inner span及显式descriptor循环后交原GatherScatter。每端保持原逻辑遍历顺序、实际view地址和完整byte count；
 目的端须证明injective，不补写holes。descriptor层数超出硬件表达能力时拒绝，不分配隐式临时buffer。
@@ -155,6 +155,21 @@ DDR规划和target地址降低消费同一对齐事实，offset仍来自原SSA�
 完成矩阵：rank3/4的1024/1025/1031行、整字节K主块与tail，静态/动态aligned offset、多个descriptor循环及嵌套view，
 逐byte枚举source/destination覆盖并检查holes/guard；未知或不整除offset、非整字节run拒绝。正式源图的BOOL分块经
 Instr、DDR/SPM规划及SystemC exact后，原ViT完整package/no-card与实卡验证才闭合本边界。
+
+只读BOOL切片另允许显式解包路径：current SSA须给出Tensor布局的静态正stride、原allocation范围、
+非负offset范围及固定的offset模8余数。先把实际root表示成等容量的一维packed view，读取覆盖切片的最小完整字节窗口；
+首尾字节和行间holes只读，窗口必须完全落在原root physical bytes内。SPM中以原Bit2Fp将窗口精确展开成FP16的0/1，
+原GatherScatter按实际stride提取logical元素，最后非零比较写入独占的连续BOOL目的buffer。
+这里的FP16只是布尔真值的精确内部表示，不改输入格式、浮点计算或attention语义；普通字节路径仍优先。
+标准view语义沿用[MLIR MemRef](https://mlir.llvm.org/docs/Dialects/MemRef/)，
+`reinterpret_cast`的offset相对underlying allocation，`subview`相对其source；实现以pinned源码核对。
+所有窗口、解包及紧凑临时buffer均实际物化并由原Tile movement owner登记，直接交唯一completion/SPM规划及target lowering。
+未知余数、动态stride、越界窗口、共享末字节目的view或部分字节写入仍拒绝；不从shape预测容量或自动重分块。
+
+只读解包覆盖矩阵：rank3的1024/1025/1031行、字节内所有起点、连续/有holes的row、静态与SCF动态offset、
+主块/tail及原root末尾padding，逐bit核对采样坐标及邻接guard；未知动态余数和越界是拒绝负例。
+直接下游须通过Instr verifier、实际DDR/SPM规划、target调用和完整numeric model。
+1025×1031真实bool滑窗mask须经原SDPA→完整package/no-card→FP16/BF16全输出实卡，不以fixture替代。
 
 ### 2-D Pooling
 
@@ -279,6 +294,17 @@ wrapper存在本身不代表production支持。关系、shape、dtype、布局�
 PBQP不负责发射广播指令。Convert仅在physical traversal成立时直接执行，不能把所有convert一律转到Tensor布局。
 1024/1025/1031的scalar/row/full broadcast、非连续映射、共享源及必要打包须分别检查actual指令与完整数值；
 必要的PV概率窄化、最终输出转换及真实packing保留。具体实施/实卡覆盖见统一板测计划的attention小节。
+
+原生短向量形式由`instr.elementwise`的`rhs_unit_elements`表达：0为完整VV，1..64为VuV，
+右操作数按物理元素序号周期重复；1也覆盖SPM scalar。仅浮点二元arithmetic/relation支持该字段，
+logic及其它操作拒绝非零值。TileToInstr先将current indexing map与两端physical element ordinal关系合成，
+证明`rhs_ordinal = dest_ordinal mod unit_elements`后才保留短右操作数；不能只比较shape或layout名称。
+左侧广播只在原算术可交换时交换两输入；其它映射保留已有movement。除法仍按原合同执行reciprocal及multiply，
+reciprocal使用右操作数自身的紧凑shape。Instr verifier检查范围、arity、dtype、左端完整shape和右端实际footprint；
+target lowering复核左端traversal，CRT发射VuV，numeric model只读取实际unit范围并按同一周期计算。
+本形式不包含immediate VS或VuVLoop；超出短向量合同的row仍通过既有GS物化，不推测循环广播的参数。
+新增覆盖同时检查1/32/64元素周期、1024/1025/1031长度、源共享、非连续映射保持movement、非法unit与unary/logic拒绝，
+以及实际target call、完整数值和越界guard；最终实卡要求仍由统一attention矩阵拥有。
 
 `wafer.tile.elementwise`以closed kind和typed inputs/result表达arithmetic、relation、logic、select及supported
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof
@@ -445,8 +471,10 @@ mapped elementwise或无法证明的control flow都保持原IR；Tile-to-Instr l
 loop-carried的结果创建body-local allocation。
 
 Execution-structure closure同时消除相邻的elementwise写回：functional `elementwise`的唯一use必须是紧接着的
-`copy_into`，result和destination的完整memref type相同，所有input与result同型且indexing maps为空或identity。
-每个input必须与destination为同一SSA value，或由fresh MLIR AliasAnalysis证明NoAlias；MustAlias但不是同一view、
+`copy_into`，result和destination的完整memref type相同。`elementwise_into`保留原typed indexing maps，
+由同一个Tile→Instr实现完成实际输入布局与广播物化；不能为复用destination猜测新的alias。
+每个input必须由fresh MLIR AliasAnalysis证明NoAlias；原map-free同型逐点operation另允许destination为同一SSA input。
+Mapped或select输入与destination存在任何alias时保留原临时结果和copy。MustAlias但不是同一view、
 PartialAlias和MayAlias均不支持此优化。满足条件时以`elementwise_into`直接写入原destination，并删除临时result和copy。
 原destination的view、后续reader和loop state保持不变；不跨越任何operation，不合并已经绑定pipeline stage/phase的operation。
 这是已有明确写入的局部转发，不重新运行Tensor bufferization、不改变算术、layout或通信选择；下游从新IR重建completion与SPM。
@@ -461,7 +489,8 @@ bufferization或Instr allocator合并storage代替。具体alias查询以pinned 
 | --- | --- | --- |
 | rank-3 FP16，1024/1025/1031，独立allocation或destination自身作为input | 相邻唯一use、同layout；functional result/copy为0，原destination直接被写 | Tile verifier→Instr同dest、无额外allocation/copy→completion/SPM |
 | destination预先存在view、后续读取或loop yield | observer继续引用原storage，不做dominated-use替换 | alias与backedge断言；prefill循环/展开完整PyTorch回归 |
-| 部分重叠view、未知alias、非identity map、layout改变、result多use、两op间存在操作 | 不执行优化，原copy保留 | 结构负例及verifier |
+| rank3+、1024/1025/1031，scalar/row广播与permutation、predicate select，输入均NoAlias | 原maps完整转交同一lowering，直接写原destination；blocked predicate padding为false | actual native unit或mapped movement、Instr destination及完整数值 |
+| 部分重叠view、未知alias、mapped input alias、layout改变、result多use、两op间存在操作 | 不执行优化，原copy保留 | 结构负例及verifier |
 | AllReduce三个长度的none/search/peer；prefill三个长度none/search | 产品路径不强制通信，专项原local写回消失，原数学与容差不变 | fresh source/no-card/package、串行完整PyTorch实卡 |
 
 fresh completion owner在worker/order确定后，从actual SSA、effects、ranges、control-flow path和observable obligations重建

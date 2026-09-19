@@ -175,7 +175,7 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
         --wafer-run $<TARGET_FILE:wafer-run>
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/pytorch-product/${_wafer_test_name}
         --optimization-policy ${optimization_policy}
-        --no-card
+        --no-card --memory-guards
         ${_wafer_model_arguments}
     )
     set_tests_properties(${_wafer_test_name} PROPERTIES
@@ -395,6 +395,8 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
       attention-prefill-tail-1025 attention-prefill-tail-1031)
     wafer_add_pytorch_source_no_card_test(${_wafer_prefill_case} float16 fp16 none)
     wafer_add_pytorch_source_no_card_test(${_wafer_prefill_case} float16 fp16 search)
+    wafer_add_pytorch_source_no_card_test(${_wafer_prefill_case} bfloat16 bf16 none)
+    wafer_add_pytorch_source_no_card_test(${_wafer_prefill_case} bfloat16 bf16 search)
   endforeach()
   unset(_wafer_prefill_case)
 
@@ -403,10 +405,41 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   foreach(_wafer_gqa_case IN ITEMS attention-gqa attention-gqa-tail-1025)
     wafer_add_pytorch_source_no_card_test(
       ${_wafer_gqa_case} float16 fp16 search)
+    wafer_add_pytorch_source_no_card_test(
+      ${_wafer_gqa_case} bfloat16 bf16 search)
   endforeach()
   unset(_wafer_gqa_case)
   wafer_add_pytorch_source_no_card_test(
     attention-decode-kv-cache-long-4096 float16 fp16 search)
+  wafer_add_pytorch_source_no_card_test(
+    attention-decode-kv-cache-long-4096 bfloat16 bf16 search)
+  foreach(_wafer_attention_case IN ITEMS
+      attention-prefill-28-heads-4096 attention-causal-decode-two-tokens
+      attention-noncausal attention-noncausal-additive attention-padding
+      attention-fully-masked attention-valid-kv-prefix)
+    foreach(_wafer_attention_policy IN ITEMS none search)
+      wafer_add_pytorch_source_no_card_test(
+        ${_wafer_attention_case} float16 fp16 ${_wafer_attention_policy})
+      wafer_add_pytorch_source_no_card_test(
+        ${_wafer_attention_case} bfloat16 bf16 ${_wafer_attention_policy})
+    endforeach()
+  endforeach()
+  unset(_wafer_attention_case)
+  unset(_wafer_attention_policy)
+
+  # The full 1025x1031 mask exercises unaligned packed reads through the
+  # numerical target consumer. Two D64 contractions require 135,267,200 FMAs.
+  foreach(_wafer_sliding_policy IN ITEMS none search)
+    wafer_add_pytorch_source_no_card_test(
+      attention-sliding-window float16 fp16 ${_wafer_sliding_policy} target-model
+      --target-model-max-fused-multiply-adds 200000000
+      --target-model-max-scalar-evaluations 100000000)
+    wafer_add_pytorch_source_no_card_test(
+      attention-sliding-window bfloat16 bf16 ${_wafer_sliding_policy} target-model
+      --target-model-max-fused-multiply-adds 200000000
+      --target-model-max-scalar-evaluations 100000000)
+  endforeach()
+  unset(_wafer_sliding_policy)
 
   foreach(_wafer_heterogeneous_policy IN ITEMS none search)
     wafer_add_pytorch_source_no_card_test(

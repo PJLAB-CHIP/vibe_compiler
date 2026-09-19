@@ -2551,6 +2551,10 @@ struct GroupBuilder {
       offsets.push_back(builder.getIndexAttr(interval.offset));
       sizes.push_back(builder.getIndexAttr(interval.size));
     }
+    llvm::SmallVector<mlir::Value, 3> positions;
+    if (attention)
+      for (mlir::Value position : attention.getPositions())
+        positions.push_back(rootMapping.lookup(position));
     if (attention &&
         attention.getAlgorithm() == AttentionAlgorithm::FlashAttention) {
       if (coupledContribution || !work.merges.empty())
@@ -2566,7 +2570,7 @@ struct GroupBuilder {
           rootOperands[attention.getKeyMutable().getOperandNumber()],
           rootOperands[attention.getValueMutable().getOperandNumber()],
           rootOperands[attention.getScaleMutable().getOperandNumber()],
-          mappedMask, offsets, sizes, builder);
+          mappedMask, positions, offsets, sizes, builder);
       if (mlir::failed(state))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,
@@ -2624,7 +2628,7 @@ struct GroupBuilder {
           rootOperands[attention.getKeyMutable().getOperandNumber()],
           rootOperands[attention.getValueMutable().getOperandNumber()],
           rootOperands[attention.getScaleMutable().getOperandNumber()],
-          mappedMask, offsets, sizes, builder);
+          mappedMask, positions, offsets, sizes, builder);
       if (mlir::failed(state))
         return fail<llvm::SmallVector<mlir::Value, 2>>(
             failure, SpatialRegionMaterializationFailureKind::Unsupported,

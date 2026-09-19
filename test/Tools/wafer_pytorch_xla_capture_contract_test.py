@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import copy
+import hashlib
 import importlib.util
 import pathlib
 import sys
@@ -402,6 +404,48 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             )
             for digest in case["digests"].values():
                 self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+
+    def test_exporter_provenance_requires_exact_managed_patch(self):
+        spec = self.tool.load_workload_corpus_spec(self.tool.DEFAULT_WORKLOAD_CORPUS_SPEC)
+        framework = spec["source"]["framework"]
+        exporter = spec["source"]["exporter"]
+        torch = types.SimpleNamespace(
+            __version__=framework["version"],
+            version=types.SimpleNamespace(git_version=framework["git_revision"]),
+        )
+        source = "torch_xla/csrc/runtime/stablehlo_composite_helper.cc"
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = pathlib.Path(directory)
+            file = checkout / source
+            file.parent.mkdir(parents=True)
+            original = (REPO_ROOT / "third_party/pytorch-xla" / source).read_bytes()
+            file.write_bytes(original)
+            self.assertEqual(hashlib.sha256(original).hexdigest(),
+                             exporter["patch"]["modified_files"][source])
+            xla = types.SimpleNamespace(__version__=exporter["version"],
+                                        __file__=str(checkout / "torch_xla/__init__.py"))
+            cases = (
+                ("managed", " M " + source + "\n", False, False, False),
+                ("unpatched", "", False, False, True),
+                ("extra", " M " + source + "\n?? extra.cc\n", False, False, True),
+                ("changed", " M " + source + "\n", True, False, True),
+                ("wrong-patch", " M " + source + "\n", False, True, True),
+            )
+            for label, status, changed, wrong_patch, reject in cases:
+                with self.subTest(label=label):
+                    file.write_bytes(original + (b"\n" if changed else b""))
+                    current = copy.deepcopy(spec)
+                    if wrong_patch:
+                        current["source"]["exporter"]["patch"]["sha256"] = "0" * 64
+                    outputs = [exporter["git_revision"], exporter["git_repository"], status]
+                    with (mock.patch.object(self.tool, "_find_git_checkout", return_value=checkout),
+                          mock.patch.object(self.tool.subprocess, "run", side_effect=[
+                              types.SimpleNamespace(stdout=value) for value in outputs])):
+                        if reject:
+                            with self.assertRaisesRegex(RuntimeError, "exporter"):
+                                self.tool._verify_workload_runtime_provenance(current, torch, xla)
+                        else:
+                            self.tool._verify_workload_runtime_provenance(current, torch, xla)
 
     def test_llama_scale_payload_is_explicit(self):
         spec_path = (

@@ -691,6 +691,10 @@ Coupled reduction的parallel轴只有出现在全部state component indexing map
 即使SPM placement合法也不保持数值语义。规则只消费`WaferCoupledReductionOpInterface`的current maps，
 两种policy共享同一capability；actual TilingInterface还须拒绝违反此限制的直接调用。独立state复制/merge不属于本合同。
 
+`none`收到actual capacity rejection后，固定尺寸细化也调用同一current-IR coupled producer/finalizer协调：
+state省略的consumer broadcast轴保持full extent，公共行轴使用一致tile size和顺序。
+该协调只修正显式temporal choice，必须重新物化并经verifier和唯一SPM路径；不能用宽state的shape估算签发容量结论。
+
 `online_attention`的parallel/output/K2轴使用同一个`TilingInterface`，K2 tile以三个DPS result携带actual
 Accumulator/Maximum/Sum。FA在唯一spatial owner内形成K2 recurrence；FD的每个local contribution在自己的exact K2 interval内形成相同
 recurrence。K1在该层保持full extent，decomposition后成为QK Linalg contraction的普通reduction codegen问题。第14项不再选择K1/K2、

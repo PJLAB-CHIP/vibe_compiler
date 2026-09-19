@@ -294,14 +294,14 @@ planning/cost看见。两个matches共享Q/K/V或mask并不冲突；只有它们
 
 ### 4.2 单一 op schema
 
-本节以下schema及4.3节state类型描述已实现的图匹配路径；composite、结构化causal和宽状态的迁移目标见4.5节。
-实施时同步更新唯一schema、verifier、interfaces与全部consumer；现有窄Accumulator不作为新合同的保留选项。
+图匹配与02号composite共同产生本节唯一schema。结构化causal、位置和宽状态遵循4.5节；所有consumer使用同一类型合同。
 
 概念形式：
 
 ```text
 %result = wafer.linalg_ext.attention
     ins(%query, %key, %value, %scale, %mask?)
+    positions(%query_start, %key_start, %key_valid_end)?
     outs(%output)
     {algorithm = flash_attention | flash_decoding,
      indexing_maps = [query, key, value, scale, mask?, output]}
@@ -312,12 +312,12 @@ planning/cost看见。两个matches共享Q/K/V或mask并不冲突；只有它们
 tensor form返回一个与output同type的result；buffer form写入tied destination。op不公开block size、partition count、Tile、layout、
 state buffer、merge owner或schedule字段。
 
-Q/K/V/output使用同一floating storage element type；scale保持source scalar floating type，optional additive mask保持自己的显式floating type，
-Maximum/Sum online state的element type由下述score region的yield定义。Online-attention conversion/decomposition按current SSA所表达的转换边界使用它们。
-Accumulator component使用output storage element type。这些都是op operand/type事实，不形成algorithm或physical candidate轴。
+Q/K/V/output使用同一floating storage element type；scale保持source scalar floating type，optional mask保持自己的显式floating或i1 type。
+低精度storage对应F32 compute type；QK结果、Maximum/Sum和Accumulator使用compute type。
+Online-attention conversion/decomposition按current SSA所表达的转换边界使用它们。这些都是op operand/type事实，不形成algorithm或physical candidate轴。
 
 Score路径的scalar arithmetic由attention自有的单block `score` region保存，并在online form中原样保留。
-Block参数依次是QK contraction的storage scalar、scale scalar和可选mask scalar；终结于
+Block参数依次是QK contraction的compute scalar、scale scalar和可选mask scalar；终结于
 `wafer.linalg_ext.attention.yield`，yield的floating type定义Maximum/Sum state type。Region必须封闭、无effect，
 只含标量运算；不能捕获外部SSA或包含tensor/buffer。已有DPS/Tiling接口继续拥有tensor输入与state，不增加另一套数值policy。
 标准`linalg.yield`的parent合同不适用于这个opaque composite op，因此新增attention专用terminator，直接消费者为op verifier和唯一decomposition。
@@ -412,7 +412,7 @@ CoupledReductionDescription
   components:
     Maximum     with row indexing map (B, M) and score result element type
     Sum         with row indexing map (B, M) and score result element type
-    Accumulator with output indexing map (B, M, N) and output element type
+    Accumulator with output indexing map (B, M, N) and compute element type
   initialization: one neutral state per contribution
   merge: all components are consumed by one coupled combine
   finalization: output is produced once after complete K2 coverage
@@ -505,6 +505,15 @@ F32状态增加的allocation、布局和lifetime先在actual candidate中物化�
 DPS或copy消除不得绕过该target约束。
 
 #### 位置与局部展开
+
+两个attention op的`positions`为0或3个index SSA operand，依次是当前query首行绝对位置、当前key首行绝对位置、
+有效key域的exclusive end；配套typed `position_map`从完整iteration domain投影query及key的序列坐标，
+不把GQA的query-head组误当作序列轴。`causal`为typed boolean，要求完整positions与position_map。
+Tiling将实际query/K2 offset分别加到前两项，end保持同一有效域；positions是标量输入，其访问map为空。
+`zero_fully_masked`保存来源算子的全屏蔽行语义：SDPA为true，普通eager softmax图为false；仅在最终sum为零时决定
+返回零或保留原除法特殊值。两字段属于现有op的语义，不是算法或精度选择。
+局部score或旧maximum为负无穷时，先将指数的输入选择为负无穷，使该贡献为零并避免`-inf - -inf`污染后续块；
+有限值仍执行原来的subtract与exp，不在exp之后重复生成完整张量select。
 
 causal可见性使用真实`key_position <= query_position`及有效KV域。位置经空间切分、temporal tiling和tail后仍由
 SSA/明确IR字段解释，不能用局部Q/K shape差重新推断。普通prefill、带cache的多token decode、单token decode共用该规则。

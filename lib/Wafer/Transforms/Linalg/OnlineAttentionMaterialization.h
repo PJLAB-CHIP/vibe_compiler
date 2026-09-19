@@ -21,7 +21,7 @@ struct OnlineAttentionState {
 mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionTile(
     LinalgExtAttentionOp source, mlir::Value query, mlir::Value key,
     mlir::Value value, mlir::Value scale, mlir::Value mask,
-    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ValueRange positions, llvm::ArrayRef<mlir::OpFoldResult> offsets,
     llvm::ArrayRef<mlir::OpFoldResult> sizes, mlir::OpBuilder &builder);
 
 mlir::FailureOr<mlir::Value>

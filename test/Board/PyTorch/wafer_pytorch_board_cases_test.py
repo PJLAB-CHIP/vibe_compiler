@@ -41,6 +41,83 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_bool_payload_uses_manifest_bit_order_and_exact_tail(self):
+        for extent in (1024, 1025, 1031):
+            mask = (torch.arange(3 * extent) % 3 == 0).reshape(1, 3, extent)
+            raw = cases.common.tensor_raw_bytes(mask)
+            expected = bytearray((mask.numel() + 7) // 8)
+            for index, value in enumerate(mask.flatten().tolist()):
+                if value:
+                    expected[index // 8] |= 1 << (index % 8)
+            self.assertEqual(raw, bytes(expected))
+            self.assertEqual(len(raw), cases.common.tensor_nbytes(mask))
+            with tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "mask.raw"
+                path.write_bytes(raw)
+                actual = cases.common.read_tensor_raw(
+                    path, dtype=torch.bool, shape=mask.shape)
+                torch.testing.assert_close(actual, mask, rtol=0, atol=0)
+                path.write_bytes(raw[:-1])
+                with self.assertRaisesRegex(RuntimeError, "byte count mismatch"):
+                    cases.common.read_tensor_raw(
+                        path, dtype=torch.bool, shape=mask.shape)
+
+    def test_multi_token_decode_preserves_causality_and_exact_cache(self):
+        for dtype in (torch.float16, torch.bfloat16):
+            case = cases.make_case("attention-causal-decode-two-tokens", dtype=dtype, seed=41)
+            original = case.materialize_expected_outputs()
+            case.validate_actual_outputs(original)
+            for updated, old, new in zip(original[1:], case.inputs[3:], case.inputs[1:3]):
+                torch.testing.assert_close(updated, torch.cat((old, new), dim=-2), rtol=0, atol=0)
+            # Change only the future new token. Query zero cannot observe it;
+            # query one must still consume it through the original module.
+            case.inputs[2][..., 1, :].add_(100)
+            changed = case.materialize_expected_outputs()
+            torch.testing.assert_close(changed[0][..., 0, :], original[0][..., 0, :], rtol=0, atol=0)
+            self.assertFalse(torch.equal(changed[0][..., 1, :], original[0][..., 1, :]))
+            damaged = list(changed)
+            damaged[1] = damaged[1].clone()
+            damaged[1].view(torch.int16)[0, 0, 0, 0] ^= 1
+            with self.assertRaises(AssertionError):
+                case.validate_actual_outputs(tuple(damaged))
+
+    def test_mask_and_valid_length_cases_use_original_module_domains(self):
+        for dtype in (torch.float16, torch.bfloat16):
+            for name in ("attention-padding", "attention-fully-masked", "attention-valid-kv-prefix", "attention-sliding-window"):
+                case = cases.make_case(name, dtype=dtype, seed=41)
+                original = torch.nn.functional.scaled_dot_product_attention
+                with mock.patch("torch.nn.functional.scaled_dot_product_attention", wraps=original) as call:
+                    output, = case.materialize_expected_outputs()
+                self.assertEqual(call.call_count, 1)
+                self.assertEqual(output.shape, case.inputs[0].shape)
+                if name == "attention-valid-kv-prefix":
+                    self.assertEqual(call.call_args.args[1].shape[-2], 1024)
+                    self.assertEqual(case.inputs[1].shape[-2], 1031)
+                else:
+                    self.assertEqual(call.call_args.kwargs["attn_mask"].dtype, torch.bool)
+                if name == "attention-fully-masked":
+                    case.validate_actual_outputs((output,))
+                    with self.assertRaises(AssertionError):
+                        case.validate_actual_outputs((output + 1,))
+                if name == "attention-sliding-window":
+                    mask = case.inputs[3][0, 0]
+                    for query in (0, 63, 1024):
+                        end = query + 6
+                        begin = max(0, end - 63)
+                        visible = mask[query].nonzero().flatten()
+                        torch.testing.assert_close(
+                            visible, torch.arange(begin, end + 1), rtol=0, atol=0)
+
+    def test_large_prefill_keeps_all_28_heads(self):
+        for dtype in (torch.float16, torch.bfloat16):
+            case = cases.make_case("attention-prefill-28-heads-4096", dtype=dtype, seed=41)
+            self.assertEqual(len(case.inputs), 3)
+            for value in case.inputs:
+                self.assertEqual(value.shape, (1, 28, 4096, 128))
+                self.assertEqual(value.dtype, dtype)
+            # Full reference and all output elements are checked by the
+            # registered source-to-package and real-board cases.
+
     def test_mixed_ports_export_and_payload_preserve_runtime_integer_indices(self):
         class Lookup(torch.nn.Module):
             def __init__(self, dtype):
@@ -243,8 +320,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             export_program=lambda _path: None,
             comparison_policy=cases.ATTENTION_COMPARISON,
         )
-        for profile in (False, True):
-            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+        for profile, guards in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(profile=profile, guards=guards), tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
                 argv = [
                     "runner", "--case", "attention-prefill", "--wafer-compile", "compile",
@@ -252,7 +329,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     "--expected-runtime-version", "1300", "--expected-device-name", "device",
                     "--expected-pci-bus-id", "bus", "--expected-tile-count", "16",
                     "--expected-runtime-library-sha256", "digest", "--completion-timeout-ms", "7000",
-                ] + (["--profile"] if profile else [])
+                ] + (["--profile"] if profile else []) + (["--memory-guards"] if guards else [])
                 with (
                     mock.patch.object(sys, "argv", argv),
                     mock.patch.dict(os.environ, {"WAFER_EXECUTE_HARDWARE_TESTS": "1"}),
@@ -261,7 +338,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                         outputs, [], {}, set(), {},
                     )),
                     mock.patch.object(board_runner, "run", return_value=types.SimpleNamespace(
-                        stdout="", stderr="",
+                        stdout="memory_guards: checked_bytes=1025\n" if guards else "", stderr="",
                     )) as run,
                     mock.patch.object(board_runner, "verify_no_card"),
                     mock.patch.object(board_runner, "verify_board"),
@@ -273,8 +350,10 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 self.assertEqual(run.call_count, 2)
                 no_card, launch = run.call_args_list
                 self.assertIn("--no-card", no_card.args[0])
+                self.assertEqual("--memory-guards" in no_card.args[0], guards)
                 command = launch.args[0]
                 self.assertIn("--board", command)
+                self.assertEqual("--memory-guards" in command, guards)
                 self.assertEqual(command[command.index("--completion-timeout-ms") + 1], "7000")
                 self.assertEqual(launch.kwargs["timeout_seconds"], None if profile else 67)
 
@@ -647,6 +726,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             optimization_policy="none",
             qualify_communication=None,
             no_card=True,
+            memory_guards=False,
             device_id=0,
             expected_runtime_version=None,
             expected_device_name=None,
@@ -1180,55 +1260,36 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 self.assertEqual(actual.shape, expected.shape)
                 self.assertEqual(actual.tobytes(), expected.tobytes())
 
-    def test_hf_prefill_preserves_the_official_additive_mask(self) -> None:
-        from transformers.masking_utils import create_causal_mask
-
-        for extent in (1024, 1025, 1031):
-            with self.subTest(extent=extent):
-                observed_masks = []
-
-                def record_official_mask(*args: object, **kwargs: object) -> object:
-                    mask = create_causal_mask(*args, **kwargs)
-                    observed_masks.append(mask)
-                    return mask
-
-                with mock.patch(
-                    "transformers.masking_utils.create_causal_mask",
-                    side_effect=record_official_mask,
-                ) as create_mask_mock:
-                    case = cases._attention_prefill(
-                        torch.float16, seed=20260803, extent=extent
-                    )
-
-                self.assertEqual(create_mask_mock.call_count, 1)
-                mask = case.inputs[-1]
-                self.assertIs(mask, observed_masks[0])
-                self.assertEqual(mask.shape, (1, 1, extent, extent))
-                call = create_mask_mock.call_args
-                expected_mask = create_causal_mask(*call.args, **call.kwargs)
-                self.assertTrue(torch.equal(mask, expected_mask))
-                expected, = case.materialize_expected_outputs()
-                self.assertEqual(expected.shape, (1, 1, extent, 64))
-                self.assertTrue(torch.isfinite(expected).all())
-                missing_tail = expected.clone()
-                missing_tail.flatten()[-1] += 1
+    def test_prefill_reference_calls_the_original_module_with_widened_inputs(self) -> None:
+        for dtype in (torch.float16, torch.bfloat16):
+            for extent in (1024, 1025, 1031):
+                case = cases._attention_prefill(dtype, seed=20260803, extent=extent)
+                self.assertEqual(len(case.inputs), 3)
+                original = torch.nn.functional.scaled_dot_product_attention
+                with mock.patch("torch.nn.functional.scaled_dot_product_attention",
+                                wraps=original) as forward:
+                    expected, = case.materialize_expected_outputs()
+                self.assertEqual(forward.call_count, 1)
+                self.assertTrue(forward.call_args.kwargs["is_causal"])
+                self.assertIsNone(forward.call_args.kwargs["attn_mask"])
+                for actual_input, low_input in zip(forward.call_args.args, case.inputs, strict=True):
+                    self.assertEqual(actual_input.dtype, torch.float32)
+                    torch.testing.assert_close(actual_input, low_input.float(), rtol=0, atol=0)
+                self.assertEqual(expected.dtype, dtype)
+                torch.testing.assert_close(expected[:, :, 0], case.inputs[2][:, :, 0], rtol=0, atol=0)
                 with self.assertRaises(AssertionError):
                     cases.common.assert_tensor_matches(
-                        missing_tail, expected, policy=case.comparison_policy,
-                        context=f"causal prefill L={extent} full tail",
-                    )
+                        expected * 2, expected, policy=case.comparison_policy,
+                        context=f"causal prefill L={extent} full result")
 
     def test_llama_prefill_uses_full_context_and_causal_multihead_reference(self) -> None:
         case = cases.make_case(
             "attention-prefill-llama-2-7b", dtype=torch.float16, seed=20260803
         )
-        query, key, value, mask = case.inputs
+        query, key, value = case.inputs
         for tensor in (query, key, value):
             self.assertEqual(tensor.shape, (1, 32, 4096, 128))
-        self.assertEqual(mask.shape, (1, 1, 4096, 4096))
-        self.assertEqual(mask[0, 0, 0, 0].item(), 0)
-        self.assertLess(mask[0, 0, 0, -1].item(), -10000)
-        self.assertEqual(mask[0, 0, -1, 0].item(), 0)
+        self.assertEqual(len(case.inputs), 3)
         # Full-context eager reference runs in the registered product no-card
         # case. Exercise multihead causality here without duplicating its cost.
         case = cases._read_only_attention(
@@ -1264,11 +1325,11 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             with self.subTest(extent=extent):
                 name = "attention-gqa" if extent == 1024 else "attention-gqa-tail-1025"
                 case = cases.make_case(name, dtype=torch.float16, seed=20260803)
-                query, key, value, mask = case.inputs
+                query, key, value = case.inputs
                 self.assertEqual(query.shape, (1, 32, extent, 128))
                 self.assertEqual(key.shape, (1, 8, extent, 128))
                 self.assertEqual(value.shape, key.shape)
-                self.assertEqual(mask.shape, (1, 1, extent, extent))
+                self.assertEqual(len(case.inputs), 3)
                 expected, = case.materialize_expected_outputs()
                 self.assertEqual(expected.shape, query.shape)
                 self.assertTrue(torch.isfinite(expected).all())

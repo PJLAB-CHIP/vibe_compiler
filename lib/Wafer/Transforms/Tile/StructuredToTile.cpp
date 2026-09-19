@@ -795,6 +795,29 @@ buildGemmDescriptor(mlir::linalg::LinalgOp operation) {
     descriptor.rhsOrientation = descriptor.rhsOrder.front() == 0
                                     ? GemmOrientation::Normal
                                     : GemmOrientation::Transpose;
+  } else {
+    // Keep a stored [K,M...] or [N...,K] matrix in that orientation. Only the
+    // matrix groups rotate; batch axes retain their proven common order. The
+    // subsequent reshape still needs the ordinary physical alias proof.
+    unsigned batches = dimensions->batch.size();
+    auto preserveTransposed = [&](llvm::SmallVector<int64_t, 6> &order,
+                                  unsigned firstGroup,
+                                  GemmOrientation &orientation) {
+      auto transposed = order;
+      std::rotate(transposed.begin() + batches,
+                  transposed.begin() + batches + firstGroup, transposed.end());
+      if (llvm::is_sorted(
+              llvm::ArrayRef<int64_t>(transposed).drop_front(batches)) &&
+          !llvm::is_sorted(
+              llvm::ArrayRef<int64_t>(order).drop_front(batches))) {
+        order = std::move(transposed);
+        orientation = GemmOrientation::Transpose;
+      }
+    };
+    preserveTransposed(descriptor.lhsOrder, dimensions->m.size(),
+                       descriptor.lhsOrientation);
+    preserveTransposed(descriptor.rhsOrder, dimensions->k.size(),
+                       descriptor.rhsOrientation);
   }
   return descriptor;
 }
@@ -1486,7 +1509,12 @@ createElementwise(ComputeElementwiseKind kind, llvm::ArrayRef<ExprValue> inputs,
   }
   mlir::MemRefType resultType =
       changeElementType(resultShape, resultElementType);
-  if (shape.size() != static_cast<size_t>(resultShape.getRank()))
+  // An intermediate predicate has its own bit-packed physical traversal.
+  // Inheriting a float destination's blocked layout changes the lane order
+  // when the native block width depends on dtype. Tensor order is common to
+  // the relation inputs/result; explicit movement preserves other layouts.
+  if (resultElementType.isInteger(1) ||
+      shape.size() != static_cast<size_t>(resultShape.getRank()))
     resultType = mlir::MemRefType::get(
         shape, resultElementType, mlir::MemRefLayoutAttrInterface{},
         MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
@@ -1567,15 +1595,14 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   mlir::IntegerAttr resultNDim;
   mlir::MemRefType gemmResultType = resultType;
   llvm::SmallVector<int64_t, 6> resultCanonicalOrder;
-  if (descriptor->rankTwo) {
-    if (descriptor->lhsOrientation != GemmOrientation::Normal ||
-        descriptor->rhsOrientation != GemmOrientation::Normal) {
-      lhsOrientation = GemmOrientationAttr::get(rewriter.getContext(),
-                                                descriptor->lhsOrientation);
-      rhsOrientation = GemmOrientationAttr::get(rewriter.getContext(),
-                                                descriptor->rhsOrientation);
-    }
-  } else {
+  if (descriptor->lhsOrientation != GemmOrientation::Normal ||
+      descriptor->rhsOrientation != GemmOrientation::Normal) {
+    lhsOrientation = GemmOrientationAttr::get(rewriter.getContext(),
+                                              descriptor->lhsOrientation);
+    rhsOrientation = GemmOrientationAttr::get(rewriter.getContext(),
+                                              descriptor->rhsOrientation);
+  }
+  if (!descriptor->rankTwo) {
     resultCanonicalOrder = descriptor->resultOrder;
     mlir::FailureOr<mlir::Value> canonicalLhs = permuteBuffer(
         lhs, descriptor->lhsOrder, rewriter, operation.getLoc(), statistics);
@@ -1585,12 +1612,22 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
       return mlir::failure();
     lhs = *canonicalLhs;
     rhs = *canonicalRhs;
-    mlir::FailureOr<mlir::Value> flattenedLhs = reshapeBuffer(
-        lhs, {descriptor->batchCount, descriptor->mSize, descriptor->kSize},
-        rewriter, operation.getLoc(), statistics);
-    mlir::FailureOr<mlir::Value> flattenedRhs = reshapeBuffer(
-        rhs, {descriptor->batchCount, descriptor->kSize, descriptor->nSize},
-        rewriter, operation.getLoc(), statistics);
+    bool transposeLhs =
+        descriptor->lhsOrientation == GemmOrientation::Transpose;
+    bool transposeRhs =
+        descriptor->rhsOrientation == GemmOrientation::Transpose;
+    mlir::FailureOr<mlir::Value> flattenedLhs =
+        reshapeBuffer(lhs,
+                      {descriptor->batchCount,
+                       transposeLhs ? descriptor->kSize : descriptor->mSize,
+                       transposeLhs ? descriptor->mSize : descriptor->kSize},
+                      rewriter, operation.getLoc(), statistics);
+    mlir::FailureOr<mlir::Value> flattenedRhs =
+        reshapeBuffer(rhs,
+                      {descriptor->batchCount,
+                       transposeRhs ? descriptor->nSize : descriptor->kSize,
+                       transposeRhs ? descriptor->kSize : descriptor->nSize},
+                      rewriter, operation.getLoc(), statistics);
     if (mlir::failed(flattenedLhs) || mlir::failed(flattenedRhs))
       return mlir::failure();
     lhs = *flattenedLhs;
@@ -1613,16 +1650,16 @@ lowerContraction(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
         return mlir::failure();
       *input = *materialized;
     }
-    gemmResultType = getShapedType(resultType, {descriptor->batchCount,
-                                                getMemRef(lhs).getDimSize(1),
-                                                getMemRef(rhs).getDimSize(2)});
+    gemmResultType =
+        getShapedType(resultType, {descriptor->batchCount, descriptor->mSize,
+                                   descriptor->nSize});
     batchCount = rewriter.getI64IntegerAttr(descriptor->batchCount);
     lhsBatchDims = rewriter.getDenseI64ArrayAttr({0});
-    lhsMDim = rewriter.getI64IntegerAttr(1);
-    lhsContractingDim = rewriter.getI64IntegerAttr(2);
+    lhsMDim = rewriter.getI64IntegerAttr(transposeLhs ? 2 : 1);
+    lhsContractingDim = rewriter.getI64IntegerAttr(transposeLhs ? 1 : 2);
     rhsBatchDims = rewriter.getDenseI64ArrayAttr({0});
-    rhsContractingDim = rewriter.getI64IntegerAttr(1);
-    rhsNDim = rewriter.getI64IntegerAttr(2);
+    rhsContractingDim = rewriter.getI64IntegerAttr(transposeRhs ? 2 : 1);
+    rhsNDim = rewriter.getI64IntegerAttr(transposeRhs ? 1 : 2);
     resultBatchDims = rewriter.getDenseI64ArrayAttr({0});
     resultMDim = rewriter.getI64IntegerAttr(1);
     resultNDim = rewriter.getI64IntegerAttr(2);

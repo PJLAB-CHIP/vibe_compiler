@@ -5,9 +5,11 @@
 #include "AttentionMath.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -87,7 +89,7 @@ mlir::Value createFilledTensor(mlir::Location location,
 mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionTile(
     LinalgExtAttentionOp source, mlir::Value query, mlir::Value key,
     mlir::Value value, mlir::Value scale, mlir::Value mask,
-    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ValueRange positions, llvm::ArrayRef<mlir::OpFoldResult> offsets,
     llvm::ArrayRef<mlir::OpFoldResult> sizes, mlir::OpBuilder &builder) {
   if (!source || !mlir::isa<mlir::RankedTensorType>(query.getType()) ||
       !mlir::isa<mlir::RankedTensorType>(key.getType()) ||
@@ -165,11 +167,25 @@ mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionTile(
   maps.append({mlir::AffineMapAttr::get(accumulatorComponent->indexingMap),
                mlir::AffineMapAttr::get(maximumComponent->indexingMap),
                mlir::AffineMapAttr::get(sumComponent->indexingMap)});
+  llvm::SmallVector<mlir::Value, 3> tiledPositions(positions);
+  if (!positions.empty()) {
+    for (auto [index, expression] :
+         llvm::enumerate(source.getPositionMapAttr().getValue().getResults())) {
+      unsigned dimension =
+          mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+      mlir::Value offset = mlir::getValueOrCreateConstantIndexOp(
+          builder, location, offsets[dimension]);
+      tiledPositions[index] = builder.createOrFold<mlir::arith::AddIOp>(
+          location, positions[index], offset);
+    }
+  }
   auto online = builder.create<LinalgExtOnlineAttentionOp>(
       location,
       mlir::TypeRange{accumulator.getType(), maximum.getType(), sum.getType()},
       *queryTile, *keyTile, *valueTile, scale, mask ? *maskTile : mlir::Value{},
-      accumulator, maximum, sum, builder.getArrayAttr(maps));
+      accumulator, maximum, sum, builder.getArrayAttr(maps), tiledPositions,
+      source.getCausalAttr(), source.getZeroFullyMaskedAttr(),
+      source.getPositionMapAttr());
   mlir::IRMapping scoreMapping;
   source.getScoreRegion().cloneInto(&online.getScoreRegion(), scoreMapping);
   return OnlineAttentionState{online.getUpdatedAccumulator(),
@@ -198,10 +214,17 @@ materializeOnlineAttentionFinalize(LinalgExtAttentionOp source,
     return mlir::failure();
   llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes(
       maps.front().getNumDims(), mlir::utils::IteratorType::parallel);
+  auto outputType = mlir::RankedTensorType::get(
+      mlir::cast<mlir::RankedTensorType>(state.accumulator.getType())
+          .getShape(),
+      mlir::cast<mlir::ShapedType>(source.getOutput().getType())
+          .getElementType());
+  mlir::Value output = builder.create<mlir::tensor::EmptyOp>(
+      source.getLoc(), outputType.getShape(), outputType.getElementType());
   auto generic = builder.create<mlir::linalg::GenericOp>(
-      source.getLoc(), mlir::TypeRange{state.accumulator.getType()},
-      mlir::ValueRange{state.accumulator, state.sum},
-      mlir::ValueRange{state.accumulator}, maps, iteratorTypes,
+      source.getLoc(), mlir::TypeRange{outputType},
+      mlir::ValueRange{state.accumulator, state.sum}, mlir::ValueRange{output},
+      maps, iteratorTypes,
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
           mlir::ValueRange arguments) {
         mlir::Value accumulator = castAttentionFloatScalar(
@@ -210,6 +233,15 @@ materializeOnlineAttentionFinalize(LinalgExtAttentionOp source,
             accumulator ? nestedBuilder.create<mlir::arith::DivFOp>(
                               location, accumulator, arguments[1])
                         : mlir::Value{};
+        if (source.getZeroFullyMasked()) {
+          mlir::Value zero = nestedBuilder.create<mlir::arith::ConstantOp>(
+              location,
+              nestedBuilder.getFloatAttr(arguments[1].getType(), 0.0));
+          mlir::Value empty = nestedBuilder.create<mlir::arith::CmpFOp>(
+              location, mlir::arith::CmpFPredicate::OEQ, arguments[1], zero);
+          normalized = nestedBuilder.create<mlir::arith::SelectOp>(
+              location, empty, zero, normalized);
+        }
         mlir::Value result =
             normalized
                 ? castAttentionFloatScalar(normalized, arguments[2].getType(),
@@ -261,10 +293,8 @@ mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionStateMerge(
         rowIterators,
         [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
             mlir::ValueRange arguments) {
-          mlir::Value difference = nestedBuilder.create<mlir::arith::SubFOp>(
-              nestedLocation, arguments[0], arguments[1]);
-          mlir::Value scale = nestedBuilder.create<mlir::math::ExpOp>(
-              nestedLocation, difference);
+          mlir::Value scale = computeAttentionExponential(
+              arguments[0], arguments[1], nestedBuilder, nestedLocation);
           nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation, scale);
         });
   };

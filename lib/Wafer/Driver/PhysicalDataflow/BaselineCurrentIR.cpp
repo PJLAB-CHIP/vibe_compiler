@@ -132,6 +132,11 @@ buildFixedTemporalChoice(const TemporalDomain &domain, uint32_t refinement,
     }
     if (!domain.contains(result.choice))
       return mlir::failure();
+    // Coordinate the actual coupled producer/result maps with its finalizer.
+    // A consumer-only broadcast axis must not split an unsplittable state
+    // component and thereby retain its entire initialization outside the loop.
+    if (auto coupled = domain.getCoupledStateProposal(result.choice))
+      result.choice = std::move(*coupled);
     return result;
   };
 

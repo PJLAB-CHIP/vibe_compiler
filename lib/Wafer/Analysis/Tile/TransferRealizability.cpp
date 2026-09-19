@@ -9,6 +9,34 @@
 #include <limits>
 
 namespace wafer::analysis {
+
+mlir::FailureOr<int64_t> TransferRealizability::proveUnitVectorBroadcast(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    const IndexRelation &destinationToSource) {
+  auto source = PhysicalLayoutRelation::create(sourceType);
+  auto dest = PhysicalLayoutRelation::create(destType);
+  if (mlir::failed(source) || mlir::failed(dest) ||
+      !mlir::isa<mlir::FloatType>(sourceType.getElementType()))
+    return mlir::failure();
+  int64_t unit = source->getPhysicalElementCount();
+  if (unit < 1 || unit > 64 || dest->getPhysicalElementCount() < unit)
+    return mlir::failure();
+  auto actual =
+      destinationToSource.compose(source->getLogicalToPhysicalElementOrdinal());
+  auto modulo = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(
+          1, 0, mlir::getAffineDimExpr(0, sourceType.getContext()) % unit),
+      {dest->getPhysicalElementCount()}, {unit});
+  if (!actual.isExact() || !modulo.isExact())
+    return mlir::failure();
+  auto expected =
+      dest->getLogicalToPhysicalElementOrdinal().compose(*modulo.get());
+  if (!expected.isExact() ||
+      !actual.get()->isEquivalentTo(*expected.get()).isProvenTrue())
+    return mlir::failure();
+  return unit;
+}
+
 namespace {
 
 static mlir::LogicalResult

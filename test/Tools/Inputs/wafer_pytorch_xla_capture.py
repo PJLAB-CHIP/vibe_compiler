@@ -654,11 +654,22 @@ def _verify_workload_runtime_provenance(
             f"expected {exporter.get('git_repository')!r}, "
             f"got {actual_xla_origin!r}"
         )
-    if xla_status:
-        raise RuntimeError(
-            "workload corpus PyTorch/XLA source checkout is dirty; "
-            "cannot attest the pinned exporter revision"
-        )
+    # The managed exporter is the pinned revision plus one reviewed source
+    # patch. Attest its exact payload and all changed files; accepting arbitrary
+    # dirt here would make the exported corpus provenance unverifiable.
+    patch = exporter.get("patch")
+    if not isinstance(patch, dict) or not isinstance(patch.get("modified_files"), dict):
+        raise RuntimeError("workload corpus is missing the managed exporter patch")
+    patch_file = pathlib.Path(__file__).resolve().parents[3] / patch["file"]
+    if hashlib.sha256(patch_file.read_bytes()).hexdigest() != patch.get("sha256"):
+        raise RuntimeError("workload corpus exporter patch digest mismatch")
+    changed = {}
+    for line in xla_status.splitlines():
+        if line[:2] not in (" M", "M ", "MM"):
+            raise RuntimeError("workload corpus exporter has unverified source changes")
+        changed[line[3:]] = hashlib.sha256((checkout / line[3:]).read_bytes()).hexdigest()
+    if changed != patch["modified_files"]:
+        raise RuntimeError("workload corpus exporter source differs from the managed patch")
 
 
 @dataclasses.dataclass(frozen=True)

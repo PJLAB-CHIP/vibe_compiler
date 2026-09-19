@@ -17,6 +17,18 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 VERSIONS_FILE = REPO_ROOT / "cmake" / "third_party" / "WaferDependencyVersions.cmake"
 
 
+def apply_composite_region_fix(source: pathlib.Path) -> None:
+    patch = REPO_ROOT / "utils/deps/patches/pytorch-xla-composite-region-captures.patch"
+    command = ["git", "apply", "--check", str(patch)]
+    if subprocess.run(command, cwd=source, capture_output=True).returncode == 0:
+        run(["git", "apply", str(patch)], cwd=source)
+    elif subprocess.run(
+        ["git", "apply", "--reverse", "--check", str(patch)],
+        cwd=source, capture_output=True,
+    ).returncode != 0:
+        raise RuntimeError("pinned PyTorch/XLA composite region patch does not apply")
+
+
 def run(command: list[str], *, cwd: pathlib.Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command), flush=True)
     subprocess.run(command, cwd=cwd, env=env, check=True)
@@ -82,12 +94,19 @@ import torchgen
 
 torch_dir = pathlib.Path(torch.__file__).resolve().parent
 torchgen_dir = pathlib.Path(torchgen.__file__).resolve().parent
+# Relocatable interpreters can retain their installation-time LIBDIR. Resolve
+# the actual shared library from the running interpreter before linking XLA.
+library = sysconfig.get_config_var("LDLIBRARY")
+libdirs = (pathlib.Path(sys.base_prefix) / "lib",
+           pathlib.Path(sysconfig.get_config_var("LIBDIR")))
+libdir = next(directory for directory in libdirs if (directory / library).is_file())
 print(json.dumps({
     "major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
     "site_packages": str(torch_dir.parent),
     "torch": str(torch_dir),
     "torchgen": str(torchgen_dir),
     "ext_suffix": sysconfig.get_config_var("EXT_SUFFIX"),
+    "libdir": str(libdir),
 }))
 """
     return json.loads(capture([str(python), "-c", code]))
@@ -229,7 +248,8 @@ def copy_built_extensions(
         source = bazel_bin / f"{name}.so"
         if not source.is_file():
             raise RuntimeError(f"built extension not found: {source}")
-        shutil.copy2(source, pytorch_xla / f"{name}{ext_suffix}")
+        destination = pytorch_xla / f"{name}{ext_suffix}"
+        shutil.copyfile(source, destination)
 
 
 def verify_runtime_import(python: pathlib.Path) -> None:
@@ -254,6 +274,7 @@ def materialize_bazel_wrapper(
     llvm_raw_repo: pathlib.Path,
     llvm_zlib_repo: pathlib.Path,
     llvm_zstd_repo: pathlib.Path,
+    python_libdir: str,
 ) -> None:
     write_executable(
         wrapper,
@@ -282,7 +303,8 @@ case "${{1:-}}" in
       "--repo_env=CC=$cc" \\
       "--repo_env=CXX=$cxx" \\
       "--action_env=CC=$cc" \\
-      "--action_env=CXX=$cxx"
+      "--action_env=CXX=$cxx" \\
+      {('--linkopt=-L' + python_libdir)!r}
     ;;
   *)
     exec "$real_bazel" "$@"
@@ -382,6 +404,7 @@ def main() -> int:
     if not pytorch_xla.is_dir():
         raise RuntimeError(f"PyTorch/XLA source checkout not found: {pytorch_xla}")
     verify_cxx_move_support(cxx)
+    apply_composite_region_fix(pytorch_xla)
 
     versions = load_versions()
     layout = get_python_layout(python)
@@ -407,6 +430,7 @@ def main() -> int:
         llvm_raw_repo,
         llvm_zlib_repo,
         llvm_zstd_repo,
+        layout["libdir"],
     )
     materialize_compiler_wrapper(wrapper.parent / "gcc", cc)
     materialize_compiler_wrapper(wrapper.parent / "g++", cxx)

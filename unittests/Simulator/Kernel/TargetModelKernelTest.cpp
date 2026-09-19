@@ -274,10 +274,9 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
   if (const auto *operation =
           std::get_if<TargetElementwiseOperation>(&descriptor.semantic)) {
     const bool logic = isTargetElementwiseLogic(*operation);
-    const size_t formatArgument =
-        arguments.size() - 1 -
-        static_cast<size_t>(descriptor.issueDomain &&
-                            descriptor.issueDomain->nccWorkerArgument);
+    const size_t formatArgument = getTargetElementwiseArity(*operation) + 2;
+    if (getTargetElementwiseArity(*operation) == 2 && !logic)
+      arguments[5] = 0;
     arguments[formatArgument] =
         supportedFormatCode(TargetFormatEngine::CT,
                             logic ? LogicalFormat::Bool : LogicalFormat::F32);
@@ -910,6 +909,68 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   for (const RawLogicalValue &value : result)
     EXPECT_EQ(value.bits, UINT64_C(0x40a00000));
   EXPECT_FALSE(config.getAggregateFlags().any());
+}
+
+TEST(TargetModelKernelTest,
+     UnitBroadcastReadsOnlyUnitAndPreservesOutputGuards) {
+  for (auto format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32})
+    for (uint32_t extent : {1024, 1025, 1031})
+      for (uint32_t unit : {1, 32, 64}) {
+        // The command is a physical vector; its producer's logical shape is
+        // [2, extent, unit], checked by the Tile-to-Instr test.
+        InvocationMemoryRegistry memory = makeRegistry();
+        FormalNumericExecutionContext context;
+        uint64_t base = memory.getAddressPlan().getSPMBase();
+        uint32_t count = 2 * extent * unit;
+        auto full =
+            makeTensor(format, PhysicalTensorLayout::Tensor, {2, extent, unit});
+        auto shortKey =
+            makeTensor(format, PhysicalTensorLayout::Tensor, {unit});
+        uint64_t one = format == LogicalFormat::F32   ? 0x3f800000
+                       : format == LogicalFormat::F16 ? 0x3c00
+                                                      : 0x3f80;
+        uint64_t two = format == LogicalFormat::F32 ? 0x40000000 : 0x4000;
+        std::vector<RawLogicalValue> lhs(count, {format, one});
+        std::vector<RawLogicalValue> rhs(unit, {format, 0});
+        for (uint32_t i = 0; i < unit; ++i)
+          rhs[i].bits = i % 2 ? one : 0;
+        writeTensor(memory, 0, base, full, lhs);
+        writeTensor(memory, 0, base + 0x90000, shortKey, rhs);
+        uint64_t output = base + 0xa0000;
+        std::vector<uint8_t> guard(16, 0xa5);
+        llvm::cantFail(memory.applyAtomically(
+            {TargetModelByteWrite{0, TargetModelAddressSpace::TileSPM,
+                                  output - guard.size(), 1, guard}}));
+        TargetCommand command{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                              TargetElementwiseCommand{
+                                  TargetElementwiseOperation::Add, base,
+                                  base + 0x90000, output, count, format, unit}};
+        auto budget = TargetModelKernelBudget::create(
+            FormalNumericWorkBudget::create(count, 0), count * 8, 256);
+        auto effect = executeTargetModelCommand(command, memory, budget);
+        ASSERT_TRUE(static_cast<bool>(effect))
+            << llvm::toString(effect.takeError());
+        ASSERT_EQ(effect->pendingReads.size(), 2u);
+        EXPECT_EQ(effect->pendingReads[1].byteCount,
+                  unit * (format == LogicalFormat::F32 ? 4 : 2));
+        llvm::cantFail(
+            applyTargetModelCommandEffect(memory, context, std::move(*effect)));
+        auto result = readTensor(memory, 0, output, full);
+        ASSERT_EQ(result.size(), count);
+        for (uint32_t i = 0; i < count; ++i)
+          ASSERT_EQ(result[i].bits, (i % unit) % 2 ? two : one) << i;
+        EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
+                      0, TargetModelAddressSpace::TileSPM,
+                      output - guard.size(), guard.size(), 1)),
+                  guard);
+        std::get<TargetElementwiseCommand>(command.payload).rhsUnitElements =
+            65;
+        EXPECT_NE(
+            expectError(executeTargetModelCommand(command, memory, budget))
+                .find("1..64"),
+            std::string::npos);
+      }
 }
 
 TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {

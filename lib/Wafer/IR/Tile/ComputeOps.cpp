@@ -230,7 +230,8 @@ mlir::LogicalResult ComputeElementwiseOp::verify() {
 
 mlir::LogicalResult ComputeElementwiseIntoOp::verify() {
   return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
-                                       getInputs(), getDest().getType());
+                                       getInputs(), getDest().getType(),
+                                       getIndexingMapsAttr());
 }
 
 mlir::LogicalResult ComputeReduceOp::verify() {

@@ -300,10 +300,23 @@ executeElementwise(const compiler::TargetCommand &command,
                                                    : value.format;
   llvm::Expected<PhysicalTensorDescriptor> inputKey =
       makeTensor(value.format, {value.elementCount});
+  llvm::Expected<PhysicalTensorDescriptor> rhsKey =
+      value.rhsUnitElements
+          ? PhysicalTensorDescriptor::create(value.format,
+                                             PhysicalTensorLayout::Tensor,
+                                             {value.rhsUnitElements})
+          : makeTensor(value.format, {value.elementCount});
   llvm::Expected<PhysicalTensorDescriptor> destinationKey =
       makeTensor(destinationFormat, {value.elementCount});
   if (!inputKey)
     return inputKey.takeError();
+  if (!rhsKey)
+    return rhsKey.takeError();
+  if (value.rhsUnitElements &&
+      value.elementCount >
+          budget.getNumericBudget().getMaximumScalarEvaluations())
+    return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
+                       "unit broadcast exceeds scalar evaluation budget");
   if (!destinationKey)
     return destinationKey.takeError();
   std::vector<PhysicalTensorDescriptor> inputKeys;
@@ -320,14 +333,16 @@ executeElementwise(const compiler::TargetCommand &command,
   std::vector<ManagedReferenceInput> managedInputs{{value.lhs, &*inputKey}};
   if (value.rhs)
     managedInputs.push_back({*value.rhs, &*inputKey});
-  llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(command, memory, *operation, managedInputs,
-                                 value.destination, *destinationKey, budget,
-                                 policy);
-  if (!managed)
-    return managed.takeError();
-  if (*managed)
-    return std::move(**managed);
+  if (!value.rhsUnitElements) {
+    llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
+        tryExecuteManagedReference(command, memory, *operation, managedInputs,
+                                   value.destination, *destinationKey, budget,
+                                   policy);
+    if (!managed)
+      return managed.takeError();
+    if (*managed)
+      return std::move(**managed);
+  }
 
   std::vector<std::vector<RawLogicalValue>> inputs;
   llvm::Expected<std::vector<RawLogicalValue>> lhs =
@@ -337,9 +352,15 @@ executeElementwise(const compiler::TargetCommand &command,
   inputs.push_back(std::move(*lhs));
   if (value.rhs) {
     llvm::Expected<std::vector<RawLogicalValue>> rhs = readTensor(
-        memory, command.launchSlotId.getValue(), *value.rhs, *inputKey);
+        memory, command.launchSlotId.getValue(), *value.rhs, *rhsKey);
     if (!rhs)
       return rhs.takeError();
+    if (value.rhsUnitElements) {
+      rhs->reserve(value.elementCount);
+      for (uint32_t index = rhs->size(); index < value.elementCount; ++index)
+        rhs->push_back((*rhs)[index % value.rhsUnitElements]);
+      rhs->resize(value.elementCount);
+    }
     inputs.push_back(std::move(*rhs));
   }
   std::vector<llvm::ArrayRef<RawLogicalValue>> views;
@@ -360,7 +381,7 @@ executeElementwise(const compiler::TargetCommand &command,
       makeTensorRead(command.launchSlotId.getValue(), value.lhs, *inputKey)};
   if (value.rhs)
     pendingReads.push_back(
-        makeTensorRead(command.launchSlotId.getValue(), *value.rhs, *inputKey));
+        makeTensorRead(command.launchSlotId.getValue(), *value.rhs, *rhsKey));
   return withReads(
       TargetModelCommandEffect{
           {TargetModelByteWrite{command.launchSlotId.getValue(),
