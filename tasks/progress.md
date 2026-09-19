@@ -49,6 +49,9 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 首次告警附近的last-command使首轮mask标量广播成为优先候选，字段更新语义未闭合，尚不能签唯一故障指令。
 本轮completion及后续厂商清理也超时，设备批次已停；现场已保存，转入离线关联，当前无需再重启。
 证据见[快速观测实测记录](../docs/data/board-performance/tdma-fast-observation-20260920.json)；根因与修复仍未完成。
+用户随后要求将生产填充统一改为整块 `XorVV + AddVS`，去掉 mask 同值铺块的 GatherScatter；
+普通 broadcast 与其它高效 movement 保留。实现、SDK字段检查及当前BF16原始source/package/no-card已完成；
+当前故障 boot 未新增设备执行，新实现的整数 CT、非对齐/tail 写入范围及 TDMA 根因仍须实卡证据。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。

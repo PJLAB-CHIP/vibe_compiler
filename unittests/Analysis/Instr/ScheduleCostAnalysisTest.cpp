@@ -1033,6 +1033,37 @@ module {
   EXPECT_EQ(cost.spmMovementBytes.value, 48u);
 }
 
+TEST_F(ScheduleCostAnalysisTest, FillCountsTwoWholeRangeCTIssues) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    std::string source;
+    llvm::raw_string_ostream os(source);
+    os << "module { func.func @main() {\n"
+          "  %dest = memref.alloc() : memref<2x3x"
+       << extent << "xf32, #wafer.memory<spm, tensor>>\n"
+          "  %value = arith.constant 0xFF800000 : f32\n"
+          "  %zero = arith.constant 0 : index\n"
+          "  %one = arith.constant 1 : index\n"
+          "  %three = arith.constant 3 : index\n"
+          "  scf.for %i = %zero to %three step %one {\n"
+          "    wafer.instr.fill %dest, %value : memref<2x3x"
+       << extent << "xf32, #wafer.memory<spm, tensor>>, f32\n"
+          "  }\n return\n } }\n";
+    auto module = parse(os.str());
+    ASSERT_TRUE(module);
+    auto cost = analyze(*module);
+    EXPECT_EQ(cost.work.instructions.staticSites.value, 1u);
+    EXPECT_EQ(cost.work.instructions.exactExecutions.value, 3u);
+    EXPECT_EQ(cost.work.ctIssues.staticSites.value, 2u);
+    EXPECT_EQ(cost.work.ctIssues.exactExecutions.value, 6u);
+    EXPECT_EQ(cost.work.tdmaIssues.exactExecutions.value, 0u);
+    ASSERT_TRUE(cost.compute.vectorOtherLogicalOps.isKnown());
+    EXPECT_EQ(cost.compute.vectorOtherLogicalOps.value, 36u * extent);
+    EXPECT_EQ(cost.compute.vectorF32LogicalOps.value, 0u);
+    EXPECT_EQ(cost.nccJoinCount.value, 0u);
+    EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
+  }
+}
+
 TEST_F(ScheduleCostAnalysisTest,
        CountsOnePrivateCalleeSiteAcrossMultipleStaticCalls) {
   auto module = parse(R"mlir(

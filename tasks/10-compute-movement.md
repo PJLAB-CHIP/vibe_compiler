@@ -357,6 +357,9 @@ geometry无法direct traversal时保留显式movement。
 `wafer.tile.reduce`只表示Tile-local reduction，保留kind、dimensions、init、input/result relation和evaluation-order
 约束。跨Tile reduction由13的Tile collective/peer protocol表达，不由local reduce op暗中访问其它Tile。
 `wafer.tile.fill`初始化既有destination，并以typed fill domain区分logical-valid或physical-footprint范围。
+TileToInstr物化mapped elementwise输入时，若实际私有allocation仅由支配当前使用的fill写入、没有view/其它使用或逃逸，
+可直接在目标allocation上生成同值physical fill；不为这种同值铺块生成逐元素GatherScatter。
+普通broadcast和非同值规律仍按原有IndexRelation与movement合同处理。目标fill的整块CT实现与位型约束见14号。
 
 TileToInstr可以将rank>4输入的多余前导单位轴从native CT geometry中省去，条件是这些轴不参与归约；
 不能仅因rank>4把这类实际Tile展开为逐归约位置的GS/elementwise循环。输入仍为上述typed Tile reduce，

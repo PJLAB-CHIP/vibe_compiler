@@ -339,7 +339,7 @@ Scratch、Recip和Mul均经同一buffer recorder进入current IR；不推算SPM�
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
 | TDMA | `wafer.instr.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy是descriptor特例，但selected TileModule set中只有无法安全coalesce storage的copy才保留 |
-| TDMA | `wafer.instr.fill` | `wafer.tile.fill` | `TsmPeripheral::Memset`使用`TsmDataMoveInstr`并最终发往TDMA queue的scalar/immediate fill |
+| CT | `wafer.instr.fill` | `wafer.tile.fill` | 同一worker的整块integer-storage `XorVV + AddVS`，一个语义fill、两次CT issue；实现与资格边界见14号 |
 | CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | `#wafer.instr_elementwise_kind` target kind；不含 select |
 | CT | `wafer.instr.bit2fp` | tile semantic select lowering | i1 mask -> floating mask target peripheral op |
 | CT | `wafer.instr.mask_move` | tile semantic select lowering | `TsmMaskDataMove::MaskMove`使用CT packet并最终发往CT/CGRA queue的masked SPM data movement target op |
@@ -387,7 +387,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | --- | --- | --- | --- |
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | current production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | current production target op | 真实layout materialization、SPM copy和可静态证明的slice/transpose/broadcast movement展开为一条或多条gather/scatter；完整copy在selected IR由08用IndexRelation、physical map、effect/lifetime/completion重证，能安全coalesce时删除，不能证明或无法压成supported descriptor时分别保留或结构化失败 |
-| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | current production target op | attr缺省保持v1 Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。current TX81只对BOOL full physical footprint开放I8 byte-fill canonicalization，native TDMA `Fmt_BOOL`和logical-valid BOOL均fail closed |
+| CT scalar fill | `wafer.instr.fill` | current production target op | attr缺省保持Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。BOOL full physical footprint按I8 byte-fill处理，logical-valid BOOL仍fail closed；不再调用厂商Memset |
 | CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | current production target op | 覆盖当前enum中的target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`。existing encoding implementation的Cx/NCx `i1` mapping可用既有full-traversal fields承载value-form relation/logic的bitpacked result；scalar immediate、VuV/VuVLoop和缺失rounding field的形态仍需显式target variant |
 | semantic select | 无单条 select op | composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；source lowering的sum/max/min支持边界见7.4 | terminal op不携带init operand/attr；完整domain/dimension/combiner/init与target format合同闭合时直接生成native Instr，不能丢弃非identity init |
@@ -668,7 +668,7 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_convert_kind`; required `zero_point` for INT8->FP kinds, required `rounding_mode` for rounding wrapper kinds, no extra attrs for plain kinds |
 
 `wafer.instr.fill`省略domain attr时采用Tensor `logical_valid`，目标必须是静态连续row-major view，
-从logical element count checked派生`elem_count`；不能忽略memref stride把非连续view作为一个Memset发射。
+从logical element count checked派生`elem_count`；不能忽略memref stride把非连续view作为一个连续fill发射。
 
 Tile→Instr的fill输入是已经确定alias/layout的`wafer.tile.fill` destination。该转换从实际memref shape/stride找出连续suffix，
 对其它非unit轴物化`scf.for`，在每个iteration建立精确`memref.subview`并发射连续`wafer.instr.fill`。
@@ -683,18 +683,19 @@ named conversion和production driver使用同一实现；原单条DRR被这一�
 直接下游为当前Instr→completion/SPM→Target LLVM，完整block仍须fresh PyTorch实卡验证。
 规则依据MLIR [MemRef subview](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)与
 [SCF for](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)官方合同，以及pinned MemRefUtils的连续view判断；
-硬件Memset当前ABI只接收连续element count，见register-level文档。
+fill的Wafer ABI接收连续element count，CRT以两次整块CT issue实现，见14号。IR effect是destination write与CT resource，
+内部自异或没有输入数值依赖；同址read/write hazard仍由整个destination write的当前IR范围表达。
 
 Current IR定义typed `#wafer.fill_domain<logical_valid|physical_footprint>`，其中`physical_footprint`表示从dest view base
 连续覆盖`computeWaferPhysicalTensorInfo`给出的完整physical bytes：非BOOL要求
 footprint可整除format element bytes并取商，BOOL按`bytes * 8` checked得到bit count；count、range和target field必须可表示。
-它是建立Cx/NCx padding与bitpacked unused bits `KnownSplat`的唯一full-fill路径；若底层Memset不能按该count完整写入则row非法。
+它是建立Cx/NCx padding与bitpacked unused bits `KnownSplat`的唯一full-fill路径；底层CT是否按该count精确写入须按14号资格矩阵验证。
 TargetCall仍消费明确`elem_count`，无需读取planner state；formal/SystemC语义必须证明scalar到canonical raw element的
 映射，无法唯一确定的NaN/-0/conversion tuple不得建立KnownSplat。current TX81 profile不把native TDMA
 `Fmt_BOOL`列为format capability：BOOL physical-footprint的Instr/TargetCall仍以bit count和canonical false/true表达，
 target verifier先证明count等于完整physical bytes×8；唯一CRT边界再以ceil-div换算byte count（对已准入domain
-恰为exact division），并改写为`Fmt_INT8`和`0x00/0xff` splat。该改写保持TDMA resource/effect，但会覆盖unused tail bits，所以不能用于
-`logical_valid` BOOL。native packet排除与I8替代路径的板端证据等级见
+恰为exact division），并改写为`Fmt_INT8`和`0x00/0xff` splat。该改写使用CT resource/effect，会覆盖unused tail bits，所以不能用于
+`logical_valid` BOOL。native TDMA packet排除及旧I8路径的板端证据、新CT路径的资格边界见
 `docs/tx81-compiler-hardware-calibration.md`。Cx/NCx的其它physical-fill组合仍按各自profile row决定；
 未命中typed约束的组合fail closed。
 

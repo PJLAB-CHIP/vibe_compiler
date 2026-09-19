@@ -254,6 +254,24 @@ static mlir::Type getVectorInputType(InstrElementwiseOp op) {
 static void collectComputeCost(mlir::Operation *op,
                                InstructionProgramCost &cost,
                                Quantity multiplicity) {
+  if (auto fill = mlir::dyn_cast<InstrFillOp>(op)) {
+    Quantity elements = getElementCount(fill.getDest());
+    if (fill.getFillDomain().value_or(FillDomain::LogicalValid) ==
+        FillDomain::PhysicalFootprint) {
+      auto info = computeWaferPhysicalTensorInfo(
+          mlir::cast<mlir::MemRefType>(fill.getDest().getType()));
+      elements = info ? Quantity{static_cast<uint64_t>(
+                            info->bitPackedElement
+                                ? info->physicalBytes
+                                : info->physicalElements)}
+                      : Quantity::unavailable(
+                            ScheduleCostReason::UnavailablePhysicalGeometry);
+    }
+    // Fixed raw-integer XorVV + AddVS implementation. Integer CT service is
+    // not calibrated; retain that fact instead of borrowing floating rates.
+    addVectorCost(cost, ScalarClass::Other, multiply(elements, 2), multiplicity);
+    return;
+  }
   if (auto elementwise = mlir::dyn_cast<InstrElementwiseOp>(op)) {
     addVectorCost(cost, getVectorInputType(elementwise),
                   getElementCount(elementwise.getDest()), multiplicity);
@@ -330,8 +348,8 @@ static void collectComputeCost(mlir::Operation *op,
     return;
   }
 
-  // Fill and movement/DTE instructions have no arithmetic logical-op cost.
-  if (mlir::isa<InstrFillOp, InstrMaskMoveOp, InstrRDMAOp, InstrWDMAOp,
+  // Movement/DTE instructions have no arithmetic logical-op cost.
+  if (mlir::isa<InstrMaskMoveOp, InstrRDMAOp, InstrWDMAOp,
                 InstrGatherScatterOp, InstrTDMADataMoveOp, InstrDTESendOp,
                 InstrDTEBroadcastOp, InstrDTEScatterOp, InstrDTERecvOp,
                 InstrDTEWaitOp>(op))
@@ -511,7 +529,8 @@ static void collectInstructionWork(mlir::Operation *op,
       family = &work.dteOperations;
       break;
     }
-    addExecutionCount(*family, multiplicity, 1, countStaticSite);
+    addExecutionCount(*family, multiplicity, mlir::isa<InstrFillOp>(op) ? 2 : 1,
+                      countStaticSite);
   }
   collectNCCDrainWork(op, work, multiplicity, countStaticSite);
 }

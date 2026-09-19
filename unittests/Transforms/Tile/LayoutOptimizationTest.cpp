@@ -3097,14 +3097,17 @@ TEST_F(LayoutOptimizationTest, CPUScalarAlternativeKeepsActualCostAndStorage) {
           EXPECT_EQ(
               cost.aggregateWork.cpuScalarOperations.exactExecutions.value,
               cpu ? 1u : 0u);
+          ASSERT_TRUE(cost.aggregateCompute.vectorOtherLogicalOps.isKnown());
+          EXPECT_EQ(cost.aggregateCompute.vectorOtherLogicalOps.value == 0,
+                    cpu);
           costs[cpu] = analysis::deriveSearchObjective(cost, cohort, programs);
         }
+        // The CT alternative now includes integer-storage XorVV/AddVS fill
+        // work. It no longer ties the register-only F32 alternative under
+        // the low CPU prior; the high CPU prior still reverses the choice.
         EXPECT_EQ(analysis::compareSearchObjectives(costs[1], costs[0]),
                   cpuPrior != 1 ? analysis::SearchObjectiveComparison::Worse
-                  : llvm::StringRef(element) == "f32"
-                      // Shared DDR service dominates both F32 alternatives.
-                      ? analysis::SearchObjectiveComparison::Equivalent
-                      : analysis::SearchObjectiveComparison::Better);
+                                : analysis::SearchObjectiveComparison::Better);
       }
     }
 }

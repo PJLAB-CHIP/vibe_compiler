@@ -694,7 +694,7 @@ module {
   auto fillInstruction =
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(fill.getOperation());
   ASSERT_TRUE(fillInstruction);
-  EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
+  EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::CT);
   EXPECT_EQ(wafer::getNCCOperationCompletion(fill).kind,
             wafer::NCCCompletionKind::OrderedAsynchronousIssue);
   auto fillIssue =
@@ -704,10 +704,10 @@ module {
   effects.clear();
   mlir::cast<mlir::MemoryEffectOpInterface>(fill.getOperation())
       .getEffects(effects);
-  EXPECT_TRUE((
+  EXPECT_FALSE((
       hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferMovementResource>(
           effects)));
-  EXPECT_FALSE(
+  EXPECT_TRUE(
       (hasMemoryEffect<mlir::MemoryEffects::Write, wafer::WaferComputeResource>(
           effects)));
   EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(effects,

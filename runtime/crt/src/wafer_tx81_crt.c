@@ -1041,15 +1041,27 @@ void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count,
   uint32_t span_bytes = 0;
   if (!wafer_memset_span_bytes(packet_elem_count, packet_format, &span_bytes))
     return;
-  TsmDataMoveInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
-  St_StrideIteration si = {
-      span_bytes, 1, 0, 1, 0, 1,
-  };
-  peripheral->Memset(&instr, dst, packet_value, packet_elem_count, &si,
-                     wafer_format(packet_format));
-  wafer_execute_td(&instr, worker);
-  TsmDeletePeripheral(peripheral);
+  /* Fill storage bits, not floating-point values: floating 0 + value would
+   * change negative zero and may change NaN payloads or subnormal values.
+   * Both instructions cover the entire contiguous range. No scalar loop,
+   * TDMA broadcast, or intermediate completion is needed. */
+  uint32_t elem_bytes = span_bytes / packet_elem_count;
+  Data_Format storage_format = elem_bytes == 1 ? Fmt_INT8
+                               : elem_bytes == 2 ? Fmt_INT16
+                               : elem_bytes == 4 ? Fmt_INT32
+                                                 : Fmt_INT64;
+  TsmLogicInstr clear = {0};
+  TsmLogic *logic = TsmNewLogic();
+  logic->XorVV(&clear, dst, dst, dst, packet_elem_count, storage_format);
+  wafer_execute_ct(&clear, worker);
+  TsmDeleteLogic(logic);
+
+  TsmArithInstr fill = {0};
+  TsmArith *arith = TsmNewArith();
+  arith->AddVS(&fill, dst, packet_value, dst, packet_elem_count,
+               RND_NEAREST_EVEN, storage_format);
+  wafer_execute_ct(&fill, worker);
+  TsmDeleteArith(arith);
 }
 
 void wafer_tx81_bit2fp(uint64_t src, uint64_t dst, uint32_t elem_count,

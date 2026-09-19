@@ -236,7 +236,6 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
     case TargetCallBuiltin::WDMA:
       return TargetCallTSMEngine::WDMA;
     case TargetCallBuiltin::GatherScatter:
-    case TargetCallBuiltin::Memset:
     case TargetCallBuiltin::TDMAPad:
     case TargetCallBuiltin::TDMAImg2Col:
       return TargetCallTSMEngine::TDMA;
@@ -245,6 +244,7 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
       return TargetCallTSMEngine::NE;
     case TargetCallBuiltin::Bit2FP:
     case TargetCallBuiltin::MaskMove:
+    case TargetCallBuiltin::Memset:
       return TargetCallTSMEngine::CT;
     case TargetCallBuiltin::DirectDTESendIssue:
     case TargetCallBuiltin::DirectDTEWait:

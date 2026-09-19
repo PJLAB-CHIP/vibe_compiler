@@ -173,6 +173,28 @@ count、fatal，共六次 volatile 32-bit load，保存起止单调时钟；C �
 
 ## 后续定位仍需闭合的证据
 
+### 同值铺块与填充实现的离线分析
+
+已确认的编译器原因是：mapped select 的非predicate输入在TileToInstr中按通用indexing-map路径物化，
+即使source是刚由fill定义、没有其它写入的私有rank-0 allocation，仍只按source/result relation生成GatherScatter。
+因此F32 `-inf`的同值铺块成为inner=4、source stride=0、65,536次迭代的单条TDMA命令。
+当前修改从实际fill/use-def证明同值，直接生成目标整块fill；一般broadcast及其它GatherScatter保持原路径。
+生产fill随后统一由同一worker的整块integer-storage `XorVV + AddVS`实现，保留scalar原始位型。
+
+这定位了低效铺块的生成原因，**没有锁定硬件TDMA timeout的根因**：
+
+- 已审计的SDK descriptor用32-bit iteration存储65,536，inclusive范围与SPM allocation一致，未发现溢出或越界证据；
+  `0xffff` timeout配置的单位及与iteration的关系未闭合，不能用数值相邻建立因果关系。
+- 原故障包同时含厂商Memset和GatherScatter。既有native BOOL Memset失败不能外推到本次F32填充；
+  替换这两类路径后即使case成功，也只能证明新序列在该次执行通过，不能单独归因其中一类旧指令。
+- 新实现的整数AddVS、非对齐/tail实际写入范围尚待本轮板端资格。SDK count/end正确及主机位型检查不能替代真实guard回读。
+- 重启后首个计算已复现，因而“必须连续跑多个case才能触发”已被本次反例排除；
+  尚不能排除同一launch内部命令/资源状态累积。厂商清理超时发生在TDMA之后，不能倒置因果。
+
+本轮仅修改代码与主机验证，没有在当前故障boot新增launch、reset或历史包重测。
+
+### 仍需的设备证据
+
 1. 在实际 TDMA handler 入口、错误状态被更改之前采集一次有界快照最可靠。
    当前发行 handler 没有这项能力；普通PMU及89–126微秒的直接fatal采样已验证，仍不能代替handler入口快照。
    先确认 PMU raw/command ID 的确切编码与保留规则，或取得厂商对应 debug 固件/采集支持。

@@ -776,7 +776,7 @@ mlir::LogicalResult InstrFillOp::verify() {
   return mlir::success();
 }
 
-InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::TDMA; }
+InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrElementwiseOp::verify() {
   if (mlir::failed(verifyNoEmptyVariadicInputs(getOperation(), getInputs(),

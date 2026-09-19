@@ -209,7 +209,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
       arguments[13] = arguments[14] = arguments[15] = 1;
       break;
     case TargetCallBuiltin::Memset:
-      arguments[3] = supportedF32Code(TargetFormatEngine::TDMA);
+      arguments[3] = supportedF32Code(TargetFormatEngine::CT);
       break;
     case TargetCallBuiltin::Bit2FP:
       arguments[3] = supportedF32Code(TargetFormatEngine::CT);

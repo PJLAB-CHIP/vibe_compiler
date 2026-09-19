@@ -2,6 +2,30 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### 同值填充替换（2026-09-20）
+
+用户要求生产填充统一使用两条整块 `XorVV + AddVS`，并明确普通broadcast/其它高效GatherScatter保留。
+合同和覆盖矩阵见14号“同值填充的CT实现”；属于本work item，不改厂商退出、timeout或同步规则。
+实施顺序为CRT及engine/effect/cost收敛→mapped mask同值填充→host/实际SDK packet核对→fresh原BF16 source/package/no-card。
+当前故障boot不再launch；主机通过之后仍须确认整数AddVS和CT非对齐/tail写入边界，不能签board-ready硬件资格或TDMA修复。
+TDMA调查保留第一次fatal附近的mask铺块与相邻copy为优先候选。将vendor Memset与同值GS同时移除属于用户指定实现变更，
+即使后续成功也不能单凭该结果在两条旧路径之间作唯一因果归因。
+
+生产CRT、Instr的CT effect/family、TargetCall/profile engine、两次issue计数及整数工作量已同步。
+mapped select只在实际private fill证明成立时直接物化同值目标；普通broadcast、按行复制及其它movement保留。
+本轮305项lit、3,276组production CRT参数检查、672组实际linked SDK构造/最终CT寄存器检查通过。
+新增1024/1025/1031的fill工作量、负零/NaN位型、动态scalar及alias逃逸保护；canonical完整增量构建与no-op通过。
+Driver等10个完整组件套件通过；Transforms扩大回归有480项通过，余下一项旧成本平局预期按新CT填充工作量修正后定向通过；
+该测试仍确认提高CPU先验会反转选择，不宣称该先验已经实卡校准。
+当前BF16 `[1,28,4096,128]` prefill从fresh源导出、PyTorch reference、payload到新package/no-card通过，
+4份input/expected共58,720,256个BF16值均有限；内部mask的F32负无穷保持原语义。
+16 Tile静态GS由912降至816，其中inner=4、source stride=0、iteration=65,536的48个site全部消失；
+fill site总数仍为176，scalar临时fill改成整块fill。static site数不等于动态issue次数，也不是设备耗时。
+记录见[主机验证与SDK字段证据](../../docs/data/board-performance/ct-fill-host-validation-20260920.json)。
+本轮未上卡；整数CT数值、非对齐/tail实际写入、完整设备guard/cleanup和TDMA根因仍未闭合。
+
+### 板测接续
+
 用户要求性能比较直接使用已有健康耗时记录，不再重新运行历史对照包。本约束覆盖下文尚未执行的旧包配对要求；
 已完成的配对样本和故障记录原样保留。历史时间注明source/包版本、配置、设备环境、计时口径及样本数，
 与当前结果的比较明确属于跨轮次比较，不冒充同环境匹配实验；没有可比记录的case仅报告当前绝对耗时。

@@ -858,7 +858,10 @@ typedef struct TD_Param {
 | destination stride/iteration 0..2 | `0x610..0x630` |
 | `src0_end/src1_end/dst_end` | `0x640/0x650/0x660` |
 
-### Memset descriptor与current profile板端校准
+### 厂商 Memset descriptor与既有profile板端校准
+
+以下描述厂商SDK与历史TDMA实现的实测事实。当前Wafer填充已改用CT `XorVV + AddVS`，
+公开Wafer ABI名称仍为`wafer_tx81_memset`；厂商Memset板端资格不覆盖新CT序列，详见14号设计。
 
 version-matched `TsmPeripheral::Memset`反汇编确认：
 
@@ -886,7 +889,7 @@ current profile的安全板端区分向量给出以下窄结论；证据等级�
   当前profile因此禁止发射native `Fmt_BOOL` TDMA packet。Wafer production只对完整
   `physical_footprint`使用TX81 CRT canonicalization：上游先证明bit count等于完整physical bytes×8，
   CRT再以ceil-div换算byte count（对准入domain是exact division），把canonical false/true变成I8
-  `0x00/0xff` splat并发射合法TDMA Memset。该映射会覆盖unused tail bits，
+  `0x00/0xff` splat；旧实现发射TDMA Memset，新实现发射两条I8 CT指令。该映射会覆盖unused tail bits，
   不能用于logical-valid BOOL fill；板端held-out完成前只算实现合同，不算supported capability。
 
 ### DataMove opcode 和 wrapper

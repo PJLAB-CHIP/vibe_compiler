@@ -102,9 +102,9 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
 
 def Wafer_InstrFillOp : Wafer_NCCInstrOp<"instr.fill", [
     MemoryEffects<[MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_MovementResource>]>
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "instruction-level TDMA scalar fill";
+  let summary = "instruction-level CT storage-bit fill (XorVV then AddVS)";
   let arguments = (ins
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     AnyType:$value,

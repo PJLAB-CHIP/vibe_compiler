@@ -159,7 +159,7 @@ struct FillLowering : mlir::OpRewritePattern<ComputeFillOp> {
       return rewriter.notifyMatchFailure(
           op, "logical fill requires static positive shape and strides");
 
-    // Memset writes a contiguous range. Preserve holes by iterating the outer
+    // Fill writes a contiguous range. Preserve holes by iterating the outer
     // axes; unit axes do not extend the physical range or require a loop.
     int64_t suffix = type.getRank();
     uint64_t elements = 1;
@@ -177,7 +177,7 @@ struct FillLowering : mlir::OpRewritePattern<ComputeFillOp> {
     if (suffix == 0) {
       auto domain = op.getFillDomainAttr();
       // This allocation owns the unused bits of its final byte. The target
-      // implements packed BOOL fills as whole-byte I8 memset operations.
+      // implements packed BOOL fills as whole-byte I8 CT operations.
       if (type.getElementType().isInteger(1) &&
           op.getDest().getDefiningOp<mlir::memref::AllocOp>())
         domain = FillDomainAttr::get(rewriter.getContext(),
@@ -431,12 +431,50 @@ emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
   return mlir::success();
 }
 
+// A private allocation initialized only by a dominating fill is a splat at
+// this consumer. Reject views, escapes and every other writer rather than
+// recovering a value from shape or assuming a general broadcast is a fill.
+// Source and lowered fills may coexist during dialect-conversion rollback.
+static mlir::Value getPrivateFillValue(mlir::Value source,
+                                      mlir::Operation *consumer) {
+  if (!source.getDefiningOp<mlir::memref::AllocOp>())
+    return {};
+  mlir::Value value;
+  ComputeFillOp sourceFill;
+  InstrFillOp loweredFill;
+  for (mlir::OpOperand &use : source.getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    if (owner == consumer)
+      continue;
+    mlir::Value fillValue;
+    if (auto fill = mlir::dyn_cast<ComputeFillOp>(owner)) {
+      if (sourceFill || &use != &fill.getDestMutable())
+        return {};
+      sourceFill = fill;
+      fillValue = fill.getValue();
+    } else if (auto fill = mlir::dyn_cast<InstrFillOp>(owner)) {
+      if (loweredFill || &use != &fill.getDestMutable())
+        return {};
+      loweredFill = fill;
+      fillValue = fill.getValue();
+    } else {
+      return {};
+    }
+    if (owner->getBlock() != consumer->getBlock() ||
+        !owner->isBeforeInBlock(consumer) || (value && value != fillValue))
+      return {};
+    value = fillValue;
+  }
+  return value;
+}
+
 template <typename OpTy>
 class ElementwiseLowering : public mlir::OpRewritePattern<OpTy>,
                             private ScratchRecorderHolder {
 public:
   struct MappedInputRewrite {
     mlir::Value source;
+    mlir::Value fillValue;
     mlir::MemRefType materializedType;
     mlir::MemRefType predicateType;
     llvm::SmallVector<MovementDescriptorPair> descriptors;
@@ -650,6 +688,14 @@ public:
           resultType.getShape(), sourceType.getElementType(),
           resultType.getLayout(), resultType.getMemorySpace());
       if (!inputRewrite.predicateType)
+        inputRewrite.fillValue = getPrivateFillValue(input, op.getOperation());
+      if (inputRewrite.fillValue) {
+        // The mapping selects from a proven uniform value. Define the whole
+        // owned destination, including physical padding, with one fill.
+        inputRewrites.push_back(std::move(inputRewrite));
+        continue;
+      }
+      if (!inputRewrite.predicateType)
         inputRewrite.dynamicSubview =
             getDynamicSubviewDescriptor(input, op.getOperation());
       mlir::MemRefType descriptorSourceType =
@@ -746,6 +792,17 @@ public:
                           op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
+      if (inputRewrite.fillValue) {
+        auto fill = rewriter.create<InstrFillOp>(
+            op.getLoc(), *materialized, inputRewrite.fillValue,
+            FillDomainAttr::get(rewriter.getContext(),
+                                FillDomain::PhysicalFootprint),
+            getDefaultNCCWorkerAttr(rewriter));
+        if (bufferRecorder)
+          bufferRecorder->recordLoweredOperation(op, fill);
+        inputs.push_back(*materialized);
+        continue;
+      }
       auto physical =
           inputRewrite.materializedType
               ? computeWaferPhysicalTensorInfo(inputRewrite.materializedType)

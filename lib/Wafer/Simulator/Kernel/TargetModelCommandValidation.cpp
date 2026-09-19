@@ -303,7 +303,7 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
             return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                                "memset element_count must be positive");
           if (llvm::Error error = requireEngineFormat(
-                  value.format, TargetFormatEngine::TDMA, "memset"))
+                  value.format, TargetFormatEngine::CT, "memset"))
             return error;
           if (value.format == LogicalFormat::Bool &&
               value.elementCount % UINT32_C(8) != 0)

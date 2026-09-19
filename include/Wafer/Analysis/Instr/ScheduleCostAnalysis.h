@@ -109,6 +109,7 @@ struct InstructionExecutionCount {
 /// or scatter therefore contributes to both `tdmaIssues` and
 /// `gatherScatterOperations`, while a Direct-DTE send/receive contributes to
 /// both `dteOperations` and its concrete send/receive counter.
+/// A fill is one IR instruction and two CT issues (whole-range XorVV/AddVS).
 struct InstructionProgramWork {
   InstructionExecutionCount instructions;
   /// Nonconstant scalar Arith operations in current IR, not machine

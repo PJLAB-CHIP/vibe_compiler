@@ -1,0 +1,507 @@
+{
+  "work_item": "board-testing",
+  "scope": "同值填充CT替换与mask铺块；host/no-card，不含真实设备执行",
+  "base_commit": "4c41e0ef653c57e4275e0e6507c2aaeba5554965",
+  "code_files": [
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/include/Wafer/Analysis/Instr/ScheduleCostAnalysis.h",
+      "bytes": 16148,
+      "sha256": "a72327daa6c288ce4ab5e0e6411d13ed2de91794081e411f2c1118f0789c4f10"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/include/Wafer/IR/Instr/InstructionOps.td",
+      "bytes": 14306,
+      "sha256": "65261e0c7de37ee507f55a96847366137233cbce3c5f411365c4e64209fb2662"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/lib/Wafer/Analysis/Instr/ExecutionCost.cpp",
+      "bytes": 49179,
+      "sha256": "b4583821f63b0b0f93ec6867b50931323a1453bcc743b5e53d7ae7d4207eb50d"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/lib/Wafer/Conversion/TileToInstr/ComputeLowering.cpp",
+      "bytes": 114191,
+      "sha256": "135395e784affd2cc381a0c34c8aace11ad59d14c4c4362a942df89b9b5d6bfb"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/lib/Wafer/IR/Instr/ComputeOps.cpp",
+      "bytes": 56130,
+      "sha256": "994efd36622ead80966cd8065a8054dd7782693482dd3c696a45b8f9f16e6686"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/lib/Wafer/Simulator/Kernel/TargetModelCommandValidation.cpp",
+      "bytes": 34065,
+      "sha256": "c3ae87358e023db910ae9f89fdbf210ffd0c1470c9c7c27e61698b2e49be13e0"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/lib/Wafer/Target/TargetCall.cpp",
+      "bytes": 14075,
+      "sha256": "4f19c419a44b39e287ee85c6a0760ad054fd4a6b26cdea249d8384f1150a3064"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/runtime/crt/src/wafer_tx81_crt.c",
+      "bytes": 79046,
+      "sha256": "ea07bafe0c71b20422410d912a4002719a99a46464fbc1aa8e14949dbd845459"
+    }
+  ],
+  "implementation": {
+    "fill": "whole-range integer-storage XorVV then AddVS, same worker",
+    "ct_issues_per_fill": 2,
+    "vendor_memset_calls_in_production": 0,
+    "ordinary_broadcast": "unchanged",
+    "same_value_mask": "dominating private fill proof; otherwise retain movement"
+  },
+  "validation": {
+    "lit": {
+      "passed": 305,
+      "unsupported": 0,
+      "scope": "245 Conversion/Dialect/Tools plus 60 Transforms/Pipelines/Runtime/Frontend/Spmd"
+    },
+    "crt_mock_configurations": 3276,
+    "linked_sdk_packet_pairs": 672,
+    "linked_sdk_ct_commands": 1344,
+    "canonical_build": "passed",
+    "second_build": "ninja no work to do",
+    "driver_component": {
+      "result": "passed",
+      "seconds": 976.83
+    },
+    "transforms_component": {
+      "first_run_passed": 480,
+      "changed_cost_expectation_retest_passed": 1,
+      "total_tests": 481,
+      "reason": "CT alternative has two integer-storage fill operations; low CPU prior now favors register-only F32 as well as F16/BF16"
+    },
+    "analysis_component": "128 tests passed after new fill-count coverage",
+    "component_summary": "10 complete component suites passed; Transforms 480/481 first-run passed, changed cost expectation passed focused retest (1/1); no outstanding failure",
+    "corrected_test_failures": [
+      {
+        "test": "ScheduleCostAnalysisTest.CountsGatherScatterCallsAndBytesFromTheFinalInstructionWalk",
+        "cause": "new C++ test initially inserted inside MLIR fixture string",
+        "resolution": "moved outside raw string; full Analysis 128 tests passed"
+      },
+      {
+        "test": "LayoutOptimizationTest.CPUScalarAlternativeKeepsActualCostAndStorage",
+        "cause": "old F32 cost-equivalence expectation omitted new integer fill work",
+        "resolution": "assert actual integer fill work and updated low-prior winner; high CPU prior still reverses choice; focused retest passed"
+      }
+    ]
+  },
+  "fresh_product": {
+    "case": "attention-prefill-28-heads-4096",
+    "dtype": "bf16",
+    "shape": [
+      1,
+      28,
+      4096,
+      128
+    ],
+    "policy": "search",
+    "seed": 20260803,
+    "source_export": true,
+    "torch_reference": true,
+    "no_card": "passed",
+    "board_execution": false,
+    "numeric_execution": false,
+    "guard_execution": false,
+    "planned_guard_bytes": 10752,
+    "elf_sha256": "sha256:793d9637ddf2e3c66c49f170f805774f2628dcd30c7ab8114038f50a812dd50d"
+  },
+  "static_instruction_comparison": {
+    "fill_sites": {
+      "before": 176,
+      "after": 176
+    },
+    "gather_scatter_sites": {
+      "before": 912,
+      "after": 816
+    },
+    "scalar_65536_gather_sites": {
+      "before": 48,
+      "after": 0
+    }
+  },
+  "root_cause": {
+    "compiler_inefficiency": "mapped select treated a private known splat as general data movement",
+    "tdma_timeout": "unknown",
+    "remaining": [
+      "fault packet/PC and PMU update semantics",
+      "integer CT numeric behavior and nonaligned/tail write span",
+      "fresh device numerical/guard/completion qualification",
+      "continuous execution and performance protection"
+    ],
+    "no_device_launch_this_change": true
+  },
+  "artifacts": [
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00000.mlir",
+      "bytes": 579906,
+      "sha256": "7e10a485c724c90fb8d271a9d9e5e5a7bb8e0734111a4e61e7edb19d6d079e25"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00001.mlir",
+      "bytes": 580060,
+      "sha256": "ce675928b96188a81a095cc711d07f72faa7d4e01a22215cd284dc9460041554"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00002.mlir",
+      "bytes": 580053,
+      "sha256": "b2bc9c4c74c9c2d27ffec83da1d7423b673baa24fca3109e85e50be585b97427"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00003.mlir",
+      "bytes": 580053,
+      "sha256": "e9cc3b7dc90af6c11ecf8976eba6deec5eb3cc25f8af5c024395395ab3a56fe9"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00004.mlir",
+      "bytes": 582210,
+      "sha256": "4ff7c5daacbbddbd14d59c2d44e40664489ebdf42569e5d02d83934cfd0e9b13"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00005.mlir",
+      "bytes": 582214,
+      "sha256": "9e97a42737248635a85f8d02aef34aa7ec78c1aa814aa166a80accb87f6edd32"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00006.mlir",
+      "bytes": 582214,
+      "sha256": "3e3def16399cbddcdd73ce027ec7882e186d6322a1a2c58cf789e4d0fa89ed96"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00007.mlir",
+      "bytes": 582214,
+      "sha256": "956ac1cef40823c9b8ab5c1febaeeb76d9fb592419c9c489e324cf497838831d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00008.mlir",
+      "bytes": 582214,
+      "sha256": "d32333f87ff55eea24cf2ece18188117747ca1cc56b90a368399980c1f5cffbe"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00009.mlir",
+      "bytes": 582214,
+      "sha256": "b9c5f11a8364ce855a465a37298561a2baa60399e240d7d4a03bf76e4cff0585"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00010.mlir",
+      "bytes": 582218,
+      "sha256": "b90285788edcdb72f232db59b2141665321274553f17f172a78ee52df52c62b0"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00011.mlir",
+      "bytes": 582218,
+      "sha256": "6e6be86c7fb774b0f7e7e26a7cc37d3174ad7548aa124f99bd6065f53092ac22"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00012.mlir",
+      "bytes": 581452,
+      "sha256": "b10119249ae4f08c150f33e609df6330bc60ab4a4daa78b4d4db961ae483d816"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00013.mlir",
+      "bytes": 581452,
+      "sha256": "84d74945be6adbd1df9a6062baefa3f0287c4e78cef245d720906fd5a5e55e4a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00014.mlir",
+      "bytes": 581452,
+      "sha256": "33e229e01c0a54c47369953635c188ee395d66fbdb1e18fea4b656e9b3389936"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/instruction/tile_00015.mlir",
+      "bytes": 581452,
+      "sha256": "0e8f625946c36af44ed43812d171879a295c75f30770ee203cc5361656d356ac"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00000.ll",
+      "bytes": 21841,
+      "sha256": "fd2d07578ab3ef516f469829906d321926ae08e90f842d486d76faaa13e1601b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00001.ll",
+      "bytes": 21911,
+      "sha256": "671f13b2ac97680a66a96bf0636d51f12aec391cfd902981c12f130f1ae16922"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00002.ll",
+      "bytes": 21911,
+      "sha256": "5d9a966f25a16202fa9389b6caf75da4fac2231c5fb8b5243f4576c21932185c"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00003.ll",
+      "bytes": 21911,
+      "sha256": "719bcd9365a3875a405e40f2ab401d189e7b51aeea205710fd8e5c84e502efd0"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00004.ll",
+      "bytes": 22688,
+      "sha256": "101945aacd248e86cee23ff3b91c1110a471099f9cdefb75716e6e4d1c53653b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00005.ll",
+      "bytes": 22690,
+      "sha256": "50668ad98f5f8536bd0e267fff55582dcbb3272b499437596d0a239d927683ce"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00006.ll",
+      "bytes": 22690,
+      "sha256": "ad67680a1c4be988e5be8cf65735b145baf4af2edf864cbc2a5e800087bcb025"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00007.ll",
+      "bytes": 22690,
+      "sha256": "36c7e2975a513ccffbc7881903d8f8468499b0964133f1b969722cf63720a088"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00008.ll",
+      "bytes": 22690,
+      "sha256": "05b4d588183cc2dcffcb0e7540287e74ee8765e4015c1f77b35fec3b266bad2a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00009.ll",
+      "bytes": 22690,
+      "sha256": "0b4dcc7add280babba6e5ca806240e8097e34a76426b0cf28cf5cf8795f4a1aa"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00010.ll",
+      "bytes": 22691,
+      "sha256": "639f047781781902bc221b5fca5bc5ac56add31e6d91c8f174fe5d822675cb12"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00011.ll",
+      "bytes": 22691,
+      "sha256": "541422d1c759d6846fedd065b7180c85d29cc3e4ba15cb0117c49b52f9a1633e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00012.ll",
+      "bytes": 22182,
+      "sha256": "586dfb303ee0d08bcf3dbbe374d7e932449d774ac12c1614460de62bb1cad2b2"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00013.ll",
+      "bytes": 22182,
+      "sha256": "276c546a86b870e7a5ce3dd7be297a3400738dfe187ef613ccb7878cd85110a8"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00014.ll",
+      "bytes": 22182,
+      "sha256": "ba8c480135c0ed95efb8ace33288d9efbe77b3bd1c3a848127f232684c5b29ce"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/target-llvm/tile_00015.ll",
+      "bytes": 22182,
+      "sha256": "96362ddee78ed528a182812d4dd9c3ed956cd2662233664c6f8836b5cf887cc2"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00000.mlir",
+      "bytes": 555675,
+      "sha256": "b1bb4e5960d411da8402c5a206fd2fac22ad693cd818d400223d6fdb86b2d7e5"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00001.mlir",
+      "bytes": 555843,
+      "sha256": "72c2d999a29e8024f71bec2f04b4c3d8819529fd14c39a1d8344503caedac040"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00002.mlir",
+      "bytes": 555843,
+      "sha256": "1e54bb9c1f9f580de444bff2d24e2954c30cb3ce1a4abf3b6e1f2d4ea1526e48"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00003.mlir",
+      "bytes": 555843,
+      "sha256": "4f568c2ac4273f9bbb07b089c3671512b2a5626bb015172fb7c56f46dea66f94"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00004.mlir",
+      "bytes": 556373,
+      "sha256": "14f9b6b8d55c79dd1e335cb0aba714ee962307b9612df3ab8fec1a6e0386b72e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00005.mlir",
+      "bytes": 556375,
+      "sha256": "0c7fff01a26e81075f6ffce5376e5b44d922f64f9b1e8c0c0375ff30dd5e6df4"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00006.mlir",
+      "bytes": 556375,
+      "sha256": "f51f7b58bb85e2dec5f7f6b0ec11faad46eaaf6ccdd1b9502c410614c7b57516"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00007.mlir",
+      "bytes": 556375,
+      "sha256": "61207c2623e27f0aa6760ab041b58c6b558f0a73cd2e348424332d611aaf6e0c"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00008.mlir",
+      "bytes": 556375,
+      "sha256": "10c2bed7e6d24d6141c49edf74a5d0389d8303c308fe7faa27879332d82b2be8"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00009.mlir",
+      "bytes": 556375,
+      "sha256": "e87023d53e5ca4f1aa2d0dc68dd697604b52ef56f7e83e763bdf536bd4be9def"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00010.mlir",
+      "bytes": 556379,
+      "sha256": "3fcc70139cc392e45a6aab02edb8029c81452313966def0b8da68c66d02c82b6"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00011.mlir",
+      "bytes": 556379,
+      "sha256": "02d9db0af4e9a143c1add8e9f5156f4a7eaa9256f8405ce516432cf79e38d596"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00012.mlir",
+      "bytes": 555679,
+      "sha256": "838d8063f646e785afea53245c5dd10ebb8240178d3a85520c6b64b604aa60dd"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00013.mlir",
+      "bytes": 555679,
+      "sha256": "cd19bf406d945ab92392d1e638546992c2dc7d7529fbe8dff42c18ea54a2deb1"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00014.mlir",
+      "bytes": 555679,
+      "sha256": "c764cb9dae601f8ecd2381ae65350fec9b462af1d61dde7b3149405b62f4a91a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/compiler-ir/tile-dataflow/tile_00015.mlir",
+      "bytes": 555679,
+      "sha256": "2941d723a29ab65d14a822934f55a2ea9b3b9140c25d0943a9a4c0f988ed5e58"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/package/data/program-data.bin",
+      "bytes": 262144,
+      "sha256": "04bd39e3cf5f5f9d914b11b487a11ff3c0e72284a86616300266f57179402f70"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/package/manifest.json",
+      "bytes": 10780,
+      "sha256": "a73698cb91cac6e65d6ecbfc38c3f5fe5dd3b81e0ae035fe60d946dfe8a89697"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/package/modules/module_00000.so",
+      "bytes": 132256,
+      "sha256": "793d9637ddf2e3c66c49f170f805774f2628dcd30c7ab8114038f50a812dd50d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/raw/card_00_output_0.expected.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "3d992577a46ca854612287f1419cbc931c19b1e667c86c5316d4f1eae1a9265b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/raw/card_00_user_input_0.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "9b8fb19689b251d560d4d8378ec1022e3ee9694ec447090c68601176fcd2c5b7"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/raw/card_00_user_input_1.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "12efe0a577e2ccd06e0f24b5b88f07819beb6750558b53509285bf96e6dfac20"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/raw/card_00_user_input_2.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "3a5e267dce6e862a904aa3c0d887f88779a135094f9a865baae0c674d2e53c3d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/source-program/constants/0",
+      "bytes": 130,
+      "sha256": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/source-program/constants/1",
+      "bytes": 130,
+      "sha256": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/source-program/constants/2",
+      "bytes": 136,
+      "sha256": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/source-program/functions/forward.meta",
+      "bytes": 947,
+      "sha256": "d36bd80083357f1b478cb2f350fac618933abfb3693db81bdc2263180626a815"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16/source-program/functions/forward.stablehlo.bc",
+      "bytes": 2910,
+      "sha256": "aa35d8ed2c86f4afbadd9d612f0448c75d60b4dc5b3f0b302773a3efa99abce1"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/attention-bf16.log",
+      "bytes": 8168,
+      "sha256": "64eff6c1b6434d5eb43dd382af6d1121bcc09a8b60f70650e6a0ebaa4267f585"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/check-sdk-ct.py",
+      "bytes": 5686,
+      "sha256": "201585ffa8a1f4b161194d944ea436eb2445d66dc57612afe8ea8142728b0cd6"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/input-audit.json",
+      "bytes": 1357,
+      "sha256": "99824d4539a84b433713a3139c13b94c0d6cb075ec45e771184766ca999fb303"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/instruction-comparison.json",
+      "bytes": 7439,
+      "sha256": "f7dc994443138e0c80f89857c24ec2d1140a7d57b444bfcfa411e673f405ebf5"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/sdk-ct-packet-audit.json",
+      "bytes": 64141,
+      "sha256": "4a4832f87bc3ccd57b1e4b669fc608e7b1a188805ce387d5a1d757478e14bb1f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-analysis-final.log",
+      "bytes": 426,
+      "sha256": "b291a76fa80240ddbb9602065ea1c154c9b8714c7cfee0ba66b3b207f476e827"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-build-final.log",
+      "bytes": 396,
+      "sha256": "c90bfcbb7cb1427ce8497025c80520910244e0715bd3be88abaf83dcfc741ab2"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-crt-final.log",
+      "bytes": 164,
+      "sha256": "347ce42a745d1f61a20fe351da92efd4e9e1d3e6f9b4b7f4c0a6dce64bcd61a9"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-layout-final.log",
+      "bytes": 706,
+      "sha256": "5af6de79e3e1673d2b5895bdda4ad3b6499b58929b44700be30d534db368e23d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-lit.log",
+      "bytes": 172,
+      "sha256": "07695d509bd90b5b4a945ed721d4a351acf2e9fc3b69e3dccb52f431e2391b3b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-noop.log",
+      "bytes": 63,
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-remaining-lit.log",
+      "bytes": 167,
+      "sha256": "fb14471036b94f20e6e45320606b82b10ca63b84fff280a80fe7f8b32dff9925"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-unit.log",
+      "bytes": 102256,
+      "sha256": "d7efde23edead06d7202e1b7905b1899d39295b0ccec8cf1c3f6b7f0c04fb532"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/ct-fill-20260920/wafer-fill-updated-unit.log",
+      "bytes": 24442,
+      "sha256": "6e4cc4c037ac23e190c1336707158e4d2ac112c8c49dcde9f817c76b8222a807"
+    }
+  ]
+}

@@ -37,6 +37,37 @@ Pipeline position:
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
+### 同值填充的 CT 实现
+
+输入为 verified `wafer.instr.fill` 的实际 destination、scalar storage bits、fill domain 与 worker；
+输出保持唯一 `wafer_tx81_memset` ABI，由 CRT 固定发射同一 worker 的整块 `XorVV(dst,dst,dst,N)`
+和整块 `AddVS(dst,bits,dst,N)`。直接消费者是 SDK CT issuer、profile 与设备；不调用厂商 `Memset`。
+这里的两条命令是 fill 的固定实现，不是逐元素循环，不从 destination 未定义内容读取语义值，也不增加 wait。
+为保持 `-0`、NaN payload、Inf 和整数原始位型，运算采用相同 storage width 的有符号整数格式；
+packed BOOL 先转换为完整 owned byte 的 0/255 填充。不能以浮点 `0 + value` 代替按位填充。
+Instr/TargetCall 的 engine、effect、issue count 和 profile 均归 CT；一个 fill 对应两次 CT issue。
+整数 CT 吞吐尚无本轮校准，成本必须保留未校准边界，不能直接冒用浮点吞吐或写成零算术工作。
+
+普通 broadcast、copy、transpose 和非同值规则数据继续使用原有已证明的 movement；
+只有 current IR 能证明 scalar fill 支配使用、没有其它写入或 alias 逃逸时，才直接物化目标 fill。
+规则 mask 的各个同值区域可分别填充，非同值规律本身不等价于 scalar fill。
+不改厂商全局析构、timeout、reset、同步强度或硬件寄存器协议；不把该替换当作 TDMA 根因已经确定。
+
+语义区分沿用MLIR [Linalg fill/broadcast](https://mlir.llvm.org/docs/Dialects/Linalg/)：fill的标量决定整个写入域，
+broadcast保留输入数据及维度映射。这里没有新的广播算法；实现只在私有allocation的实际use-def可证明同值时消除搬运。
+所有匹配先于mutation，修改经[PatternRewriter](https://mlir.llvm.org/docs/PatternRewriter/)完成；API以pinned MLIR
+`PatternMatch.h`和本仓既有conversion使用方式核实。
+
+| 覆盖 | exact 输出 / failure 边界 | 直接下游 |
+| --- | --- | --- |
+| rank3、1024/1025/1031 与 65,536 元素整块；F16/BF16/F32、8/16/32-bit integer、BOOL | 每个连续 fill 两次 CT issue，worker 一致，raw bits 与元素数精确；无 TDMA Memset | production CRT 主机拦截、device 交叉编译与实际 SDK packet 检查 |
+| `+0/-0`、Inf、NaN payload、整数极值、动态 scalar | 独立位型 oracle，guard 与空/非法参数边界 | TargetModel 与 CRT 测试；未测整数 CT/tail 实卡语义不代签 |
+| 私有 scalar fill 经 mapped select 铺满大块；普通输入 broadcast、其它写入/逃逸 | 前者生成 fill，后者保留原有 movement；不能按 mask 名称判断 | actual Instr、completion/SPM、LLVM/package/no-card |
+| strided logical view 与 physical domain | 保留连续 suffix、实际 count、holes 和 owned padding 合同 | 原 strided lowering 回归；CT 非对齐/tail 的真实写入范围须单独实卡确认 |
+
+完成条件为上述主机与 fresh source→package/no-card、canonical 构建及对应新板端资格。
+SDK end/count 字段正确不证明 CT 在任意非对齐 view 上不扩大写入；该硬件风险与 TDMA 根因保持显式未完成。
+
 ### Candidate局部常量绑定
 
 输入为actual分块/展开后产生、bufferization已物化的只读DDR `memref.global`及其真实`get_global`使用。
