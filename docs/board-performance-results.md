@@ -2832,3 +2832,36 @@ Runner返回0并完成readback、192,128 guard bytes和cleanup，health wrapper�
 目前没有故障PC或具体packet，不能从Tile-2告警判定compiler、包、runtime或硬件根因，也不能据旧包本次失败外推新版健康性。
 剩余73项配置未启动，Q1配对计时及prefill/4K/GQA/长cache/LLaMA/GEMM/ViT等保护尚未完成；原prefill 1.563 ms目标不重置。
 `board-testing`保持未完成，设备恢复核实后才能接续剩余实卡工作。
+
+## 2026-09-20：厂商正常退出后的接续与TDMA固件审计
+
+本轮boot为`67de7cfd-6440-408b-8a18-8627516a5626`。Compiler产物沿用已核对的当前包，runner为
+成功/失败均正常返回的`938e2c11`实现；`be6d0f35`将普通division改为合法有限输入，本轮输入单测、
+三项重新准备、86个package的fresh no-card及canonical增量构建/no-op均已完成。
+本次只执行当前包，历史健康时间直接读取已有记录。原始命令、健康记录与输入诊断见
+[本轮证据](data/board-performance/tdma-firmware-localization-20260920.json)。
+
+| 当前配置 | 本次设备时间/ms | 结果 |
+| --- | ---: | --- |
+| FP16普通Q1，step1/step2 | 5.317 / 5.210 | 完整输出、actual KV接续、旧prefix及159,296/116,574 guard bytes通过；执行窗口健康 |
+| BF16小prefill | 1.757 | 完整数值与10,752 guard bytes通过；执行窗口健康 |
+| FP16小prefill | 1.748 | 完整数值与10,752 guard bytes通过；执行窗口健康 |
+| BF16 4K 28-head prefill | 不计健康时间 | 第5次launch窗口出现多Tile LSU TDMA；runtime返回0、guard通过不能覆盖该告警 |
+| 用户明确要求接续的FP16 4K 28-head prefill | 未取得 | 120秒外层期限失败；固件再次记录TDMA及后续AP资源清理超时 |
+
+前三项只有资格样本，不代替三次重复计时，也未达到全部性能目标。BF16故障的原始事件时间127.556999 ms只作审计，
+不参与健康基线比较。三个输入各14,680,064元素，全量无NaN/Inf；故障回读同样全量有限、relative L2为0.00194608，
+满足既定数值门槛。这不能证明TDMA正确或设备健康。
+
+当前BF16首次固件告警在AP时间660.878785秒出现；随后正常卸载及context清理均完成。
+后续FP16告警在AP时间856.078028秒开始；再往后的AP资源清理超时、Kcore停止失败`-110`以及驱动终止日志服务
+属于后续故障，不能解释前一次TDMA的最初触发。FP16 wrapper未完成最终日志写出；其返回信息不完整，原始记录保留。
+用户随后明确转入原始TDMA定位，停止后没有继续launch，也没有手工reset或修改设备软件。
+
+离线核对5.7安装包与已安装固件/runtime，并从当前AP `tx_npu.ko`还原告警链：fatal bit 12映射TDMA handler，
+上报`0x0D00C005`，发行handler没有packet/PC快照。包内旧源码的EID表与当前二进制存在差异，已按实际二进制核对。
+具体观测接口、访问边界及下一次需补的证据见[TDMA定位说明](tx81-tdma-fault-localization.md)。
+当前仍未找到根因，不能签厂商正常析构已解决问题。
+
+此前3项资格按原记录保留，本boot新增3项健康配置；2项故障、68项尚未启动，共70项未签资格。
+后续先准备能捕获故障指令的观测，再做一个当前case的干净启动复现，不直接重开完整矩阵。

@@ -1,0 +1,1625 @@
+{
+  "date": "2026-09-20",
+  "scope": "原始LSU TDMA告警的离线定位；后续AP清理超时单列；无新增设备launch/reset/驱动或固件安装",
+  "base_commit": "be6d0f353bd07b8f8e9d555df10cfa7b4b2cb780",
+  "artifact_root": "/data/vibe_compiler-validation/tdma-localization-20260920",
+  "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+  "installer_inventory": [
+    {
+      "file": "/home/ubuntu/workspace/Tsm8-drivers/TX8100_V5.7.0/Tsm_driver_5.7.0.0524_x86_64_installer.run",
+      "sha256": "851f008bbd52c9c7946c231f293a0b255b96760b2242a5034f6ba68415afa281",
+      "skip": 713,
+      "offset": 18772,
+      "member_count": 2
+    },
+    {
+      "file": "/home/ubuntu/workspace/Tsm8-drivers/TX8100_V5.7.0/Tsm_firmware_EVB_5.7.0.0524_x86_64_installer.run",
+      "sha256": "b1923a8c50607bf32d12ddd1289e7dae4265237a3cff332fbe6f3eab0857446f",
+      "skip": 716,
+      "offset": 18903,
+      "member_count": 11
+    },
+    {
+      "file": "/home/ubuntu/workspace/Tsm8-drivers/TX8100_V5.7.0/Tsm_runtime_5.7.0.0524_x86_64_installer.run",
+      "sha256": "ea2d671f06c51279765b039f878cd840b9b0d4f1c0e8262f570332aee14a4a5a",
+      "skip": 715,
+      "offset": 18876,
+      "member_count": 84
+    }
+  ],
+  "dynamic_firmware_comparison": [
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/rootfs.cpio.gz",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/rootfs.cpio.gz",
+      "equal": true,
+      "sha256": "1efd0ec47faabfcd2a71064006e0bdfb55a5ac4a075019dfd8e1368654064a91"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/score1.bin",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/score1.bin",
+      "equal": true,
+      "sha256": "459d0548eb5d9750b610d3baf3f5ed6dfa4a68ac5618e089dae523a5b16707f5"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/score0.tufw",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/score0.tufw",
+      "equal": true,
+      "sha256": "716f2f0f6bd0d5ed5d369107e2c2a3d3ab743c8cd9be6da718f216667862a42c"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/kcore_fw.bin",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/kcore_fw.bin",
+      "equal": true,
+      "sha256": "dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/score1.tufw",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/score1.tufw",
+      "equal": true,
+      "sha256": "f177677d504e0a458fc0f17a20fb5e442c3d305913a72ebb0a776a8e4241324c"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/kcore.tufw",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/kcore.tufw",
+      "equal": true,
+      "sha256": "cf64c2d205c8235755f557c5c147a5c499111a43705df31260a97d500ee9c41e"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/firmware/score0.bin",
+      "installed": "/data/vibe_compiler-validation/tdma-localization-20260920/installed/score0.bin",
+      "equal": true,
+      "sha256": "4905ae5e4d34c1621256549da6518b46e30e7ff5bc8bba827dee993d3c8dad31"
+    },
+    {
+      "packaged": "/data/vibe_compiler-validation/tdma-localization-20260920/driver-payload/lib/libtsmml.so",
+      "installed": "/usr/local/kuiper/lib/libtsmml.so",
+      "equal": false,
+      "sha256": "294096656bb7e1e22497d418f40c2fe627072381df788b68cd09119b047b9b34"
+    }
+  ],
+  "runtime_comparison": [
+    {
+      "file": "libtsmml.so",
+      "equal": true,
+      "packaged": "7e4b4128ab243928af95b73e8a2caa7607df6a60d674214f8f5565f36138d83d",
+      "installed": "7e4b4128ab243928af95b73e8a2caa7607df6a60d674214f8f5565f36138d83d"
+    },
+    {
+      "file": "libml.so",
+      "equal": true,
+      "packaged": "7e4b4128ab243928af95b73e8a2caa7607df6a60d674214f8f5565f36138d83d",
+      "installed": "7e4b4128ab243928af95b73e8a2caa7607df6a60d674214f8f5565f36138d83d"
+    },
+    {
+      "file": "libcommon.so",
+      "equal": true,
+      "packaged": "f6388405a8d7fd70500f3b5d4a09fdc3906257e4dce8fdb804a9e66f6065f5f6",
+      "installed": "f6388405a8d7fd70500f3b5d4a09fdc3906257e4dce8fdb804a9e66f6065f5f6"
+    },
+    {
+      "file": "libhpgr.so",
+      "equal": true,
+      "packaged": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+      "installed": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c"
+    }
+  ],
+  "driver_identity": {
+    "version": "5.7.0.0524",
+    "srcversion": "F64164C6460FEE30EBF66E2",
+    "core_implementation": "src/refine2/tsm_core/tsm_core.o_binary",
+    "source_warning": "src/refine/tsm_ras/tsm_eid.h将0x0D00C005标为RDMA；实际AP二进制与安装host二进制均为LSU TDMA，旧源码不代替当前二进制"
+  },
+  "ap_module": {
+    "file": "ap-modules/modules/tx_npu.ko",
+    "sha256": "028b04e3c2a2d0ef02519205f1d3cb878baf4eb0fa313d94d12ccf0683aa8b31",
+    "fatal_table": {
+      "12": "fatalerr_lsu_tdma_intr_handle",
+      "13": "fatalerr_lsu_rdma_intr_handle"
+    },
+    "read_status": {
+      "function": "streamint_fatal_err_get",
+      "symbol_offset": "0x83e0",
+      "status_load": "ldr w0, [x0, #0xc0]",
+      "mask": "0x1ff03"
+    },
+    "handler": {
+      "function": "fatalerr_lsu_tdma_intr_handle",
+      "symbol_offset": "0x87d0",
+      "dwarf_file": "stream_int.c",
+      "dwarf_line": 746,
+      "eid": "0x0D00C005",
+      "calls": [
+        "tsm_fw_queue_eid_update",
+        "printk"
+      ],
+      "snapshot_reads": false,
+      "explicit_reset_calls": false
+    },
+    "dispatcher": {
+      "function": "stream_irq_handler",
+      "symbol_offset": "0x4c60",
+      "dwarf_file": "npu.c",
+      "dwarf_line": 1871
+    }
+  },
+  "prior_tile2_fault": {
+    "local_time": "2026-09-19T22:46:48+08:00",
+    "fatal_err": 4096,
+    "tile": 2,
+    "execution_completed": true,
+    "numeric_diagnostic_passed": true,
+    "health_passed": false,
+    "device_time_ms_invalid_for_performance": 13.155
+  },
+  "current_board": {
+    "cases": [
+      {
+        "name": "wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card",
+        "case": "attention-decode-kv-cache",
+        "dtype": "float16",
+        "prepared": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card",
+        "status": "qualified",
+        "samples": [
+          {
+            "sample": 1,
+            "phase": "qualification",
+            "command": [
+              "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+              "-B",
+              "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+              "--case",
+              "attention-decode-kv-cache",
+              "--dtype",
+              "float16",
+              "--seed",
+              "20260803",
+              "--wafer-compile",
+              "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+              "--wafer-run",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/checked_runner.py",
+              "--work-dir",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01",
+              "--prepared-work-dir",
+              "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card",
+              "--optimization-policy",
+              "search",
+              "--search-mode",
+              "standard",
+              "--search-width",
+              "8",
+              "--search-trials",
+              "42",
+              "--memory-guards",
+              "--device-timing",
+              "--repeat",
+              "1",
+              "--device-id",
+              "0",
+              "--expected-runtime-version",
+              "1400",
+              "--expected-device-name",
+              "/dev/accel/dev-0",
+              "--expected-pci-bus-id",
+              "0000:3b:00.0",
+              "--expected-tile-count",
+              "16",
+              "--expected-runtime-library-sha256",
+              "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+              "--completion-timeout-ms",
+              "60000"
+            ],
+            "started_utc": "2026-09-19T18:41:37.704097+00:00",
+            "comparison_passed": true,
+            "exit_code": 0,
+            "finished_utc": "2026-09-19T18:41:58.763024+00:00",
+            "step_milliseconds": [
+              5.317,
+              5.21
+            ],
+            "total_milliseconds": 10.527000000000001,
+            "guards_passed": true,
+            "continuation": "actual capture"
+          }
+        ]
+      },
+      {
+        "name": "wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card",
+        "case": "attention-prefill",
+        "dtype": "bfloat16",
+        "prepared": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card",
+        "status": "qualified",
+        "samples": [
+          {
+            "sample": 1,
+            "phase": "qualification",
+            "command": [
+              "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+              "-B",
+              "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+              "--case",
+              "attention-prefill",
+              "--dtype",
+              "bfloat16",
+              "--seed",
+              "20260803",
+              "--wafer-compile",
+              "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+              "--wafer-run",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/checked_runner.py",
+              "--work-dir",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card/sample-01",
+              "--prepared-work-dir",
+              "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card",
+              "--optimization-policy",
+              "search",
+              "--search-mode",
+              "standard",
+              "--search-width",
+              "8",
+              "--search-trials",
+              "42",
+              "--memory-guards",
+              "--device-timing",
+              "--repeat",
+              "1",
+              "--device-id",
+              "0",
+              "--expected-runtime-version",
+              "1400",
+              "--expected-device-name",
+              "/dev/accel/dev-0",
+              "--expected-pci-bus-id",
+              "0000:3b:00.0",
+              "--expected-tile-count",
+              "16",
+              "--expected-runtime-library-sha256",
+              "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+              "--completion-timeout-ms",
+              "60000"
+            ],
+            "started_utc": "2026-09-19T18:41:58.764450+00:00",
+            "comparison_passed": true,
+            "exit_code": 0,
+            "finished_utc": "2026-09-19T18:42:04.618358+00:00",
+            "step_milliseconds": [
+              1.757
+            ],
+            "total_milliseconds": 1.757,
+            "guards_passed": true,
+            "continuation": null
+          }
+        ]
+      },
+      {
+        "name": "wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card",
+        "case": "attention-prefill",
+        "dtype": "float16",
+        "prepared": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card",
+        "status": "qualified",
+        "samples": [
+          {
+            "sample": 1,
+            "phase": "qualification",
+            "command": [
+              "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+              "-B",
+              "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+              "--case",
+              "attention-prefill",
+              "--dtype",
+              "float16",
+              "--seed",
+              "20260803",
+              "--wafer-compile",
+              "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+              "--wafer-run",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/checked_runner.py",
+              "--work-dir",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card/sample-01",
+              "--prepared-work-dir",
+              "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card",
+              "--optimization-policy",
+              "search",
+              "--search-mode",
+              "standard",
+              "--search-width",
+              "8",
+              "--search-trials",
+              "42",
+              "--memory-guards",
+              "--device-timing",
+              "--repeat",
+              "1",
+              "--device-id",
+              "0",
+              "--expected-runtime-version",
+              "1400",
+              "--expected-device-name",
+              "/dev/accel/dev-0",
+              "--expected-pci-bus-id",
+              "0000:3b:00.0",
+              "--expected-tile-count",
+              "16",
+              "--expected-runtime-library-sha256",
+              "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+              "--completion-timeout-ms",
+              "60000"
+            ],
+            "started_utc": "2026-09-19T18:42:04.620412+00:00",
+            "comparison_passed": true,
+            "exit_code": 0,
+            "finished_utc": "2026-09-19T18:42:10.532610+00:00",
+            "step_milliseconds": [
+              1.748
+            ],
+            "total_milliseconds": 1.748,
+            "guards_passed": true,
+            "continuation": null
+          }
+        ]
+      },
+      {
+        "name": "wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card",
+        "case": "attention-prefill-28-heads-4096",
+        "dtype": "bfloat16",
+        "prepared": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card",
+        "status": "failed",
+        "samples": [
+          {
+            "sample": 1,
+            "phase": "qualification",
+            "command": [
+              "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+              "-B",
+              "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+              "--case",
+              "attention-prefill-28-heads-4096",
+              "--dtype",
+              "bfloat16",
+              "--seed",
+              "20260803",
+              "--wafer-compile",
+              "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+              "--wafer-run",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/checked_runner.py",
+              "--work-dir",
+              "/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/sample-01",
+              "--prepared-work-dir",
+              "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card",
+              "--optimization-policy",
+              "search",
+              "--search-mode",
+              "standard",
+              "--search-width",
+              "8",
+              "--search-trials",
+              "42",
+              "--memory-guards",
+              "--device-timing",
+              "--repeat",
+              "1",
+              "--device-id",
+              "0",
+              "--expected-runtime-version",
+              "1400",
+              "--expected-device-name",
+              "/dev/accel/dev-0",
+              "--expected-pci-bus-id",
+              "0000:3b:00.0",
+              "--expected-tile-count",
+              "16",
+              "--expected-runtime-library-sha256",
+              "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+              "--completion-timeout-ms",
+              "60000"
+            ],
+            "started_utc": "2026-09-19T18:42:10.534755+00:00",
+            "comparison_passed": false,
+            "exit_code": 1,
+            "finished_utc": "2026-09-19T18:42:18.773937+00:00"
+          }
+        ]
+      }
+    ],
+    "prior_qualified": [
+      [
+        "attention-causal-decode-two-tokens",
+        "bfloat16"
+      ],
+      [
+        "attention-causal-decode-two-tokens",
+        "float16"
+      ],
+      [
+        "attention-decode-kv-cache",
+        "bfloat16"
+      ]
+    ],
+    "prior_timed": [
+      [
+        "attention-causal-decode-two-tokens",
+        "bfloat16"
+      ],
+      [
+        "attention-causal-decode-two-tokens",
+        "float16"
+      ]
+    ]
+  },
+  "current_launch_health": [
+    {
+      "started_utc": "2026-09-19T18:41:48.060400+00:00",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/step_01/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_output_0.capture.f16.raw",
+        "--output",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_output_1.capture.f16.raw",
+        "--output",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_output_2.capture.f16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_user_input_0.f16.raw",
+        "--resource",
+        "3=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_user_input_1.f16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_user_input_2.f16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_01/raw/card_00_user_input_3.f16.raw"
+      ],
+      "kernel_cursor": "s=5e90b078e471441abe3419aeea510daf;i=2838b21;b=67de7cfd6440408b8a188627516a5626;m=1a86146;t=65bda398c5d1f;x=db0e5c74dd3fd2a2",
+      "occupancy": {
+        "device": "/dev/accel/dev-0",
+        "major": 10,
+        "minor": 123,
+        "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+        "holders": [
+          {
+            "pid": 1616,
+            "fd": 3,
+            "exe": "/usr/bin/npu_pull_ep_log",
+            "uid": 0,
+            "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+            "verified_log_service": true
+          }
+        ],
+        "unknown": [],
+        "state": "idle",
+        "unexplained_fuser_pids": []
+      },
+      "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+      "returncode": 0,
+      "alarms": [],
+      "health_passed": true,
+      "finished_utc": "2026-09-19T18:41:50.196119+00:00"
+    },
+    {
+      "started_utc": "2026-09-19T18:41:55.334165+00:00",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/step_02/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_output_0.capture.f16.raw",
+        "--output",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_output_1.capture.f16.raw",
+        "--output",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_output_2.capture.f16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_user_input_0.f16.raw",
+        "--resource",
+        "3=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_user_input_1.f16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_user_input_2.f16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card/sample-01/step_02/raw/card_00_user_input_3.f16.raw"
+      ],
+      "kernel_cursor": "s=5e90b078e471441abe3419aeea510daf;i=2838b21;b=67de7cfd6440408b8a188627516a5626;m=1a86146;t=65bda398c5d1f;x=db0e5c74dd3fd2a2",
+      "occupancy": {
+        "device": "/dev/accel/dev-0",
+        "major": 10,
+        "minor": 123,
+        "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+        "holders": [
+          {
+            "pid": 1616,
+            "fd": 3,
+            "exe": "/usr/bin/npu_pull_ep_log",
+            "uid": 0,
+            "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+            "verified_log_service": true
+          }
+        ],
+        "unknown": [],
+        "state": "idle",
+        "unexplained_fuser_pids": []
+      },
+      "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+      "returncode": 0,
+      "alarms": [],
+      "health_passed": true,
+      "finished_utc": "2026-09-19T18:41:57.503494+00:00"
+    },
+    {
+      "started_utc": "2026-09-19T18:42:03.574457+00:00",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card/sample-01/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card/sample-01/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card/sample-01/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card/sample-01/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "kernel_cursor": "s=5e90b078e471441abe3419aeea510daf;i=2838b21;b=67de7cfd6440408b8a188627516a5626;m=1a86146;t=65bda398c5d1f;x=db0e5c74dd3fd2a2",
+      "occupancy": {
+        "device": "/dev/accel/dev-0",
+        "major": 10,
+        "minor": 123,
+        "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+        "holders": [
+          {
+            "pid": 1616,
+            "fd": 3,
+            "exe": "/usr/bin/npu_pull_ep_log",
+            "uid": 0,
+            "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+            "verified_log_service": true
+          }
+        ],
+        "unknown": [],
+        "state": "idle",
+        "unexplained_fuser_pids": []
+      },
+      "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+      "returncode": 0,
+      "alarms": [],
+      "health_passed": true,
+      "finished_utc": "2026-09-19T18:42:03.897382+00:00"
+    },
+    {
+      "started_utc": "2026-09-19T18:42:09.466525+00:00",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card/sample-01/raw/card_00_output_0.capture.f16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card/sample-01/raw/card_00_user_input_0.f16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card/sample-01/raw/card_00_user_input_1.f16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card/sample-01/raw/card_00_user_input_2.f16.raw"
+      ],
+      "kernel_cursor": "s=5e90b078e471441abe3419aeea510daf;i=2838b21;b=67de7cfd6440408b8a188627516a5626;m=1a86146;t=65bda398c5d1f;x=db0e5c74dd3fd2a2",
+      "occupancy": {
+        "device": "/dev/accel/dev-0",
+        "major": 10,
+        "minor": 123,
+        "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+        "holders": [
+          {
+            "pid": 1616,
+            "fd": 3,
+            "exe": "/usr/bin/npu_pull_ep_log",
+            "uid": 0,
+            "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+            "verified_log_service": true
+          }
+        ],
+        "unknown": [],
+        "state": "idle",
+        "unexplained_fuser_pids": []
+      },
+      "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+      "returncode": 0,
+      "alarms": [],
+      "health_passed": true,
+      "finished_utc": "2026-09-19T18:42:09.799777+00:00"
+    },
+    {
+      "started_utc": "2026-09-19T18:42:17.483967+00:00",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/sample-01/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/sample-01/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/sample-01/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/sample-01/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "kernel_cursor": "s=5e90b078e471441abe3419aeea510daf;i=2838b21;b=67de7cfd6440408b8a188627516a5626;m=1a86146;t=65bda398c5d1f;x=db0e5c74dd3fd2a2",
+      "occupancy": {
+        "device": "/dev/accel/dev-0",
+        "major": 10,
+        "minor": 123,
+        "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+        "holders": [
+          {
+            "pid": 1616,
+            "fd": 3,
+            "exe": "/usr/bin/npu_pull_ep_log",
+            "uid": 0,
+            "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+            "verified_log_service": true
+          }
+        ],
+        "unknown": [],
+        "state": "idle",
+        "unexplained_fuser_pids": []
+      },
+      "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+      "returncode": 0,
+      "alarms": [
+        "2026-09-20T02:42:17+0800 ubuntu kernel: accel 0000:3b:00.0: rpu=0 pid=3634 xid=12 category=XID_NPU_ERROR eid=\"0x0D00C005\" detail=\"NPU LSU TDMA Timeout\" action=\"RESET_BM\""
+      ],
+      "health_passed": false,
+      "finished_utc": "2026-09-19T18:42:18.076944+00:00"
+    }
+  ],
+  "bf16_fault_diagnostic": {
+    "purpose": "故障后离线输入域与回读诊断，不签设备健康、资格或性能",
+    "board_execution": false,
+    "inputs": [
+      {
+        "port": 0,
+        "shape": [
+          1,
+          28,
+          4096,
+          128
+        ],
+        "elements": 14680064,
+        "nonfinite": 0,
+        "minimum": -0.416015625,
+        "maximum": 0.416015625,
+        "sha256": "9b8fb19689b251d560d4d8378ec1022e3ee9694ec447090c68601176fcd2c5b7"
+      },
+      {
+        "port": 1,
+        "shape": [
+          1,
+          28,
+          4096,
+          128
+        ],
+        "elements": 14680064,
+        "nonfinite": 0,
+        "minimum": -0.416015625,
+        "maximum": 0.416015625,
+        "sha256": "12efe0a577e2ccd06e0f24b5b88f07819beb6750558b53509285bf96e6dfac20"
+      },
+      {
+        "port": 2,
+        "shape": [
+          1,
+          28,
+          4096,
+          128
+        ],
+        "elements": 14680064,
+        "nonfinite": 0,
+        "minimum": -3.328125,
+        "maximum": 3.328125,
+        "sha256": "3a5e267dce6e862a904aa3c0d887f88779a135094f9a865baae0c674d2e53c3d"
+      }
+    ],
+    "output": {
+      "elements": 14680064,
+      "nonfinite": 0,
+      "expected_nonfinite": 0,
+      "cosine_similarity": 0.9999981065706683,
+      "relative_l2_error": 0.0019460798917830886,
+      "elementwise_mismatches": 0,
+      "mean_abs_error": 2.837120829624657e-05,
+      "max_abs_error": 0.015625
+    }
+  },
+  "fp16_user_directed_continuation": {
+    "result": {
+      "case": "attention-prefill-28-heads-4096",
+      "dtype": "float16",
+      "started_utc": "2026-09-19T18:45:25.398471+00:00",
+      "prior_stop": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/STOP-DEVICE",
+      "status": "failed",
+      "exit_code": 1,
+      "finished_utc": "2026-09-19T18:47:32.361281+00:00"
+    },
+    "partial_health_record": {
+      "started_utc": "2026-09-19T18:45:32.647274+00:00",
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-fp16-optimization-search-no-card/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/user-directed-continuation/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-fp16-optimization-search-no-card/sample-01/raw/card_00_output_0.capture.f16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-vendor-exit-20260920/user-directed-continuation/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-fp16-optimization-search-no-card/sample-01/raw/card_00_user_input_0.f16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-vendor-exit-20260920/user-directed-continuation/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-fp16-optimization-search-no-card/sample-01/raw/card_00_user_input_1.f16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-vendor-exit-20260920/user-directed-continuation/board/wafer-runtime-pytorch-attention-prefill-28-heads-4096-fp16-optimization-search-no-card/sample-01/raw/card_00_user_input_2.f16.raw"
+      ],
+      "kernel_cursor": "s=5e90b078e471441abe3419aeea510daf;i=2846433;b=67de7cfd6440408b8a188627516a5626;m=28754d1b;t=65bda605948f4;x=6d0afc47f1408591",
+      "occupancy": {
+        "device": "/dev/accel/dev-0",
+        "major": 10,
+        "minor": 123,
+        "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626",
+        "holders": [
+          {
+            "pid": 1616,
+            "fd": 3,
+            "exe": "/usr/bin/npu_pull_ep_log",
+            "uid": 0,
+            "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+            "verified_log_service": true
+          }
+        ],
+        "unknown": [],
+        "state": "idle",
+        "unexplained_fuser_pids": []
+      },
+      "boot_id": "67de7cfd-6440-408b-8a18-8627516a5626"
+    },
+    "record_incomplete": true,
+    "outer_host_deadline_seconds": 120,
+    "wrapper_deadline_seconds": 105,
+    "qualification": "failed",
+    "evidence_limit": "wrapper未完成写出runner日志；不能从外层120秒错误定位wafer-run阻塞的具体函数；固件显示本次仍有TDMA及随后AP清理超时"
+  },
+  "counts": {
+    "matrix_board_configurations": 76,
+    "retained_prior_qualified_configurations": 3,
+    "this_boot_qualified_configurations": 3,
+    "this_boot_healthy_launches": 4,
+    "this_boot_failed_configurations": 2,
+    "never_started_configurations": 68,
+    "remaining_unqualified_configurations": 70
+  },
+  "fault_log_index": [
+    {
+      "file": "/data/vibe_compiler-validation/attention-current/post-failure-firmware/KERNEL_2026_9_19_19_12_48",
+      "member": "KERNEL_2026_9_19_19_12_48",
+      "sha256": "fe5c44196c972ff5eb5815f37731342764c259691441300ccdba73774dd77ff0",
+      "hits": [
+        {
+          "line": 481,
+          "text": "[12842.428209]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =0!!!"
+        },
+        {
+          "line": 485,
+          "text": "[12842.436710]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        }
+      ]
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/snapshot/firmware/KERNEL_2026_9_18_1_44_11.tar.gz",
+      "member": "/var/npu_ep_log/0000:3b:00.0/KERNEL_2026_9_18_1_44_11",
+      "sha256": "a18b776f3d3d48d26cbf8a50a0fe4fe74c703ec3dbe4dbe5b5443730d933a9a4",
+      "hits": [
+        {
+          "line": 430,
+          "text": "[26535.818053]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =0!!!"
+        },
+        {
+          "line": 433,
+          "text": "[26535.826500]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 452,
+          "text": "[26536.582456]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 453,
+          "text": "[26536.589185]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 454,
+          "text": "[26536.595888]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 475,
+          "text": "[26537.322546]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 476,
+          "text": "[26537.329258]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 477,
+          "text": "[26537.335928]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 478,
+          "text": "[26537.342566]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 499,
+          "text": "[26586.540019]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 500,
+          "text": "[26586.546744]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 501,
+          "text": "[26586.553408]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 522,
+          "text": "[26587.295483]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 523,
+          "text": "[26587.302190]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 524,
+          "text": "[26587.308851]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 547,
+          "text": "[26587.963868]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 548,
+          "text": "[26587.970592]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 549,
+          "text": "[26587.977258]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 550,
+          "text": "[26587.983897]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 1045,
+          "text": "[45558.705985]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 1046,
+          "text": "[45558.712700]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 1047,
+          "text": "[45558.719368]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 1048,
+          "text": "[45558.726007]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 1049,
+          "text": "[45558.732680]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 1050,
+          "text": "[45558.739319]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        }
+      ]
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/snapshot/firmware/KERNEL_2026_9_18_23_0_17.tar.gz",
+      "member": "/var/npu_ep_log/0000:3b:00.0/KERNEL_2026_9_18_23_0_17",
+      "sha256": "e50d1556df251521e8c3ccdb9febaccf67aa7e246cdfb95c14d65ca566648b18",
+      "hits": [
+        {
+          "line": 390,
+          "text": "[8781.660152]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 2247,
+          "text": "[9279.774929]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 2248,
+          "text": "[9279.781698]\u00013[RAS-FE]lsu tdma timeout from Tile-12, need to reset chip!!!"
+        },
+        {
+          "line": 2249,
+          "text": "[9279.788458]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 2250,
+          "text": "[9279.795185]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 2251,
+          "text": "[9279.801840]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 2558,
+          "text": "[9923.145067]\u00013[RAS-FE]lsu tdma timeout from Tile-14, need to reset chip!!!"
+        },
+        {
+          "line": 2559,
+          "text": "[9923.151841]\u00013[RAS-FE]lsu tdma timeout from Tile-12, need to reset chip!!!"
+        },
+        {
+          "line": 2560,
+          "text": "[9923.158607]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 2561,
+          "text": "[9923.165335]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 2562,
+          "text": "[9923.171991]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 2563,
+          "text": "[9923.178664]\u00013[RAS-FE]lsu tdma timeout from Tile-8, need to reset chip!!!"
+        },
+        {
+          "line": 2564,
+          "text": "[9923.185335]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 2565,
+          "text": "[9923.192011]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 2566,
+          "text": "[9923.198651]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 2567,
+          "text": "[9923.205425]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 2568,
+          "text": "[9923.212085]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 2610,
+          "text": "[9925.461912]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 2611,
+          "text": "[9925.468706]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 2612,
+          "text": "[9925.475449]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 2613,
+          "text": "[9925.482110]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 2614,
+          "text": "[9925.488783]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 2615,
+          "text": "[9925.495511]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 2616,
+          "text": "[9925.502182]\u00013[RAS-FE]lsu tdma timeout from Tile-12, need to reset chip!!!"
+        },
+        {
+          "line": 2617,
+          "text": "[9925.508941]\u00013[RAS-FE]lsu tdma timeout from Tile-8, need to reset chip!!!"
+        },
+        {
+          "line": 2635,
+          "text": "[9944.683478]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =100!!!"
+        },
+        {
+          "line": 2636,
+          "text": "[9944.692050]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =100!!!"
+        },
+        {
+          "line": 2654,
+          "text": "[9945.636668]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =100!!!"
+        },
+        {
+          "line": 2672,
+          "text": "[9946.602006]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =100!!!"
+        },
+        {
+          "line": 2701,
+          "text": "[9965.619224]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 2703,
+          "text": "[9965.619274]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 2704,
+          "text": "[9965.632604]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 2705,
+          "text": "[9965.639275]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 2706,
+          "text": "[9965.645948]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 2707,
+          "text": "[9965.652720]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 2708,
+          "text": "[9965.659378]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 2709,
+          "text": "[9965.666048]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 2710,
+          "text": "[9965.672776]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 2740,
+          "text": "[9966.656769]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 2741,
+          "text": "[9966.663478]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 2742,
+          "text": "[9966.670162]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 2743,
+          "text": "[9966.676821]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 2744,
+          "text": "[9966.683461]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 2745,
+          "text": "[9966.690149]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 2746,
+          "text": "[9966.696788]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 2747,
+          "text": "[9966.703442]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 2779,
+          "text": "[9967.582793]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 2780,
+          "text": "[9967.589530]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 2781,
+          "text": "[9967.596262]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 2782,
+          "text": "[9967.602941]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 2783,
+          "text": "[9967.609676]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 2784,
+          "text": "[9967.616414]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 2785,
+          "text": "[9967.623128]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 2786,
+          "text": "[9967.629790]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 2787,
+          "text": "[9967.636518]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 3788,
+          "text": "[10783.839947]\u00013[RAS-FE]lsu tdma timeout from Tile-14, need to reset chip!!!"
+        },
+        {
+          "line": 3789,
+          "text": "[10783.846747]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 3790,
+          "text": "[10783.853422]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 3791,
+          "text": "[10783.860170]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 3792,
+          "text": "[10783.866807]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 3793,
+          "text": "[10783.873579]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 3794,
+          "text": "[10783.880345]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 3809,
+          "text": "[10784.923456]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =300!!!"
+        },
+        {
+          "line": 3836,
+          "text": "[10786.052831]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 3837,
+          "text": "[10786.059635]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 3838,
+          "text": "[10786.066313]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 3839,
+          "text": "[10786.072955]\u00013[RAS-FE]lsu tdma timeout from Tile-8, need to reset chip!!!"
+        },
+        {
+          "line": 3840,
+          "text": "[10786.079611]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 3841,
+          "text": "[10786.086297]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 3842,
+          "text": "[10786.092954]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 3843,
+          "text": "[10786.099681]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 3844,
+          "text": "[10786.106456]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 3845,
+          "text": "[10786.113112]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 3872,
+          "text": "[10787.232885]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 3873,
+          "text": "[10787.239613]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 3874,
+          "text": "[10787.246319]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 3875,
+          "text": "[10787.253049]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 3876,
+          "text": "[10787.259775]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 3877,
+          "text": "[10787.266461]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 3878,
+          "text": "[10787.273102]\u00013[RAS-FE]lsu tdma timeout from Tile-14, need to reset chip!!!"
+        },
+        {
+          "line": 3906,
+          "text": "[10788.322744]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 3907,
+          "text": "[10788.329442]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 3908,
+          "text": "[10788.336201]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 3909,
+          "text": "[10788.342842]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 3910,
+          "text": "[10788.349498]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 3911,
+          "text": "[10788.356188]\u00013[RAS-FE]lsu tdma timeout from Tile-12, need to reset chip!!!"
+        },
+        {
+          "line": 3912,
+          "text": "[10788.362914]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 3913,
+          "text": "[10788.369568]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 3949,
+          "text": "[10808.776722]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 3950,
+          "text": "[10808.783448]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 3968,
+          "text": "[10809.740822]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =300!!!"
+        },
+        {
+          "line": 3986,
+          "text": "[10810.700146]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =300!!!"
+        },
+        {
+          "line": 4004,
+          "text": "[10811.557174]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =300!!!"
+        },
+        {
+          "line": 4030,
+          "text": "[10812.504892]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 4031,
+          "text": "[10812.504907]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 4033,
+          "text": "[10812.518259]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 4034,
+          "text": "[10812.524901]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 4035,
+          "text": "[10812.531557]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 4036,
+          "text": "[10812.538244]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 4067,
+          "text": "[10813.405825]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 4068,
+          "text": "[10813.412543]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 4069,
+          "text": "[10813.419223]\u00013[RAS-FE]lsu tdma timeout from Tile-3, need to reset chip!!!"
+        },
+        {
+          "line": 4070,
+          "text": "[10813.425892]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 4071,
+          "text": "[10813.432572]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 4072,
+          "text": "[10813.439230]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 4073,
+          "text": "[10813.445870]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 4074,
+          "text": "[10813.452558]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 4832,
+          "text": "[31019.215578]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 4833,
+          "text": "[31019.222295]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        }
+      ]
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/snapshot/firmware/KERNEL_2026_9_19_19_12_48.tar.gz",
+      "member": "/var/npu_ep_log/0000:3b:00.0/KERNEL_2026_9_19_19_12_48",
+      "sha256": "970e47b63967a26e6b76b855202c3eed7accffaebc8b52a89edd5181ea6ed88f",
+      "hits": [
+        {
+          "line": 481,
+          "text": "[12842.428209]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =0!!!"
+        },
+        {
+          "line": 485,
+          "text": "[12842.436710]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        }
+      ]
+    },
+    {
+      "file": "/data/vibe_compiler-validation/tdma-localization-20260920/snapshot/firmware/KERNEL_2026_9_20_2_31_18",
+      "member": "KERNEL_2026_9_20_2_31_18",
+      "sha256": "c082d355f4217cb1246037e85222f8967a2f64b0a5cf104af66d08eaf5074137",
+      "hits": [
+        {
+          "line": 268,
+          "text": "[660.878785]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 269,
+          "text": "[660.885487]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 270,
+          "text": "[660.892179]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 271,
+          "text": "[660.898868]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 272,
+          "text": "[660.905623]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 273,
+          "text": "[660.912385]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 284,
+          "text": "[660.920562]\u00013[RAS-FE]lsu tdma timeout from Tile-12, need to reset chip!!!"
+        },
+        {
+          "line": 285,
+          "text": "[660.927327]\u00013[RAS-FE]lsu tdma timeout from Tile-14, need to reset chip!!!"
+        },
+        {
+          "line": 286,
+          "text": "[660.934095]\u00013[RAS-FE]lsu tdma timeout from Tile-13, need to reset chip!!!"
+        },
+        {
+          "line": 287,
+          "text": "[660.940841]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 288,
+          "text": "[660.947566]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 289,
+          "text": "[660.954342]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 290,
+          "text": "[660.960983]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 299,
+          "text": "[660.969465]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 300,
+          "text": "[660.976152]\u00013[RAS-FE]lsu tdma timeout from Tile-2, need to reset chip!!!"
+        },
+        {
+          "line": 301,
+          "text": "[660.982840]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 302,
+          "text": "[660.989537]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 303,
+          "text": "[660.996269]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 333,
+          "text": "[856.078028]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 334,
+          "text": "[856.084670]\u00013[RAS-FE]lsu tdma timeout from Tile-1, need to reset chip!!!"
+        },
+        {
+          "line": 335,
+          "text": "[856.091348]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 336,
+          "text": "[856.098023]\u00013[RAS-FE]lsu tdma timeout from Tile-4, need to reset chip!!!"
+        },
+        {
+          "line": 337,
+          "text": "[856.104684]\u00013[RAS-FE]lsu tdma timeout from Tile-7, need to reset chip!!!"
+        },
+        {
+          "line": 338,
+          "text": "[856.111325]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 339,
+          "text": "[856.118012]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        },
+        {
+          "line": 340,
+          "text": "[856.124677]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 341,
+          "text": "[856.131420]\u00013[RAS-FE]lsu tdma timeout from Tile-10, need to reset chip!!!"
+        },
+        {
+          "line": 342,
+          "text": "[856.138179]\u00013[RAS-FE]lsu tdma timeout from Tile-15, need to reset chip!!!"
+        },
+        {
+          "line": 352,
+          "text": "[856.147746]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+        },
+        {
+          "line": 354,
+          "text": "[856.161024]\u00013[RAS-FE]lsu tdma timeout from Tile-6, need to reset chip!!!"
+        },
+        {
+          "line": 355,
+          "text": "[856.167678]\u00013[RAS-FE]lsu tdma timeout from Tile-5, need to reset chip!!!"
+        },
+        {
+          "line": 356,
+          "text": "[856.174365]\u00013[RAS-FE]lsu tdma timeout from Tile-8, need to reset chip!!!"
+        },
+        {
+          "line": 357,
+          "text": "[856.181005]\u00013[RAS-FE]lsu tdma timeout from Tile-11, need to reset chip!!!"
+        },
+        {
+          "line": 358,
+          "text": "[856.187772]\u00013[RAS-FE]lsu tdma timeout from Tile-9, need to reset chip!!!"
+        }
+      ]
+    }
+  ],
+  "conclusion": {
+    "root_cause": "unknown",
+    "vendor_teardown_sufficient_to_prevent_tdma": false,
+    "nonfinite_input_in_bf16_fault": false,
+    "fault_pc_available": false,
+    "fault_packet_available": false,
+    "next_step": "先准备并验证首故障快照与命令/site关联；随后干净boot仅执行一个当前case，历史包不重跑；仍不得以快照或局部通过代签修复"
+  }
+}

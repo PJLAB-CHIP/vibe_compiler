@@ -47,6 +47,35 @@ invocation的poison仍停止Wafer后续资源操作，厂商退出流程独立�
 输入修正的44项case单测及三项fresh source/payload/no-card通过，全部86个package摘要与当前runner no-card通过；
 canonical完整增量构建及随后Ninja no-op通过。初版遗漏必填comparison policy的主机失败已修正并完整复测，尚未触发设备调用。
 
+### 当前接续结果与TDMA定位（2026-09-20）
+
+上述主机准备后，本boot实际完成FP16普通Q1两步和小prefill BF16/FP16，共3项配置、4次健康launch；
+完整输出、actual KV接续和guard通过。随后当前BF16 4K 28-head prefill报告多个Tile的LSU TDMA，批次停止。
+用户明确要求继续后，仅运行同workload的FP16，仍失败；外层120秒期限触发，固件还记录后续AP资源清理超时。
+该FP16的health wrapper未完成最终日志落盘，不能从外层期限推断具体阻塞函数；原始partial record保留。
+两项故障都不签资格或性能。原3项资格按原版本保留，本boot新增3项；68项尚未启动，合计70项未签资格。
+
+用户最新要求优先定位原始TDMA，并询问是否需要重启。已说明先保存现场、继续离线分析，今晚不再执行设备。
+本项继续归15/16号既有诊断与验证边界，没有修改厂商清理策略、driver、firmware或寄存器设置。
+原始告警、接续故障和最后清理失败按时间分别保存，不将后者当作最初TDMA的原因。
+
+已完成的审计及覆盖：
+
+| 输入/分支 | 实际产出 | 验证边界 |
+| --- | --- | --- |
+| 三个5.7安装包、已安装动态固件和runtime | 摘要及逐字节对照，AP模块符号和DWARF | 确认所比较文件身份；未读取板上flash全量镜像 |
+| 上次Tile-2和当前多Tile告警 | fatal bit 12、实际handler、EID及原始日志关联 | 证明相同告警类别；不证明相同故障指令或根因 |
+| 当前BF16故障输入/回读 | 全量有限值检查、既定数值比较 | 排除这次NaN/Inf输入；不覆盖低层地址或同步合法性 |
+| 后续FP16期限失败 | 外层结果、partial health record及固件时间线 | 拒绝资格；不虚构缺失的runner退出信息 |
+
+下一步先完成首故障快照路径的访问验证及实际packet/site关联，再在干净boot运行一个当前case。
+优先取PMU exception raw/stat/mask、命令ID、TDMA last-command及timeout配置；NCC命令寄存器的Kcore专用访问
+不能按同地址套到host BAR。当前发行AP handler没有这组快照；厂商debug支持或等价采集能力尚待补齐。
+取得故障site之前不凭猜测插join、改timeout、屏蔽异常或reset。TDMA根因及连续运行稳定性仍未闭合。
+
+详见[硬件定位事实](../../docs/tx81-tdma-fault-localization.md)、
+[本轮证据](../../docs/data/board-performance/tdma-firmware-localization-20260920.json)及统一板端结果。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
