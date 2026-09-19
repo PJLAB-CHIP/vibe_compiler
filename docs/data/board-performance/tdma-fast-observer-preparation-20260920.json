@@ -1,0 +1,230 @@
+{
+  "recorded_utc": "2026-09-19T19:45:03.620922+00:00",
+  "work_item": "board-testing",
+  "scope": "直接 TDMA fatal 连续只读采集准备；尚无本轮真实采集或设备执行",
+  "source_head": "6411678f562de58f54f00632faf02d5c09d916d4",
+  "preparation_boot_id": "8da5f00d-b678-4df9-bb23-b93b11a0c54e",
+  "collector_directory": "/data/vibe_compiler-validation/tdma-fast-observer-20260920",
+  "single_case_directory": "/data/vibe_compiler-validation/tdma-fast-observation-20260920",
+  "after_reboot_command": [
+    "python3",
+    "-B",
+    "/data/vibe_compiler-validation/tdma-fast-observation-20260920/run_after_reboot.py"
+  ],
+  "case": "attention-prefill-28-heads-4096-bf16",
+  "runner_sha256": "8fa7dd5bac0e10a86ca660d09ed48d73468c3653e7adcefb29a5f791d81ef793",
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "collector": {
+    "read_only": true,
+    "runtime_context": false,
+    "register_writes": false,
+    "tile_count": 16,
+    "sample_loads": 6,
+    "stream_fatal_offset": "0x6100c0",
+    "tdma_fatal_mask": "0x1000",
+    "baseline_fatal_mask": "0x1ff03",
+    "worker0_count_offset": "0x590020",
+    "last_low_offset": "0x59027c",
+    "last_high_offset": "0x590280",
+    "capacity_records": 1048576,
+    "maximum_ms": 15000,
+    "post_trigger_ms": 100,
+    "post_trigger_capacity_bound": "half ring",
+    "atomic_snapshot": false,
+    "live_access_verified": false,
+    "measured_board_sampling_interval": null
+  },
+  "host_verification": [
+    {
+      "source": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/offline/verification.json",
+      "passed": true,
+      "checks": [
+        "16 Tile zero fixture exact; no false trigger",
+        "ring wrap ordered and bounded",
+        "deadline termination",
+        "fixture hash unchanged by reader",
+        "external stop",
+        "dynamic Tile13 fatal: exact trigger/count/last-command plus before/after records",
+        "preexisting fatal/count blocks ready",
+        "bounded post-trigger retains trigger on small ring",
+        "truncated binary rejected",
+        "unaligned/out-of-file mappings rejected",
+        "wrong packed XY identity rejected",
+        "capacity/deadline/post-window bounds rejected"
+      ]
+    },
+    {
+      "source": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/offline/cli-verification.json",
+      "passed": true,
+      "checks": [
+        "all 16 Tile counter/low/high fields exact after dynamic ordinary-file update",
+        "all-ones aperture stops and preserves binary evidence",
+        "complete offline CLI identity/binary/summary workflow",
+        "live collector, top-level launcher and board wrapper all reject current fault boot before launch"
+      ]
+    }
+  ],
+  "fresh_no_card": {
+    "returncode": 0,
+    "started_utc": "2026-09-19T19:41:08.865209+00:00",
+    "finished_utc": "2026-09-19T19:41:15.269691+00:00",
+    "wall_seconds": 6.404486197000097,
+    "board": false
+  },
+  "build_checks": {
+    "helper_command": "cc -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -shared -fPIC fast_reader.c -o fast_reader.so",
+    "helper_passed": true,
+    "canonical_command": "third_party/host-tools/tools/bin/cmake --build --preset default --parallel \"$(nproc)\"",
+    "canonical_passed": true,
+    "subsequent_ninja_noop": true,
+    "initial_system_cmake_failure": "System cmake rejected preset version; used repository host-tools cmake successfully without reconfiguration."
+  },
+  "live_device_access_this_preparation": false,
+  "device_launches_this_preparation": 0,
+  "fault_instruction_identified": false,
+  "root_cause_identified": false,
+  "remaining": [
+    "新 boot 系统占用/身份及 16 Tile 真实只读基线验证",
+    "一个当前 case 的直接 fatal 前后观测",
+    "字段更新语义、动态故障指令及根因关联；不保证单次确定"
+  ],
+  "limitations": [
+    "采样不是原子快照；状态脉冲可能短于同 Tile 读取间隔",
+    "只读 PCI 采样可能影响总线时序；不签性能",
+    "stream 寄存器依据 SDK/AP 二进制；完整硬件读取副作用语义未知",
+    "worker0 是前次计数活动域，不能据此证明故障 worker",
+    "离线测试只向普通文件注入状态，不向设备注入故障"
+  ],
+  "artifacts": [
+    {
+      "path": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/check_occupancy.py",
+      "bytes": 2066,
+      "sha256": "79e1af74b96926fe8ac7d25acb0ccc5bd63252346262f0cc1561b60dbebb082e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/checked_runner.py",
+      "bytes": 5409,
+      "sha256": "8fca7b1787c2ea991e0fbcc400ea891270ceb13e85339564912fa168e0c49d11"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/run_remaining.py",
+      "bytes": 5510,
+      "sha256": "8ece0908ee875ea4a9010fc25cf7de5bef64b2a96595c4f9e5738d9aeba17f83"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/check_occupancy.py",
+      "bytes": 2066,
+      "sha256": "79e1af74b96926fe8ac7d25acb0ccc5bd63252346262f0cc1561b60dbebb082e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/checked_runner.py",
+      "bytes": 7858,
+      "sha256": "b1724db256d66d58e7eb2bb3f75ddfa1a967e41fe179aac2069b42e59ac48f15"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/environment.json",
+      "bytes": 4557,
+      "sha256": "fee9707877fb1dd0ca9fefb46d4e8cb259256c00d2d2ab2acee6d4c5b4f633d8"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare-command.json",
+      "bytes": 894,
+      "sha256": "731eb301b1b6b71bc889e71e96efd56094cb1076f35b3dc40277fead86466cae"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare-process.json",
+      "bytes": 1036,
+      "sha256": "aeb2ba8c352f30cc86f53b79c0ff68021f8c4c4d911ae05cac38a0ac3fc6dddd"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare-result.json",
+      "bytes": 184,
+      "sha256": "16e3cc7e835d292fa5e12a7d0ce3f05f296ae6f4dee7359ffea8381730e6f085"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare.log",
+      "bytes": 8231,
+      "sha256": "36b9816caff38580b5e3068662767f656f6313a6d2ab3d492cf38766df405ff4"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/run_after_reboot.py",
+      "bytes": 3071,
+      "sha256": "82396ade1b28591ad8eba27c5a4b04b29bb7db5b2025e0112320519d2cd8ad4f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/capture_fast.py",
+      "bytes": 7064,
+      "sha256": "5e051740f54f3c6bdd10a757c26d999d3205cff1a2c814dc4a2cb05801fec120"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/fast_reader.c",
+      "bytes": 6188,
+      "sha256": "6211fb9e1fdc8375ddf2ea11a1b2397136b4de7fc8b85b5060ff158f656d0c2f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/fast_reader.so",
+      "bytes": 16752,
+      "sha256": "08f0f94ab07d255e744edbcc2dd9a9ff2bfe4f8dc18dd5c6ff75407ee9d06e43"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/offline/cli-verification.json",
+      "bytes": 380,
+      "sha256": "e7106b30439be3d0eea40e3c4030e0223b8529c9ac7c618ba693a5835bfbe56b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/offline/verification.json",
+      "bytes": 40764,
+      "sha256": "21c365d7544a4f7fbd05a612a4a2492d7034a6d308a5fb536e43fecd8869bc3e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/verify_cli.py",
+      "bytes": 3255,
+      "sha256": "c68d1fb17dac4ef44114a2c7a5197885bc9b1597efa3786985e1ae3404747ee7"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/verify_offline.py",
+      "bytes": 4961,
+      "sha256": "ca694b8d72ed6e6032d76a6343df4ef9edb7e5c7dfdaf0f1b5485d75f8e59d29"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/check_occupancy.py",
+      "bytes": 2066,
+      "sha256": "79e1af74b96926fe8ac7d25acb0ccc5bd63252346262f0cc1561b60dbebb082e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/checked_runner.py",
+      "bytes": 7087,
+      "sha256": "ed78afeff8bd7114d3d4afe93d5fd7271cdb29992fa77f26dd76a46eaba2cdea"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/capture_pmu.py",
+      "bytes": 6971,
+      "sha256": "9d33b2249771e3704c3295f8f7468856fdf49abc49d1bceb725681ee4e9cb956"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/pmu_reader.so",
+      "bytes": 16192,
+      "sha256": "4b2d550c1f5b47ac06db2a3012c3be1f5b106566e5e19aca5e6b37bb836bc094"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/registers.json",
+      "bytes": 3361,
+      "sha256": "5032f2bc58863610839bac331cbedaaabfe3cc7d5ecdb266f540eccc9f743c1a"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "bytes": 71082,
+      "sha256": "df296bc7ac68850d2cb02a7f49d58647f15f8eceaedff1dd3a24643b8bd0705c"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_pytorch_board_cases.py",
+      "bytes": 59451,
+      "sha256": "e2e418f1c6e8e34c68c50793b0c221f72c8861f4268a3c2307e0683cd1490258"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_pytorch_board_common.py",
+      "bytes": 12240,
+      "sha256": "bec09b2084eeffd6b4ef5d2c5e78650686b6c041ced68e13bed8e8031c2d7c43"
+    }
+  ]
+}

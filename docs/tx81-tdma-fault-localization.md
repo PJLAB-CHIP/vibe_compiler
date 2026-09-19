@@ -123,6 +123,24 @@ GS 两端 payload 一致、地址包络不相交，GS/Memset 的地址范围均�
 没有故障 site、阈值单位和硬件耗时证据时，不能因数值接近 `0xffff` 就认定它触发 timeout，或据此插 join、改分块和阈值。
 本轮仅离线审计，没有新增设备执行。完整参数、每 Tile 调用记录与脚本摘要归入同一实测证据。
 
+### 直接 fatal 状态的快速采集准备
+
+当前 SDK 定义 `KUIPER_STREAMINT_REG_BASE=0x610000`；当前 AP 模块的
+`streamint_fatal_err_get` 从该块 `+0xc0` 读取 32 bit，并以 `0x1ff03` 保留有效字段。
+该模块 handler 表把 bit 12 分派给 TDMA timeout handler。这是 SDK/二进制的 **supported** 依据，
+不同于上述位义未知的 PMU exception raw；新 host 映射的真实访问尚未验证。
+
+新采集器依实际 ATU 只读映射，每个 Tile 连续读取 fatal、worker0 TDMA count、last-command 低/高字、
+count、fatal，共六次 volatile 32-bit load，保存起止单调时钟；C 热循环取消原 10 ms sleep，
+有界 ring 在首次 bit 12 后保留最多 100 ms 或半 ring 的后续记录，避免覆盖触发点和已有前置记录。
+字段仍按顺序读取，counter/last-command 更新语义仍未知；相邻值变化用于标记不确定窗口，不能宣称原子故障快照。
+实际采样间隔及总线扰动须在下一次观测记录；短暂状态仍可能漏采，完整硬件读取副作用语义尚未取得。
+
+普通文件 fixture 的 16 Tile exact、动态触发、wrap/stop/deadline、已有异常拒绝、坏映射及截断记录拒绝均通过，
+单case入口已完成 fresh no-card，详见[准备证据](data/board-performance/tdma-fast-observer-preparation-20260920.json)。
+本轮没有访问真实设备或新增计算。用户重启后先验证真实只读基线，再运行一个当前失败配置；
+正常或异常退出仍调用厂商流程。该准备不等于已捕获故障指令或修复 TDMA。
+
 ## 下一次复现需要先补的证据
 
 1. 在实际 TDMA handler 入口、错误状态被更改之前采集一次有界快照最可靠。
@@ -133,8 +151,9 @@ GS 两端 payload 一致、地址包络不相交，GS/Memset 的地址范围均�
    并保留触发时的实际 packet 参数。参数必须来自真实 issue，不能由预期指令列表猜测。
 3. 若现有寄存器不能映射回实际调用位置，再对一个当前包使用有界 issue 记录：关联实际 Tile/worker、
    动态序号、ELF site 及 packet。诊断记录本身的开销需要单列，不以完整 Trace 卡死或普通计时替代它。
-4. 干净启动的单个当前失败配置已完成一次带采集复现；后续先离线核对字段与 site/packet 关联，
-   依据确定证据缩小局部链，不直接重复同一采样，不重跑矩阵或历史对照包，也不改同步、timeout 或 reset 来试运气。
+4. 干净启动的单个当前失败配置已完成一次带采集复现；离线 ELF/SDK 对照及上述直接 fatal 采集准备已完成。
+   用户再次重启后用新采集器进行一次当前配置观测，再结合实际字段缩小调用范围；
+   不重跑矩阵或历史对照包，也不改同步、timeout 或 reset 来试运气。
 
 完成条件是拿到一次可关联实际指令的故障现场，据此修正确定缺陷，再以当前原始 case 及相应连续运行序列验证。
 目前完成了安装版本核对、告警路径还原及重启后首个计算的寄存器观测；尚未取得可关联实际指令的故障 packet/PC，

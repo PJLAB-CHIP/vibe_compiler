@@ -117,6 +117,32 @@ fixture前后摘要相同；新boot只读访问正例实际通过后，才能单
 不模拟NPU计算或队列时序，不因此签包合法性。last-command右移8位与实际destination的592项相关性留作待验证线索；
 重复destination及更新时点未知仍阻止唯一故障site关联。用户询问是否需再重启，已说明现场仍有用、当前无需重启。
 
+### 首个fatal边沿的快速只读采集
+
+用户进一步要求立即改好采集器，准备完成后由用户重启。本项沿用15/16号诊断边界：
+输入为实际ATU、packed XY身份、当前ELF调用记录及新boot；C采样循环只读每Tile的stream fatal状态、
+worker0 TDMA count和last-command，输出有界二进制环形记录及原始字段JSON，直接下游为首次fatal与实际发射site的关联。
+入口为独立host诊断采集器及既有单case wrapper；不修改设备程序、firmware、driver、runtime退出或寄存器设置。
+
+stream寄存器base来自SDK `KUIPER_STREAMINT_REG_BASE=0x610000`，fatal字段来自当前AP
+`streamint_fatal_err_get` 的 `+0xc0` 读取；bit 12依据同模块实际handler表。
+每Tile保存读取起止时钟，fatal和TDMA count分别在last-command前后读取；不得将一次序列读取声明为原子快照。
+热循环不写JSON、不sleep、不等待host EID；固定容量ring保留触发前记录，首次fatal后再保留有界窗口。
+新boot基线已有fatal、身份/占用失败或采集器未ready均禁止launch。允许无触发、buffer wrap和外部正常stop，须显式记录原因。
+采样会影响总线时序；状态位可能短于一次扫描，直接fatal未捕获或候选不唯一时仍报告unknown，不保证一次锁定根因。
+
+覆盖矩阵：16 Tile静态fixture精确读取及文件摘要不变；动态fatal注入只作用普通文件fixture，验证触发前后记录、
+wrap、deadline/stop、零状态不误触发、已有fatal拒绝、坏映射拒绝、截断binary拒绝；真实访问在新boot先验证基线。
+完成条件为离线覆盖实际通过、单case接入与身份摘要冻结；本轮只准备，不在当前故障boot继续launch。
+
+上述准备现已完成，见[快速采集准备记录](../../docs/data/board-performance/tdma-fast-observer-preparation-20260920.json)。
+C helper以严格warning选项编译通过；离线读取、动态触发、环形记录、拒绝路径及完整CLI实际通过，
+当前故障boot在collector、单case wrapper和接续入口均被拒绝，验证未访问设备。
+所选当前BF16 case重新生成source/input/reference并完成fresh no-card；canonical完整增量构建及随后Ninja no-op通过。
+已冻结单次入口和采集脚本摘要，用户可重启。新boot先检查系统占用、身份和16 Tile真实只读基线；
+只有采集器ready才运行这一case一次，保存首次TDMA fatal前后记录及固件/内核增量，异常即停、沿厂商退出。
+新stream寄存器的真实访问与采样周期尚待该次验证；离线通过不保证能恢复唯一故障指令，也不签TDMA修复。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
