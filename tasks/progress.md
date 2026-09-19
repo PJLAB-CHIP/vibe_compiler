@@ -22,6 +22,11 @@
 具体case与验收顺序记录在同一份板测计划中，逐次已测性能与根因追加到
 [`docs/board-performance-results.md`](../docs/board-performance-results.md)；不再按算子、正确性或性能拆work item。编译器实现任务保留自身范围。
 
+2026-09-20用户修正板测方式：禁止为性能比较重新运行历史包，直接使用已有健康耗时记录并注明版本、配置及环境差异。
+设备恢复核实后的接续先覆盖当前版本尚未验收的case，不再交错旧包或启动原配对队列；必要重复计时只运行当前版本。
+用户提出连续运行后偶发异常的可能性，作为待查假设保留；当前仅能确认前18次健康、第19次报告TDMA异常，不能据此归因旧包。
+本轮设备异常后的停止状态保持；本次修正不启动设备、不自动retry/reset。
+
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
 顺序为composite接入→宽状态/causal局部展开→GEMM/layout/movement修正→原PyTorch/HF module新reference→完整实卡与性能保护。
