@@ -45,8 +45,10 @@
 last-command与destination出现一致相关性，但未恢复唯一故障指令。用户随后要求改好采集再重启：
 直接观察stream TDMA fatal、worker0 count和last-command的C连续采集器及单次入口已准备完成，
 离线触发/记录/拒绝路径、fresh no-card和canonical构建通过，摘要已冻结。当前故障boot未新增设备访问或launch。
-等待用户重启；新boot先验证占用、身份和真实只读基线，再仅运行当前BF16 4K 28-head prefill一次。
-证据见[快速采集准备记录](../docs/data/board-performance/tdma-fast-observer-preparation-20260920.json)；根因与修复仍未完成。
+用户已确认重启，新boot真实基线通过后仅执行当前BF16 4K 28-head prefill一次；直接fatal前后记录已取得。
+首次告警附近的last-command使首轮mask标量广播成为优先候选，字段更新语义未闭合，尚不能签唯一故障指令。
+本轮completion及后续厂商清理也超时，设备批次已停；现场已保存，转入离线关联，当前无需再重启。
+证据见[快速观测实测记录](../docs/data/board-performance/tdma-fast-observation-20260920.json)；根因与修复仍未完成。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
@@ -147,7 +149,7 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留。当前82项host配置/86个package已完成fresh no-card；Q2双dtype健康三次计时及BF16普通Q1资格保留。厂商正常退出版本新增FP16普通Q1两步和小prefill双dtype健康资格，随后4K 28-head BF16发生TDMA；用户明确要求接续的FP16也失败。重启后首个当前BF16计算仍告警；64帧PMU与正常回读/厂商退出已归档，未取得故障packet/PC。直接fatal快速采集及单case入口已通过离线/no-card准备，待用户重启后验证真实基线并单次观测；根因未知。68项配置尚未启动、2项故障，共70项未签资格；必要重复计时、attention性能目标及全矩阵保护未闭合。完整LM S1024/1025、搜索性能回归/deep收益及三轮模型调优仍未完成；原最好可复现目标不重置。 | `tasks/plans/board-workload-matrix.md` |
+| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留。当前82项host配置/86个package已完成fresh no-card；Q2双dtype健康三次计时及BF16普通Q1资格保留。厂商正常退出版本新增FP16普通Q1两步和小prefill双dtype健康资格，随后4K 28-head BF16发生TDMA；用户明确要求接续的FP16也失败。重启后首个当前BF16计算仍告警；64帧PMU与正常回读/厂商退出已归档，未取得故障packet/PC。再次重启后的直接fatal快速采集已完成，首轮mask广播成为优先候选；本轮completion及后续厂商清理超时，已停批并保存现场，根因仍未知。68项配置尚未启动、2项故障，共70项未签资格；必要重复计时、attention性能目标及全矩阵保护未闭合。完整LM S1024/1025、搜索性能回归/deep收益及三轮模型调优仍未完成；原最好可复现目标不重置。 | `tasks/plans/board-workload-matrix.md` |
 | 3 | `mesh-communication-materialization` | `queued` | 06、13、14、16 | verified card-local TensorProgram、抽象 collective participant/payload/combine 语义、layout-resolved current TileRegion；target transport 只消费已物化 peer IR | 通用Ring/recursive-doubling/ordered AllToAll/reduction算法与TX81 transport分层；execution/residency、layout/bufferization、frontend helper和search cost的current-IR合同闭合；focused current-IR、SystemC与host/no-card witness通过。真实板测及PyTorch验收由独立板测项拥有 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `production-host-readiness` | `queued` | Q53 / 16 | `mesh-communication-materialization`产出的 current-IR 与 target-independent/target transport 分界、frontend、interface、package/runtime | 历史主纵向与smoke通过不能代签current模型资格；模型扩展暴露的prefill/decode/LLaMA问题已由board-testing统一修复并完成限定矩阵的FP16实卡验收。等待前置通信实现边界闭合后，按本项合同重签完整source/IR/package/oracle/runner/no-card/SystemC矩阵；板端证据见统一归档，本项不运行真实设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |

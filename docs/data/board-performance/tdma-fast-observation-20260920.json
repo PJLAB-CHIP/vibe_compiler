@@ -1,0 +1,653 @@
+{
+  "recorded_utc": "2026-09-19T19:54:38.869741+00:00",
+  "work_item": "board-testing",
+  "scope": "用户确认重启后的单次BF16 4K prefill与直接fatal快速观测",
+  "source_head": "2465a293b057e470f5ef5f6913de719d9f9128a5",
+  "boot_id": "37c73cbc-4229-4e5e-9848-5cd34ebc884f",
+  "case": "attention-prefill-28-heads-4096",
+  "dtype": "bf16",
+  "qkv_shape": [
+    1,
+    28,
+    4096,
+    128
+  ],
+  "seed": 20260803,
+  "launch_count": 1,
+  "retry_count": 0,
+  "manual_reset": false,
+  "signals_sent": false,
+  "runtime_version": 1400,
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "driver_srcversion": "F64164C6460FEE30EBF66E2",
+  "pre_launch_occupancy": {
+    "device": "/dev/accel/dev-0",
+    "major": 10,
+    "minor": 123,
+    "boot_id": "37c73cbc-4229-4e5e-9848-5cd34ebc884f",
+    "holders": [
+      {
+        "pid": 1619,
+        "fd": 3,
+        "exe": "/usr/bin/npu_pull_ep_log",
+        "uid": 0,
+        "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+        "verified_log_service": true
+      }
+    ],
+    "unknown": [],
+    "state": "idle",
+    "unexplained_fuser_pids": []
+  },
+  "baseline": "16 Tile fatal/count/last-command zero; packed XY identity and actual ATU passed before ready",
+  "fresh_source_equal": true,
+  "fresh_input_audit": {
+    "fresh_board_payloads": [
+      {
+        "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_output_0.expected.bf16.raw",
+        "sha256": "3d992577a46ca854612287f1419cbc931c19b1e667c86c5316d4f1eae1a9265b",
+        "dtype": "bf16",
+        "elements": 14680064,
+        "finite": true,
+        "min": -3.109375,
+        "max": 3.328125
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_user_input_0.bf16.raw",
+        "sha256": "9b8fb19689b251d560d4d8378ec1022e3ee9694ec447090c68601176fcd2c5b7",
+        "dtype": "bf16",
+        "elements": 14680064,
+        "finite": true,
+        "min": -0.416015625,
+        "max": 0.416015625
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_user_input_1.bf16.raw",
+        "sha256": "12efe0a577e2ccd06e0f24b5b88f07819beb6750558b53509285bf96e6dfac20",
+        "dtype": "bf16",
+        "elements": 14680064,
+        "finite": true,
+        "min": -0.416015625,
+        "max": 0.416015625
+      },
+      {
+        "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_user_input_2.bf16.raw",
+        "sha256": "3a5e267dce6e862a904aa3c0d887f88779a135094f9a865baae0c674d2e53c3d",
+        "dtype": "bf16",
+        "elements": 14680064,
+        "finite": true,
+        "min": -3.328125,
+        "max": 3.328125
+      }
+    ],
+    "device_output_exists": false
+  },
+  "board_result": {
+    "returncode": 1,
+    "started_utc": "2026-09-19T19:48:53.537334+00:00",
+    "finished_utc": "2026-09-19T19:50:33.642693+00:00",
+    "wall_seconds": 100.10535834400001,
+    "board": true
+  },
+  "wrapper_returncode": 124,
+  "runner_alive_at_wrapper_deadline": true,
+  "runner_exit_code": null,
+  "runner_absent_at_post_fault_snapshot": true,
+  "vendor_teardown": "CLI poisoned completion then vendor process teardown; AP reports reset, clean timeout and Kcore/context errors later",
+  "output_validated": false,
+  "guards_validated": false,
+  "performance_qualified": false,
+  "collector_summary": {
+    "start_ns": 103802837622,
+    "end_ns": 104180176951,
+    "total": 66331,
+    "kept": 66331,
+    "first_sequence": 0,
+    "trigger_sequence": 48593,
+    "trigger_ns": 104080173349,
+    "reason": "post-trigger-window",
+    "record_bytes": 56,
+    "register_loads_per_tile_sample": 6,
+    "tile_read_ns_min": 5384,
+    "tile_read_ns_max": 39267,
+    "same_tile_gap_ns_min": 88841,
+    "same_tile_gap_ns_max": 125615,
+    "atomic_snapshot": false,
+    "fault_instruction_identified": false
+  },
+  "raw_register_word_count": 397986,
+  "first_fatal_lead_over_host_eid_ns": 11926651,
+  "first_fatal_sampled_tile": 1,
+  "first_hardware_fault_tile_known": false,
+  "first_fatal_counter_17_tiles": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "unconfirmed_broadcast_destination_tiles": [
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "candidate": {
+    "status": "inference, not unique fault instruction",
+    "operation": "first causal-mask F32 negative-infinity scalar broadcast and neighboring copies",
+    "elf_tdma_ordinal_1based_in_host_control_flow_audit": 13,
+    "destination_hex": "0x170900",
+    "inner_bytes": 4,
+    "iterations": 65536,
+    "payload_bytes": 262144,
+    "counter_update_semantics_confirmed": false,
+    "last_command_encoding_confirmed": false,
+    "bounded_prefix_is_complete_candidate_set": false
+  },
+  "kernel_events": [
+    {
+      "host_monotonic_us": 104092100,
+      "message": "accel 0000:3b:00.0: rpu=0 pid=3636 xid=12 category=XID_NPU_ERROR eid=\"0x0D00C005\" detail=\"NPU LSU TDMA Timeout\" action=\"RESET_BM\""
+    },
+    {
+      "host_monotonic_us": 194792117,
+      "message": "accel 0000:3b:00.0: rpu=0 pid=3636 xid=14 category=XID_AP_ERROR eid=\"0x0F000008\" detail=\"AP Application Processor (AP) Is Resetting\" action=\"IGNORE\""
+    },
+    {
+      "host_monotonic_us": 215180129,
+      "message": "accel 0000:3b:00.0: rpu=0 pid=3636 xid=14 category=XID_AP_ERROR eid=\"0x0F000004\" detail=\"AP Clean Resource Timeout\" action=\"IGNORE\""
+    },
+    {
+      "host_monotonic_us": 218332761,
+      "message": "accel 0000:3b:00.0: stop kcore failed, r = -110"
+    },
+    {
+      "host_monotonic_us": 218432062,
+      "message": "accel 0000:3b:00.0: failed to fini ctx[2]: -110"
+    }
+  ],
+  "health_passed": false,
+  "root_cause_identified": false,
+  "remaining": [
+    "确认counter和last-command更新/编码，或以有界actual issue记录补足动态序号",
+    "优先核查首轮mask标量广播及相邻搬运；不由阈值数值接近直接归因",
+    "确定缺陷后再做当前case与连续运行资格；本轮不再上卡"
+  ],
+  "limits": [
+    "16 Tile 顺序读取，最先采到的 Tile 不等于硬件最先故障的 Tile",
+    "已有 ELF 控制流审计跳过 NPU 运算，并非板上动态 issue trace；首 32 条只作局部对照，不能签完整候选集合",
+    "广播采用每次 4 bytes、65536 次循环；阈值单位未知，不能由 65536 与 0xffff 接近证明超时原因",
+    "采样在首次 fatal 后约 100 ms 结束，末尾计数不能当作最终设备进度",
+    "连续 PCI 只读采样的时序影响没有隔离，不能签性能或把本轮 completion 卡住归因采样"
+  ],
+  "artifacts": [
+    {
+      "path": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/compiler-ir/instruction/tile_00004.mlir",
+      "bytes": 584782,
+      "sha256": "7b629717ff677efa2dd5f6eea116a66cba98fcf2fa37b6f6070a6075d870165e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/compiler-ir/target-llvm/tile_00004.ll",
+      "bytes": 23738,
+      "sha256": "e7024eab1305529a32c311456869a6ca3cd8e3571d494251f36b47a65f08efa1"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/package/manifest.json",
+      "bytes": 10780,
+      "sha256": "f1d27ec21094e67b5f18af54337cba7d1f53388a0104387bbe3e8bb180022eaf"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-current/matrix/wafer-runtime-pytorch-attention-prefill-28-heads-4096-bf16-optimization-search-no-card/package/modules/module_00000.so",
+      "bytes": 131296,
+      "sha256": "fadf21ae2beae55ca556a05ccf191cd1631d7995960be3a536d7cbfb344b9d6e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/check_occupancy.py",
+      "bytes": 2066,
+      "sha256": "79e1af74b96926fe8ac7d25acb0ccc5bd63252346262f0cc1561b60dbebb082e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/checked_runner.py",
+      "bytes": 5409,
+      "sha256": "8fca7b1787c2ea991e0fbcc400ea891270ceb13e85339564912fa168e0c49d11"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-vendor-exit-20260920/run_remaining.py",
+      "bytes": 5510,
+      "sha256": "8ece0908ee875ea4a9010fc25cf7de5bef64b2a96595c4f9e5738d9aeba17f83"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/BOOT-CLAIM",
+      "bytes": 37,
+      "sha256": "b8d2d91c61d255b60954225ae36535f4af2c266f3256f38a437411d117dd0304"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/LAUNCH-CLAIM",
+      "bytes": 96,
+      "sha256": "6edf13363a0e1511022ed9723b344b52aac85cc4a1f61045d07f8487befee094"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/STOP-DEVICE",
+      "bytes": 96,
+      "sha256": "6edf13363a0e1511022ed9723b344b52aac85cc4a1f61045d07f8487befee094"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/analyze_capture.py",
+      "bytes": 5198,
+      "sha256": "c72f1b4dbcd2fe58f2d5d9712ee2aafa2145151fbd4613bcb18ce7245c6e7ebc"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/command.json",
+      "bytes": 1165,
+      "sha256": "2f1ca9d8c330c5a87588afbc3c164858fa8cd75637f9a5d094216e941c9c9312"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_output_0.expected.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "3d992577a46ca854612287f1419cbc931c19b1e667c86c5316d4f1eae1a9265b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_user_input_0.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "9b8fb19689b251d560d4d8378ec1022e3ee9694ec447090c68601176fcd2c5b7"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_user_input_1.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "12efe0a577e2ccd06e0f24b5b88f07819beb6750558b53509285bf96e6dfac20"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/raw/card_00_user_input_2.bf16.raw",
+      "bytes": 29360128,
+      "sha256": "3a5e267dce6e862a904aa3c0d887f88779a135094f9a865baae0c674d2e53c3d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/source-program/constants/0",
+      "bytes": 130,
+      "sha256": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/source-program/constants/1",
+      "bytes": 130,
+      "sha256": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/source-program/constants/2",
+      "bytes": 136,
+      "sha256": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/source-program/functions/forward.meta",
+      "bytes": 947,
+      "sha256": "d36bd80083357f1b478cb2f350fac618933abfb3693db81bdc2263180626a815"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board/source-program/functions/forward.stablehlo.bc",
+      "bytes": 2910,
+      "sha256": "aa35d8ed2c86f4afbadd9d612f0448c75d60b4dc5b3f0b302773a3efa99abce1"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board-command.json",
+      "bytes": 1264,
+      "sha256": "30d42538328cfd1c83ffdfddf329e5d59dd81136dbb3c76116e386cbc97bf36a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board-process.json",
+      "bytes": 1437,
+      "sha256": "237a4dbb304ebd03a5074f9e2e6ed165092dfded0e6c62628a9a70c231ba57bc"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board-result.json",
+      "bytes": 184,
+      "sha256": "76d568856b0f9288c9db9f738d15e390c0ca840bd2f194940320fee845dff825"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/board.log",
+      "bytes": 1832,
+      "sha256": "cde2c71eabbb64a7dddb43363846656f5162369e5bff7862b7d44b5537783166"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/capture-analysis.json",
+      "bytes": 52173,
+      "sha256": "33f698b7324bc300d60dfb6ad3c133ca33e19be846c4024791c62386ebc207a5"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/check_occupancy.py",
+      "bytes": 2066,
+      "sha256": "79e1af74b96926fe8ac7d25acb0ccc5bd63252346262f0cc1561b60dbebb082e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/checked_runner.py",
+      "bytes": 7858,
+      "sha256": "b1724db256d66d58e7eb2bb3f75ddfa1a967e41fe179aac2069b42e59ac48f15"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/environment.json",
+      "bytes": 4557,
+      "sha256": "ec058211ecc3ab281dc4a3737b19d2b32712f87074ddb214f50434ccf6411d23"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/input-audit.json",
+      "bytes": 1425,
+      "sha256": "35463155976bd39542cc7d735ab866f73635b19b9db3804bca8429b20d03541b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/firmware.log",
+      "bytes": 3426,
+      "sha256": "eb4e3bb904921aae756f3b98d225b4053f179799cf1bd52eef3f5f9ac550ce51"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/fuser.log",
+      "bytes": 111,
+      "sha256": "43826f94dcd34b2a44ebd0a90242f3890e104fe3ed5a26e11ea2b7f32d3a46fb"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/kernel.log",
+      "bytes": 170,
+      "sha256": "f9d1070986bd9d0208cb873c211692abbd30fba2635b0660f26fb832c21173ff"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/observer-ready.json",
+      "bytes": 15,
+      "sha256": "e963cc327932ee9a112cd85dc00414f99e344143129c27ef0ba65b52446b437c"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/observer-stop",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/observer.log",
+      "bytes": 429,
+      "sha256": "e1424ae3585ee1af3ee7a701bf39f9cc079244a4a3c465678fe7c5146f40edb5"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/occupancy.json",
+      "bytes": 417,
+      "sha256": "a15e4b46bc70c7219f12222f5a82b5ade1d2f94c4a3b399bc7004b4783c68efe"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/pmu.bin",
+      "bytes": 3714600,
+      "sha256": "8f9c4bb722326382b087ee3d5b1b3fc54473bdb492d69236bd462448afcc52fb"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/pmu.bin.identity.json",
+      "bytes": 3287,
+      "sha256": "62b789d91ef9e3f97bdbcd2c5bf1112d947e4c0bf71399b9c3884c3fb2ac5560"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/pmu.bin.summary.json",
+      "bytes": 37487,
+      "sha256": "7e3468fa57f20916d38e6f83e4a884ef11a5e88e448a97bdb6dd8c96221cbfb0"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/record.json",
+      "bytes": 45736,
+      "sha256": "45c271a74d3c4204807fc7a67dff485c685b54dec4b2af166cc7f92cb44a91d7"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/launch-health/1789847342234648940/runner.log",
+      "bytes": 198,
+      "sha256": "21c4b798d6e677343ffb6ae0de8bacf84f93069f79e8e20f9888e3bc69a585eb"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/firmware/FABRIC_MANAGER_2026_9_20_3_47_38",
+      "bytes": 1072,
+      "sha256": "2407284558a10421d154b20c5bb5f4e28439f3e3e717f3547f79c20c9ec33d11"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/firmware/KERNEL_2026_9_20_3_47_38",
+      "bytes": 14969,
+      "sha256": "0827147497abb467c66af1590a3137feae464080487871551c2ccdc84bbdaf94"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/firmware/NPUVS_2026_9_20_3_47_38",
+      "bytes": 186,
+      "sha256": "48bae0b910859da92fd2641f966ec18bd28a8d9409f9d727925470a9fc09263c"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/firmware/OOB_2026_9_20_3_47_38",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/firmware/TXMM_2026_9_20_3_47_38",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/kernel.json",
+      "bytes": 1158992,
+      "sha256": "a3f905a4248c8112a8e56c22576303a273d2d89c750960a506f1da7ac861b49b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/kernel.json.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/occupancy.json",
+      "bytes": 156,
+      "sha256": "3c55ade7ab5d8bb79654537aed3c2b27fb070acf72da9e3d63ed103bdc6e3537"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/occupancy.json.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/process.txt",
+      "bytes": 74,
+      "sha256": "5eb1e2190c4a110eaf86ff0076aeeb7c644a6788b15258b86924f84b51da7b30"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/process.txt.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/runner-process.json",
+      "bytes": 374,
+      "sha256": "5200ef6a9eeda88b7292649374e3a390e0c45fd8bfeec4a67bcc14d7162890dd"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/runner-process.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/post-fault/snapshot.json",
+      "bytes": 1649,
+      "sha256": "b08065e96afad283ca654321fccc303bf023a7a8f0285d38b03fb88530318160"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare-command.json",
+      "bytes": 894,
+      "sha256": "731eb301b1b6b71bc889e71e96efd56094cb1076f35b3dc40277fead86466cae"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare-process.json",
+      "bytes": 1036,
+      "sha256": "aeb2ba8c352f30cc86f53b79c0ff68021f8c4c4d911ae05cac38a0ac3fc6dddd"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare-result.json",
+      "bytes": 184,
+      "sha256": "16e3cc7e835d292fa5e12a7d0ce3f05f296ae6f4dee7359ffea8381730e6f085"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/prepare.log",
+      "bytes": 8231,
+      "sha256": "36b9816caff38580b5e3068662767f656f6313a6d2ab3d492cf38766df405ff4"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observation-20260920/run_after_reboot.py",
+      "bytes": 3071,
+      "sha256": "82396ade1b28591ad8eba27c5a4b04b29bb7db5b2025e0112320519d2cd8ad4f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/capture_fast.py",
+      "bytes": 7064,
+      "sha256": "5e051740f54f3c6bdd10a757c26d999d3205cff1a2c814dc4a2cb05801fec120"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/fast_reader.c",
+      "bytes": 6188,
+      "sha256": "6211fb9e1fdc8375ddf2ea11a1b2397136b4de7fc8b85b5060ff158f656d0c2f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/fast_reader.so",
+      "bytes": 16752,
+      "sha256": "08f0f94ab07d255e744edbcc2dd9a9ff2bfe4f8dc18dd5c6ff75407ee9d06e43"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/verify_cli.py",
+      "bytes": 3255,
+      "sha256": "c68d1fb17dac4ef44114a2c7a5197885bc9b1597efa3786985e1ae3404747ee7"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-fast-observer-20260920/verify_offline.py",
+      "bytes": 4961,
+      "sha256": "ca694b8d72ed6e6032d76a6343df4ef9edb7e5c7dfdaf0f1b5485d75f8e59d29"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/check_occupancy.py",
+      "bytes": 2066,
+      "sha256": "79e1af74b96926fe8ac7d25acb0ccc5bd63252346262f0cc1561b60dbebb082e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/checked_runner.py",
+      "bytes": 7087,
+      "sha256": "ed78afeff8bd7114d3d4afe93d5fd7271cdb29992fa77f26dd76a46eaba2cdea"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-0.calls.json",
+      "bytes": 1590332,
+      "sha256": "f2fbfe70207d62e1c4bfe55bfa39b3505d28121a4575e72162e09123f46aac5f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-1.calls.json",
+      "bytes": 1604188,
+      "sha256": "77e399d18b0ca0beeabf211828febad22e8442f8d83ff8fa169ba578ee110f13"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-10.calls.json",
+      "bytes": 1683933,
+      "sha256": "93564373cc53cd549283d0ac82230a6b8de391c7c92c274a52c3e2ddee60742b"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-11.calls.json",
+      "bytes": 1683933,
+      "sha256": "9b29afea82dd96bda145ee221950b6f32466907a3e8515279edb9a87f78e18ea"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-12.calls.json",
+      "bytes": 842013,
+      "sha256": "aa7c071324c2e8fdd6617b46c257bcac5e8b27bc101f549c95403a056d6723c3"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-13.calls.json",
+      "bytes": 842013,
+      "sha256": "966dac1880d0d9897b507d5e43e28e0022825382f64019278ade69ec411dff36"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-14.calls.json",
+      "bytes": 834813,
+      "sha256": "f12981d793b64267486c8de589194627a407f7ddeed89aa6b21f8798849efce9"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-15.calls.json",
+      "bytes": 842013,
+      "sha256": "d2913bff66ade4c0de9819d075bc993bb050617359cc5de04572b160667c779a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-2.calls.json",
+      "bytes": 1604188,
+      "sha256": "1653285d7d9d71cf3938421d127feaca76daa9dba4065b48fbdc4618af7dfea3"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-3.calls.json",
+      "bytes": 1604188,
+      "sha256": "fccaa5f38336935a8eb69fa7f0b6e155850e58d96073cda5103e78f64693cb2e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-4.calls.json",
+      "bytes": 1683932,
+      "sha256": "831eba94630755b5e35cb33956b6b105e1b15fc654ba42f85db97b031cbc3bfc"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-5.calls.json",
+      "bytes": 1683932,
+      "sha256": "20c693d658b4a82e31cba8c6d66c561a143f300ecf4f1975925fe9e2e9de4646"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-6.calls.json",
+      "bytes": 1683932,
+      "sha256": "d950cd3768c3f4a48cd36ab3cb6a1eb852d82e26007e15372ae7498b8b5a4b1f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-7.calls.json",
+      "bytes": 1683932,
+      "sha256": "de6de72de3d8532ad4536cc5d6c83fda2e380d8aa3092c107319fac03cd05dea"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-8.calls.json",
+      "bytes": 1683932,
+      "sha256": "a63a829afc2e061472be024ca1499ac41e378d6240d603c7db14c544ddb0d5c1"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-first-observation-20260920/host-packet-audit/tile-9.calls.json",
+      "bytes": 1683932,
+      "sha256": "e63ec8f8d2d8c7d58ec11990e2423e95b85d06245c4ed29ba79694544d9ea9cc"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/capture_pmu.py",
+      "bytes": 6971,
+      "sha256": "9d33b2249771e3704c3295f8f7468856fdf49abc49d1bceb725681ee4e9cb956"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/pmu_reader.so",
+      "bytes": 16192,
+      "sha256": "4b2d550c1f5b47ac06db2a3012c3be1f5b106566e5e19aca5e6b37bb836bc094"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-localization-20260920/pmu-observer/registers.json",
+      "bytes": 3361,
+      "sha256": "5032f2bc58863610839bac331cbedaaabfe3cc7d5ecdb266f540eccc9f743c1a"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "bytes": 71082,
+      "sha256": "df296bc7ac68850d2cb02a7f49d58647f15f8eceaedff1dd3a24643b8bd0705c"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_pytorch_board_cases.py",
+      "bytes": 59451,
+      "sha256": "e2e418f1c6e8e34c68c50793b0c221f72c8861f4268a3c2307e0683cd1490258"
+    },
+    {
+      "path": "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_pytorch_board_common.py",
+      "bytes": 12240,
+      "sha256": "bec09b2084eeffd6b4ef5d2c5e78650686b6c041ced68e13bed8e8031c2d7c43"
+    }
+  ]
+}

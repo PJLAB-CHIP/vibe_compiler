@@ -141,19 +141,49 @@ count、fatal，共六次 volatile 32-bit load，保存起止单调时钟；C �
 本轮没有访问真实设备或新增计算。用户重启后先验证真实只读基线，再运行一个当前失败配置；
 正常或异常退出仍调用厂商流程。该准备不等于已捕获故障指令或修复 TDMA。
 
-## 下一次复现需要先补的证据
+### 快速采集的真实观测（2026-09-20）
+
+新boot `37c73cbc-4229-4e5e-9848-5cd34ebc884f` 的首个计算仅运行同一当前BF16 4K prefill一次。
+实际ATU/packed XY、系统空闲和16 Tile零基线通过；stream字段的host只读访问获得 **board-observed** 证据。
+采集保留66,331条记录、397,986个原始字；每Tile六次读取耗时5.384–39.267微秒，
+同Tile采样间隔88.841–125.615微秒。采集从runner启动前17.306 ms持续至首次bit 12后100 ms，未覆盖整个设备执行。
+
+首次读到bit 12的是Tile 1：host monotonic `104080.173349 ms`，比host EID早11.926651 ms。
+它是顺序采样中最先读到的Tile，不能替代硬件首故障顺序；AP首条按Tile打印的日志是Tile 9，二者也不能直接相互推翻。
+16 Tile均有非零bit 12样本；Tile 1–15首次样本的TDMA count前后均为17，Tile 0为23。
+告警后的下一次读取中多数Tile的bit 12已为0，且计数继续增加；不从这一变化推断清除机制或恢复健康。
+
+| 首次fatal采样的Tile | last-command低字右移8位 | 前32条ELF TDMA调用的destination对照 |
+| --- | --- | --- |
+| 4–15 | `0x170900` | 第13次：4-byte inner、source stride 0、65,536次迭代，广播为256 KiB |
+| 1–3 | `0x70800` | 第14次：紧随广播的256 KiB连续copy |
+| 0 | `0xf2900` | 第20或22次：后续广播，单凭destination不能区分 |
+
+该表仍为 **inference**：沿用上一轮未正式确认的字段编码，前32条只是局部对照范围，不是完整故障候选集合。
+现有证据不足以将PMU计数与last-command按同一个退休序号解释；counter更新点、last-command保留时点及低8 bit位义仍未知。
+因此优先候选缩小为首轮causal mask的标量广播及相邻copy，但未取得唯一故障packet/PC。
+当前Instr明确将F32 `-inf`标量广播到`1x1x256x256xf32`再用于mask move；这是程序语义，三个用户输入全量有限。
+本次增加了故障时点附近的地址线索，仍不能单凭65,536与`0xffff`接近证明硬件timeout原因。
+
+本次还出现completion超过60秒。CLI记录context poisoned并进入厂商退出；90秒wrapper期限到达时进程仍存活，
+之后固件报告AP资源清理超时，kernel记录Kcore/context结束失败`-110`。后续只读快照时runner已消失，最终退出码未取得。
+这些清理故障晚于首个TDMA约90秒以上，不作为最初TDMA的原因；没有手工reset、signal或第二次launch。
+没有输出回读、guard通过或健康性能结果。采样扰动仍未隔离，也不能把本次completion卡住归因于采集器。
+原始binary、完整窗口日志、输入摘要及离线对照见[本轮证据](data/board-performance/tdma-fast-observation-20260920.json)。
+
+## 后续定位仍需闭合的证据
 
 1. 在实际 TDMA handler 入口、错误状态被更改之前采集一次有界快照最可靠。
-   当前发行 handler 没有这项能力；只读 PMU 访问现已验证，但约 10 ms 的采样不能代替 handler 快照。
+   当前发行 handler 没有这项能力；普通PMU及89–126微秒的直接fatal采样已验证，仍不能代替handler入口快照。
    先确认 PMU raw/command ID 的确切编码与保留规则，或取得厂商对应 debug 固件/采集支持。
    即使在 host EID 之前采到 raw，也可能晚于出错指令退休，不能声称一定抓到了首条故障指令。
 2. 同时保留 Tile、worker、异常 raw/stat/mask、命令 ID、TDMA last-command、timeout/enable、进度计数，
    并保留触发时的实际 packet 参数。参数必须来自真实 issue，不能由预期指令列表猜测。
 3. 若现有寄存器不能映射回实际调用位置，再对一个当前包使用有界 issue 记录：关联实际 Tile/worker、
    动态序号、ELF site 及 packet。诊断记录本身的开销需要单列，不以完整 Trace 卡死或普通计时替代它。
-4. 干净启动的单个当前失败配置已完成一次带采集复现；离线 ELF/SDK 对照及上述直接 fatal 采集准备已完成。
-   用户再次重启后用新采集器进行一次当前配置观测，再结合实际字段缩小调用范围；
-   不重跑矩阵或历史对照包，也不改同步、timeout 或 reset 来试运气。
+4. 干净启动的单个当前失败配置已分别完成普通PMU与快速fatal采集。先离线核查首轮mask广播及相邻copy，
+   补齐计数/last-command更新语义，或使用有界实际issue记录消除动态序号歧义；
+   不直接重复采样，不重跑矩阵或历史对照包，也不改同步、timeout或reset来试运气。
 
 完成条件是拿到一次可关联实际指令的故障现场，据此修正确定缺陷，再以当前原始 case 及相应连续运行序列验证。
 目前完成了安装版本核对、告警路径还原及重启后首个计算的寄存器观测；尚未取得可关联实际指令的故障 packet/PC，

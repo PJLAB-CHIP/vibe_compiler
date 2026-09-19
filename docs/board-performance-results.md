@@ -2883,3 +2883,19 @@ source/input/reference重新生成，source与当前prepared package一致，fre
 但位义、保留规则以及下一context的清除行为未知，不能据此认定析构遗漏。没有第二次launch、重试或手工reset。
 原始帧、日志、包/输入及采集脚本摘要见[实测证据](data/board-performance/tdma-pmu-observation-20260920.json)，
 详细字段边界见[定位说明](tx81-tdma-fault-localization.md#重启后首个计算的只读观测2026-09-20)。70项未签资格保持。
+
+## 2026-09-20：直接TDMA fatal的快速单case观测
+
+用户再次重启后，新boot `37c73cbc-4229-4e5e-9848-5cd34ebc884f` 只运行当前BF16 4K 28-head prefill一次。
+使用已通过fresh no-card的同一package和正常厂商退出runner；本次再次生成source、输入和reference，source exact相同。
+16 Tile真实只读基线通过后launch。C采集器保存66,331条记录；同Tile间隔约89–126微秒，
+直接TDMA fatal比host EID早11.927 ms被采到，16 Tile均有告警样本。
+
+15个Tile首次fatal时count为17；其中12个Tile的last-command出现相同destination编码线索，
+指向首轮mask中4-byte标量广播成256 KiB的搬运。编码及更新语义未完全确认，不能签故障PC或根因。
+详细对照见[定位说明](tx81-tdma-fault-localization.md#快速采集的真实观测2026-09-20)。
+
+本轮completion超过60秒，90秒外层期限拒绝资格；CLI已进入厂商退出，随后发生AP清理timeout及Kcore/context结束失败。
+后续快照时runner已消失，最终退出码未取得。没有设备输出、guard通过或健康耗时；不增加已验收配置数。
+没有第二次launch、手工reset、signal或历史包重跑。输入和reference全量BF16有限；采样扰动未隔离。
+完整binary、执行记录、后续清理日志及脚本摘要见[本轮证据](data/board-performance/tdma-fast-observation-20260920.json)。

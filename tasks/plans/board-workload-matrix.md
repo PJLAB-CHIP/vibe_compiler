@@ -143,6 +143,21 @@ C helper以严格warning选项编译通过；离线读取、动态触发、环�
 只有采集器ready才运行这一case一次，保存首次TDMA fatal前后记录及固件/内核增量，异常即停、沿厂商退出。
 新stream寄存器的真实访问与采样周期尚待该次验证；离线通过不保证能恢复唯一故障指令，也不签TDMA修复。
 
+用户再次确认重启后已执行这一轮单case观测。新boot身份、空闲占用及16 Tile零基线通过，
+取得66,331条记录、397,986个原始字；同Tile间隔88.841–125.615微秒。
+直接bit 12首次在Tile 1采到，比host EID早11.927 ms；这是采样顺序，不是硬件首次故障Tile的证明。
+16 Tile都采到告警，15个Tile首次样本count=17，Tile 0为23；12个Tile的last-command右移8位为`0x170900`。
+按前轮尚未确认的destination编码线索，首32条实际ELF TDMA调用中该地址对应第13次调用：
+causal mask的F32负无穷标量经4-byte inner、65,536次迭代广播成256 KiB。
+这将该广播及紧邻搬运列为优先候选，不把PMU count直接当退休序号，也不签唯一故障指令或timeout阈值根因。
+
+本轮设备completion超过60秒；90秒wrapper停止时进程仍在厂商退出路径，wrapper以124拒绝。
+随后厂商清理记录AP reset及资源清理timeout、Kcore/context结束失败；只读后续快照时runner已消失，最终进程退出码未知。
+没有设备输出、guard通过或健康计时；没有第二次launch、重试、手工reset或signal。
+输入及reference均为本轮新生成，全量BF16有限；负无穷是程序内部明确的mask语义。
+原始记录和离线对照见[快速观测实测证据](../../docs/data/board-performance/tdma-fast-observation-20260920.json)。
+本轮采集准备及真实访问已验证，TDMA根因与修复仍未完成；保留现场，先离线核查候选广播和字段更新语义，无需用户立即再重启。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
