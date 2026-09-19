@@ -125,8 +125,10 @@ Layout domain builder只读current structural TileRegion，为每个SSA value、
 Baseline与search对每个实际layout-input只求解一次完整assignment；search保留未变的current-IR query owner，
 把同一assignment经各次`IRMapping`应用于FirstUse或LoopInvariant placement的独立clone，再bufferize。
 outer search不逐value/use重新约束PBQP；变化后的Spatial/Region/Temporal输入重新建立query。Query不跨其owner的mutation保存；失败/loser的actual owner销毁。
-Exact optimization完成时结果为`Optimal`；budget exhaustion时使用solver已验证的canonical incumbent并标记`Feasible`。二者共用同一
+Exact optimization及稳定同分选择完成时结果为`Optimal`；budget exhaustion时保留solver已验证的最佳完整incumbent并标记`Feasible`。二者共用同一
 assignment和apply实现；没有合法incumbent才是typed failure，不由movement或其它下游stage补layout。
+残余图搜索、独立连通分量及同分选择共用此规则；已经求出的低成本解不能被初始assignment覆盖。
+仅同分选择未完成时保留已证明的最优成本下界。独立分量只有以已验证的赋值补齐全部变量后才能发布完整结果。
 
 PBQP hard factor只表达current interface和physical encoding能够证明的合法性。Finite objective只计最终实际创建的unique layout
 materialization的估计physical bytes加一次activation成本：static type直接计算；dynamic dimension用current SSA的ValueBounds闭上界估计。
@@ -136,9 +138,40 @@ publication分别计费，same-layout、metadata view和alias为0。相同目标
 PBQP不读取NE/Vector/CT throughput、descriptor、instruction、DDR/NoC、SPM movement或capacity；这些信息只由物化后的current IR下游
 分析和最终candidate objective消费。Checked finite objective累加overflow返回`Indeterminate`，不能与hard infinity混合。
 
-Baseline的单次局部优化可在query-local exact solve中删除materialization-objective严格支配的layout state：保留每个live fixed-compute publication和fixed-use实际
-要求的layout；从未被current compute/use要求的state不能减少任何activation/publication，因而可删除。无live target的group只保留原domain
-第一个canonical state。物理search保留完整合法label域，因为局部conversion目标支配不能推导下游instruction/capacity/cost支配。
+Baseline与search使用同一完整合法label域。合法域只由明确的target约束、encoding及actual alias/view关系限制；
+无固定layout要求的operation保留选择自由度，由完整转换成本决定布局。不能以缺少直接fixed-compute邻接为由删除某种layout，
+也不能把Tensor或Cx/NCx统一指定为计算布局。既有PBQP精确化简消费完整unary/binary factors。
+
+#### 布局求解前的逐元素目标分解
+
+- Upstream IR / input：selected TileRegion中的tensor Linalg elementwise payload及其actual scalar SSA、indexing maps和DPS。
+- Current stage responsibility：将实际需独立执行的payload步骤确定性物化为现有Linalg/Tensor SSA，让谓词、cast及投影中间值参与同一布局求解。
+- Output IR / files：原dtype、算术依赖和数值语义不变的verified Linalg/Tensor/SCF；scalar捕获保持紧凑，投影结果只保留实际依赖维。
+- Downstream consumer：同一PBQP assignment、One-Shot bufferization及StructuredToTile；后者消费已选result layout，不重选隐藏中间布局。
+- User-level driver / named pipeline：现有prepareCurrentLayoutInput及production/named layout pipeline共用实现。
+- Explicit non-goals：不选attention算法/分块，不作ordinary pure graph等价搜索，不增加future-output IR或旁路layout planner，不改SPM准入或执行单元选择策略。
+- Completion criteria：完整合法域、预算中断的完整低成本解保留、已选中间布局到实际Instr一致；下表及本项产品witness通过。
+
+参考[MLIR Linalg](https://mlir.llvm.org/docs/Dialects/Linalg/)及pinned DecomposeLinalgOps：复用现有SSA/maps表达，
+但不能把原紧凑scalar/row中间值机械扩成完整迭代域。BOOL及跨dtype的直接执行必须证明physical element ordinal一致，
+必要的布局转换显式物化；同名layout不能代替此证明。下游不得因predicate或rank变化统一指定Tensor。
+本次分解保留原有scalar常量/cast及rank-0计算的执行路径，不建立“标量统一由CT执行”的规则。
+执行单元选择须比较actual计算次数、数据位置、复用，以及RISC-V计算和CT发射/搬运/同步成本；
+广播后的元素数不等于scalar自身的计算次数。本项不声称已实现这种规模与成本选择。
+Cast的输入use参与同一activation模型；直接执行由input/result的physical traversal证明决定，不能额外要求family名称相同。
+线性CT的结构检查与target validation边界由11号拥有；证明兼容的不同family不得仅因名称差异生成搬运。
+具有固定destination或非identity坐标的cast先暴露独立结果与publication/broadcast use，避免将destination约束误当成convert唯一执行布局。
+Layout query拒绝绕过此物化边界的复合payload。
+One-Shot产生actual memref stride后，在同一layout transformation内验证cast的实际输入遍历；strided slice若不能直接执行，
+只在所选encoding内物化经过GatherScatter证明的compact read。不得改选family；compact read本身也无直接convert证明时返回typed failure。
+输出中的copy及其真实owner交给原Instr/SPM路径，StructuredToTile不再补此copy或改变布局。
+
+| 本项覆盖 | exact要求与直接下游 |
+| --- | --- |
+| 1024/1025/1031、rank3+的固定布局端点及多个自由elementwise | 合法域保留跨普通算子传播的布局；包含Tensor更省转换的对称正例；actual materialization及Instr |
+| 残余搜索、分量、同分选择三处预算中断 | 完整assignment逐factor验证，低成本解不丢；小规模穷举oracle、同预算确定性、无伪Optimal |
+| FP16/BF16/F32、BOOL、cast、scalar/row广播及投影 | 每个中间值进入current SSA；无广播扩张，无下游重选；原算术/dtype、实际Instr/completion/SPM |
+| prefill、Q=1及短Q decode | 正式source到包/no-card及实际转换次数/bytes；Q2补充完整TargetModel数值；未恢复设备不签性能或实卡通过 |
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。

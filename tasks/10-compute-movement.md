@@ -63,6 +63,16 @@ symbol-free affine window maps和scalar region共同证明ordinary static 2-D co
 target-implementation OpInterface、external-model registry、plan kind、
 capability menu、selected/forced参数或hidden fallback。rewrite改变source region/type/SSA/effect后，lowering只重新读取current IR。
 
+Selected Tile内的普通逐元素payload在08号layout query之前按实际scalar SSA分解为独立Linalg步骤。
+投影中间值只保留依赖维，原scalar捕获保持紧凑；cast保持输入坐标，置换、广播和固定destination publication由显式SSA use表达。
+每个predicate、cast和紧凑中间值都先参与同一次布局求解。Cast输入use允许显式layout转换，直接convert的合法组合由
+physical traversal证明限制，不额外要求family名称相同；StructuredToTile消费已选destination layout，不因i1或rank变化指定Tensor，
+也不为逐元素cast隐式补Tensor桥接。
+这只是selected-tile目标分解，保留原算术op、dtype与依赖，不属于普通图等价搜索或数值重排。
+本次保留已有scalar常量/cast及rank-0计算的执行路径；scalar形态本身不能决定CT或RISC-V，规模和执行成本选择边界见08号。
+Collective merge识别允许穿过上述步骤的private DPS publication：必须是同type的精确copy、fresh allocation、唯一writer和唯一compute reader，
+且producer、copy、reader在同block保持实际顺序。额外use、alias或clobber不满足此证明，保留原普通peer路径。
+
 Physical-dataflow controller是choice和candidate ownership的唯一owner：它选择Tile set、per-Tile work domain、temporal tile和
 TileRegion partition，随后把actual candidate IR依次交给layout/bufferization、movement、execution structure与Instr stage。Direct lowering不能为某个op自行决定
 全局mapping，也不能因为当前route失败而
@@ -323,6 +333,10 @@ ExecutionStructure可把同一dynamic scope内、Allocate effect明确、仅被�
 buffer选为实际destination，物化`elementwise_into`后替换result。被复用input的map必须identity且type与result相同；
 Select只复用false输入并由MaskMove保留未选中位置。外层loop输入、共享值、view/未知alias和已绑定pipeline的op不改写。
 该变换先于completion和actual SPM规划；它不授权GEMM psum/destination同址。
+逐元素分解产生的private DPS publication若只是同block内allocation-producing compute到fresh allocation的同type copy，
+且copy之后的destination用户均为有明确Read effect的同block操作，则ExecutionStructure先将读取绑定到原compute结果，删除该copy与空allocation。
+源结果必须只有该copy一个use，destination不得有其它写入、alias、escape或pipeline绑定；随后复用上述唯一last-use路径。
+这使显式中间SSA不会凭空阻断原select对false输入的复用。验收须覆盖1024/1025/1031及第二次写入、view/escape和跨loop反例。
 
 `math.sin/cos`保留原dtype和indexing maps，分别映射到`wafer.tile.elementwise<sin/cos>`，随后使用既有
 `InstrElementwiseKind::Sin/Cos`与target/runtime接口。它们和exp/ln一样是一元transcendental，不引入模型名分支或主机预计算。

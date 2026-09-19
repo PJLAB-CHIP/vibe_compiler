@@ -961,7 +961,8 @@ value group、use domain、op tuple和conversion activation构造一个完整can
 canonical state，fixed compute use选择其typed required state，不一致处选择actual materialization activation。该assignment必须先通过
 PBQP自身的unary/factor检查，再作为exact solver的incumbent。Factor graph先按stable variable index分解connected components；一状态
 变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；全assignment tie-break必须与独立flat
-oracle一致。Exact search完成时返回`Optimal`；预算耗尽但incumbent仍合法时返回携带完整assignment的`Feasible`。两种成功状态使用同一
+oracle一致。Exact search及同分选择完成时返回`Optimal`；预算耗尽时保留搜索过程中已验证的最佳完整assignment并返回`Feasible`，
+包含残余搜索、独立分量及同分选择的中断。不能以初始解覆盖已找到的低成本解；同分选择中断保留已证明的主成本下界。两种成功状态使用同一
 assignment类型和唯一apply实现，不建立第二条layout lowering。`NoSolution`与已验证incumbent并存是`BrokenContract`；没有合法canonical
 assignment的source在mutation前按typed unsupported停止，不能猜测layout或把问题推给下游。
 Assignment选中后在各自candidate owner上创建actual view/alias/allocation/layout materialization。
@@ -970,7 +971,7 @@ Search只在未修改的layout-input owner存活期间保留query与assignment�
 
 第17、18项的每个实际layout-input必须恰调用一次PBQP并得到`Optimal`或`Feasible`，且两者都携带完整、factor-valid并已apply的
 assignment；记录status、variables、factors、solver work、wall以及apply后的actual materialization数。`Feasible`只表示本次没有完成
-最优性证明，不得称为materialization-minimal。`Indeterminate`只允许在没有合法incumbent时返回，并阻止规定产品case完成；不能通过提高
+完整最优合同；仅当lowerBound等于cost时主成本已证最优，同分选择仍可能未完成。`Indeterminate`只允许在没有合法incumbent时返回，并阻止规定产品case完成；不能通过提高
 timeout、放宽work budget或下游layout repair掩盖。性能工作继续优化exact factor formulation、connected-component reduction或有证明的
 dominated-state约简，但不影响编译正确性所需的canonical assignment。
 

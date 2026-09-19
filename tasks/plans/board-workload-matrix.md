@@ -40,6 +40,102 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 #### 本轮主机性能修改
 
+用户进一步授权layout修正：依次保留PBQP预算中断前的最佳完整可行解、删除固定邻接驱动的错误domain剪枝、
+在layout query前显式分解逐元素中间SSA并由下游消费所选layout。完整合同及机制矩阵见08号2.2节。
+验证限于直接受影响的solver/layout/lowering回归、canonical增量构建，以及prefill、Q=1和短Q decode的定向产品witness；
+不自动重启此前已停止的长时间全矩阵，不启动设备。当前改动不能代签整项attention性能完成。
+
+已执行的检查点验证（均早于最后两处退化修正草稿，不是当前工作区的通过结论）：
+
+- PBQP在残余搜索、独立分量和同分选择耗尽预算时保留最佳完整可行解；baseline/search均保留完整合法layout域。
+  逐元素predicate、cast和投影中间值先成为actual SSA，再参与同一布局求解；cast的actual strided输入在所选encoding内作有证明的compact read。
+- 10项solver测试通过；47项layout/lowering/attention定向回归通过。新增覆盖包含1024/1025/1031、FP16/BF16、
+  紧凑predicate、cast、固定DPS及Tensor更省转换的正例。最后的scalar执行路径保留修正另跑对应测试通过。
+  canonical完整增量构建通过，随后无源码变化的构建为Ninja no-op。
+- FP16 prefill、Q1 KV-cache两步和Q2正式source→包→no-card通过；Q2另完成16 Tiles的完整TargetModel输出比较。
+  Prefill及Q1的no-card未执行算术，Q1第二步使用reference KV，不能登记为完整数值或actual KV接续通过。
+  Scalar执行路径保留修正发生在prefill、Q2和Q1第一步启动之后；Q1第二步使用随后构建的二进制。
+  三项产物都早于最后两处退化修正草稿，不能签作最终源码版本的完整产品验收。
+- 执行单元不能由scalar形态统一指定。此次只保留已有路径；实际计算次数、数据位置、复用及RISC-V/CT成本选择尚未实现。
+  一个值广播到大矩阵不代表该scalar计算执行了矩阵元素数那么多次。
+
+本次按最终`instruction/tile_*.mlir`计数，对照为`attention-host-optimization/verified-matrix`中的同名FP16产物。
+历史产物只读用于结构比较，没有作为新测试输入。计数是16 Tiles的静态指令位置和`byte_count`之和，
+不是循环展开后的执行次数或板端时间；早先Q2的1479来自较早统计点，不是最终Instr的1527。
+
+| 同名case的历史产物→本次产物 | Instr位置 | GS位置 / 静态bytes | NCC join位置 |
+| --- | ---: | ---: | ---: |
+| prefill | 2032→2140 | 976→1084 / 48046080→54019072 | 16→16 |
+| Q2 decode | 1599→1527 | 666→602 / 2967760→2902096 | 43→43 |
+
+两项最终LLVM中SPM mapping调用均为0。Q2局部结构减少不代表实测提速；prefill新增108条静态指令全部为GS，
+静态bytes增加5972992（约5.7 MiB）。已定位下面两处退化来源，尚未逐条证明新增GS已消失；attention总体性能目标仍未闭合。
+证据根目录为`build/test/attention-layout-fix/final/`，其中`commands.json`、各case日志、`static-instruction-comparison.json`、
+`compile-metrics.json`及`host-checks/`保存实际命令、编译work/timing、wall/RSS、结构计数和主机回归；
+这些记录与后续恢复设备后的实卡结果分开。
+
+#### 交接与接续计划
+
+本节记录2026-09-19讨论后的接续步骤，属于原`board-testing`，状态以progress为准。
+代码工作区保留在原checkout；上一个代码提交为`53de6c01`。本轮代码和测试尚未提交，最新两处修改尚未构建。
+既有`third_party/pytorch-xla`修改及`dcrmi.log`、`log/`不属于本次修复，保留原样。
+本轮三个定向产品检查已经退出，`results.json`均为exit 0；没有本轮后台续跑队列。本次交接不启动构建、实卡或新一轮搜索。
+
+接续前必须区分三个边界：
+
+| 边界 | 已有内容 | 仍缺内容 |
+| --- | --- | --- |
+| 既有attention主机优化 | `53de6c01`已包含VS、mask常量模板、私有scalar广播、native归约及NCC依赖等修改；前文保留各自验证记录 | 最终同版本整体性能验收，不能用历史资格覆盖后续修改 |
+| 本轮layout三项修复检查点 | 较优可行解保留、完整合法域、提前暴露逐元素SSA；10项solver、47项定向回归、scalar补测，以及canonical build/no-op记录 | Prefill结构退化尚未消除，最新源码尚未重新验收 |
+| 最后追加的两处草稿 | 移除线性CT路径的多余family名称比较；在ExecutionStructure增加private pointwise publication消除 | 编译、正反例测试、直接target证明、actual completion/SPM及产品验证全部待做 |
+
+两处退化的实际依据和修复边界：
+
+1. 对相同实际physical traversal，PBQP允许零转换成本，但Tile→Instr曾额外要求family名称相同，导致NCx/Cx之间仍发GS。
+   这是实现限制，不能当作硬件约束，也不能通过调高成本逼所有值使用同名layout。
+   草稿涉及`IR/Common/WaferIRVerification.cpp`、Tile/Instr的`ComputeOps.cpp`、`Conversion/TileToInstr/ComputeLowering.cpp`，
+   并同步移除pointwise cast选择与lowering的同名限制。接续时必须逐入口确认既有`verifyTargetCTPhysicalTraversal`仍完整执行，
+   不得只删检查就放过真正不兼容的stride、padding或跨dtype遍历。Reduce/GEMM自身的明确硬件约束继续独立成立。
+2. 逐元素分解新增DPS destination后，旧的last-use复用只看allocation-producing结果，漏掉publication之后的链。
+   已观察到旧IR为`select(..., sub_result) into sub_result`，新IR改成另一个destination，产生整块false-value copy。
+   草稿在`ExecutionStructure.cpp`中先证明并消除private publication，再交给既有复用逻辑；不能在lowering里猜alias。
+   接续要检查额外写入、view/escape、共享读、跨loop、pipeline绑定及无reader情形，并审查与既有writeback消除的顺序。
+
+讨论中已确定的要求：
+
+| 主题 | 后续必须遵守的约束 |
+| --- | --- |
+| Layout | 有明确硬件约束则服从约束；其它值保留全部合法选择，以减少实际转换为目标。不能统一指定Tensor、Cx或NCx，也不能靠改默认layout规避问题 |
+| 相同物理遍历 | 对已经证明元素排列、范围和dtype遍历兼容的buffer直接执行；layout标签不同不是复制理由。仅有地址对齐或相同元素总数仍不足以证明任意两种布局等价 |
+| 中间值 | Predicate、cast及compact scalar/row中间值须在当前SSA中可见；不在下游偷偷选布局，不把广播中间值扩成全矩阵 |
+| Mask与常量 | FP32 `-inf`保留常量bits并复用；合法scalar算术使用AddVS/MulVS等形式，避免为常量多发Fill和逐元素CPU指令。Additive mask与select覆盖语义分别保持；必要初始化/padding须有依据 |
+| RISC-V与标量 | CPU开销必须计入；不使用`get_spm_mapping`。CT/RISC-V选择要看实际计算次数、数据位置、复用及发射/搬运/同步成本，不以“scalar”或广播后shape统一决定 |
+| Prefill/decode | 分别分析指令展开；prefill的等价转置须有合法性与实际收益证据。Q=1充分利用退化维和可见KV前缀，Q>1保留新token causal边界；保护KV更新、compact DMA和GQA |
+| Join/wait | 根据current IR中的真实hazard、completion域和lifetime生成最晚必要同步；同worker issue order不添加逐块join。NCC join与DTE token wait不能互代 |
+| 验收 | 静态指令数、动态执行次数、搬运bytes、编译CPU时间和板端耗时分开记录。旧日志只供审计；预算耗尽不是最优证明，no-card不是数值执行 |
+
+按以下依赖顺序继续，前一项未闭合不启动后一项的长验证：
+
+1. **先闭合两处退化。** 补齐草稿和直接测试，覆盖rank3+、1024/1025/1031、FP16/BF16及必要F32/BOOL。
+   等价layout正例须断言无多余GS并通过直接target验证；非等价padding/stride/cast反例仍typed拒绝或保留必要movement。
+   Private publication正例须看到select复用原false buffer；额外写入、alias、旧值仍活跃及跨loop反例不得误消除。
+   重新生成completion及actual SPM结果，检查真实allocation owner；跑直接受影响的IR/lowering/execution测试、canonical完整增量构建及第二次no-op。
+2. **再验收本轮layout修复。** 固定输入和配置，先比较相同Tile/分块下prefill、Q1、Q2的实际差异，再核对产品搜索winner。
+   只做这三个具名case的有界定向验证，分别记录两步KV-cache及完整数值范围；版本一旦冻结再签同版本结果。
+   不因一处失败重跑整张矩阵，不提高搜索预算掩盖问题；先用最小受影响路径定位，修好后只补受影响检查。
+   消除本次引入的无用复制且不存在未解释搬运增长，才可收口提交layout修复；最后两处修正前的计数不能当作修正后结果。
+3. **再优化prefill/decode展开及mask。** 分别建立实际指令与搬运基线，检查prefill等价转置、decode Q=1/短Q的专用展开、
+   全可见/边界/全屏蔽块、模板常量读取、scalar/row广播、KV/GQA及tail。分组GS与常量模板的优劣仍待实际候选比较，不能预先签收益。
+4. **补规模与成本选择，继续精简同步。** 先审计已有CPU/CT选择与目标能力，再把未建模成本补到实际owner，
+   不在payload分解中擅自把所有标量外提到CPU或强制CT。逐actual loop复核join/wait的participant、token和执行次数，
+   将RISC-V发射成本与CT/TDMA搬运一起评价，避免指令减少却总耗时增加。
+5. **设备恢复后做最终验收。** 先达到同版本board-ready；收到人工恢复信息后，按全系统占用检查、单进程逐case、异常即停的流程，
+   完成完整数值、actual KV接续、guard及匹配计时。LLaMA block、大GEMM和其它受影响既有case承担必要性能保护。
+   当前ViT1025 TDMA Timeout未恢复，不自动retry/reset/power cycle；静态结构改善不能代签实卡性能。
+
+更早保留的完整LM S1024/1025、4K/28与32 heads、ViT、搜索性能回归/deep收益及模型三轮调优仍按原合同验收，
+不会随本次交接自动开启。不得把它们或旧的长时间全矩阵插到上述两处退化修复之前。
+
 设备异常尚未人工恢复。本轮先完成主机修改、fresh package/no-card和数值模型，保留既有实现、原始实测及
 最好健康目标；禁止启动设备、重试或复位。主机完成不改变本项实卡完成条件。
 
@@ -104,7 +200,7 @@ Lifetime的DDR观察者同步保留实际pending storage身份；只修改join�
 
 | 产物 | 指令总数 | GS次数 / bytes | GEMM次数 / FMA | NCC join |
 | --- | ---: | ---: | ---: | ---: |
-| 普通S1024 FP16 prefill，当前方案 | 1,840 | 824 / 38,262,784 | 48 / 100,663,296 | 16，全部terminal |
+| 普通S1024 FP16 prefill，scalar/VuV修正阶段 | 1,840 | 824 / 38,262,784 | 48 / 100,663,296 | 16，全部terminal |
 | 长cache FP16 decode第一步，scalar/NCC修正前 | 31,960 | 14,457 / 209,242,112 | 1,404 / 100,655,104 | 773 |
 | 长cache FP16/BF16 decode第一步，scalar/NCC修正后 | 13,993 | 6,842 / 276,770,048 | 416 / 100,655,104 | 137 |
 | 长cache FP16 decode第二步，scalar/NCC修正前 | 32,457 | 15,224 / 209,599,488 | 1,344 / 100,663,296 | 753 |

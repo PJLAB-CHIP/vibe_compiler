@@ -52,11 +52,16 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   Predicate转换为blocked layout时，logical gather未覆盖的padding必须先由physical-domain零fill定义，
   再写入logical predicate；MaskMove的整个physical traversal均须具有canonical 0/1 mask。
   浮点binary arithmetic/relation可携带`rhs_unit_elements`：0表示VV，1..64表示右侧物理短向量VuV，
-  输入SPM地址保持SSA。Verifier要求左输入与destination完整shape/layout一致，右输入physicalElements与unit相等，
+  输入SPM地址保持SSA。Verifier要求左输入与destination完整shape一致，右输入physicalElements与unit相等，
   两输入dtype一致且为F16/BF16/F32；relation输出仍为i1。该属性不接受unary或logic。
   对应CRT唯一binary arithmetic/relation签名在format后、worker前携带`i32 rhs_unit_elements`；
   numeric model按unit周期计算并只读取右侧unit实际存储，不能将短输入按destination长度读取。
   Tile映射到此硬件形式的证明由10号拥有；这里不保留上层indexing map，也不恢复attention或row语义。
+  线性CT elementwise、bit2fp、mask_move及convert不以layout family名称相等作为硬件约束。
+  Op verifier检查shape、dtype、SPM与参数；既有target validation在发射前对current operand type调用同一physical traversal证明，
+  要求逻辑坐标对应的physical element ordinal及实际遍历范围兼容。仅对齐或元素数相等不替代该证明。
+  Tile→Instr对已通过同一证明的不同family直接发射，不补GS；不兼容的布局仍须显式物化或typed拒绝。
+  本项验收须覆盖rank3+、1024/1025/1031、对齐NCx/Cx等价正例、非等价padding/stride反例及直接target验证。
   `wafer.instr.convert` 使用 opcode-aligned `#wafer.instr_convert_kind<...>`，覆盖硬件
   convert opcode 139..174 的 dtype pair；INT8->FP kind 携带 `zero_point`，需要 rounding 的 kind
   携带 `rounding_mode`，plain wrapper kind 不允许带这两类 attr。它不是通过 `src_dtype` /
