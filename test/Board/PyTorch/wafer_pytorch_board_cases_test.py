@@ -41,6 +41,26 @@ def read_portable_stablehlo(program: pathlib.Path) -> str:
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
+    def test_ordinary_division_inputs_are_finite_and_in_domain(self):
+        for extent in (1024, 1025, 1031):
+            with self.subTest(extent=extent):
+                case = cases.make_division(torch.float32, 20260803, extent=extent)
+                lhs, rhs = case.inputs
+                self.assertEqual(tuple(lhs.shape), (2, 4, extent))
+                self.assertTrue(torch.isfinite(lhs).all())
+                self.assertTrue(torch.isfinite(rhs).all())
+                self.assertTrue((rhs.abs() >= 0.5).all())
+                self.assertTrue((rhs > 0).any() and (rhs < 0).any())
+                output, = case.materialize_expected_outputs()
+                self.assertTrue(torch.isfinite(output).all())
+                torch.testing.assert_close(output * rhs, lhs)
+                self.assertEqual(torch.signbit(output.flatten()[:4]).tolist(),
+                                 [False, True, True, False])
+                repeated = cases.make_division(torch.float32, 20260803, extent=extent)
+                for actual, expected in zip(repeated.inputs, case.inputs):
+                    self.assertEqual(cases.common.tensor_raw_bytes(actual),
+                                     cases.common.tensor_raw_bytes(expected))
+
     def test_bool_payload_uses_manifest_bit_order_and_exact_tail(self):
         for extent in (1024, 1025, 1031):
             mask = (torch.arange(3 * extent) % 3 == 0).reshape(1, 3, extent)

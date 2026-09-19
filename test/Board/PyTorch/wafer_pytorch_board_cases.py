@@ -359,13 +359,15 @@ def make_division(dtype: torch.dtype, seed: int, *, extent: int = 1024):
         raise RuntimeError("division implementation qualification requires F32")
     generator = torch.Generator(device="cpu").manual_seed(seed)
     lhs = torch.randn((2, 4, extent), generator=generator) * 3
-    rhs = torch.randn((2, 4, extent), generator=generator) * 2
-    # Exercise the source division boundary, including zero and special values.
+    rhs = 0.5 + torch.rand((2, 4, extent), generator=generator) * 1.5
+    rhs *= torch.randint(0, 2, rhs.shape, generator=generator) * 2 - 1
+    # Ordinary qualification uses finite values and bounded nonzero divisors.
+    # Exceptional domains belong to the explicit primitive calibration cases.
     lhs.flatten()[:12] = torch.tensor(
-        [0, -0.0, 0, -0.0, 1, -1, torch.inf, -torch.inf, 0, torch.inf, torch.nan, 1]
+        [0, -0.0, 0, -0.0, 1, -1, 2, -2, 0.5, -0.5, 3, -3]
     )
     rhs.flatten()[:12] = torch.tensor(
-        [1, 1, -1, -1, torch.inf, torch.inf, 1, 1, 0, torch.inf, 1, torch.nan]
+        [1, 1, -1, -1, 0.5, 0.5, -0.5, -0.5, 2, -2, 1.5, -1.5]
     )
     module = Division().eval()
     inputs = (lhs, rhs)
@@ -373,7 +375,7 @@ def make_division(dtype: torch.dtype, seed: int, *, extent: int = 1024):
         name=f"division-{extent}", num_partitions=1, dtype=dtype, inputs=inputs,
         expected_outputs_factory=lambda: (module(*inputs),),
         export_program=lambda out: _save_exported_program(out, module, inputs),
-        comparison_policy=common.ComparisonPolicy(equal_nan=True),
+        comparison_policy=common.ComparisonPolicy(),
     )
 
 

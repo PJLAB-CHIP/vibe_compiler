@@ -33,6 +33,20 @@ invocation的poison仍停止Wafer后续资源操作，厂商退出流程独立�
 
 本轮未启动设备，未重新运行历史包，未retry/reset；既有TDMA停止状态保持。本次修正不签TDMA根因或板端通过。
 
+### 用户再次重启后的接续（2026-09-20）
+
+用户确认再次重启并授权完成剩余板测。本轮使用厂商正常退出的runner，先执行原矩阵尚未验收的73项当前配置，
+之后补当前包必要计时；两项Q2已完成的健康资格和三次计时保留，BF16普通Q1已有单次资格、仍需补计时。
+首个真实case同时核对runtime与16 Tile身份，逐launch仍检查全系统占用、kernel及固件增量，异常即停。
+历史停止标记、raw和报告原样保留，新记录进入独立接续目录，不启动任何历史对照包。
+
+先修正16号普通输入域：三个F32 division的rank3、1024/1025/1031配置使用有限数、绝对值不小于0.5的非零分母，
+保留正负与signed-zero覆盖；显式primitive特殊域不变。本轮重新生成三项source、输入及reference，
+与当前已准备source逐文件相等后复用package并完成fresh no-card；其余已准备包核对摘要并用当前runner重新no-card。
+这不改变compiler或搜索方案，除法跨轮性能比较须注明输入域变化。
+输入修正的44项case单测及三项fresh source/payload/no-card通过，全部86个package摘要与当前runner no-card通过；
+canonical完整增量构建及随后Ninja no-op通过。初版遗漏必填comparison policy的主机失败已修正并完整复测，尚未触发设备调用。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。

@@ -116,6 +116,11 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 复用不重新签发compiler freshness：调用者只能指定本轮current build产生的产物，compiler/ABI变化后须重新准备。
 本入口不实现缓存查找、安装SDK、设备重试、reset或编译策略fallback，设备资格继续使用原有显式参数。
 
+普通数值/性能case在算子合法输入域内生成数据；随机值必须满足分母、索引、mask及位置等实际语义约束。
+普通F32 division使用有限输入、绝对值不小于0.5的非零分母，并覆盖正负数及signed zero；
+NaN/Inf、零分母及负数开方等特殊域保留在显式primitive校准case，不混入普通性能输入。
+division的rank3、1024/1025/1031均检查输入域、完整reference有限及确定性，仍由同一source/package入口消费。
+
 覆盖矩阵与完成条件：
 
 | 输入/分支 | exact结果或失败 | 直接消费者 |
