@@ -2865,3 +2865,21 @@ Runner返回0并完成readback、192,128 guard bytes和cleanup，health wrapper�
 
 此前3项资格按原记录保留，本boot新增3项健康配置；2项故障、68项尚未启动，共70项未签资格。
 后续先准备能捕获故障指令的观测，再做一个当前case的干净启动复现，不直接重开完整矩阵。
+
+## 2026-09-20：重启后首个4K prefill的PMU观测
+
+新boot `8da5f00d-b678-4df9-bb23-b93b11a0c54e` 首个计算仅运行当前BF16 4K 28-head prefill一次；
+source/input/reference重新生成，source与当前prepared package一致，fresh no-card及真实只读访问前置检查通过。
+单独的host采集器只读BAR4的PMU寄存器，不打开runtime context；计算仍为单进程、单launch，沿厂商退出流程。
+执行窗口再次出现 `0x0D00C005`、AP fatal bit 12和多Tile TDMA告警；runner返回0，health wrapper以90拒绝资格并停批。
+
+采集取得64帧、16 Tile × 38字段，共38,912个原始字。host EID前已采到raw从0变为`0x4000`及非零command ID；
+三个worker bank记录相同，而只有worker0 TDMA count增长，不能据此确定故障worker或packet。
+告警后计数继续增长，完成全量回读及10,752 guard bytes；厂商module/context清理结束，AP记 `err_code:0`。
+全量输出有限，cosine为0.9999981066、relative L2为0.0019460799，原门槛通过；本次仍为设备故障，不计健康资格。
+原始事件计时170.612 ms只作审计，寄存器采样对时序的影响未隔离，不能与正常性能样本比较。
+
+这次不需要本boot内先连续执行多个case即可复现；不能外推所有历史故障的根因。raw在runner退出后仍保留，
+但位义、保留规则以及下一context的清除行为未知，不能据此认定析构遗漏。没有第二次launch、重试或手工reset。
+原始帧、日志、包/输入及采集脚本摘要见[实测证据](data/board-performance/tdma-pmu-observation-20260920.json)，
+详细字段边界见[定位说明](tx81-tdma-fault-localization.md#重启后首个计算的只读观测2026-09-20)。70项未签资格保持。

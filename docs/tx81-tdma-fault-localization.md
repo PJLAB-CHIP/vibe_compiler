@@ -35,7 +35,8 @@
 | board-observed：旧 Q1 | Tile-2、fatal bit 12、TDMA EID 出现在正常完成与清理之前；完整输出仍满足既定数值门槛 | 正确输出不抵消设备错误，也不证明此告警必然永久卡死 |
 | board-observed：当前 BF16 4K prefill | 厂商正常退出版本仍在执行窗口出现多个 Tile 的 TDMA；三个输入和回读均为有限值，离线数值门槛满足，guard 通过 | 不能把 NaN/Inf 输入或跳过全局析构当作这一次的已证实解释 |
 | board-observed：后续 FP16 | 用户明确要求继续后运行同 workload 的 FP16；固件再次报告 TDMA，随后出现 AP 资源清理超时及 Kcore 关闭失败 | 后续清理失败不能解释先前 TDMA 的初始触发条件 |
-| unknown | 故障时实际 TDMA packet、当前 worker、命令编号、地址、队列进度及 timeout 配置 | 尚不能区分非法命令/地址、依赖等待、硬件进度停滞、状态残留或阈值问题 |
+| board-observed：重启后首个当前 BF16 4K prefill | 单次执行再次报告 TDMA；只读 PMU 采样取得配置、异常字段和变化中的计数，见下节 | 此次复现不需要本 boot 先连续执行多个 case；采样可能影响时序，不能外推到所有历史故障 |
+| unknown | 故障时实际 TDMA packet、源程序位置、raw/命令字段编码及其对应 worker、地址 | 尚不能区分非法命令/地址、依赖等待、状态残留或阈值问题 |
 
 当前 BF16 Q/K/V 各有 14,680,064 个元素，无非有限值；Q/K 范围为 ±0.416015625，V 范围为 ±3.328125。
 回读 relative L2 为 0.00194608，所有元素满足既定比较门槛。该检查只排除了这次输入含 NaN/Inf，
@@ -70,17 +71,52 @@ NCC command/CSR 访问使用 Kcore 的 `get_ncc_reg`；当前实现包含专用 
 **excluded**：不能把其 `0x01000000 + worker_offset` 地址直接加到 host Tile BAR 映射后读，
 这与普通 Tile-local PMU aperture 不是已证明等价的访问路径。
 
+## 重启后首个计算的只读观测（2026-09-20）
+
+证据与原始文件摘要见 [PMU 实测记录](data/board-performance/tdma-pmu-observation-20260920.json)。
+新 boot `8da5f00d-b678-4df9-bb23-b93b11a0c54e` 的第一个计算 invocation 是当前 BF16 4K 28-head prefill；
+输入、reference 重新生成，source 与已核对的当前 package 相同。设备占用检查仅发现已核实的厂商日志服务。
+采集器通过实际 ATU 表只读映射 BAR4，未创建 runtime context 或提交 kernel。
+
+访问验证最初因采集器误把 Tile 身份字段当作线性编号而拒绝；实际逻辑/物理字段均为 `(x << 8) | y`。
+修正 host 校验及离线 fixture 后，1,216 项 exact 读取及原拒绝路径通过，真实 16 Tile 基线读取通过后才 launch。
+这次前置失败属于采集器校验错误，没有设备计算或寄存器写入。
+
+本次取得 64 帧、每帧 16 Tile × 38 个寄存器，共 38,912 个原始字；帧间隔 10.41–11.70 ms，
+单帧依次读取耗时 0.677–0.763 ms。以下均为 **board-observed**，不是原子快照或 fault-handler 入口快照：
+
+| 字段/行为 | 本次实际观测 | 解释边界 |
+| --- | --- | --- |
+| exception raw | 所有 Tile 的三个 worker bank 均从 0 变为 `0x4000`；高字为 0 | 未确认 PMU raw 位义；不能直接称为 TDMA timeout 位，也不能套用 CSR 或 AP fatal 位表 |
+| exception stat/mask | stat 始终 0；mask 始终为低字 `0xffffffff`、高字 `0x00ffffff` | stat 为 0 不能抵消同窗口的 AP/host TDMA 告警 |
+| exception command ID | 低字为 `0xf8fc0000` 或 `0xfcfc0000`，高字为 `0xf800` 或 `0xfc00`；同 Tile 三个 bank 相同 | 字段编码、是否共享/广播及对应动态指令未知，不能当作 PC 或三个 worker 均故障的证明 |
+| timeout/enable | LSU timeout 始终 `0xffff`，TDMA exception enable 为 1，first-catch 为 1，caught-exception-stop 为 0 | 未修改配置；timeout 单位及适用条件未知 |
+| TDMA 进度 | 首次看到 raw 后，所有 Tile 的 worker0 count 继续增加；最终分别为 7,488、8,032 或 4,016，worker1/2 为 0 | 本次未表现为永久停滞；不能据计数恢复具体执行顺序 |
+| TDMA last-command | 低字随执行改变，高字为 0 | 不能将最后一个采样值认作最初出错的 packet |
+| 退出后的状态 | runner 返回后仍采到非零 raw 和 command ID | 可能是保留状态；下一次 context 是否清除及其因果关系未知，不能直接认定资源泄漏 |
+
+相对 host runner 启动，第 26 帧在 268.181–268.888 ms 仍未见 raw；第 27 帧在 278.641–279.349 ms
+已读到上述值；host kernel 在 281.750 ms 记录 `0x0D00C005`。因此取得了 host EID 之前的状态，
+但该 raw 的来源、与 TDMA 告警的关系及两帧间最先发生的事件仍未知。
+AP 自身时间线上，kernel dispatch 日志后约 0.372 ms 出现 fatal bit 12；AP 与 host 时钟不能直接相减。
+
+Runner 返回 0、回读完整、检查 10,752 guard bytes，随后沿厂商流程卸载和销毁 context；AP 清理记录 `err_code:0`。
+离线数值检查全量有限、relative L2 为 0.00194608，仍因设备告警拒绝资格。原始 170.612 ms 只保留审计，
+不作健康性能样本；采样对总线时序的影响也未隔离。批次已停，没有第二次 launch、手工 reset 或重试。
+
 ## 下一次复现需要先补的证据
 
 1. 在实际 TDMA handler 入口、错误状态被更改之前采集一次有界快照最可靠。
-   当前发行 handler 没有这项能力；需要厂商提供对应 debug 固件/采集支持，或先完成等价采集路径的访问验证。
-   Host 收到 EID 后采集可以作为补充，但可能晚于出错指令退休，不能声称一定抓到了首条故障指令。
+   当前发行 handler 没有这项能力；只读 PMU 访问现已验证，但约 10 ms 的采样不能代替 handler 快照。
+   先确认 PMU raw/command ID 的确切编码与保留规则，或取得厂商对应 debug 固件/采集支持。
+   即使在 host EID 之前采到 raw，也可能晚于出错指令退休，不能声称一定抓到了首条故障指令。
 2. 同时保留 Tile、worker、异常 raw/stat/mask、命令 ID、TDMA last-command、timeout/enable、进度计数，
    并保留触发时的实际 packet 参数。参数必须来自真实 issue，不能由预期指令列表猜测。
 3. 若现有寄存器不能映射回实际调用位置，再对一个当前包使用有界 issue 记录：关联实际 Tile/worker、
    动态序号、ELF site 及 packet。诊断记录本身的开销需要单列，不以完整 Trace 卡死或普通计时替代它。
-4. 准备完成后，干净启动只运行一个当前失败配置。首先尝试原 PyTorch 输入边界，随后只能依据已取得的 site/packet
-   缩小为局部链；不先重跑整个矩阵，不重放历史对照包，也不改同步、timeout 或 reset 来试运气。
+4. 干净启动的单个当前失败配置已完成一次带采集复现；后续先离线核对字段与 site/packet 关联，
+   依据确定证据缩小局部链，不直接重复同一采样，不重跑矩阵或历史对照包，也不改同步、timeout 或 reset 来试运气。
 
 完成条件是拿到一次可关联实际指令的故障现场，据此修正确定缺陷，再以当前原始 case 及相应连续运行序列验证。
-目前只完成了安装版本核对、告警路径还原和已有现场归档；**TDMA 根因与修复仍未完成**。
+目前完成了安装版本核对、告警路径还原及重启后首个计算的寄存器观测；尚未取得可关联实际指令的故障 packet/PC，
+**TDMA 根因与修复仍未完成**。

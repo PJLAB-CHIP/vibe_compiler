@@ -96,9 +96,21 @@ fixture前后摘要相同；新boot只读访问正例实际通过后，才能单
 
 准备已完成：只读映射helper使用`O_RDONLY`、`PROT_READ`及volatile 32-bit load；16 Tile × 38寄存器 × 2采样
 共1,216项离线读取exact通过，fixture摘要不变，缺窗口/错误target/不对齐/重复窗口/越页/短映射拒绝。
-所选BF16 case已重新生成source/input/reference，与prepared source一致后通过本轮fresh no-card；未执行真实读取或launch。
-当前等待用户重启完成，旧boot被采集入口拒绝。证据及脚本摘要见
+所选BF16 case已重新生成source/input/reference，与prepared source一致后通过本轮fresh no-card。准备时尚未执行真实读取或launch，
+旧boot被采集入口拒绝。该阶段证据及脚本摘要见
 [采集准备记录](../../docs/data/board-performance/pmu-observer-preparation-20260920.json)。
+
+用户确认重启后，新boot首个计算已完成上述一次观测，详见
+[实测记录](../../docs/data/board-performance/tdma-pmu-observation-20260920.json)。真实访问前置检查发现Tile身份为packed XY，
+修正原线性编号校验及离线fixture后，完整复测exact/拒绝路径，再读真实基线，最后才启动计算。
+采集取得64帧、38,912个原始字；本次再次报告TDMA，runner返回0且厂商正常退出，health wrapper以90停止。
+完整回读和10,752 guard bytes保留；离线数值满足原门槛仍不签资格或性能。没有第二次launch或手工reset。
+
+本步真实访问和故障窗口采集已完成，但现场尚不足以关联故障packet/PC：三个worker bank的raw/命令字段相同，
+只有worker0 TDMA count变化，不能直接推断故障worker。raw在host EID前已采到、退出后仍保留；位义和保留规则未知，
+不将其直接解释为TDMA timeout位或未释放资源。下一步离线确认字段编码和实际发射site关联，再确定是否需要更窄的观测。
+新boot首个计算即复现，削弱“必须先连续多个case才触发”的解释；不证明所有历史故障同因，也不排除采样时序影响。
+总矩阵资格数及TDMA根因未闭合状态不变。
 
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
