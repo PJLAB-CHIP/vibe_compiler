@@ -1,6 +1,7 @@
 //===- ExecutableLowering.cpp - Executable lowering =====================//
 
 #include "Wafer/Driver/ExecutableLowering.h"
+#include "InlineConstantData.h"
 
 #include "Wafer/Analysis/Module/ExecutableCallClosure.h"
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
@@ -19,8 +20,8 @@
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -657,6 +658,14 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     return mlir::failure();
   }
 
+  auto localConstants = bindInlineConstantBuffers(moduleViews, programData);
+  if (!localConstants) {
+    moduleViews.front().emitError()
+        << llvm::toString(localConstants.takeError());
+    failureKind = ExecutableLoweringFailureKind::ProgramResourceBindings;
+    return mlir::failure();
+  }
+
   const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   {
     wafer::support::ScopedCompileTimingSpan timing(
@@ -747,6 +756,9 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     mlir::FailureOr<std::vector<ProgramResourceBinding>> bindings =
         buildProgramResourceBindings(program, kSingleCardPartitionId, module,
                                      programData);
+    if (mlir::succeeded(bindings))
+      bindings->insert(bindings->end(), (*localConstants)[tileIndex].begin(),
+                       (*localConstants)[tileIndex].end());
     if (mlir::failed(bindings) || mlir::failed(verifyProgramResourceBoundary(
                                       closure->entry, *bindings))) {
       failureKind = ExecutableLoweringFailureKind::ProgramResourceBindings;

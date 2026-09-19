@@ -2702,12 +2702,14 @@ TEST_F(StructuredToTileTest, CrossTileRelationBecomesOneMatchedPeerTransfer) {
 TEST_F(StructuredToTileTest,
        PhysicalCopyPlacementPreservesAliasAndActualMemoryContracts) {
   for (int64_t extent : {1024, 1025, 1031}) {
-    for (unsigned variant = 0; variant < 9; ++variant) {
+    for (unsigned variant = 0; variant < 11; ++variant) {
       SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
       std::string sourceType = "memref<2x1x" + std::to_string(extent) +
                                "x64xf16, #wafer.memory<spm, tensor>>";
       std::string resultType = "memref<2x" + std::to_string(extent) +
                                "x64xf16, #wafer.memory<spm, tensor>>";
+      std::string ddrType = "memref<2x1x" + std::to_string(extent) +
+                            "x64xf16, #wafer.memory<ddr, tensor>>";
       std::string text;
       llvm::raw_string_ostream ir(text);
       ir << "module {\n";
@@ -2725,12 +2727,19 @@ TEST_F(StructuredToTileTest,
            << "%step = arith.constant 128 : index\n"
            << "%end = arith.constant " << (variant == 3 ? 0 : extent)
            << " : index\n%value = arith.constant 0.0 : f16\n";
+        if (variant == 10)
+          ir << "%ddr = memref.alloc() : " << ddrType << "\n";
         if (variant == 7)
           ir << "%escaped = ";
         ir << "scf.for %iv = %zero to %end step %step";
         if (variant == 7)
           ir << " iter_args(%carried = %destination) -> (" << resultType << ")";
         ir << " {\n";
+        // A DPS load has no result and writes its existing destination on
+        // every iteration. Neither it nor the dependent copy may be hoisted.
+        if (variant == 10)
+          ir << "wafer.tile.load %ddr into %source : " << ddrType << " into "
+             << sourceType << "\n";
         if (variant == 6)
           ir << "%temporary = memref.alloc() : memref<1x1024x1024xf16, "
                 "#wafer.memory<spm, tensor>>\n"
@@ -2741,6 +2750,9 @@ TEST_F(StructuredToTileTest,
                 "memref<1x1024x1024xf16, #wafer.memory<ddr, tensor>>\n"
              << "wafer.tile.copy_into %source into %other : " << sourceType
              << " into " << sourceType << "\n";
+        if (variant == 9)
+          ir << "%condition = arith.cmpi eq, %iv, %zero : index\nscf.if "
+                "%condition {\n";
         ir << "%copy = wafer.tile.reshape_copy %source : " << sourceType
            << " -> " << resultType << "\n";
         if (variant == 1)
@@ -2761,6 +2773,8 @@ TEST_F(StructuredToTileTest,
              << ", f16\n";
         ir << "wafer.tile.copy_into %copy into %destination : " << resultType
            << " into " << resultType << "\n";
+        if (variant == 9)
+          ir << "}\n";
         if (variant == 7)
           ir << "scf.yield %copy : " << resultType << "\n";
         ir << "}\nwafer.tile.yield\n}\nreturn\n}}\n";
@@ -2772,10 +2786,10 @@ TEST_F(StructuredToTileTest,
         ASSERT_TRUE(module) << text;
         StructuredMaterializationRelations relations;
         const bool hoisted =
-            (variant == 0 || variant == 4 || variant == 6) &&
+            (variant == 0 || variant == 4 || variant == 6 || variant == 9) &&
             placement == LayoutMaterializationPlacement::LoopInvariant;
         EXPECT_EQ(hasInvariantPhysicalMovement(*module),
-                  variant == 0 || variant == 4 || variant == 6);
+                  variant == 0 || variant == 4 || variant == 6 || variant == 9);
         auto moved =
             optimizePhysicalMovementPlacement(*module, relations, placement);
         ASSERT_TRUE(mlir::succeeded(moved));
@@ -2783,7 +2797,8 @@ TEST_F(StructuredToTileTest,
         module->walk([&](MoveReshapeOp copy) {
           EXPECT_EQ(bool(copy->getParentOfType<mlir::scf::ForOp>()), !hoisted);
         });
-        if (variant != 0 && variant != 4 && variant != 6)
+        if (variant != 0 && variant != 4 && variant != 6 && variant != 9 &&
+            variant != 10)
           continue;
         std::string failure;
         auto standalone = createStandaloneTileModules(std::move(module),
@@ -2798,6 +2813,12 @@ TEST_F(StructuredToTileTest,
           for (auto region : regions)
             ASSERT_TRUE(
                 mlir::succeeded(convertTileRegionToInstr(region, session)));
+          unsigned loads = 0;
+          tile.module->walk([&](InstrRDMAOp load) {
+            ++loads;
+            EXPECT_TRUE(load->getParentOfType<mlir::scf::ForOp>());
+          });
+          EXPECT_EQ(loads, variant == 10 ? 1u : 0u);
           unsigned outside = 0, inside = 0;
           tile.module->walk([&](InstrGatherScatterOp copy) {
             if (copy->getParentOfType<mlir::scf::ForOp>())
@@ -2808,8 +2829,12 @@ TEST_F(StructuredToTileTest,
           EXPECT_EQ(outside, hoisted ? 1u : 0u);
           EXPECT_EQ(inside, (variant == 6 ? 3u : 2u) - outside);
           const uint64_t waves = (extent + 127) / 128;
-          EXPECT_EQ(outside + inside * waves, (variant == 6 ? 3u : 2u) * waves -
-                                                  (hoisted ? waves - 1 : 0));
+          if (variant != 9)
+            EXPECT_EQ(outside + inside * waves,
+                      (variant == 6 ? 3u : 2u) * waves -
+                          (hoisted ? waves - 1 : 0));
+          else
+            EXPECT_EQ(outside + inside, 2u);
           ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
           TileMemoryPlanningFailure memoryFailure;
           auto planned = planTileMemory(std::move(tile.module), &memoryFailure);

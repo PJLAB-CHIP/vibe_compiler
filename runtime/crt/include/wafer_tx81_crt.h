@@ -108,37 +108,48 @@ void wafer_tx81_elementwise_neg(uint64_t src, uint64_t dst,
                                    uint32_t worker);
 void wafer_tx81_elementwise_max(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                 uint32_t elem_count, uint32_t format,
-                                uint32_t rhs_unit_elements, uint32_t worker);
+                                uint32_t rhs_unit_elements,
+                                uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_min(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                 uint32_t elem_count, uint32_t format,
-                                uint32_t rhs_unit_elements, uint32_t worker);
+                                uint32_t rhs_unit_elements,
+                                uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_add(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                 uint32_t elem_count, uint32_t format,
-                                uint32_t rhs_unit_elements, uint32_t worker);
+                                uint32_t rhs_unit_elements,
+                                uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_sub(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                 uint32_t elem_count, uint32_t format,
-                                uint32_t rhs_unit_elements, uint32_t worker);
+                                uint32_t rhs_unit_elements,
+                                uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_mul(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                 uint32_t elem_count, uint32_t format,
-                                uint32_t rhs_unit_elements, uint32_t worker);
+                                uint32_t rhs_unit_elements,
+                                uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_eq(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                uint32_t elem_count, uint32_t format,
-                               uint32_t rhs_unit_elements, uint32_t worker);
+                               uint32_t rhs_unit_elements,
+                               uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_ne(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                uint32_t elem_count, uint32_t format,
-                               uint32_t rhs_unit_elements, uint32_t worker);
+                               uint32_t rhs_unit_elements,
+                               uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_ge(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                uint32_t elem_count, uint32_t format,
-                               uint32_t rhs_unit_elements, uint32_t worker);
+                               uint32_t rhs_unit_elements,
+                               uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_gt(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                uint32_t elem_count, uint32_t format,
-                               uint32_t rhs_unit_elements, uint32_t worker);
+                               uint32_t rhs_unit_elements,
+                               uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_le(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                uint32_t elem_count, uint32_t format,
-                               uint32_t rhs_unit_elements, uint32_t worker);
+                               uint32_t rhs_unit_elements,
+                               uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_lt(uint64_t lhs, uint64_t rhs, uint64_t dst,
                                uint32_t elem_count, uint32_t format,
-                               uint32_t rhs_unit_elements, uint32_t worker);
+                               uint32_t rhs_unit_elements,
+                               uint32_t rhs_is_scalar, uint32_t worker);
 void wafer_tx81_elementwise_logic_not(uint64_t src, uint64_t dst,
                                          uint32_t elem_count, uint32_t format,
                                          uint32_t worker);

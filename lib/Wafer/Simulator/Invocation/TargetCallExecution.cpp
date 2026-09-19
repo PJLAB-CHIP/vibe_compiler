@@ -232,6 +232,13 @@ verifyNativeInstruction(const llvm::Instruction &instruction) {
   if (const auto *cast = llvm::dyn_cast<llvm::CastInst>(&instruction)) {
     if (cast->getSrcTy()->isIntegerTy() && cast->getDestTy()->isIntegerTy())
       return llvm::Error::success();
+    // Runtime VS immediates retain scalar SSA. Attention converts its bounded
+    // index threshold to F32 before passing the storage bits to the decoder.
+    if (llvm::isa<llvm::SIToFPInst, llvm::UIToFPInst>(cast) &&
+        cast->getSrcTy()->isIntegerTy() &&
+        cast->getSrcTy()->getIntegerBitWidth() <= 64 &&
+        cast->getDestTy()->isFloatTy())
+      return llvm::Error::success();
     if (llvm::isa<llvm::BitCastInst>(cast) &&
         ((cast->getSrcTy()->isIntegerTy(32) &&
           cast->getDestTy()->isFloatTy()) ||

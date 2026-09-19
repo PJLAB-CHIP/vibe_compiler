@@ -68,41 +68,44 @@ mlir::LogicalResult ComputeConvertOp::verify() {
   return mlir::success();
 }
 
-mlir::LogicalResult ComputeGemmOp::verify() {
-  if (auto partial = getPsum()) {
+template <typename GemmOp>
+static mlir::LogicalResult verifyGemm(GemmOp op, mlir::Value output) {
+  if (auto partial = op.getPsum()) {
     auto type = mlir::dyn_cast<mlir::MemRefType>(partial.getType());
-    auto output = mlir::dyn_cast<mlir::MemRefType>(getResult().getType());
-    if (!type || !output || !type.getElementType().isF32() ||
-        type.getShape() != output.getShape() ||
-        type.getLayout() != output.getLayout() ||
-        type.getMemorySpace() != output.getMemorySpace())
-      return emitOpError("psum must be F32 with destination shape and layout");
+    auto outputType = mlir::dyn_cast<mlir::MemRefType>(output.getType());
+    if (!type || !outputType || !type.getElementType().isF32() ||
+        type.getShape() != outputType.getShape() ||
+        type.getLayout() != outputType.getLayout() ||
+        type.getMemorySpace() != outputType.getMemorySpace())
+      return op.emitOpError(
+          "psum must be F32 with destination shape and layout");
   }
   std::optional<mlir::RankedTensorType> lhsTensor =
-      getLogicalTensorType(getLhs().getType());
+      getLogicalTensorType(op.getLhs().getType());
   std::optional<mlir::RankedTensorType> rhsTensor =
-      getLogicalTensorType(getRhs().getType());
+      getLogicalTensorType(op.getRhs().getType());
   std::optional<mlir::RankedTensorType> resultTensor =
-      getLogicalTensorType(getResult().getType());
+      getLogicalTensorType(output.getType());
   if (!lhsTensor || !rhsTensor || !resultTensor)
-    return emitOpError("expects Wafer buffer operands and result");
+    return op.emitOpError("expects Wafer buffer operands and result");
 
   auto verifyStorage =
       [&](mlir::Type type,
           mlir::RankedTensorType tensor) -> mlir::LogicalResult {
     if (!hasWaferMemorySpace(type, MemorySpace::SPM))
-      return emitOpError("gemm storage values must use SPM memory space");
+      return op.emitOpError("gemm storage values must use SPM memory space");
     const MemLayout expectedLayout =
         tensor.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
     if (!hasWaferLayout(type, expectedLayout))
-      return emitOpError(tensor.getRank() > 2
-                             ? "batched gemm storage values must use ncx layout"
-                             : "rank-2 gemm storage values must use cx layout");
+      return op.emitOpError(
+          tensor.getRank() > 2
+              ? "batched gemm storage values must use ncx layout"
+              : "rank-2 gemm storage values must use cx layout");
     return mlir::success();
   };
-  if (mlir::failed(verifyStorage(getLhs().getType(), *lhsTensor)) ||
-      mlir::failed(verifyStorage(getRhs().getType(), *rhsTensor)) ||
-      mlir::failed(verifyStorage(getResult().getType(), *resultTensor)))
+  if (mlir::failed(verifyStorage(op.getLhs().getType(), *lhsTensor)) ||
+      mlir::failed(verifyStorage(op.getRhs().getType(), *rhsTensor)) ||
+      mlir::failed(verifyStorage(output.getType(), *resultTensor)))
     return mlir::failure();
 
   auto inputType = lhsTensor->getElementType();
@@ -110,29 +113,29 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   if (inputType != rhsTensor->getElementType() ||
       (inputType != outputType &&
        !((inputType.isF16() || inputType.isBF16()) && outputType.isF32())))
-    return emitOpError("gemm requires equal input types and the same output "
-                       "type or f16/bf16 inputs with f32 output");
+    return op.emitOpError("gemm requires equal input types and the same output "
+                          "type or f16/bf16 inputs with f32 output");
 
-  if (static_cast<bool>(getLhsOrientationAttr()) !=
-      static_cast<bool>(getRhsOrientationAttr()))
-    return emitOpError(
+  if (static_cast<bool>(op.getLhsOrientationAttr()) !=
+      static_cast<bool>(op.getRhsOrientationAttr()))
+    return op.emitOpError(
         "lhs_orientation and rhs_orientation must either both be present for "
         "oriented GEMM or both be absent for normal/normal GEMM");
   GemmOrientation lhsOrientation =
-      getLhsOrientation().value_or(GemmOrientation::Normal);
+      op.getLhsOrientation().value_or(GemmOrientation::Normal);
   GemmOrientation rhsOrientation =
-      getRhsOrientation().value_or(GemmOrientation::Normal);
+      op.getRhsOrientation().value_or(GemmOrientation::Normal);
 
   if (lhsTensor->getRank() != 2 || rhsTensor->getRank() != 2 ||
       resultTensor->getRank() != 2) {
     BatchedGemmDimAttrs attrs;
-    return verifyBatchedGemmTileContract(getOperation(), *lhsTensor, *rhsTensor,
-                                         *resultTensor, lhsOrientation,
-                                         rhsOrientation, attrs);
+    return verifyBatchedGemmTileContract(op.getOperation(), *lhsTensor,
+                                         *rhsTensor, *resultTensor,
+                                         lhsOrientation, rhsOrientation, attrs);
   }
 
-  if (hasAnyBatchedGemmAttrs(getOperation()))
-    return emitOpError("gemm rank-2 form must not carry batched GEMM attrs");
+  if (hasAnyBatchedGemmAttrs(op.getOperation()))
+    return op.emitOpError("gemm rank-2 form must not carry batched GEMM attrs");
 
   int64_t lhsMDim = lhsOrientation == GemmOrientation::Normal ? 0 : 1;
   int64_t lhsKDim = lhsOrientation == GemmOrientation::Normal ? 1 : 0;
@@ -140,14 +143,24 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   int64_t rhsNDim = rhsOrientation == GemmOrientation::Normal ? 1 : 0;
   if (hasStaticMismatch(lhsTensor->getDimSize(lhsKDim),
                         rhsTensor->getDimSize(rhsKDim)))
-    return emitOpError("gemm lhs K dimension must match rhs K dimension");
+    return op.emitOpError("gemm lhs K dimension must match rhs K dimension");
   if (hasStaticMismatch(lhsTensor->getDimSize(lhsMDim),
                         resultTensor->getDimSize(0)) ||
       hasStaticMismatch(rhsTensor->getDimSize(rhsNDim),
                         resultTensor->getDimSize(1)))
-    return emitOpError("gemm result shape must be lhs M by rhs N");
+    return op.emitOpError("gemm result shape must be lhs M by rhs N");
 
   return mlir::success();
+}
+
+mlir::LogicalResult ComputeGemmOp::verify() {
+  return verifyGemm(*this, getResult());
+}
+
+mlir::LogicalResult ComputeGemmIntoOp::verify() {
+  if (getDest() == getLhs() || getDest() == getRhs() || getDest() == getPsum())
+    return emitOpError("destination must not be a GEMM input or psum");
+  return verifyGemm(*this, getDest());
 }
 
 mlir::LogicalResult ComputeConvOp::verify() {

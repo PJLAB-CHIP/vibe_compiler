@@ -8,6 +8,7 @@
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/IRMapping.h"
@@ -411,7 +412,8 @@ getDeadLoopCarriedDestination(mlir::Operation *operation, mlir::Value result,
 static bool hasMapFreeEquivalent(ComputeElementwiseOp elementwise) {
   mlir::Type resultType = elementwise.getResult().getType();
   if (llvm::any_of(elementwise.getInputs(), [&](mlir::Value input) {
-        return input.getType() != resultType;
+        return !mlir::isa<mlir::FloatType>(input.getType()) &&
+               input.getType() != resultType;
       }))
     return false;
   mlir::ArrayAttr maps = elementwise.getIndexingMapsAttr();
@@ -423,7 +425,103 @@ static bool hasMapFreeEquivalent(ComputeElementwiseOp elementwise) {
   return llvm::all_of(maps, [&](mlir::Attribute attribute) {
     auto map = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
     return map && map.getValue().getNumDims() == resultMemref.getRank() &&
-           map.getValue().getNumSymbols() == 0 && map.getValue().isIdentity();
+           map.getValue().getNumSymbols() == 0 &&
+           (map.getValue().isIdentity() || map.getValue().getNumResults() == 0);
+  });
+}
+
+static void preservePrivateScalarBroadcasts(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  module.walk([&](mlir::memref::LoadOp load) {
+    auto type = load.getMemRefType();
+    auto allocation = load.getMemRef().getDefiningOp<mlir::memref::AllocOp>();
+    if (!allocation || type.getRank() != 0 ||
+        !mlir::isa<mlir::FloatType>(type.getElementType()) ||
+        !isWaferSPMMemRefType(type) || load.getResult().use_empty() ||
+        allocation->getBlock() != load->getBlock() ||
+        pipelineOperations.contains(load))
+      return;
+    // A private allocation with exactly this read and one initializing write
+    // has no escaping alias or later mutation. Moving its read to CT consumers
+    // therefore preserves the loaded value, including inside nested loops.
+    StorageLoadOp initialization;
+    for (auto *user : allocation.getResult().getUsers()) {
+      if (user == load)
+        continue;
+      auto write = mlir::dyn_cast<StorageLoadOp>(user);
+      if (!write || initialization || write.getDest() != allocation ||
+          write->getBlock() != load->getBlock() ||
+          !write->isBeforeInBlock(load) || pipelineOperations.contains(write))
+        return;
+      initialization = write;
+    }
+    if (!initialization)
+      return;
+    llvm::SmallVector<mlir::OpOperand *> uses;
+    for (auto &use : load.getResult().getUses()) {
+      auto *consumer = use.getOwner();
+      if (!mlir::isa<ComputeElementwiseOp, ComputeElementwiseIntoOp>(consumer) ||
+          use.getOperandNumber() != 1 || pipelineOperations.contains(consumer))
+        return;
+      auto *owner = getTopLevelOwner(consumer, load->getBlock());
+      if (!owner || !load->isBeforeInBlock(owner))
+        return;
+      uses.push_back(&use);
+    }
+    for (auto *use : uses) {
+      auto *consumer = use->getOwner();
+      auto update = [&](auto op, mlir::Type output) {
+        rewriter.modifyOpInPlace(op, [&] {
+          if (!op.getIndexingMapsAttr()) {
+            int64_t rank = mlir::cast<mlir::MemRefType>(output).getRank();
+            auto identity = rewriter.getMultiDimIdentityMap(rank);
+            auto scalar = mlir::AffineMap::get(rank, 0, {}, module.getContext());
+            op.setIndexingMapsAttr(
+                rewriter.getAffineMapArrayAttr({identity, scalar, identity}));
+          }
+          use->set(allocation.getResult());
+        });
+      };
+      if (auto op = mlir::dyn_cast<ComputeElementwiseOp>(consumer))
+        update(op, op.getResult().getType());
+      else {
+        auto into = mlir::cast<ComputeElementwiseIntoOp>(consumer);
+        update(into, into.getDest().getType());
+      }
+    }
+    rewriter.eraseOp(load);
+  });
+}
+
+static void eliminateGemmWritebacks(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  module.walk([&](MoveCopyIntoOp copy) {
+    auto gemm = copy.getSource().getDefiningOp<ComputeGemmOp>();
+    if (!gemm || !gemm.getResult().hasOneUse() ||
+        gemm->getNextNode() != copy.getOperation() ||
+        copy.getSource().getType() != copy.getDest().getType() ||
+        pipelineOperations.contains(gemm) || pipelineOperations.contains(copy))
+      return;
+    {
+      mlir::AliasAnalysis aliases(module);
+      for (auto input : gemm->getOperands())
+        if (!aliases.alias(input, copy.getDest()).isNo())
+          return;
+    }
+    rewriter.setInsertionPoint(gemm);
+    rewriter.create<ComputeGemmIntoOp>(
+        gemm.getLoc(), gemm.getLhs(), gemm.getRhs(), copy.getDest(),
+        gemm.getPsum(), gemm.getLhsOrientationAttr(),
+        gemm.getRhsOrientationAttr(), gemm.getBatchCountAttr(),
+        gemm.getLhsBatchDimsAttr(), gemm.getLhsMDimAttr(),
+        gemm.getLhsContractingDimAttr(), gemm.getRhsBatchDimsAttr(),
+        gemm.getRhsContractingDimAttr(), gemm.getRhsNDimAttr(),
+        gemm.getResultBatchDimsAttr(), gemm.getResultMDimAttr(),
+        gemm.getResultNDimAttr());
+    rewriter.eraseOp(copy);
+    rewriter.eraseOp(gemm);
   });
 }
 
@@ -449,7 +547,8 @@ static void eliminateElementwiseWritebacks(
           hasMapFreeEquivalent(elementwise) &&
           elementwise.getKind() != ComputeElementwiseKind::Select;
       for (mlir::Value input : elementwise.getInputs())
-        if (!(allowExactDestination && input == copy.getDest()) &&
+        if (mlir::isa<mlir::MemRefType>(input.getType()) &&
+            !(allowExactDestination && input == copy.getDest()) &&
             !aliases.alias(input, copy.getDest()).isNo())
           return;
     }
@@ -461,6 +560,64 @@ static void eliminateElementwiseWritebacks(
     rewriter.eraseOp(copy);
     rewriter.eraseOp(elementwise);
   });
+}
+
+// Reuse a private, last-use allocation only in the same dynamic scope. An
+// operand defined outside a loop is deliberately excluded: its single SSA
+// use may execute repeatedly and does not make the old contents dead.
+static void reuseElementwiseInputs(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  llvm::SmallVector<ComputeElementwiseOp> operations;
+  module.walk([&](ComputeElementwiseOp op) { operations.push_back(op); });
+  // Start with the last consumer. Rewriting its producer first would add a
+  // destination write use to the allocation and hide the original last-use
+  // relation of a whole private expression chain.
+  for (auto op : llvm::reverse(operations)) {
+    if (pipelineOperations.contains(op))
+      continue;
+    for (auto [index, input] : llvm::enumerate(op.getInputs())) {
+      if (op.getKind() == ComputeElementwiseKind::Select && index != 2)
+        continue;
+      auto result = mlir::dyn_cast<mlir::OpResult>(input);
+      auto producer = result ? result.getOwner() : nullptr;
+      if (!producer || producer->getBlock() != op->getBlock() ||
+          !input.hasOneUse() || input.getType() != op.getResult().getType() ||
+          pipelineOperations.contains(producer))
+        continue;
+      auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(producer);
+      if (!effects)
+        continue;
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> instances;
+      effects.getEffectsOnValue(input, instances);
+      if (!llvm::any_of(instances, [](const auto &effect) {
+            return mlir::isa<mlir::MemoryEffects::Allocate>(effect.getEffect());
+          }))
+        continue;
+      if (auto maps = op.getIndexingMapsAttr())
+        if (!mlir::cast<mlir::AffineMapAttr>(maps[index])
+                 .getValue()
+                 .isIdentity())
+          continue;
+      bool safe = true;
+      {
+        mlir::AliasAnalysis aliases(module);
+        for (auto [otherIndex, other] : llvm::enumerate(op.getInputs()))
+          if (otherIndex != index &&
+              mlir::isa<mlir::MemRefType>(other.getType()) &&
+              !aliases.alias(input, other).isNo())
+            safe = false;
+      }
+      if (!safe)
+        continue;
+      rewriter.setInsertionPoint(op);
+      rewriter.create<ComputeElementwiseIntoOp>(op.getLoc(), op.getKindAttr(),
+                                                op.getInputs(), input,
+                                                op.getIndexingMapsAttr());
+      rewriter.replaceOp(op, input);
+      break;
+    }
+  }
 }
 
 static mlir::LogicalResult
@@ -779,7 +936,10 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
   for (const MaterializedExecutionPipeline &pipeline : result.pipelines)
     for (const MaterializedExecutionOperation &operation : pipeline.operations)
       pipelineOperations.insert(operation.operation);
+  preservePrivateScalarBroadcasts(*module, rewriter, pipelineOperations);
+  eliminateGemmWritebacks(*module, rewriter, pipelineOperations);
   eliminateElementwiseWritebacks(*module, rewriter, pipelineOperations);
+  reuseElementwiseInputs(*module, rewriter, pipelineOperations);
   if (mlir::failed(materializeLoopCarriedDestinations(*module, rewriter)))
     return materializationFailure(
         ExecutionStructureFailureKind::CompilerBug,

@@ -1402,7 +1402,7 @@ static int wafer_ncc_issue(void *opaque, const WaferNccProbeRequest *request,
   switch (issue->engine) {
   case WAFER_NCC_ENGINE_CT:
     wafer_tx81_elementwise_add(read0, read1, write, bytes / sizeof(uint16_t),
-                               Fmt_FP16, 0U, 0U);
+                               Fmt_FP16, 0U, 0U, 0U);
     break;
   case WAFER_NCC_ENGINE_NE:
     if (wafer_ncc_is_scope_ne_lane(context, issue->lane_spec))

@@ -33,6 +33,10 @@
 ViT1025本轮launch窗口出现`NPU LSU TDMA Timeout`，批次已停止，未retry/reset，不签该项通过。
 主机已闭合滑窗packed BOOL读取、完整TargetModel数值、guard规划与故障注入，完整lit及component回归通过。
 attention性能目标仍未达到；匹配重复计时、实卡guard及最终同版本全矩阵未完成，设备异常处理后才能继续实卡。
+用户已确认上述ViT1025异常后板卡尚未人工恢复，本轮只推进主机优化。scalar VS、规则mask常量模板、
+私有DPS复用、GQA单位前缀native归约及DDR通知的精确NCC依赖已实现；当前重签完整decode和保护矩阵。
+不再通过CPU逐元素生成规则mask；decode私有scalar广播直接交给CT，避免SPM mapping读取。
+设备继续停用，不重试或复位；下文更早的Add通过记录不解除这次新异常后的阻塞。主机验证结果及版本边界见同一实施计划。
 
 用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
 [06号搜索合同](06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)及

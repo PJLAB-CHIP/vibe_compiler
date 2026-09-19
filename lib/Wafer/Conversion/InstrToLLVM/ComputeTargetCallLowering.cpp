@@ -117,6 +117,24 @@ mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
 mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
   llvm::SmallVector<mlir::Value, 8> args;
   for (mlir::Value input : op.getInputs()) {
+    if (auto scalarType = mlir::dyn_cast<mlir::FloatType>(input.getType())) {
+      mlir::Value scalar = convertedValues.lookup(input);
+      if (!scalar || scalar.getType() != scalarType)
+        return op.emitError("VS scalar has no matching converted SSA value");
+      mlir::Attribute constant;
+      if (mlir::matchPattern(input, mlir::m_Constant(&constant))) {
+        scalar = constantI32(op.getLoc(), mlir::cast<mlir::FloatAttr>(constant)
+                                              .getValue()
+                                              .bitcastToAPInt()
+                                              .getZExtValue());
+      } else {
+        scalar = builder.createOrFold<mlir::LLVM::BitcastOp>(
+            op.getLoc(), builder.getIntegerType(scalarType.getWidth()), scalar);
+      }
+      args.push_back(builder.createOrFold<mlir::LLVM::ZExtOp>(
+          op.getLoc(), builder.getI64Type(), scalar));
+      continue;
+    }
     mlir::FailureOr<mlir::Value> address =
         materializeAddress(op, input, "elementwise input");
     if (mlir::failed(address))
@@ -140,8 +158,11 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
   appendI32(op.getLoc(), args, *fmt);
   if (op.getInputs().size() == 2 &&
       !isTargetElementwiseLogic(std::get<TargetElementwiseOperation>(
-          getTargetCallDescriptor(op.getKind()).semantic)))
+          getTargetCallDescriptor(op.getKind()).semantic))) {
     appendI32(op.getLoc(), args, op.getRhsUnitElements());
+    appendI32(op.getLoc(), args,
+              mlir::isa<mlir::FloatType>(op.getInputs()[1].getType()));
+  }
   emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
               op.getWorker());
   return mlir::success();

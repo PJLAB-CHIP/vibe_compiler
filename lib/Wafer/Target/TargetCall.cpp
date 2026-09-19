@@ -90,7 +90,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
               signature(getTargetElementwiseArity(operation) == 1 ? 2 : 3,
                         getTargetElementwiseArity(operation) == 2 &&
                                 !isTargetElementwiseLogic(operation)
-                            ? 3
+                            ? 4
                             : 2),
               operation);
 

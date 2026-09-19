@@ -44,6 +44,7 @@ add_mlir_library(WaferLinalgTransforms
   MLIRTensorTransforms
   MLIRTilingInterface
   MLIRTransforms
+  MLIRValueBoundsOpInterface
 )
 
 target_include_directories(obj.WaferLinalgTransforms PRIVATE

@@ -945,6 +945,59 @@ TEST(CostModelTest, TwoActualSlotsOverlapIdenticalLoadsAndComputations) {
     }
 }
 
+TEST(CostModelTest, AffineVisibilityIntervalsRetainLateBoundaryWork) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto cohort = SearchCostCohort::create(unitCostPolicy());
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  for (int64_t extent : {1024, 1025, 1031}) {
+    std::array<uint64_t, 2> times{};
+    for (bool conditional : {false, true}) {
+      const std::string type = "memref<2x" + std::to_string(extent) +
+                               "x32xf32, #wafer.memory<spm, tensor>>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { func.func @main() { %a = memref.alloc() "
+             "{wafer.spm.offset = #wafer.spm_offset<65536>} : "
+          << type
+          << "\n%scalar = arith.constant 2.0 : f32\n"
+             "%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : index\n"
+             "%start = arith.constant 17 : index\n%stop = arith.constant 48 : "
+             "index\n"
+             "%end = arith.constant 64 : index\nscf.for %iv = %"
+          << (conditional ? "c0 to %end" : "start to %stop") << " step %c1 {\n";
+      if (conditional)
+        out << "%lo = arith.cmpi uge, %iv, %start : index\n"
+               "%hi = arith.cmpi ult, %iv, %stop : index\n"
+               "%visible = arith.andi %lo, %hi : i1\nscf.if %visible {\n";
+      out << "wafer.instr.elementwise <mul> %a, %scalar into %a : " << type
+          << ", f32 into " << type << "\n";
+      if (conditional)
+        out << "}\n";
+      out << "}\nwafer.instr.ncc_join [0]\nreturn } }";
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module) << text;
+      llvm::SmallVector<TileInstructionProgram> programs{
+          {wafer::TileId(0), *module}};
+      auto cost = analyzeInstructionProgramAggregateCost(
+          programs, wafer::getTargetMemoryPolicy());
+      auto objective = deriveSearchObjective(cost, *cohort, programs);
+      const auto *known = std::get_if<KnownSearchObjective>(&objective);
+      ASSERT_TRUE(known);
+      // Aggregate work retains conditional lower/upper bounds; the current-IR
+      // timeline below must nevertheless price every actual visible iteration.
+      EXPECT_EQ(known->usesCoarseEstimate, conditional);
+      times[conditional] = known->estimatedDurationPicoseconds;
+    }
+    EXPECT_EQ(times[0], times[1]);
+    EXPECT_GT(times[0], uint64_t(31 * 64 * extent));
+  }
+}
+
 TEST(CostModelTest, ExplicitCohortDerivesResourceTermsUnknownAndOverflow) {
   std::string failureReason;
   SearchCostPolicy policy = unitCostPolicy();

@@ -626,7 +626,7 @@ wafer_probe_dte_sender_raw_async(uint32_t tile_id, uint32_t issue_window) {
                                WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
                                WAFER_PROBE_SPM_ASYNC_COMPUTE_OUTPUT,
                                WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16,
-                               0U, 0U);
+                               0U, 0U, 0U);
 
   if (result.send_result == 0)
     result.wait_result = direct_dte_wait_done(&info);
@@ -639,7 +639,7 @@ wafer_probe_dte_sender_raw_async(uint32_t tile_id, uint32_t issue_window) {
                                WAFER_PROBE_SPM_ASYNC_COMPUTE_INPUT,
                                WAFER_PROBE_SPM_ASYNC_COMPUTE_OUTPUT,
                                WAFER_PROBE_ASYNC_TRANSPORT_ELEMENTS, Fmt_FP16,
-                               0U, 0U);
+                               0U, 0U, 0U);
   wafer_tx81_ncc_join(1U);
 
   if (result.send_result == 0 && result.wait_result == 0 &&
@@ -1186,7 +1186,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t tile_id, uint64_t input_ddr,
       wafer_tx81_elementwise_add(WAFER_PROBE_SPM_INPUT, WAFER_PROBE_SPM_INPUT,
                                  WAFER_PROBE_SPM_PRODUCED,
                                  payload_bytes / (uint32_t)sizeof(uint16_t),
-                                 Fmt_FP16, 0U, 0U);
+                                 Fmt_FP16, 0U, 0U, 0U);
       wafer_tx81_ncc_join(1U);
       wafer_probe_dte_ring(tile_id, WAFER_PROBE_SPM_PRODUCED, payload_bytes);
       break;
@@ -1198,7 +1198,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t tile_id, uint64_t input_ddr,
       wafer_tx81_elementwise_add(
           WAFER_PROBE_SPM_DTE_RECV, WAFER_PROBE_SPM_DTE_RECV,
           WAFER_PROBE_SPM_PRODUCED, payload_bytes / (uint32_t)sizeof(uint16_t),
-          Fmt_FP16, 0U, 0U);
+          Fmt_FP16, 0U, 0U, 0U);
       wafer_tx81_ncc_join(1U);
       break;
 
@@ -1212,7 +1212,7 @@ wafer_tx81_dte_ncc_execution_probe(uint32_t tile_id, uint64_t input_ddr,
       wafer_tx81_elementwise_add(
           WAFER_PROBE_SPM_DISJOINT_INPUT, WAFER_PROBE_SPM_DISJOINT_INPUT,
           WAFER_PROBE_SPM_DISJOINT_OUTPUT, WAFER_PROBE_DISJOINT_ELEMENTS,
-          Fmt_FP16, 0U, 0U);
+          Fmt_FP16, 0U, 0U, 0U);
       if (mode == WAFER_PROBE_DISJOINT_LOCAL_WAIT_FIRST) {
         wafer_tx81_ncc_join(1U);
         wafer_probe_dte_ring(tile_id, WAFER_PROBE_SPM_INPUT, payload_bytes);

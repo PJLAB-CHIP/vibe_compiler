@@ -3,6 +3,7 @@
 #include "OnlineAttentionDecomposition.h"
 
 #include "AttentionMath.h"
+#include "AttentionVisibility.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Linalg/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
@@ -230,6 +231,8 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
     maps.push_back(*operation.getMaskMap());
   }
   const unsigned scoreArgumentCount = inputs.size();
+  std::optional<unsigned> validLimit, validCoordinates, causalLimit,
+      diagonalCoordinates;
   if (!operation.getPositions().empty()) {
     auto extents = operation.getStaticLoopRanges();
     auto positionMap = operation.getPositionMapAttr().getValue();
@@ -240,6 +243,9 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
     int64_t keyExtent =
         extents[mlir::cast<mlir::AffineDimExpr>(positionMap.getResult(1))
                     .getPosition()];
+    auto keySize = builder.create<mlir::arith::ConstantIndexOp>(loc, keyExtent);
+    auto keyEnd = builder.createOrFold<mlir::arith::AddIOp>(
+        loc, operation.getPositions()[1], keySize);
     auto boundedRelative = [&](mlir::Value position, int64_t lower,
                                int64_t upper) -> mlir::Value {
       auto relative = builder.createOrFold<mlir::arith::SubIOp>(
@@ -253,41 +259,46 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
       return builder.createOrFold<mlir::arith::SIToFPOp>(
           loc, builder.getF32Type(), integer);
     };
-    inputs.push_back(
-        boundedRelative(operation.getPositions()[0], -queryExtent, keyExtent));
-    inputs.push_back(builder.create<mlir::arith::ConstantOp>(
-        loc, builder.getF32FloatAttr(0)));
-    inputs.push_back(
-        boundedRelative(operation.getPositions()[2], 0, keyExtent));
-    maps.append(3, operation.getScaleMap());
-    for (mlir::AffineExpr expression :
-         operation.getPositionMapAttr().getValue().getResults()) {
-      unsigned dimension =
-          mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
-      int64_t size = extents[dimension];
-      // Materialize the coordinates in the candidate's current IR. These
-      // values are created after program-data outlining, so a dense constant
-      // would create an unbound global at the device ABI boundary.
-      auto empty = builder.create<mlir::tensor::EmptyOp>(
-          loc, llvm::ArrayRef<int64_t>{size}, builder.getF32Type());
-      auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
-      auto limit = builder.create<mlir::arith::ConstantIndexOp>(loc, size);
-      auto one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
-      auto coordinates = builder.create<mlir::scf::ForOp>(
-          loc, zero, limit, one, mlir::ValueRange{empty},
-          [&](mlir::OpBuilder &nested, mlir::Location location,
-              mlir::Value index, mlir::ValueRange state) {
-            auto integer = nested.create<mlir::arith::IndexCastOp>(
-                location, nested.getI64Type(), index);
-            auto value = nested.create<mlir::arith::SIToFPOp>(
-                location, nested.getF32Type(), integer);
-            auto inserted = nested.create<mlir::tensor::InsertOp>(
-                location, value, state.front(), mlir::ValueRange{index});
-            nested.create<mlir::scf::YieldOp>(location, inserted.getResult());
-          });
-      inputs.push_back(coordinates.getResult(0));
-      maps.push_back(mlir::AffineMap::get(operation.getIterationDomainRank(), 0,
-                                          expression, builder.getContext()));
+    auto append = [&](mlir::Value value, mlir::AffineMap map) {
+      unsigned index = inputs.size();
+      inputs.push_back(value);
+      maps.push_back(map);
+      return index;
+    };
+    auto literal = [&](llvm::ArrayRef<int64_t> shape,
+                       llvm::ArrayRef<float> values) {
+      auto type = mlir::RankedTensorType::get(shape, builder.getF32Type());
+      return builder.create<mlir::arith::ConstantOp>(
+          loc, mlir::DenseElementsAttr::get(type, values));
+    };
+    if (!proveAttentionPositionOrder(keyEnd, operation.getPositions()[2])) {
+      validLimit =
+          append(boundedRelative(operation.getPositions()[2], 0, keyExtent),
+                 operation.getScaleMap());
+      llvm::SmallVector<float> coordinates;
+      for (int64_t k = 0; k < keyExtent; ++k)
+        coordinates.push_back(static_cast<float>(k));
+      validCoordinates = append(
+          literal({keyExtent}, coordinates),
+          mlir::AffineMap::get(operation.getIterationDomainRank(), 0,
+                               positionMap.getResult(1), builder.getContext()));
+    }
+    if (operation.getCausal()) {
+      causalLimit = append(
+          boundedRelative(operation.getPositions()[0], -queryExtent, keyExtent),
+          operation.getScaleMap());
+      // One local diagonal-offset template replaces two score-sized coordinate
+      // broadcasts and their vector arithmetic. All offsets and the clamped
+      // scalar threshold are exactly representable integers in F32. The
+      // candidate-owned literal uses the formal program-data ABI, never Kcore
+      // element generation. Batch/head axes reuse the same template.
+      llvm::SmallVector<float> offsets;
+      offsets.reserve(queryExtent * keyExtent);
+      for (int64_t q = 0; q < queryExtent; ++q)
+        for (int64_t k = 0; k < keyExtent; ++k)
+          offsets.push_back(static_cast<float>(k - q));
+      diagonalCoordinates =
+          append(literal({queryExtent, keyExtent}, offsets), positionMap);
     }
   }
   maps.push_back(descriptor.scoreMap);
@@ -314,31 +325,25 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
             auto yield =
                 mlir::cast<LinalgExtAttentionYieldOp>(body.getTerminator());
             mlir::Value score = mapping.lookup(yield.getValue());
-            if (!operation.getPositions().empty()) {
-              auto position = [&](unsigned role) {
-                return nested
-                    .create<mlir::arith::AddFOp>(
-                        location, arguments[scoreArgumentCount + 3 + role],
-                        arguments[scoreArgumentCount + role])
-                    .getResult();
-              };
-              mlir::Value key = position(1);
-              mlir::Value visible = nested.create<mlir::arith::CmpFOp>(
-                  location, mlir::arith::CmpFPredicate::OLT, key,
-                  arguments[scoreArgumentCount + 2]);
+            if (validLimit || causalLimit) {
               mlir::Value masked = nested.create<mlir::arith::ConstantOp>(
                   location, nested.getFloatAttr(
                                 score.getType(),
                                 -std::numeric_limits<double>::infinity()));
-              score = nested.create<mlir::arith::SelectOp>(location, visible,
-                                                           score, masked);
-              if (operation.getCausal()) {
-                mlir::Value causal = nested.create<mlir::arith::CmpFOp>(
-                    location, mlir::arith::CmpFPredicate::OLE, key,
-                    position(0));
-                score = nested.create<mlir::arith::SelectOp>(location, causal,
-                                                             score, masked);
-              }
+              auto mask = [&](mlir::arith::CmpFPredicate predicate,
+                              unsigned coordinates, unsigned limit) {
+                mlir::Value maskedPosition = nested.create<mlir::arith::CmpFOp>(
+                    location, predicate, arguments[coordinates],
+                    arguments[limit]);
+                score = nested.create<mlir::arith::SelectOp>(
+                    location, maskedPosition, masked, score);
+              };
+              if (validLimit)
+                mask(mlir::arith::CmpFPredicate::OGE, *validCoordinates,
+                     *validLimit);
+              if (causalLimit)
+                mask(mlir::arith::CmpFPredicate::OGT, *diagonalCoordinates,
+                     *causalLimit);
             }
             nested.create<mlir::linalg::YieldOp>(location, score);
           })

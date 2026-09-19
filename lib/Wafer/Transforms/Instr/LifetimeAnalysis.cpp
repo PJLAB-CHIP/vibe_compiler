@@ -288,6 +288,11 @@ static bool hasOnlyWitnessedRootlessStorageEffects(
     if (hasTypedDTEBufferContract &&
         resource == WaferCommunicationResource::get())
       continue;
+    // DDR notification ordering does not observe arbitrary storage. Its
+    // explicit data/ready effects are checked in their own memory domain.
+    if (mlir::isa<SyncDDRPublishOp, SyncDDRAcquireOp>(op) &&
+        resource == WaferSyncResource::get())
+      continue;
 
     std::optional<MemorySpace> memorySpace;
     if (resource == WaferSPMResource::get())
@@ -2277,6 +2282,13 @@ LifetimeDataflow::run(mlir::Operation *scope,
         buffer = load.getMemref();
       else if (auto store = mlir::dyn_cast<mlir::memref::StoreOp>(operation))
         buffer = store.getMemref();
+      else if (auto publish = mlir::dyn_cast<SyncDDRPublishOp>(operation))
+        buffer = publish.getData();
+      else if (auto acquire = mlir::dyn_cast<SyncDDRAcquireOp>(operation))
+        buffer = acquire.getData();
+      // Publication is also a Kcore storage observer. In its DDR domain keep
+      // pending access identities until completion, so a later notification
+      // is checked against actual roots instead of a released-worker summary.
       if (buffer && isTrackedType(buffer.getType()))
         localCompletion->hasScalarStorageObservers = true;
     });

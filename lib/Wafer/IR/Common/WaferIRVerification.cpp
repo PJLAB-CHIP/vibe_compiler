@@ -445,6 +445,8 @@ template <typename GemmOp> static bool hasAnyBatchedGemmAttrsImpl(GemmOp op) {
 bool hasAnyBatchedGemmAttrs(mlir::Operation *op) {
   if (auto tile = mlir::dyn_cast<ComputeGemmOp>(op))
     return hasAnyBatchedGemmAttrsImpl(tile);
+  if (auto tile = mlir::dyn_cast<ComputeGemmIntoOp>(op))
+    return hasAnyBatchedGemmAttrsImpl(tile);
   if (auto instr = mlir::dyn_cast<InstrGemmOp>(op))
     return hasAnyBatchedGemmAttrsImpl(instr);
   return false;
@@ -497,6 +499,8 @@ getBatchedGemmDimAttrsImpl(GemmOp op, BatchedGemmDimAttrs &attrs) {
 static mlir::LogicalResult getBatchedGemmDimAttrs(mlir::Operation *op,
                                                   BatchedGemmDimAttrs &attrs) {
   if (auto tile = mlir::dyn_cast<ComputeGemmOp>(op))
+    return getBatchedGemmDimAttrsImpl(tile, attrs);
+  if (auto tile = mlir::dyn_cast<ComputeGemmIntoOp>(op))
     return getBatchedGemmDimAttrsImpl(tile, attrs);
   if (auto instr = mlir::dyn_cast<InstrGemmOp>(op))
     return getBatchedGemmDimAttrsImpl(instr, attrs);
@@ -717,6 +721,27 @@ verifyElementwiseTileContract(mlir::Operation *op, ComputeElementwiseKind kind,
 
   std::optional<mlir::RankedTensorType> firstInputTensor;
   for (auto [index, input] : llvm::enumerate(inputs)) {
+    if (mlir::isa<mlir::FloatType>(input.getType())) {
+      bool binary = kind == ComputeElementwiseKind::Add ||
+                    kind == ComputeElementwiseKind::Sub ||
+                    kind == ComputeElementwiseKind::Mul ||
+                    kind == ComputeElementwiseKind::Max ||
+                    kind == ComputeElementwiseKind::Min || isRelationKind(kind);
+      if (!binary || index != 1 || !firstInputTensor ||
+          input.getType() != firstInputTensor->getElementType() ||
+          !(input.getType().isF16() || input.getType().isBF16() ||
+            input.getType().isF32()))
+        return op->emitOpError(
+            "VS requires a matching F16/BF16/F32 binary RHS");
+      if (indexingMaps) {
+        auto map = mlir::dyn_cast<mlir::AffineMapAttr>(indexingMaps[index]);
+        if (!map || map.getValue().getNumDims() != resultTensor->getRank() ||
+            map.getValue().getNumSymbols() != 0 ||
+            map.getValue().getNumResults() != 0)
+          return op->emitOpError("VS scalar indexing map must be empty");
+      }
+      continue;
+    }
     std::optional<mlir::RankedTensorType> inputTensor =
         getLogicalTensorType(input.getType());
     if (!inputTensor)

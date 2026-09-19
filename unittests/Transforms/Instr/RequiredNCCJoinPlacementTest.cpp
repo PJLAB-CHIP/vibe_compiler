@@ -3,6 +3,7 @@
 
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -59,6 +60,101 @@ struct MarkAfterFailedNCCPass
                             mlir::UnitAttr::get(getOperation().getContext()));
   }
 };
+
+TEST(RequiredNCCJoinPlacementTest,
+     DDRNotificationsOnlyCompleteTheirActualDependencies) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t length : {1024, 1025, 1031})
+    for (bool publish : {false, true})
+      for (unsigned dependency = 0; dependency < 4; ++dependency) {
+        SCOPED_TRACE(::testing::Message() << length << ':' << publish << ':'
+                                         << dependency);
+        std::string spm = "memref<2x" + std::to_string(length) +
+                          "x32xf16, #wafer.memory<spm, tensor>>";
+        std::string ddr = "memref<2x" + std::to_string(length) +
+                          "x32xf16, #wafer.memory<ddr, tensor>>";
+        std::string ready = "memref<64xi8, #wafer.memory<ddr, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main(";
+        if (dependency == 3)
+          out << "%inData: " << ddr << ", %inOther: " << ddr << ", %inReady: "
+              << ready;
+        out << ") {\n";
+        if (dependency == 3)
+          out << "wafer.tile.region(%inData, %inOther, %inReady : " << ddr
+              << ", " << ddr << ", " << ready
+              << ") -> () { ^bb0(%data: " << ddr << ", %other: " << ddr
+              << ", %ready: " << ready << "): \n";
+        else
+          out << "wafer.tile.region() -> () {\n";
+        if (dependency != 3)
+          out << "%data = memref.alloc() : " << ddr
+              << "\n%other = memref.alloc() : " << ddr
+              << "\n%ready = memref.alloc() : " << ready << '\n';
+        out << "%a = memref.alloc() : " << spm
+            << "\n%b = memref.alloc() : " << spm
+            << "\n%zero = arith.constant 0.0 : f16\n"
+               "wafer.instr.fill %a, %zero : "
+            << spm << ", f16\nwafer.instr.fill %b, %zero "
+               "{worker = #wafer.ncc_worker<worker1>} : "
+            << spm << ", f16\n";
+        if (dependency == 2) {
+          out << "%r = memref.alloc() : "
+                 "memref<64xi8, #wafer.memory<spm, tensor>>\n"
+                 "%alias = memref.cast %ready : "
+              << ready << " to " << ready
+              << "\nwafer.instr.wdma %r to %alias {byte_count = 64 : i64, "
+                 "inner_bytes = 64 : i64, dst_strides = array<i64: 0,0,0>, "
+                 "dst_iterations = array<i64: 1,1,1>, "
+                 "worker = #wafer.ncc_worker<worker1>} : "
+                 "memref<64xi8, #wafer.memory<spm, tensor>> to "
+              << ready << '\n';
+        } else {
+          out << "%alias = memref.cast %"
+              << (dependency == 1 ? "data" : "other") << " : " << ddr << " to "
+              << ddr << "\nwafer.instr.wdma %b to %alias {byte_count = "
+              << length * 128 << " : i64, inner_bytes = " << length * 128
+              << " : i64, dst_strides = array<i64: 0,0,0>, "
+                 "dst_iterations = array<i64: 1,1,1>, "
+                 "worker = #wafer.ncc_worker<worker1>} : "
+              << spm << " to " << ddr << '\n';
+        }
+        out << "wafer.instr.ddr_" << (publish ? "publish" : "acquire")
+            << " %data, %ready : " << ddr << ", " << ready
+            << "\nwafer.tile.yield } return } }";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        llvm::SmallVector<wafer::SyncNCCJoinOp> joins;
+        module->walk([&](wafer::SyncNCCJoinOp join) { joins.push_back(join); });
+        ASSERT_EQ(joins.size(), dependency ? 2u : 1u);
+        if (dependency) {
+          EXPECT_EQ(joins.front().getParticipants(),
+                    llvm::ArrayRef<int64_t>{1});
+          EXPECT_TRUE((mlir::isa<wafer::SyncDDRPublishOp,
+                                wafer::SyncDDRAcquireOp>(
+              joins.front()->getNextNode())));
+          EXPECT_EQ(joins.back().getParticipants(),
+                    llvm::ArrayRef<int64_t>{0});
+        } else {
+          EXPECT_EQ(joins.back().getParticipants(),
+                    llvm::ArrayRef<int64_t>({0, 1}));
+        }
+        EXPECT_TRUE(mlir::isa<mlir::func::ReturnOp>(joins.back()->getNextNode()));
+        EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+            *module, 0, 3 * 1024 * 1024, 16)));
+        EXPECT_TRUE(mlir::succeeded(wafer::planDDRMemoryModule(
+            *module, 256, 64 * 1024 * 1024, 64 * 1024 * 1024,
+            64 * 1024 * 1024)));
+      }
+}
 
 TEST(RequiredNCCJoinPlacementTest,
      DynamicLoopRebuildClosesEntryBackedgeAndReturn) {

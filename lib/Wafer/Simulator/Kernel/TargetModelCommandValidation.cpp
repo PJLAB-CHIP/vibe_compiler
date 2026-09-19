@@ -162,11 +162,19 @@ llvm::Error validateElementwise(const target::TargetElementwiseCommand &value) {
           value.format, TargetFormatEngine::CT, "elementwise"))
     return error;
   const bool binary = getTargetElementwiseArity(value.operation) == 2;
-  if (value.rhs.has_value() != binary)
+  if ((value.rhs.has_value() + value.rhsScalar.has_value()) != int(binary))
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "elementwise rhs presence differs from operation arity");
   const bool logic = isTargetElementwiseLogic(value.operation);
   const bool relation = isTargetElementwiseRelation(value.operation);
+  if (value.rhsScalar &&
+      (logic || value.rhsUnitElements ||
+       (value.format != LogicalFormat::F16 &&
+        value.format != LogicalFormat::BF16 &&
+        value.format != LogicalFormat::F32) ||
+       (value.format != LogicalFormat::F32 && *value.rhsScalar > UINT16_MAX)))
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                       "elementwise VS requires matching floating scalar bits");
   if (value.rhsUnitElements &&
       (!binary || logic || value.rhsUnitElements > 64 ||
        (value.format != LogicalFormat::F16 &&

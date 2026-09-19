@@ -240,12 +240,19 @@ buildElementwiseCommand(const TargetCallDecodeConfig &config,
       decodeFormat(TargetFormatEngine::CT, arguments[formatIndex]);
   if (!format)
     return format.takeError();
+  bool scalar = !unary && !isTargetElementwiseLogic(kind) &&
+                argument32(arguments, 6) != 0;
+  if (!unary && !isTargetElementwiseLogic(kind) && argument32(arguments, 6) > 1)
+    return llvm::createStringError("elementwise scalar flag must be 0 or 1");
+  if (scalar && arguments[1] > UINT32_MAX)
+    return llvm::createStringError("elementwise scalar bits must fit uint32");
   return TargetCommandPayload{TargetElementwiseCommand{
       kind, arguments[0],
-      unary ? std::nullopt : std::optional<uint64_t>(arguments[1]),
+      unary || scalar ? std::nullopt : std::optional<uint64_t>(arguments[1]),
       arguments[destinationIndex], argument32(arguments, countIndex), *format,
-      !unary && !isTargetElementwiseLogic(kind) ? argument32(arguments, 5)
-                                                : 0}};
+      !unary && !isTargetElementwiseLogic(kind) ? argument32(arguments, 5) : 0,
+      scalar ? std::optional<uint32_t>(argument32(arguments, 1))
+             : std::nullopt}};
 }
 
 static llvm::Expected<TargetCommandPayload>

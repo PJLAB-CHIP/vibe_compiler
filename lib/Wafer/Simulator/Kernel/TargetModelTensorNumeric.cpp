@@ -312,7 +312,7 @@ executeElementwise(const compiler::TargetCommand &command,
     return inputKey.takeError();
   if (!rhsKey)
     return rhsKey.takeError();
-  if (value.rhsUnitElements &&
+  if ((value.rhsUnitElements || value.rhsScalar) &&
       value.elementCount >
           budget.getNumericBudget().getMaximumScalarEvaluations())
     return kernelError(TargetModelKernelErrorCode::WorkBudgetExceeded,
@@ -321,7 +321,7 @@ executeElementwise(const compiler::TargetCommand &command,
     return destinationKey.takeError();
   std::vector<PhysicalTensorDescriptor> inputKeys;
   inputKeys.push_back(*inputKey);
-  if (value.rhs)
+  if (value.rhs || value.rhsScalar)
     inputKeys.push_back(*inputKey);
   llvm::Expected<FormalElementwiseOperation> operation =
       createFormalElementwiseOperation(value.operation, std::move(inputKeys),
@@ -333,7 +333,7 @@ executeElementwise(const compiler::TargetCommand &command,
   std::vector<ManagedReferenceInput> managedInputs{{value.lhs, &*inputKey}};
   if (value.rhs)
     managedInputs.push_back({*value.rhs, &*inputKey});
-  if (!value.rhsUnitElements) {
+  if (!value.rhsUnitElements && !value.rhsScalar) {
     llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
         tryExecuteManagedReference(command, memory, *operation, managedInputs,
                                    value.destination, *destinationKey, budget,
@@ -350,6 +350,9 @@ executeElementwise(const compiler::TargetCommand &command,
   if (!lhs)
     return lhs.takeError();
   inputs.push_back(std::move(*lhs));
+  if (value.rhsScalar)
+    inputs.emplace_back(value.elementCount,
+                        RawLogicalValue{value.format, *value.rhsScalar});
   if (value.rhs) {
     llvm::Expected<std::vector<RawLogicalValue>> rhs = readTensor(
         memory, command.launchSlotId.getValue(), *value.rhs, *rhsKey);

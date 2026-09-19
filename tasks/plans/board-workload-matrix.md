@@ -38,6 +38,102 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 
 ### 实施顺序
 
+#### 本轮主机性能修改
+
+设备异常尚未人工恢复。本轮先完成主机修改、fresh package/no-card和数值模型，保留既有实现、原始实测及
+最好健康目标；禁止启动设备、重试或复位。主机完成不改变本项实卡完成条件。
+
+输入为当前structured/Tile/Instr及已冻结的健康对照；输出为同一产品路径的verified Instr、TargetCall和包。
+直接下游为completion、actual SPM规划、CRT及TargetModel；不新增旁路后端、mapped-SPM数据生成或运行时任务队列。
+按以下边界依次修改，每项使用actual IR计数和直接下游验证，不以预计指令数量签发收益：
+
+1. StructuredToTile保留浮点scalar SSA，TileToInstr按type区分vector、SPM unit与VS immediate。
+   MulVS/AddVS及已支持的binary relation直接消费原dtype的storage bits；常量不先变成Fill。
+   合法的state初始化继续保留Fill。唯一TargetCall/CRT协议同步扩展，scalar不能作为SPM地址参与alias或range检查。
+2. 分开证明valid-length与causal，省去已证明全真的条件；从实际位置形成可见范围和边界。
+   Q=1 decode只有在有效前缀全可见时去掉causal；Q>1保留新token边界。移除逐元素CPU坐标生成，
+   规则mask比较分组GS与局部常量模板的实际代价，常量必须走正式program-data绑定；不从sample mask推断语义。
+   原additive mask保持加法，原select保持覆盖及特殊值语义。
+3. 在已有movement/DPS owner中处理Q不变搬运、结果直接写入、状态布局及必要packing；
+   不违反psum/destination不重叠，不凭循环边界删除completion。保护decode compact DMA、KV前缀与GQA映射。
+4. 成本分析精确解释actual整数/布尔条件，区分可知work与尚未标定的时间；在减少缓冲和指令后重新运行
+   原预算search及actual SPM规划。先固定tiling归因，再比较产品winner，不扩大预算掩盖问题。
+
+算法依据为[FlashAttention-2](https://arxiv.org/abs/2307.08691)的非矩阵工作与分块原则、
+[Triton fused attention](https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html)的前缀/对角分段，
+以及[FlashAttention mask实现](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/mask.h)。
+GPU线程上的逐元素表达不能移植成Kcore逐元素循环；不采用有限负数替代负无穷或改变原算术顺序。
+
+| 主机覆盖 | exact断言与下游witness |
+| --- | --- |
+| VS：FP16/BF16/F32常量及F32运行期标量SSA，rank3，1024/1025/1031 | 原bits、MulVS/AddVS/relation、无scalar scratch/Fill；实际target decoder、CRT构包及完整numeric结果 |
+| 非法scalar、unit、dtype与operand位置 | verifier typed拒绝；逻辑/unary不误用VS；SPM地址与immediate不混用 |
+| prefill全可见/边界/不可见、1024/1025/1031、28/32 heads 4K | 无CPU逐元素坐标/SPM mapping；valid-length与causal独立；真实多Tile/tail及actual指令/搬运统计 |
+| decode普通/长cache/Q2/GQA及padding/window/全屏蔽 | 原完整module、actual KV接续、旧prefix exact；无多余causal及逐行DMA；语义保护完整 |
+| 通用DPS/layout/cost变更 | 旧值存活/alias反例、actual SPM、minimum completion；固定配置work/time/RSS及原预算search |
+| 条件内只读copy外提 | 非空静态循环、可推测metadata及in-bounds证明；DPS load仍在循环内写已有destination，不进入分配型copy外提；多Tile/tail的实际RDMA/GS及SPM规划 |
+| NCC completion | 逐actual loop检查join位置与动态次数；同worker issue order不插逐块join；保留跨worker、释放/复用及最终输出完成的必要等待 |
+| DDR publication completion | rank3、1024/1025/1031的独立worker、data/ready alias及未知alias；精确participant、实际SPM/DDR规划及SystemC完整输出；缺少writer join的负例拒绝 |
+| decode的SPM scalar广播 | 私有只写一次的rank-0源直接走VuV，删除CPU scalar load及其join；alias/后续写入/其它scalar consumer不改；完整decode检查无SPM mapping |
+| 分块后rank5/6单位前缀归约 | exact physical view/copy进入原rank4 native reduce；无逐归约元素GS/CT循环；非单位/被归约前缀和非identity init不误改；GQA完整数值 |
+
+上述矩阵补充下文完整case矩阵，不替代它。板卡恢复后仍须同版本fresh实卡、guard和至少三次匹配计时。
+
+本轮实现已把scalar SSA贯通至唯一VS TargetCall/CRT/model路径；边界mask使用局部`k−q`常量模板及
+GT VS，valid-length单独证明。没有运行期逐元素坐标生成或mapped-SPM mask写入。原select继续覆盖`-inf`，
+原additive/scale分别使用AddVS/MulVS；state初始化、物理padding及select源的必要物化仍保留。
+模板已通过正式ProgramData绑定主块/tail的不同只读常量集合。分组GS尚未形成另一份qualified actual候选，
+本轮不声称已完成两种方案的实卡优劣比较；模板的额外DDR读取必须计入后续matched性能验收。
+
+当前actual Instr对照还定位到GQA分块后的rank5单位前缀，使原native归约落入逐位置展开。
+通用TileToInstr现通过exact物理view或movement进入原rank4 native reduce，不改变dtype、归约维或初始化语义。
+相同GQA FP16源程序、Q/KV=256/256、16 Tiles的两份actual winner保持640次GEMM、5,368,709,120 FMA、
+92,274,688 bytes RDMA不变；动态指令347,312→19,632（减少94.3%），GS 173,248→9,408，
+GS bytes 1,307,377,664→1,139,605,504。NCC join均为16次、全部位于终止边界，循环内为0。
+这是本轮归约修正前后的结构归因，不是旧健康实现与最终版本的板端性能对照。
+
+完整decode还暴露两处Kcore/completion开销：私有rank-0 scalar先经CPU读取再广播，以及DDR通知的
+rootless SyncResource被当成所有NCC worker的观察者。前者在唯一初始化、无逃逸alias/后续写入的实际
+use-def上保留SPM unit广播，最终使用VuV；真正的scalar SSA仍使用VS。后者由最终completion根据
+data/ready的实际hazard选择participant，acquire不再等待无关worker，publish前的写回等待保留。
+Lifetime的DDR观察者同步保留实际pending storage身份；只修改join放置而遗漏该分析曾触发规划拒绝，
+失败日志保留，修正后重新运行直接内存规划及完整产品验证。含DDR通信的完整decode仍有必要join，
+不能套用独立prefill的16次终止join结论。
+
+本轮actual结构证据（全16 Tiles，动态指令次数；不是设备计时）：
+
+| 产物 | 指令总数 | GS次数 / bytes | GEMM次数 / FMA | NCC join |
+| --- | ---: | ---: | ---: | ---: |
+| 普通S1024 FP16 prefill，当前方案 | 1,840 | 824 / 38,262,784 | 48 / 100,663,296 | 16，全部terminal |
+| 长cache FP16 decode第一步，scalar/NCC修正前 | 31,960 | 14,457 / 209,242,112 | 1,404 / 100,655,104 | 773 |
+| 长cache FP16/BF16 decode第一步，scalar/NCC修正后 | 13,993 | 6,842 / 276,770,048 | 416 / 100,655,104 | 137 |
+| 长cache FP16 decode第二步，scalar/NCC修正前 | 32,457 | 15,224 / 209,599,488 | 1,344 / 100,663,296 | 753 |
+| 长cache FP16/BF16 decode第二步，scalar/NCC修正后 | 12,737 | 6,160 / 293,331,904 | 384 / 100,663,296 | 137 |
+
+长cache新产物137次join分别位于64处DDR publish、17处有本地pending依赖的acquire、40处DTE收发及
+16处terminal，循环内为0；实际LLVM的join调用数一致，SPM mapping调用、CPU scalar load/store均为0。
+该产品winner的分块也发生变化，GS字节增加约32.3%，不能将全部差异归因于join放置或据此断言设备加速。
+相同输入的两种dtype、两步完整TargetModel及fresh no-card均通过，第二步也没有循环内join或SPM mapping。
+主机第二步使用reference KV，不能替代板端actual KV接续和逐位prefix检查；普通/Q2 decode以对应完成日志为准。
+长cache FP16第一步profile记录compile transaction约645.3秒、当前线程CPU约490.7秒；
+搜索`advance`156次，`prepare-region`69次，region conversion 10,361次。该并行验证环境下的单样本用于定位工作量，
+不是匹配主机性能对照，也不包含板端执行时间。
+
+Q2 decode的两种dtype完整TargetModel及fresh no-card通过；FP16 actual Instr中，join由59降至43，
+总指令1,615→1,599，其余逐类动态指令数、搬运字节和FMA均未改变。这组用于隔离DDR通知join的结构收益，
+不将完整decode重新搜索带来的其它变化混入归因。
+
+最终DPS load边界修正后的普通prefill重新从原module生成package并通过no-card；16份Instr和16份LLVM
+均与本轮已通过完整TargetModel的对应产物逐字节相同，记录于`prefill-artifact-parity.json`。
+该次compile transaction约172.4秒、当前线程CPU约133.8秒，runner峰值RSS 478,364 KiB；
+开启compile timing并与大模型并行，不能作为孤立的主机性能对照。copy外提只处理分配结果的operation，
+无result的DPS load保留原动态scope；补充回归覆盖1024/1025/1031、4 Tiles、实际RDMA/GS及SPM规划。
+
+结果和复现命令保存在`build/test/attention-host-optimization/`：`validation/`为首轮矩阵，
+`refined/`保留常量域修正后的tail及native归约GQA复验；`refined-work-counts.json`包含各Tile实际计数及IR SHA256，
+`audit-instructions.py`按actual常量循环/条件解释指令次数，无法解释时停止，不猜测次数。大规模模型的额外数值执行与
+原1800秒构包/no-card分别记录；扩大模型执行时限不改变8/42搜索预算或数值门限。
+
 1. 接通原框架capture的StableHLO composite，保留causal、query/key位置、有效KV长度和GQA关系，
    经portable/SPMD在structured入口转到现有attention IR。普通causal不再传dense`[S,S]`mask；任意additive mask保持真实输入。
    QKV projection、RoPE、KV更新及output projection保留各自边界；不从sample mask或模块名恢复语义。

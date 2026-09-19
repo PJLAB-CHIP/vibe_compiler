@@ -937,6 +937,8 @@ verifyTargetCTPhysicalTraversal(mlir::Operation *op) {
   return llvm::TypeSwitch<mlir::Operation *, mlir::LogicalResult>(op)
       .Case<InstrElementwiseOp>([&](auto typedOp) {
         for (auto [index, input] : llvm::enumerate(typedOp.getInputs())) {
+          if (mlir::isa<mlir::FloatType>(input.getType()))
+            continue; // A typed VS immediate is not a memory traversal.
           if (index == 1 && typedOp.getRhsUnitElements())
             continue; // The verifier checks this typed physical unit.
           if (mlir::failed(verifyTargetPhysicalTraversal(

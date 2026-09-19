@@ -99,6 +99,7 @@ struct TargetElementwiseCommand {
   uint32_t elementCount;
   LogicalFormat format;
   uint32_t rhsUnitElements = 0;
+  std::optional<uint32_t> rhsScalar;
 };
 
 struct TargetReduceCommand {

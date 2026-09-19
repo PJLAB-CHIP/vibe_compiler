@@ -1318,6 +1318,17 @@ static mlir::FailureOr<ExprValue>
 materializeExprMap(ExprValue value, mlir::MemRefType targetShapeType,
                    mlir::IRRewriter &rewriter, mlir::Location location,
                    StructuredToTileStatistics &statistics) {
+  if (mlir::isa<mlir::FloatType>(value.buffer.getType()) &&
+      value.buffer.getType() == targetShapeType.getElementType()) {
+    auto allocation = rewriter.create<mlir::memref::AllocOp>(
+        location, getOwnedType(targetShapeType));
+    rewriter.create<ComputeFillOp>(location, allocation.getResult(),
+                                   value.buffer, FillDomainAttr{});
+    ++statistics.fills;
+    return ExprValue{
+        allocation.getResult(),
+        getIdentityMap(rewriter.getContext(), targetShapeType.getRank())};
+  }
   mlir::MemRefType sourceType = getMemRef(value.buffer);
   if (!sourceType || !targetShapeType ||
       sourceType.getElementType() != targetShapeType.getElementType() ||
@@ -1459,11 +1470,15 @@ createConvert(mlir::Value source, mlir::MemRefType resultType,
 }
 
 static mlir::FailureOr<ExprValue>
-createScalarFill(mlir::Value scalar, mlir::MemRefType resultShape,
-                 mlir::IRRewriter &rewriter, mlir::Location location,
-                 StructuredToTileStatistics &statistics) {
+createScalarExpression(mlir::Value scalar, mlir::MemRefType resultShape,
+                       mlir::IRRewriter &rewriter, mlir::Location location,
+                       StructuredToTileStatistics &statistics,
+                       bool requireStorage = false) {
   if (!scalar || mlir::isa<mlir::ShapedType>(scalar.getType()))
     return mlir::failure();
+  if (!requireStorage && mlir::isa<mlir::FloatType>(scalar.getType()))
+    return ExprValue{scalar, mlir::AffineMap::get(resultShape.getRank(), 0, {},
+                                                  rewriter.getContext())};
   auto tensorMemory = MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
                                       MemLayout::Tensor);
   auto type = mlir::MemRefType::get(
@@ -1478,10 +1493,37 @@ createScalarFill(mlir::Value scalar, mlir::MemRefType resultShape,
 }
 
 static mlir::FailureOr<ExprValue>
-createElementwise(ComputeElementwiseKind kind, llvm::ArrayRef<ExprValue> inputs,
+createElementwise(ComputeElementwiseKind kind,
+                  llvm::ArrayRef<ExprValue> operands,
                   mlir::Type resultElementType, mlir::MemRefType resultShape,
                   mlir::IRRewriter &rewriter, mlir::Location location,
                   StructuredToTileStatistics &statistics) {
+  llvm::SmallVector<ExprValue, 3> inputs(operands);
+  bool commutative = kind == ComputeElementwiseKind::Add ||
+                     kind == ComputeElementwiseKind::Mul ||
+                     kind == ComputeElementwiseKind::Max ||
+                     kind == ComputeElementwiseKind::Min ||
+                     kind == ComputeElementwiseKind::Eq ||
+                     kind == ComputeElementwiseKind::Ne;
+  bool supportsScalar = commutative || kind == ComputeElementwiseKind::Sub ||
+                        kind == ComputeElementwiseKind::Lt ||
+                        kind == ComputeElementwiseKind::Le ||
+                        kind == ComputeElementwiseKind::Gt ||
+                        kind == ComputeElementwiseKind::Ge;
+  if (commutative && inputs.size() == 2 &&
+      mlir::isa<mlir::FloatType>(inputs[0].buffer.getType()) &&
+      getMemRef(inputs[1].buffer))
+    std::swap(inputs[0], inputs[1]);
+  for (auto [index, input] : llvm::enumerate(inputs)) {
+    if (!mlir::isa<mlir::FloatType>(input.buffer.getType()) ||
+        (supportsScalar && index == 1))
+      continue;
+    auto filled = createScalarExpression(input.buffer, resultShape, rewriter,
+                                         location, statistics, true);
+    if (mlir::failed(filled))
+      return mlir::failure();
+    inputs[index] = *filled;
+  }
   llvm::SmallVector<mlir::Value, 3> buffers;
   llvm::SmallVector<mlir::AffineMap, 4> maps;
   llvm::SmallBitVector used(resultShape.getRank());
@@ -2075,7 +2117,7 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
         return mlir::failure();
       values.try_emplace(argument, *mapped);
     } else {
-      mlir::FailureOr<ExprValue> filled = createScalarFill(
+      mlir::FailureOr<ExprValue> filled = createScalarExpression(
           input, resultType, rewriter, operation.getLoc(), statistics);
       if (mlir::failed(filled))
         return mlir::failure();
@@ -2087,7 +2129,7 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   for (mlir::Value capture : captures) {
     if (mlir::isa<mlir::ShapedType>(capture.getType()))
       return mlir::failure();
-    mlir::FailureOr<ExprValue> filled = createScalarFill(
+    mlir::FailureOr<ExprValue> filled = createScalarExpression(
         capture, resultType, rewriter, operation.getLoc(), statistics);
     if (mlir::failed(filled))
       return mlir::failure();
@@ -2102,7 +2144,7 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
     if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(nested)) {
       auto cloned = rewriter.create<mlir::arith::ConstantOp>(
           location, constant.getValue());
-      mlir::FailureOr<ExprValue> filled = createScalarFill(
+      mlir::FailureOr<ExprValue> filled = createScalarExpression(
           cloned.getResult(), resultType, rewriter, location, statistics);
       if (mlir::failed(filled))
         return mlir::failure();
@@ -2115,6 +2157,17 @@ lowerElementwise(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
       if (mlir::failed(input))
         return mlir::failure();
       mlir::MemRefType inputType = getMemRef(input->buffer);
+      if (mlir::isa<mlir::FloatType>(input->buffer.getType())) {
+        mlir::Value converted;
+        if (mlir::isa<mlir::arith::ExtFOp>(nested))
+          converted = rewriter.createOrFold<mlir::arith::ExtFOp>(
+              location, nested.getResult(0).getType(), input->buffer);
+        else
+          converted = rewriter.createOrFold<mlir::arith::TruncFOp>(
+              location, nested.getResult(0).getType(), input->buffer);
+        values[nested.getResult(0)] = ExprValue{converted, input->indexingMap};
+        continue;
+      }
       if (!inputType)
         return mlir::failure();
       mlir::MemRefType convertedType =

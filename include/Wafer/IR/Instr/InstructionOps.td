@@ -125,7 +125,7 @@ def Wafer_InstrElementwiseOp : Wafer_NCCInstrOp<"instr.elementwise", [
   let summary = "instruction-level CT elementwise compute";
   let arguments = (ins
     Wafer_InstrElementwiseKindAttr:$kind,
-    Arg<Variadic<AnyMemRef>, "", [MemRead]>:$inputs,
+    Arg<Variadic<AnyTypeOf<[AnyMemRef, F16, BF16, F32]>>, "", [MemRead]>:$inputs,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     DefaultValuedAttr<Wafer_NCCWorkerAttr,
                       "::wafer::NCCWorker::Worker0">:$worker,

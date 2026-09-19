@@ -37,6 +37,17 @@ Pipeline position:
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
+### Candidate局部常量绑定
+
+输入为actual分块/展开后产生、bufferization已物化的只读DDR `memref.global`及其真实`get_global`使用。
+Instr executable形成时沿用`ProgramDataHandoff`和`ProgramResourceBinding`，把live literal绑定为entry constant参数；
+同一内容只建立一个owned source/range，各Tile显式增加相同常量集合，未使用的参数由既有ABI dead-constant规则删除。
+这里不合成未来buffer或movement：已有DDR读取、SPM allocation、layout与completion保持原IR事实，
+只替换只读global的外部数据绑定。Constant的原dtype/bits、shape和content identity必须保持，重复内容去重；
+非literal、可写或helper中无法闭合的global在绑定边界拒绝，不退回CPU映射写SPM。
+直接消费者为原target materialization/package/no-card路径。完成覆盖包含分块后局部常量、共享/不同Tile使用、
+主块/tail、完整内容逐位、非法global及fresh source到package的numeric witness；主机通过不代签板端。
+
 ### GEMM混合format调用
 
 输入是verified Tile/Instr上的低精度lhs/rhs、可选F32 psum及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/
@@ -447,3 +458,18 @@ constant与dynamic值、raw bits及完整LM的缩放系数；映射及跨worker�
 标准memref collapse/expand在blocked layout上也必须消费同一physical reshape证明：空间、元素类型和layout一致，且完整physical element mapping
 与footprint相等时，target只转发实际source地址；证明失败时typed拒绝。Tensor布局保留原offset delta处理，不用逻辑元素数相等替代blocked物理等价。
 覆盖NCx单位轴的1024/1025/1031、block尾宽、不同channel分解反例及实际attention consumer。
+
+### VS immediate与Tile局部常量
+
+Instr浮点binary RHS标量按原dtype bitcast，零扩展到TargetCall的rhs i64字段；新增`rhs_is_scalar`
+i32取0/1，并与`rhs_unit_elements`互斥。CRT直接发射VS；decoder/numeric model只对vector读取SPM。
+闭合的native model control接受i≤64的signed/unsigned整数转F32以及F32/i32 bitcast，供运行时相对阈值使用，
+不开放任意浮点运算或地址访问。常量值保留包括负无穷在内的原始bits。
+
+实际候选中新建的tensor literal使用本节既有ProgramData绑定。在Target ABI删除未使用常量后，
+各Tile的只读TargetTensor列表允许不同；`resourceIndex`仍按该entry自己的ProgramResourceBinding解析，
+不再按其它Tile相同ordinal解释。每entry拒绝可写/zero-initialize或无materialization的TargetTensor；
+同一program binding的不同显式physical representation可以各有一个slot，不按source index误判重复。
+用户input/output等common端口的相互一致性、card-shared资源按ID一致性、manifest/payload的逐项验证保持原合同。
+TileMajor/TileRow均沿已有variable-row地址计算与argument-row acquire，没有新ABI或运行时格式。
+覆盖1024/1025/1031主块/tail的不同常量集合、两种行ABI、非法常量绑定及fresh source→package/model/no-card。

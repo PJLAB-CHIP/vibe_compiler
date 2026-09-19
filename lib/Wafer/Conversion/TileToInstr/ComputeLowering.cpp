@@ -63,14 +63,16 @@ getStaticDim(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   return value;
 }
 
+template <typename GemmOp>
 static mlir::FailureOr<llvm::SmallVector<int64_t, 3>>
-inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter) {
+inferGemmMKN(GemmOp op, mlir::Type outputType,
+             mlir::PatternRewriter &rewriter) {
   std::optional<mlir::RankedTensorType> lhs =
       getLogicalTensorTypeFromMemRef(op.getLhs().getType());
   std::optional<mlir::RankedTensorType> rhs =
       getLogicalTensorTypeFromMemRef(op.getRhs().getType());
   std::optional<mlir::RankedTensorType> result =
-      getLogicalTensorTypeFromMemRef(op.getResult().getType());
+      getLogicalTensorTypeFromMemRef(outputType);
   if (!lhs || !rhs || !result)
     return failFailureOr<llvm::SmallVector<int64_t, 3>>(
         rewriter, op, "tile.gemm lowering requires Wafer memref operands");
@@ -543,6 +545,12 @@ public:
     for (auto [index, input] : llvm::enumerate(op.getInputs())) {
       MappedInputRewrite inputRewrite;
       inputRewrite.source = input;
+      if (mlir::isa<mlir::FloatType>(input.getType())) {
+        // The Tile verifier proves this is the binary RHS scalar and that
+        // its map is empty. Keep the SSA value; VS has no SPM RHS allocation.
+        inputRewrites.push_back(std::move(inputRewrite));
+        continue;
+      }
       auto sourceType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
       if (!sourceType)
         return failPattern(rewriter, op,
@@ -604,6 +612,7 @@ public:
                          op.getKind() == ComputeElementwiseKind::Gt ||
                          op.getKind() == ComputeElementwiseKind::Ge;
       if (!unitInput && binaryFloat && op.getInputs().size() == 2 &&
+          mlir::isa<mlir::MemRefType>(op.getInputs()[1].getType()) &&
           (index == 1 || commutative)) {
         auto relation = analysis::IndexRelation::fromAffineMap(
             inputMap, resultType.getShape(), sourceType.getShape());
@@ -741,7 +750,13 @@ public:
                           op, bufferRecorder);
       if (mlir::failed(materialized))
         return mlir::failure();
-      if (inputRewrite.predicateType) {
+      auto physical =
+          inputRewrite.materializedType
+              ? computeWaferPhysicalTensorInfo(inputRewrite.materializedType)
+              : mlir::FailureOr<WaferPhysicalTensorInfo>(mlir::failure());
+      if (inputRewrite.predicateType &&
+          (!physical || physical->physicalElements !=
+                            inputRewrite.materializedType.getNumElements())) {
         // MaskMove visits the complete physical traversal, including blocked
         // channel padding that the logical gather does not write. Establish
         // canonical false values there before placing the converted predicate.
@@ -784,9 +799,9 @@ public:
       std::swap(inputs[0], inputs[1]);
 
     if (op.getKind() == ComputeElementwiseKind::Select) {
-      if (mlir::failed(emitGatherScatterDescriptorPlan(
-              rewriter, op.getLoc(), op, inputs[2], *dest,
-              selectCopyDescriptors, bufferRecorder)))
+      if (inputs[2] != *dest && mlir::failed(emitGatherScatterDescriptorPlan(
+                                    rewriter, op.getLoc(), op, inputs[2], *dest,
+                                    selectCopyDescriptors, bufferRecorder)))
         return mlir::failure();
       mlir::Value mask = inputs[0];
       if (!inputRewrites[0].predicateType) {
@@ -1098,6 +1113,13 @@ public:
               ? findTargetFormatEncoding(TargetFormatEngine::CT, *logicalFormat)
               : nullptr;
       const bool targetAllowsNativeReduce = reduceFormat != nullptr;
+      const int64_t droppedUnits =
+          std::max<int64_t>(0, inputType.getRank() - 4);
+      const bool unitPrefix =
+          llvm::all_of(llvm::seq<int64_t>(0, droppedUnits), [&](int64_t dim) {
+            return inputType.getDimSize(dim) == 1 &&
+                   !llvm::is_contained(reducedDims, dim);
+          });
       const bool nativeShapeContract = llvm::all_of(
           llvm::enumerate(inputType.getShape()), [&](const auto &dimension) {
             const int64_t maximum =
@@ -1108,10 +1130,9 @@ public:
             return dimension.value() > 0 && dimension.value() <= maximum;
           });
       const bool nativeLayoutContract =
-          inputType.getRank() <= 4 && nativeShapeContract &&
-          targetAllowsNativeReduce && inputMemory &&
-          inputMemory.getLayout() == expectedInputLayout && resultMemory &&
-          resultMemory.getLayout() == expectedResultLayout;
+          unitPrefix && nativeShapeContract && targetAllowsNativeReduce &&
+          inputMemory && inputMemory.getLayout() == expectedInputLayout &&
+          resultMemory && resultMemory.getLayout() == expectedResultLayout;
       if (nativeKind && hasExactNativeIdentity && nativeLayoutContract) {
         auto kind =
             InstrReduceKindAttr::get(rewriter.getContext(), *nativeKind);
@@ -1134,9 +1155,11 @@ public:
           }
         }
         if (!nativeDims.empty()) {
-          const int64_t leadingUnits = 4 - inputType.getRank();
+          const int64_t leadingUnits =
+              std::max<int64_t>(0, 4 - inputType.getRank());
           llvm::SmallVector<int64_t, 4> nativeShape(leadingUnits, 1);
-          llvm::append_range(nativeShape, inputType.getShape());
+          llvm::append_range(nativeShape,
+                             inputType.getShape().drop_front(droppedUnits));
           auto nativeMemory = MemoryAttr::get(rewriter.getContext(),
                                               MemorySpace::SPM, MemLayout::NCx);
           auto nativeInputType = mlir::MemRefType::get(
@@ -1163,7 +1186,7 @@ public:
             llvm::SmallVector<mlir::AffineExpr, 4> coordinates(
                 leadingUnits,
                 mlir::getAffineConstantExpr(0, rewriter.getContext()));
-            for (int64_t dim = 0; dim < inputType.getRank(); ++dim)
+            for (int64_t dim = droppedUnits; dim < inputType.getRank(); ++dim)
               coordinates.push_back(
                   mlir::getAffineDimExpr(dim, rewriter.getContext()));
             auto source =
@@ -1198,12 +1221,16 @@ public:
               leadingUnits,
               mlir::getAffineConstantExpr(0, rewriter.getContext()));
           unsigned resultDim = 0;
-          for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim)
-            nativeCoordinates.push_back(
+          for (int64_t inputDim = 0; inputDim < inputType.getRank();
+               ++inputDim) {
+            auto coordinate =
                 llvm::is_contained(reducedDims, inputDim)
                     ? mlir::getAffineConstantExpr(0, rewriter.getContext())
                     : mlir::getAffineDimExpr(resultDim++,
-                                             rewriter.getContext()));
+                                             rewriter.getContext());
+            if (inputDim >= droppedUnits)
+              nativeCoordinates.push_back(coordinate);
+          }
           analysis::IndexRelationResult sourceRelation =
               analysis::IndexRelation::fromAffineMap(
                   mlir::AffineMap::get(resultType.getRank(), 0,
@@ -1995,29 +2022,40 @@ private:
   MovementDescriptorCache *descriptorCache = nullptr;
 };
 
-class GemmLowering : public mlir::OpRewritePattern<ComputeGemmOp>,
+template <typename GemmOp>
+class GemmLowering : public mlir::OpRewritePattern<GemmOp>,
                      private ScratchRecorderHolder {
 public:
   GemmLowering(mlir::MLIRContext *context,
                TileRegionToInstrBufferRecorder *bufferRecorder)
-      : mlir::OpRewritePattern<ComputeGemmOp>(context),
+      : mlir::OpRewritePattern<GemmOp>(context),
         ScratchRecorderHolder(bufferRecorder) {}
 
   mlir::LogicalResult
-  matchAndRewrite(ComputeGemmOp op,
-                  mlir::PatternRewriter &rewriter) const final {
+  matchAndRewrite(GemmOp op, mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
+    mlir::Type outputType;
+    if constexpr (std::is_same_v<GemmOp, ComputeGemmOp>)
+      outputType = op.getResult().getType();
+    else
+      outputType = op.getDest().getType();
     mlir::FailureOr<llvm::SmallVector<int64_t, 3>> mkn =
-        inferGemmMKN(op, rewriter);
+        inferGemmMKN(op, outputType, rewriter);
     if (mlir::failed(mkn))
       return mlir::failure();
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, bufferRecorder);
-    if (mlir::failed(dest))
-      return mlir::failure();
+    mlir::Value dest;
+    if constexpr (std::is_same_v<GemmOp, ComputeGemmOp>) {
+      auto allocated = createDestAlloc(op.getLoc(), outputType, rewriter, op,
+                                       bufferRecorder);
+      if (mlir::failed(allocated))
+        return mlir::failure();
+      dest = *allocated;
+    } else {
+      dest = op.getDest();
+    }
 
     auto instr = rewriter.create<InstrGemmOp>(
-        op.getLoc(), op.getLhs(), op.getRhs(), *dest, op.getPsum(),
+        op.getLoc(), op.getLhs(), op.getRhs(), dest, op.getPsum(),
         getI64Attr(rewriter, (*mkn)[0]), getI64Attr(rewriter, (*mkn)[1]),
         getI64Attr(rewriter, (*mkn)[2]), op.getLhsOrientationAttr(),
         op.getRhsOrientationAttr(), op.getBatchCountAttr(),
@@ -2028,7 +2066,10 @@ public:
         op.getResultNDimAttr(), getDefaultNCCWorkerAttr(rewriter));
     if (bufferRecorder)
       bufferRecorder->recordLoweredOperation(op, instr);
-    rewriter.replaceOp(op, *dest);
+    if constexpr (std::is_same_v<GemmOp, ComputeGemmOp>)
+      rewriter.replaceOp(op, dest);
+    else
+      rewriter.eraseOp(op);
     return mlir::success();
   }
 };
@@ -2403,7 +2444,8 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     TileRegionToInstrBufferRecorder *bufferRecorder,
     MovementDescriptorCache *descriptorCache) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<GemmLowering>(context, bufferRecorder);
+  patterns.add<GemmLowering<ComputeGemmOp>, GemmLowering<ComputeGemmIntoOp>>(
+      context, bufferRecorder);
   patterns.add<PoolLowering>(context, bufferRecorder);
   patterns.add<ConvLowering, ConvertLowering,
                ElementwiseLowering<ComputeElementwiseOp>,

@@ -4,14 +4,17 @@
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
+#include <functional>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -46,18 +49,70 @@ bool hasPrivateReadOnlyUses(mlir::Value result, mlir::scf::ForOp loop) {
   return true;
 }
 
-bool canHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
-              mlir::AliasAnalysis &aliases) {
+struct HoistPlan {
+  llvm::SmallVector<mlir::Operation *> metadata;
+};
+
+std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
+                                   mlir::AliasAnalysis &aliases) {
   auto lower = mlir::getConstantIntValue(loop.getLowerBound());
   auto upper = mlir::getConstantIntValue(loop.getUpperBound());
   auto step = mlir::getConstantIntValue(loop.getStep());
   if (!lower || !upper || !step || *step <= 0 || *upper <= *lower ||
-      llvm::any_of(copy->getOperands(),
-                   [&](mlir::Value operand) {
-                     return !loop.isDefinedOutsideOfLoop(operand);
-                   }) ||
       !hasPrivateReadOnlyUses(copy->getResult(0), loop))
-    return false;
+    return std::nullopt;
+  // Views and scalar offset arithmetic can be nested in a visibility branch.
+  // Move their actual SSA dependency slice with the copy, never reconstruct
+  // equivalent metadata from a name or a predicted load.
+  HoistPlan plan;
+  const bool crossesCondition = copy->getParentOp() != loop;
+  llvm::DenseSet<mlir::Operation *> visited;
+  std::function<bool(mlir::Value)> invariant = [&](mlir::Value value) {
+    if (loop.isDefinedOutsideOfLoop(value))
+      return true;
+    auto *definition = value.getDefiningOp();
+    if (!definition || definition->getNumRegions() ||
+        !mlir::isMemoryEffectFree(definition))
+      return false;
+    if (crossesCondition && !mlir::isSpeculatable(definition))
+      return false;
+    if (crossesCondition && mlir::isa<mlir::MemRefType>(value.getType())) {
+      if (auto view = mlir::dyn_cast<mlir::memref::SubViewOp>(definition)) {
+        auto sourceType = view.getSourceType();
+        for (auto [axis, offset] : llvm::enumerate(view.getMixedOffsets())) {
+          int64_t size = view.getStaticSizes()[axis];
+          int64_t stride = view.getStaticStrides()[axis];
+          if (size <= 0 || stride != 1 || sourceType.isDynamicDim(axis))
+            return false;
+          if (auto constant = mlir::getConstantIntValue(offset)) {
+            if (*constant < 0 || *constant > sourceType.getDimSize(axis) - size)
+              return false;
+          } else {
+            using Bounds = mlir::ValueBoundsConstraintSet;
+            auto variable = Bounds::Variable(mlir::cast<mlir::Value>(offset));
+            auto lo = Bounds::computeConstantBound(
+                mlir::presburger::BoundType::LB, variable);
+            auto hi = Bounds::computeConstantBound(
+                mlir::presburger::BoundType::UB, variable, nullptr, true);
+            if (mlir::failed(lo) || mlir::failed(hi) || *lo < 0 ||
+                *hi > sourceType.getDimSize(axis) - size)
+              return false;
+          }
+        }
+      } else if (!mlir::isa<mlir::memref::GetGlobalOp, mlir::memref::CastOp>(
+                     definition)) {
+        return false;
+      }
+    }
+    if (!visited.insert(definition).second)
+      return true;
+    if (!llvm::all_of(definition->getOperands(), invariant))
+      return false;
+    plan.metadata.push_back(definition);
+    return true;
+  };
+  if (!llvm::all_of(copy->getOperands(), invariant))
+    return std::nullopt;
   mlir::Value source = copy->getOperand(0);
   StorageRootMemo roots;
   auto walk = loop.walk([&](mlir::Operation *operation) {
@@ -91,13 +146,23 @@ bool canHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
     }
     return mlir::WalkResult::advance();
   });
-  return !walk.wasInterrupted();
+  return walk.wasInterrupted() ? std::nullopt
+                               : std::optional<HoistPlan>(std::move(plan));
+}
+
+mlir::scf::ForOp getEnclosingLoop(mlir::Operation *copy) {
+  auto *parent = copy->getParentOp();
+  while (mlir::isa_and_nonnull<mlir::scf::IfOp>(parent))
+    parent = parent->getParentOp();
+  return mlir::dyn_cast_or_null<mlir::scf::ForOp>(parent);
 }
 
 llvm::SmallVector<mlir::Operation *>
 collectPhysicalCopies(mlir::Operation *root) {
   llvm::SmallVector<mlir::Operation *> copies;
   root->walk([&](mlir::Operation *operation) {
+    // These operations allocate their result. A DPS load mutates an existing
+    // destination and needs a separate allocation/lifetime proof.
     if (mlir::isa<LayoutMaterializeOp, MoveReshapeOp, MoveTransposeOp,
                   MoveBroadcastOp, MoveCopyOp, MoveExtractSliceOp>(operation))
       copies.push_back(operation);
@@ -110,8 +175,8 @@ collectPhysicalCopies(mlir::Operation *root) {
 bool hasInvariantPhysicalMovement(mlir::Operation *root) {
   mlir::AliasAnalysis aliases(root);
   for (auto *copy : collectPhysicalCopies(root))
-    if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(copy->getParentOp()))
-      if (canHoist(copy, loop, aliases))
+    if (auto loop = getEnclosingLoop(copy))
+      if (planHoist(copy, loop, aliases))
         return true;
   return false;
 }
@@ -127,11 +192,14 @@ optimizePhysicalMovementPlacement(mlir::Operation *root,
   mlir::IRRewriter rewriter(root->getContext());
   for (mlir::Operation *copy : copies) {
     bool changed = false;
-    while (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(copy->getParentOp())) {
+    while (auto loop = getEnclosingLoop(copy)) {
       // Each query reads the current epoch, including previously moved copies.
       mlir::AliasAnalysis aliases(root);
-      if (!canHoist(copy, loop, aliases))
+      auto plan = planHoist(copy, loop, aliases);
+      if (!plan)
         break;
+      for (auto *metadata : plan->metadata)
+        rewriter.moveOpBefore(metadata, loop);
       rewriter.moveOpBefore(copy, loop);
       changed = true;
     }

@@ -454,6 +454,21 @@ static mlir::LogicalResult verifySimpleInstrElementwiseContract(
 
   std::optional<mlir::RankedTensorType> firstInputTensor;
   for (auto [index, input] : llvm::enumerate(inputs)) {
+    if (mlir::isa<mlir::FloatType>(input.getType())) {
+      bool supported = isInstrRelationKind(kind) ||
+                       kind == InstrElementwiseKind::Add ||
+                       kind == InstrElementwiseKind::Sub ||
+                       kind == InstrElementwiseKind::Mul ||
+                       kind == InstrElementwiseKind::Max ||
+                       kind == InstrElementwiseKind::Min;
+      if (!supported || index != 1 || rhsUnitElements || !firstInputTensor ||
+          input.getType() != firstInputTensor->getElementType() ||
+          !(input.getType().isF16() || input.getType().isBF16() ||
+            input.getType().isF32()))
+        return op->emitOpError(
+            "VS requires a matching F16/BF16/F32 binary RHS");
+      continue;
+    }
     bool isUnit = index == 1 && rhsUnitElements != 0;
     std::optional<mlir::RankedTensorType> inputTensor =
         getLogicalTensorType(input.getType());
@@ -772,6 +787,8 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
   for (auto [index, input] : llvm::enumerate(getInputs())) {
+    if (mlir::isa<mlir::FloatType>(input.getType()))
+      continue;
     if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(), "input")))
       return mlir::failure();
   }
@@ -785,7 +802,9 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
     if (unit < 1 || unit > 64 || !supportedKind || getInputs().size() != 2)
       return emitOpError("rhs_unit_elements requires a floating binary "
                          "arithmetic/relation operation and a unit in [1, 64]");
-    auto rhs = mlir::cast<mlir::MemRefType>(getInputs()[1].getType());
+    auto rhs = mlir::dyn_cast<mlir::MemRefType>(getInputs()[1].getType());
+    if (!rhs)
+      return emitOpError("rhs_unit_elements cannot be combined with VS scalar");
     auto elementType = rhs.getElementType();
     auto info = computeWaferPhysicalTensorInfo(rhs);
     if (!(elementType.isF16() || elementType.isBF16() || elementType.isF32()) ||

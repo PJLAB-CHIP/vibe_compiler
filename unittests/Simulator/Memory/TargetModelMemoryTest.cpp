@@ -217,6 +217,85 @@ TEST(TargetModelMemoryTest,
   EXPECT_NE(error.find("access-denied"), std::string::npos);
 }
 
+TEST(TargetModelMemoryTest, ImmutableTensorUsesOnlyItsActualTileDomain) {
+  for (int64_t length : {1024, 1025, 1031}) {
+    for (size_t participants : {1u, 8u}) {
+      SCOPED_TRACE(length);
+      SCOPED_TRACE(participants);
+      auto invocation = makeInvocation(16);
+      auto bindings = makeBindings(16);
+      const uint64_t base = UINT64_C(0x400000);
+      const int64_t byteSize = 2 * length * 4 * sizeof(float);
+      const auto resource = getTargetModelResourceId(
+          CardId(0), TileId(0), TileEntryArgumentKind::TargetTensor, 0);
+      std::vector<uint8_t> bytes(byteSize);
+      for (size_t i = 0; i < bytes.size(); ++i)
+        bytes[i] = static_cast<uint8_t>(i % 251);
+      bindings.push_back({resource, bytes});
+      for (size_t i = 0; i < participants; ++i) {
+        auto &tile = invocation.tiles[i];
+        tile.tileEntryArguments.push_back({3,
+                                           TileEntryArgumentKind::TargetTensor,
+                                           0,
+                                           "literal",
+                                           LogicalFormat::F32,
+                                           MemLayout::Tensor,
+                                           {2, length, 4},
+                                           byteSize,
+                                           256,
+                                           TileEntryArgumentAccess::ReadOnly});
+        tile.tileEntryArguments.back().targetTensorMaterialization =
+            llvm::cantFail(TargetTensorMaterializationAction::create(
+                LogicalFormat::F32, LogicalFormat::F32, std::nullopt));
+        tile.slotValues.push_back(base);
+      }
+      auto plan = InvocationAddressPlan::create(invocation, bindings);
+      ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+      auto registry = InvocationMemoryRegistry::create(std::move(*plan));
+      ASSERT_TRUE(static_cast<bool>(registry))
+          << llvm::toString(registry.takeError());
+      for (size_t i = 0; i < participants; ++i) {
+        auto resolved = registry->getAddressPlan().resolve(
+            i, TargetModelAddressSpace::DDR, TargetModelAccess::Read, base,
+            byteSize, 256);
+        ASSERT_TRUE(static_cast<bool>(resolved))
+            << llvm::toString(resolved.takeError());
+        EXPECT_EQ(resolved->resource, resource);
+        EXPECT_EQ(resolved->regionOffset, 0u);
+        EXPECT_EQ(llvm::cantFail(registry->readSlotSnapshot(i, 3)), bytes);
+      }
+      EXPECT_NE(expectError(registry->readSnapshot(participants,
+                                                   TargetModelAddressSpace::DDR,
+                                                   base, 4, 4))
+                    .find("unknown-resource"),
+                std::string::npos);
+      EXPECT_NE(
+          expectError(registry->applyAtomically({TargetModelByteWrite{
+                          0, TargetModelAddressSpace::DDR, base, 1, {0}}}))
+              .find("access-denied"),
+          std::string::npos);
+      auto invalid = invocation;
+      invalid.tiles[0].tileEntryArguments.back().zeroInitialize = true;
+      EXPECT_NE(expectError(InvocationAddressPlan::create(invalid, bindings))
+                    .find("invalid-slot"),
+                std::string::npos);
+      invalid = invocation;
+      invalid.tiles[0].tileEntryArguments.back().access =
+          TileEntryArgumentAccess::ReadWrite;
+      EXPECT_NE(expectError(InvocationAddressPlan::create(invalid, bindings))
+                    .find("immutable TargetTensor"),
+                std::string::npos);
+      if (participants > 1) {
+        invalid = invocation;
+        invalid.tiles[1].tileEntryArguments.back().shape.back() = 5;
+        EXPECT_NE(expectError(InvocationAddressPlan::create(invalid, bindings))
+                      .find("same resource"),
+                  std::string::npos);
+      }
+    }
+  }
+}
+
 TEST(TargetModelMemoryTest, ResolvesExactEndAndRejectsCrossResource) {
   InvocationMemoryRegistry registry = makeRegistry(1);
   EXPECT_EQ(llvm::cantFail(registry.readSnapshot(

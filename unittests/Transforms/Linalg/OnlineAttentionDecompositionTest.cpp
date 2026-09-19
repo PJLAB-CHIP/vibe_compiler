@@ -270,20 +270,10 @@ TEST(OnlineAttentionDecompositionTest,
           return;
         }
         ASSERT_TRUE(branch);
-        auto guard = mlir::dyn_cast<mlir::scf::IfOp>(branch->getParentOp());
-        ASSERT_TRUE(guard);
-        auto skip = mlir::cast<mlir::scf::YieldOp>(
-            guard.getElseRegion().front().getTerminator());
-        EXPECT_EQ(skip.getOperands()[0], op.getAccumulator());
-        EXPECT_EQ(skip.getOperands()[1], op.getMaximum());
-        EXPECT_EQ(skip.getOperands()[2], op.getSum());
-        EXPECT_TRUE(llvm::hasSingleElement(guard.getElseRegion().front()));
-        for (mlir::Value input : {op.getQuery(), op.getKey(), op.getValue()}) {
-          if (auto slice =
-                  input.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-            EXPECT_TRUE(guard->isProperAncestor(slice));
-          }
-        }
+        // Q spans all 1025 rows in this mechanism test. Every selected KV
+        // block has at least one visible element; ValueBounds proves the
+        // outer visibility guard true. Only full-vs-boundary remains.
+        EXPECT_FALSE(mlir::isa<mlir::scf::IfOp>(branch->getParentOp()));
         if (op.getCausal()) {
           ++guardedTiles;
           EXPECT_EQ(op.getPositions().size(), 3u);
@@ -303,6 +293,15 @@ TEST(OnlineAttentionDecompositionTest,
       ASSERT_TRUE(mlir::succeeded(decomposed)) << failure.detail;
       EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()),
                 0u);
+      EXPECT_EQ(countOps<mlir::tensor::InsertOp>(module->getOperation()), 0u);
+      unsigned validLengthTests = 0, causalTests = 0;
+      region.walk([&](mlir::arith::CmpFOp cmp) {
+        validLengthTests +=
+            cmp.getPredicate() == mlir::arith::CmpFPredicate::OGE;
+        causalTests += cmp.getPredicate() == mlir::arith::CmpFPredicate::OGT;
+      });
+      EXPECT_EQ(validLengthTests, 0u);
+      EXPECT_GT(causalTests, 0u);
       auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       auto lowered = lowerStructuredComputeToTile(*module, relations);

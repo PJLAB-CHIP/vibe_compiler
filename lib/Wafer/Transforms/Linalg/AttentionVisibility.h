@@ -8,9 +8,15 @@
 
 namespace mlir {
 class RewriterBase;
-}
+class Value;
+} // namespace mlir
 namespace wafer {
 class TileRegionOp;
+
+/// Prove an index ordering from current SSA, including the last reachable
+/// induction value of positive, constant-step loops. Unknown remains false.
+bool proveAttentionPositionOrder(mlir::Value lhs, mlir::Value rhs,
+                                 bool strict = false);
 
 /// Specialize actual, statically sized online tiles from their SSA positions.
 /// Invisible blocks carry their old DPS states without reading Q/K/V. Fully

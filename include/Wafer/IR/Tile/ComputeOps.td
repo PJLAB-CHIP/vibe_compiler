@@ -47,16 +47,17 @@ def Wafer_ComputeConvertOp : Wafer_Op<"tile.compute.convert", [
       "$source attr-dict `:` type($source) `to` type($result)";
 }
 
-def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
+class Wafer_ComputeGemmBase<string mnemonic, bit into> : Wafer_Op<mnemonic, [
     WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
-  let arguments = (ins
+  let arguments = !con((ins
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$lhs,
-    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$rhs,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$rhs
+  ), !if(into, (ins Arg<Wafer_AnySPMMemRef, "output storage", [MemWrite]>:$dest), (ins)), (ins
     Arg<Optional<AnyMemRef>, "incoming F32 partial", [MemRead]>:$psum,
     OptionalAttr<Wafer_GemmOrientationAttr>:$lhs_orientation,
     OptionalAttr<Wafer_GemmOrientationAttr>:$rhs_orientation,
@@ -70,12 +71,16 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
     OptionalAttr<DenseI64ArrayAttr>:$result_batch_dims,
     OptionalAttr<I64Attr>:$result_m_dim,
     OptionalAttr<I64Attr>:$result_n_dim
-  );
-  let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
+  ));
+  let results = !if(into, (outs), (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result));
   let hasVerifier = 1;
-  let assemblyFormat =
-      "$lhs `,` $rhs (`psum` `(` $psum^ `:` type($psum) `)`)? attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)";
+  let assemblyFormat = !if(into,
+      "$lhs `,` $rhs `into` $dest (`psum` `(` $psum^ `:` type($psum) `)`)? attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `into` type($dest)",
+      "$lhs `,` $rhs (`psum` `(` $psum^ `:` type($psum) `)`)? attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)");
 }
+
+def Wafer_ComputeGemmOp : Wafer_ComputeGemmBase<"tile.gemm", 0>;
+def Wafer_ComputeGemmIntoOp : Wafer_ComputeGemmBase<"tile.gemm_into", 1>;
 
 def Wafer_ComputeConvOp : Wafer_Op<"tile.conv", [
     WaferTileDataflowOpInterface,
@@ -148,13 +153,14 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
     its operand/result relation explicit: without `indexing_maps`, all operands
     and the result must have the same logical tensor type; with
     `indexing_maps`, operands may use verifier-proven permutation-only
-    broadcast from result dimensions. All operands and the result must use SPM
-    tensor storage values with matching element types.
+    broadcast from result dimensions. Vector operands and the result use SPM tensor storage. Supported binary
+    operations may carry a matching floating scalar RHS with an empty map;
+    it remains scalar through lowering to the VS immediate form.
   }];
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs,
+    Arg<Variadic<AnyTypeOf<[Wafer_AnySPMMemRef, F16, BF16, F32]>>, "", [MemRead]>:$inputs,
     OptionalAttr<AffineMapArrayAttr>:$indexing_maps
   );
   let results = (outs Res<Wafer_AnySPMMemRef, "", [MemAlloc, MemWrite]>:$result);
@@ -182,7 +188,7 @@ def Wafer_ComputeElementwiseIntoOp : Wafer_Op<"tile.elementwise_into", [
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs,
+    Arg<Variadic<AnyTypeOf<[Wafer_AnySPMMemRef, F16, BF16, F32]>>, "", [MemRead]>:$inputs,
     Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$dest,
     OptionalAttr<AffineMapArrayAttr>:$indexing_maps
   );

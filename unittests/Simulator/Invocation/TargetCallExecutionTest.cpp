@@ -422,8 +422,10 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
           &descriptor.semantic)) {
     unsigned arity = wafer::getTargetElementwiseArity(*operation);
     arguments[arity + 2] = supportedF32Code(wafer::TargetFormatEngine::CT);
-    if (arity == 2 && !wafer::isTargetElementwiseLogic(*operation))
+    if (arity == 2 && !wafer::isTargetElementwiseLogic(*operation)) {
       arguments[5] = 32;
+      arguments[6] = 0;
+    }
     return arguments;
   }
   if (std::holds_alternative<wafer::TargetReduceOperation>(
@@ -1065,7 +1067,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetElementwiseOperation::Add)
           .arguments.size(),
-      7u);
+      8u);
   EXPECT_EQ(wafer::getTargetCallDescriptor(
                 wafer::TargetConvolutionOperation::Convolution)
                 .arguments.size(),
@@ -1527,6 +1529,74 @@ TEST(TargetCallExecutionTest, NativeF32BitcastsPreserveEveryPayloadBit) {
     EXPECT_EQ(std::get<wafer::target::TargetStridedDMACommand>(command.payload)
                   .source,
               value);
+}
+
+// Scalar cast oracle; the source attention matrix supplies rank-three/tail
+// numeric coverage. Each threshold remains runtime SSA until native execution.
+TEST(TargetCallExecutionTest, NativeIntegerThresholdBecomesVSStorageBits) {
+  for (bool isSigned : {false, true}) {
+    std::string diagnostics;
+    auto modules = compileElementwiseTargetModules(diagnostics);
+    ASSERT_TRUE(static_cast<bool>(modules))
+        << llvm::toString(modules.takeError());
+    const auto &descriptor =
+        wafer::getTargetCallDescriptor(wafer::TargetElementwiseOperation::Add);
+    std::vector<uint32_t> expected;
+    for (const auto &owner : modules->getModules()) {
+      auto &module = const_cast<llvm::Module &>(owner.getModule());
+      auto *entry = module.getFunction("main");
+      entry->deleteBody();
+      llvm::IRBuilder<> builder(
+          llvm::BasicBlock::Create(module.getContext(), "entry", entry));
+      llvm::SmallVector<llvm::Type *> types;
+      for (auto scalar : descriptor.arguments)
+        types.push_back(scalar == wafer::TargetCallScalarType::I64
+                            ? builder.getInt64Ty()
+                            : builder.getInt32Ty());
+      auto callee = module.getOrInsertFunction(
+          descriptor.symbol,
+          llvm::FunctionType::get(builder.getVoidTy(), types, false));
+      auto raw = makeDecodableArguments(descriptor);
+      raw[5] = 0;
+      raw[6] = 1;
+      uint64_t address =
+          0x100000 + owner.getLaunchSlotId().getValue() * 0x100000;
+      auto *runtime =
+          builder.CreateSub(entry->getArg(0), builder.getInt64(address));
+      for (int64_t threshold :
+           {-1031, -1025, -1024, 0, 1024, 1025, 1031, 16777217}) {
+        auto *integer = builder.CreateAdd(runtime, builder.getInt64(threshold));
+        auto *floating =
+            isSigned ? builder.CreateSIToFP(integer, builder.getFloatTy())
+                     : builder.CreateUIToFP(integer, builder.getFloatTy());
+        auto *bits = builder.CreateBitCast(floating, builder.getInt32Ty());
+        llvm::SmallVector<llvm::Value *> arguments;
+        for (auto [index, value] : llvm::enumerate(raw))
+          arguments.push_back(index < 3 ? builder.getInt64(value)
+                                        : builder.getInt32(value));
+        arguments[1] = builder.CreateZExt(bits, builder.getInt64Ty());
+        builder.CreateCall(callee, arguments);
+        float reference =
+            isSigned ? static_cast<float>(threshold)
+                     : static_cast<float>(static_cast<uint64_t>(threshold));
+        expected.push_back(
+            llvm::APFloat(reference).bitcastToAPInt().getZExtValue());
+      }
+      builder.CreateRetVoid();
+    }
+    RecordingSink sink;
+    auto result = wafer::compiler::executeTargetCalls(
+        *modules, makeInvocationArguments(*modules), sink);
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    ASSERT_EQ(sink.commands.size(), expected.size());
+    for (auto [command, value] : llvm::zip_equal(sink.commands, expected)) {
+      const auto &binary =
+          std::get<wafer::target::TargetElementwiseCommand>(command.payload);
+      EXPECT_EQ(binary.rhsScalar, value);
+      EXPECT_FALSE(binary.rhs);
+    }
+  }
 }
 
 // Scalar bitwidth oracles deliberately use scalar LLVM and a recording sink;

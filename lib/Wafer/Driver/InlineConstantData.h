@@ -12,5 +12,12 @@ llvm::Error
 outlineInlineConstantData(mlir::ModuleOp module,
                           frontend::FrontendProgramVerificationResult &program,
                           ProgramDataHandoff &data);
+
+/// Bind live read-only literals created by actual candidate transformations.
+/// Every module gets the same constant set; uses are replaced in the actual
+/// entry IR, and the returned bindings extend its existing program boundary.
+llvm::Expected<std::vector<std::vector<ProgramResourceBinding>>>
+bindInlineConstantBuffers(llvm::ArrayRef<mlir::ModuleOp> modules,
+                          ProgramDataHandoff &data);
 } // namespace wafer::compiler::detail
 #endif

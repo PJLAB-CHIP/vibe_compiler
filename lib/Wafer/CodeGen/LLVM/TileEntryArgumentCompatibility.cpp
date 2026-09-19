@@ -55,7 +55,18 @@ validateTileEntryArgumentDomain(llvm::ArrayRef<TargetLLVMModule> modules) {
         return llvm::createStringError(llvm::errc::invalid_argument,
                                        "Tile entry arguments are not dense");
       llvm::StringRef difference;
-      if (slot.kind == TileEntryArgumentKind::SharedWorkspace) {
+      if (slot.kind == TileEntryArgumentKind::TargetTensor) {
+        // TargetTensor payloads are resolved through this entry's actual
+        // ProgramResourceBinding. Tails can consume different immutable
+        // literals, and unused constants have no runtime slot. Their indices
+        // are entry-local, unlike a card-shared workspace resource ID.
+        if (slot.resourceIndex < 0 ||
+            slot.access != TileEntryArgumentAccess::ReadOnly ||
+            slot.zeroInitialize || !slot.targetTensorMaterialization)
+          return llvm::createStringError(llvm::errc::invalid_argument,
+                                         "Tile has an invalid "
+                                         "immutable target tensor binding");
+      } else if (slot.kind == TileEntryArgumentKind::SharedWorkspace) {
         if (slot.resourceIndex < 0 ||
             !localSharedResources.insert(slot.resourceIndex).second)
           return llvm::createStringError(llvm::errc::invalid_argument,

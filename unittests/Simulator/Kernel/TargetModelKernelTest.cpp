@@ -973,6 +973,55 @@ TEST(TargetModelKernelTest,
       }
 }
 
+TEST(TargetModelKernelTest, ScalarImmediateHasExactBitsAndNoRHSRead) {
+  for (auto format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32})
+    for (uint32_t extent : {1024, 1025, 1031})
+      for (bool negativeInfinity : {false, true}) {
+        InvocationMemoryRegistry memory = makeRegistry();
+        FormalNumericExecutionContext context;
+        uint64_t base = memory.getAddressPlan().getSPMBase();
+        uint32_t count = 2 * extent * 32;
+        auto key =
+            makeTensor(format, PhysicalTensorLayout::Tensor, {2, extent, 32});
+        uint32_t one = format == LogicalFormat::F32   ? 0x3f800000
+                       : format == LogicalFormat::F16 ? 0x3c00
+                                                      : 0x3f80;
+        uint32_t two = format == LogicalFormat::F32 ? 0x40000000 : 0x4000;
+        uint32_t infinity = format == LogicalFormat::F32   ? 0xff800000
+                            : format == LogicalFormat::F16 ? 0xfc00
+                                                           : 0xff80;
+        writeTensor(memory, 0, base, key,
+                    std::vector<RawLogicalValue>(count, {format, one}));
+        uint64_t output = base + 0xa0000;
+        TargetCommand command{
+            CardId(0), TileId(0), LaunchSlotId(0), 0,
+            TargetElementwiseCommand{negativeInfinity
+                                         ? TargetElementwiseOperation::Add
+                                         : TargetElementwiseOperation::Mul,
+                                     base, std::nullopt, output, count, format,
+                                     0, negativeInfinity ? infinity : two}};
+        auto budget = TargetModelKernelBudget::create(
+            FormalNumericWorkBudget::create(count, 0), count * 8, 256);
+        auto effect = executeTargetModelCommand(command, memory, budget);
+        ASSERT_TRUE(static_cast<bool>(effect))
+            << llvm::toString(effect.takeError());
+        ASSERT_EQ(effect->pendingReads.size(), 1u);
+        llvm::cantFail(
+            applyTargetModelCommandEffect(memory, context, std::move(*effect)));
+        auto result = readTensor(memory, 0, output, key);
+        ASSERT_EQ(result.size(), count);
+        for (const auto &value : result)
+          ASSERT_EQ(value.bits, negativeInfinity ? infinity : two);
+        auto &payload = std::get<TargetElementwiseCommand>(command.payload);
+        payload.rhs = base;
+        EXPECT_NE(
+            expectError(executeTargetModelCommand(command, memory, budget))
+                .find("arity"),
+            std::string::npos);
+      }
+}
+
 TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;

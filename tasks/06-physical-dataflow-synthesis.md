@@ -1656,7 +1656,10 @@ movement、completion和memory/target数据。推算结果不进入legality、SP
 Instr modules：CostModel只读actual worker/family、block顺序、SSA/view/slot、typed effect与NCC participant，按资源服务时间
 和根级读写依赖估计最早完成时间。同一engine保持顺序；不同engine只有无依赖且未被实际completion隔开时才估算重叠。
 根级范围合并会高估依赖，不改变IR。两槽流水直接解释current select/loop-carried buffer；固定循环在携带buffer两轮复现且
-没有变化的index carry时，取前五轮，以最后两轮服务增量外推其余完整两轮，并单独解释奇数余轮。其它循环在统一work上限内
+没有变化的index carry时，先根据current整数比较和and/or确定分支不变的迭代区间；只在每个区间内部取前五轮，
+以最后两轮服务增量外推其余完整两轮，并单独解释奇数余轮。未知条件或随外层迭代变化的内层loop边界禁止该外推。
+Scalar select、signed/unsigned cmpi及位逻辑保留原bitwidth；aggregate work仍不能精确计数的条件维持上下界及coarse标记，
+不得把current-IR时序估计称为精确硬件时间。其它循环在统一work上限内
 继续解释，超限采用有限粗估；不能只平移时钟却丢失后续操作读取的index结果。这是有界性能近似，不是周期模拟、hardware保证或hard pruning bound。
 估计器有固定分析工作上限；已知条件解释实际分支，动态控制、未支持的完成域/alias或超限使用局部有限串行估计，不给出不可比。
 整卡DDR总服务仍为资源下限，与估计的最长Tile路径取最大，不能与已经包含的DDR服务重复求和。所有公式与近似仅在CostModel；

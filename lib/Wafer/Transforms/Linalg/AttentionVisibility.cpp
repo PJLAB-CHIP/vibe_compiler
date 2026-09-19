@@ -7,11 +7,55 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 
 namespace wafer {
+
+bool proveAttentionPositionOrder(mlir::Value lhs, mlir::Value rhs,
+                                 bool strict) {
+  using Bounds = mlir::ValueBoundsConstraintSet;
+  auto difference =
+      mlir::AffineMap::get(2, 0,
+                           mlir::getAffineDimExpr(1, lhs.getContext()) -
+                               mlir::getAffineDimExpr(0, lhs.getContext()));
+  auto stop = [](mlir::Value value, std::optional<int64_t> dim,
+                 Bounds &bounds) {
+    if (dim)
+      return false;
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+    auto loop = argument ? mlir::dyn_cast<mlir::scf::ForOp>(
+                               argument.getOwner()->getParentOp())
+                         : mlir::scf::ForOp{};
+    if (!loop || value != loop.getInductionVar())
+      return false;
+    auto first = mlir::getConstantIntValue(loop.getLowerBound());
+    auto end = mlir::getConstantIntValue(loop.getUpperBound());
+    auto step = mlir::getConstantIntValue(loop.getStep());
+    // Attention positions are nonnegative. This also makes every
+    // subtraction/product below representable in signed int64.
+    if (!first || !end || !step || *first < 0 || *end <= *first || *step <= 0)
+      return false;
+    int64_t last = *first + ((*end - *first - 1) / *step) * *step;
+    bounds.bound(value) >= *first;
+    bounds.bound(value) <= last;
+    return true;
+  };
+  for (auto value : {lhs, rhs}) {
+    auto bound = Bounds::computeConstantBound(mlir::presburger::BoundType::LB,
+                                              Bounds::Variable(value), stop);
+    if (mlir::failed(bound) || *bound < 0)
+      return false;
+  }
+  auto lower = Bounds::computeConstantBound(
+      mlir::presburger::BoundType::LB,
+      Bounds::Variable(difference, llvm::ArrayRef<mlir::Value>{lhs, rhs}),
+      stop);
+  return mlir::succeeded(lower) && *lower >= (strict ? 1 : 0);
+}
 
 mlir::LogicalResult materializeAttentionVisibility(mlir::RewriterBase &rewriter,
                                                    TileRegionOp region) {
@@ -47,6 +91,10 @@ mlir::LogicalResult materializeAttentionVisibility(mlir::RewriterBase &rewriter,
     };
     auto compare = [&](mlir::arith::CmpIPredicate predicate, mlir::Value lhs,
                        mlir::Value rhs) {
+      if (proveAttentionPositionOrder(
+              lhs, rhs, predicate == mlir::arith::CmpIPredicate::ult))
+        return mlir::Value(
+            rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, 1));
       return rewriter.createOrFold<mlir::arith::CmpIOp>(loc, predicate, lhs,
                                                         rhs);
     };

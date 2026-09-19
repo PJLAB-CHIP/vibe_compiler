@@ -48,8 +48,13 @@ model输入边界就是`DeviceExecutable`及与其绑定的invocation-local targ
 `prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program tensor和每个
 `TileEntryArgument`。它按显式program tensor identity、entry argument relation和target layout建立model-private memory：
 card级`TargetTensor`、input/output及SharedWorkspace由card共享，普通workspace/status由Tile独占。一个card input只编码和初始化一次，引用它的
-16个Tile entry arguments绑定同一base；input physical bytes与argument values由prepared invocation拥有，不alias source
+Tile entry arguments绑定同一base；input physical bytes与argument values由prepared invocation拥有，不alias source
 NPY storage。这里的model-private memory只服务functional model，不定义package中的provider allocation identity。
+
+只读`TargetTensor`可以只被实际使用它的Tile子集引用，例如主块与tail的不同mask literal。
+该子集仍共享一份card-owned bytes和base，不为未使用者补ABI slot或复制storage；同一resource的geometry、
+初始bytes和只读权限必须一致。普通input/output的完整Tile域、Tile-owned workspace的唯一owner要求不变。
+覆盖rank3、1024/1025/1031、16 Tiles中的单个/多个使用者、非使用者读取拒绝、写入拒绝及geometry冲突。
 
 同一物理resource的geometry与每个Tile的access是两件事。Invocation准备与memory registry共用kind/index、dtype/layout/shape、bytes、alignment、
 materialization和zero-initialize比较；同一SharedWorkspace允许writer为WriteOnly、reader为ReadOnly或未使用者为None。

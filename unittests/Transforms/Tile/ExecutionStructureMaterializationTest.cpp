@@ -198,6 +198,236 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     PrivateScalarBroadcastAvoidsCPUReadback) {
+  for (auto dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (unsigned variant = 0; variant < 4; ++variant) {
+        SCOPED_TRACE(::testing::Message() << dtype << ':' << extent << ':'
+                                         << variant);
+        auto context = createContext();
+        const std::string scalar = "memref<" + std::string(dtype) +
+                                    ", #wafer.memory<spm, tensor>>";
+        const std::string source = "memref<" + std::string(dtype) +
+                                    ", #wafer.memory<ddr, tensor>>";
+        const std::string tensor = "memref<2x" + std::to_string(extent) +
+                                    "x32x" + dtype +
+                                    ", #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        // Rank zero is the actual scalar source; its consumers exercise a
+        // real tensor and multiple dynamic iterations.
+        out << "module { func.func @main(%source: " << source
+            << ") { wafer.tile.region(%source : " << source
+            << ") -> () { ^bb0(%in: " << source << "):"
+            << "%s = memref.alloc() : " << scalar
+            << "\nwafer.tile.load %in into %s : " << source << " into "
+            << scalar << "\n%value = memref.load %s[] : " << scalar
+            << "\n%v = memref.alloc() : " << tensor
+            << "\n%c0 = arith.constant 0 : index\n"
+               "%c1 = arith.constant 1 : index\n"
+               "%c4 = arith.constant 4 : index\n";
+        if (variant == 1)
+          out << "wafer.tile.load %in into %s : " << source << " into "
+              << scalar << '\n';
+        if (variant == 2)
+          out << "%alias = memref.cast %s : " << scalar << " to " << scalar
+              << "\nwafer.tile.fill %alias, %value : " << scalar << ", "
+              << dtype << '\n';
+        if (variant == 3)
+          out << "wafer.tile.fill %v, %value : " << tensor << ", " << dtype
+              << '\n';
+        out << "scf.for %iv = %c0 to %c4 step %c1 {\n"
+               "wafer.tile.elementwise_into <mul> %v, %value into %v : "
+            << tensor << ", " << dtype << " into " << tensor
+            << "\n}\nwafer.tile.yield } return } }";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        auto prepared = prepareTileExecutionStructure(*module, {});
+        ASSERT_TRUE(prepared.succeeded());
+        auto materialized = materializeExecutionStructure(
+            std::move(module), std::move(*prepared.prepared));
+        ASSERT_TRUE(materialized.succeeded())
+            << (materialized.failure ? materialized.failure->detail : "");
+        auto &result = materialized.materialized->module;
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*result)));
+        unsigned reads = 0;
+        result->walk([&](mlir::memref::LoadOp) { ++reads; });
+        EXPECT_EQ(reads, variant ? 1u : 0u);
+        if (variant)
+          continue;
+        TileRegionOp region;
+        result->walk([&](TileRegionOp op) { region = op; });
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        unsigned units = 0;
+        region.walk([&](InstrElementwiseOp op) {
+          ++units;
+          EXPECT_EQ(op.getRhsUnitElements(), 1);
+          EXPECT_EQ(mlir::cast<mlir::MemRefType>(op.getInputs()[1].getType())
+                        .getRank(),
+                    0);
+        });
+        EXPECT_EQ(units, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*result)));
+        unsigned joins = 0;
+        result->walk([&](SyncNCCJoinOp op) {
+          ++joins;
+          EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+        });
+        EXPECT_EQ(joins, 1u);
+        EXPECT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*result, 0, 3 * 1024 * 1024, 16)));
+      }
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     GemmWritebackKeepsExplicitDestinationAndSeparatePsum) {
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (unsigned variant = 0; variant < 6; ++variant) {
+        SCOPED_TRACE(::testing::Message()
+                     << dtype << "/" << extent << "/" << variant);
+        auto context = createContext();
+        std::string lhs = "memref<2x" + std::to_string(extent) + "x16x" +
+                          dtype + ", #wafer.memory<spm, ncx>>";
+        std::string rhs = "memref<2x16x16x" + std::string(dtype) +
+                          ", #wafer.memory<spm, ncx>>";
+        std::string dest = "memref<2x" + std::to_string(extent) +
+                           "x16xf32, #wafer.memory<spm, ncx>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main() { wafer.tile.region() -> () {\n"
+               "%a = memref.alloc() : "
+            << lhs << "\n%b = memref.alloc() : " << rhs
+            << "\n%d = memref.alloc() : " << dest
+            << "\n%p = memref.alloc() : " << dest
+            << "\n%alias = memref.cast %d : " << dest << " to " << dest
+            << "\n%r = wafer.tile.gemm %a, %b";
+        if (variant == 1 || variant == 2 || variant == 5)
+          out << " psum(%"
+              << (variant == 1   ? "p"
+                  : variant == 2 ? "d"
+                                 : "alias")
+              << " : " << dest << ")";
+        out << " {batch_count = 2 : i64, lhs_batch_dims = array<i64: 0>, "
+               "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+               "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : i64, "
+               "rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+               "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : ("
+            << lhs << ", " << rhs << ") -> " << dest << "\n";
+        if (variant == 4)
+          out << "%observer = wafer.tile.copy %d : " << dest << " -> " << dest
+              << "\n";
+        out << "wafer.tile.copy_into %r into %d : " << dest << " into " << dest
+            << "\n";
+        if (variant == 3)
+          out << "%extra = wafer.tile.copy %r : " << dest << " -> " << dest
+              << "\n";
+        out << "wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        auto prepared = prepareTileExecutionStructure(*module, {});
+        ASSERT_TRUE(prepared.succeeded());
+        auto materialized = materializeExecutionStructure(
+            std::move(module), std::move(*prepared.prepared));
+        ASSERT_TRUE(materialized.succeeded())
+            << (materialized.failure ? materialized.failure->detail : "");
+        unsigned into = 0, copies = 0;
+        TileRegionOp region;
+        mlir::Value target;
+        materialized.materialized->module->walk([&](ComputeGemmIntoOp op) {
+          ++into;
+          target = op.getDest();
+        });
+        materialized.materialized->module->walk(
+            [&](MoveCopyIntoOp) { ++copies; });
+        materialized.materialized->module->walk(
+            [&](TileRegionOp op) { region = op; });
+        EXPECT_EQ(into, variant < 2 ? 1u : 0u);
+        EXPECT_EQ(copies, variant < 2 ? 0u : 1u);
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        unsigned gemms = 0;
+        region.walk([&](InstrGemmOp op) {
+          ++gemms;
+          if (target) {
+            EXPECT_EQ(op.getDest(), target);
+          }
+          EXPECT_NE(op.getDest(), op.getPsum());
+        });
+        EXPECT_EQ(gemms, 1u);
+        ASSERT_TRUE(mlir::succeeded(
+            rebuildRequiredNCCJoins(*materialized.materialized->module)));
+        unsigned joins = 0;
+        materialized.materialized->module->walk(
+            [&](SyncNCCJoinOp) { ++joins; });
+        EXPECT_EQ(joins, 1u);
+        EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(
+            *materialized.materialized->module, 0, 3 * 1024 * 1024, 16)));
+      }
+}
+
+TEST(ExecutionStructureMaterializationTest,
+     ReusePrivateScalarArithmeticButPreserveRepeatedInput) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant = 0; variant < 3; ++variant) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      auto context = createContext();
+      std::string type = "memref<2x" + std::to_string(extent) +
+                         "x16xf32, #wafer.memory<spm, tensor>>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { func.func @main() { wafer.tile.region() -> () {\n"
+             "%a = memref.alloc() : "
+          << type
+          << "\n"
+             "%scalar = arith.constant 0.125 : f32\n"
+             "%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : index\n"
+             "%c8 = arith.constant 8 : index\n"
+             "%p = wafer.tile.elementwise <exp> %a : ("
+          << type << ") -> " << type << "\n";
+      if (variant == 2)
+        out << "scf.for %iv = %c0 to %c8 step %c1 {\n";
+      out << "%r = wafer.tile.elementwise <mul> %p, %scalar : (" << type
+          << ", f32) -> " << type << "\n";
+      if (variant == 1)
+        out << "%old = wafer.tile.copy %p : " << type << " -> " << type << "\n";
+      if (variant == 2)
+        out << "}\n";
+      out << "wafer.tile.yield } return } }";
+      auto module =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(module) << text;
+      auto prepared = prepareTileExecutionStructure(*module, {});
+      ASSERT_TRUE(prepared.succeeded());
+      auto result = materializeExecutionStructure(
+          std::move(module), std::move(*prepared.prepared));
+      ASSERT_TRUE(result.succeeded())
+          << (result.failure ? result.failure->detail : "");
+      unsigned multiplyInto = 0;
+      result.materialized->module->walk([&](ComputeElementwiseIntoOp op) {
+        if (op.getKind() == ComputeElementwiseKind::Mul) {
+          ++multiplyInto;
+          EXPECT_EQ(op.getInputs()[0], op.getDest());
+        }
+      });
+      EXPECT_EQ(multiplyInto, variant == 0 ? 1u : 0u);
+      TileRegionToInstrLoweringSession session(*context);
+      result.materialized->module->walk([&](TileRegionOp op) {
+        EXPECT_TRUE(mlir::succeeded(convertTileRegionToInstr(op, session)));
+      });
+      ASSERT_TRUE(mlir::succeeded(
+          rebuildRequiredNCCJoins(*result.materialized->module)));
+      result.materialized->module->walk([&](SyncNCCJoinOp op) {
+        EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+      });
+      EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(
+          *result.materialized->module, 0, 3 * 1024 * 1024, 16)));
+    }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      AdjacentWritebackPreservesDestinationAndRejectsUnprovenReuse) {
   enum class Case {
     Disjoint,

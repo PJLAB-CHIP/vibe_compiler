@@ -327,7 +327,8 @@ getExternalConflictMask(mlir::Operation *operation,
   effects.getEffects(instances);
   bool ignoreTypedResources =
       ignoreTypedIssueResources ||
-      mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation);
+      mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp,
+                 SyncDDRPublishOp, SyncDDRAcquireOp>(operation);
   for (const auto &instance : instances) {
     mlir::Value value = instance.getValue();
     if (!value) {
@@ -339,7 +340,9 @@ getExternalConflictMask(mlir::Operation *operation,
       // effect is the NCC visibility boundary, while its rootless
       // communication resource describes transport occupancy. The exact DTE
       // wait carries no NCC buffer observation and must not become an implicit
-      // NCC join. Unknown and other synchronous observers retain the
+      // NCC join. DDR publication likewise observes its explicit data/ready
+      // operands; the notification's SyncResource does not drain independent
+      // NCC work. Unknown and other synchronous observers retain the
       // conservative all-pending conflict.
       if (ignoreTypedResources &&
           instance.getResource() != mlir::SideEffects::DefaultResource::get())

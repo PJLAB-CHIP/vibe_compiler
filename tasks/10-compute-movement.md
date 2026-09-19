@@ -302,13 +302,27 @@ logic及其它操作拒绝非零值。TileToInstr先将current indexing map与�
 左侧广播只在原算术可交换时交换两输入；其它映射保留已有movement。除法仍按原合同执行reciprocal及multiply，
 reciprocal使用右操作数自身的紧凑shape。Instr verifier检查范围、arity、dtype、左端完整shape和右端实际footprint；
 target lowering复核左端traversal，CRT发射VuV，numeric model只读取实际unit范围并按同一周期计算。
-本形式不包含immediate VS或VuVLoop；超出短向量合同的row仍通过既有GS物化，不推测循环广播的参数。
+浮点binary的右operand也可为与左buffer element type一致的F16/BF16/F32 scalar SSA，空map表示广播；
+该形式直接对应VS，`rhs_unit_elements`必须为0。StructuredToTile保留scalar，不先物化SPM Fill；
+如果scalar来自私有rank-0 SPM allocation的一次load，且allocation只有同block、先于该load的StorageLoad写入，
+其余使用全部是该scalar load，execution materialization可把后续binary RHS改为直接读取此buffer的空map广播。
+所有consumer须位于同一动态scope或其内部，不能存在alias、第二次写入、非elementwise scalar user或pipeline绑定；
+当前IR据此明确延长buffer读生命周期，再由原VuV证明及completion/SPM规划处理。此路径不把运行期输入猜成常量，
+不经CPU读回SPM；真正的scalar SSA仍走VS。覆盖F16/BF16/F32、1024/1025/1031及写入/alias/其它scalar user反例。
+只有原算术可交换时才交换scalar左operand。Instr/TargetCall以type明确区分scalar bits与地址，
+runtime保持原storage bits，numeric model不对immediate产生SPM读取。unary/logic及其它位置的scalar拒绝。
+本形式不包含VuVLoop；超出短向量合同的row仍通过既有GS物化，不推测循环广播的参数。
 新增覆盖同时检查1/32/64元素周期、1024/1025/1031长度、源共享、非连续映射保持movement、非法unit与unary/logic拒绝，
 以及实际target call、完整数值和越界guard；最终实卡要求仍由统一attention矩阵拥有。
 
 `wafer.tile.elementwise`以closed kind和typed inputs/result表达arithmetic、relation、logic、select及supported
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof
 支持。relation result保持logical i1，bitpacking只由encoding与Instr lowering决定。
+
+ExecutionStructure可把同一dynamic scope内、Allocate effect明确、仅被当前op读取且与其它输入NoAlias的最后使用
+buffer选为实际destination，物化`elementwise_into`后替换result。被复用input的map必须identity且type与result相同；
+Select只复用false输入并由MaskMove保留未选中位置。外层loop输入、共享值、view/未知alias和已绑定pipeline的op不改写。
+该变换先于completion和actual SPM规划；它不授权GEMM psum/destination同址。
 
 `math.sin/cos`保留原dtype和indexing maps，分别映射到`wafer.tile.elementwise<sin/cos>`，随后使用既有
 `InstrElementwiseKind::Sin/Cos`与target/runtime接口。它们和exp/ln一样是一元transcendental，不引入模型名分支或主机预计算。
@@ -327,6 +341,14 @@ geometry无法direct traversal时保留显式movement。
 `wafer.tile.reduce`只表示Tile-local reduction，保留kind、dimensions、init、input/result relation和evaluation-order
 约束。跨Tile reduction由13的Tile collective/peer protocol表达，不由local reduce op暗中访问其它Tile。
 `wafer.tile.fill`初始化既有destination，并以typed fill domain区分logical-valid或physical-footprint范围。
+
+TileToInstr可以将rank>4输入的多余前导单位轴从native CT geometry中省去，条件是这些轴不参与归约；
+不能仅因rank>4把这类实际Tile展开为逐归约位置的GS/elementwise循环。输入仍为上述typed Tile reduce，
+输出为实际rank4 view或经exact relation生成的materializing movement、原native InstrReduce及结果movement，
+直接下游仍是completion/SPM和target lowering。只有既有physical reshape证明成功才alias，失败时走既有明确copy。
+非单位前导轴、被归约的前导轴、非identity init及原native不支持的组合保持既有合同；不更改归约轴次序或dtype。
+覆盖rank5/6、1024/1025/1031、单位与非单位前缀、identity/非identity init，检查native数量、无逐位置循环、
+exact物理索引及完整数值；GQA源程序提供多Tile/head/tail和直接模型/package witness。
 
 ### 扩展门
 
@@ -548,3 +570,13 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 方法参考MLIR Linalg的unit-extent elimination；pinned DropUnitDims以actual loop extent和map替换证明单步坐标，本处不调用全局canonicalizer。
 覆盖rank3 1024/1025/1031、非零init、generic/named与置换maps；检查一个mul和一个add、无F32 GEMM、F32结果与原初值精确消费，
 并由实际PyTorch outer product和完整LM进入直接下游。K>1不套用此规则。
+
+### GEMM显式目标与相邻写回
+
+输入为已完成layout/bufferization的`tile.gemm`及其唯一相邻`tile.copy_into`。ExecutionStructure仅在
+结果与目标type完全相同、全部GEMM输入（含psum）与目标由fresh alias analysis证明NoAlias时，
+将二者合并为`tile.gemm_into`。它与functional GEMM共享shape/dtype/方向合同，目标为明确Write operand，
+不再分配结果。现有elementwise_into不能表达收缩与psum；新op的直接消费者是同一TileToInstr GEMM lowering。
+目标identity及其已有view保持不变；不跨中间观察者、pipeline调度边界或shape/layout copy链合并。
+psum与destination必须分离，低层不得自行选择复用。完成条件包括rank3、1024/1025/1031，
+无psum/独立psum正例和重叠psum/额外use/中间观察反例，Instr目标identity、无多余copy、fresh completion/SPM。

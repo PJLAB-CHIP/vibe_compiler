@@ -1,13 +1,18 @@
 //===- InlineConstantData.cpp - Own current tensor literals ---------------===//
 #include "InlineConstantData.h"
+#include "Wafer/Analysis/Module/ExecutableCallClosure.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 #include <limits>
 #include <optional>
@@ -96,6 +101,161 @@ llvm::Expected<SourceDataId> establishLiteral(mlir::DenseElementsAttr value,
   return data.establishSource(path, locator, &failure);
 }
 } // namespace
+
+llvm::Expected<std::vector<std::vector<ProgramResourceBinding>>>
+bindInlineConstantBuffers(llvm::ArrayRef<mlir::ModuleOp> modules,
+                          ProgramDataHandoff &data) {
+  struct Literal {
+    mlir::DenseElementsAttr value;
+    mlir::MemRefType type;
+    Encoding format;
+  };
+  llvm::SmallVector<Literal> literals;
+  llvm::DenseMap<mlir::Attribute, unsigned> indices;
+  llvm::SmallVector<mlir::func::FuncOp> entries;
+  llvm::SmallVector<
+      llvm::SmallVector<std::pair<mlir::memref::GetGlobalOp, unsigned>>>
+      reads;
+  // Preflight every current use before changing the module set.
+  for (mlir::ModuleOp module : modules) {
+    auto closure = analyzeExecutableCallClosure(module);
+    if (!closure)
+      return closure.takeError();
+    entries.push_back(closure->entry);
+    reads.emplace_back();
+    bool invalid = false;
+    module.walk([&](mlir::memref::GetGlobalOp read) {
+      auto global =
+          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::memref::GlobalOp>(
+              read, read.getNameAttr());
+      if (!global || !global.getInitialValue())
+        return; // External resource declarations have their own binding.
+      auto value =
+          mlir::dyn_cast<mlir::DenseElementsAttr>(*global.getInitialValue());
+      auto type = read.getType();
+      auto memory = mlir::dyn_cast_or_null<MemoryAttr>(type.getMemorySpace());
+      auto format = encoding(type.getElementType());
+      if (!global.getConstant() || !value || !format || !memory ||
+          memory.getSpace() != MemorySpace::DDR ||
+          memory.getLayout() != MemLayout::Tensor ||
+          !type.getLayout().isIdentity() ||
+          read->getParentOfType<mlir::func::FuncOp>() != closure->entry) {
+        invalid = true;
+        return;
+      }
+      auto inserted = indices.try_emplace(value, literals.size());
+      if (inserted.second)
+        literals.push_back({value, type, *format});
+      else if (literals[inserted.first->second].type != type)
+        invalid = true;
+      reads.back().emplace_back(read, inserted.first->second);
+    });
+    if (invalid)
+      return llvm::createStringError(
+          "inline buffer constant requires an immutable Tensor DDR literal in "
+          "the entry");
+  }
+  std::vector<ProgramResourceBinding> bindings;
+  int64_t next = 0;
+  for (const auto &range : data.getRanges())
+    if (range.getTensorId().role == ProgramResourceRole::Constant)
+      next = std::max(next, range.getTensorId().roleIndex + 1);
+  for (const Literal &literal : literals) {
+    std::string identity;
+    llvm::raw_string_ostream stream(identity);
+    literal.value.getType().print(stream);
+    stream.write(literal.value.getRawData().data(),
+                 literal.value.getRawData().size());
+    llvm::SHA256 hash;
+    hash.update(stream.str());
+    std::string locator = "constants/local_" + llvm::toHex(hash.final(), true);
+    const ProgramDataRange *existing = nullptr;
+    for (const auto &range : data.getRanges())
+      if (range.getTensorId().role == ProgramResourceRole::Constant &&
+          data.findByLocator(locator) == &data.getSource(range.getSourceId())) {
+        existing = &range;
+        break;
+      }
+    ProgramTensorId id{ProgramResourceRole::Constant,
+                       existing ? existing->getTensorId().roleIndex : next++};
+    auto shape = literal.type.getShape();
+    llvm::SmallVector<int64_t> zeros(shape.size(), 0), ones(shape.size(), 1);
+    if (!existing) {
+      auto source =
+          establishLiteral(literal.value, literal.format, locator, data);
+      if (!source)
+        return source.takeError();
+      auto range = ProgramDataRange::create(
+          id, literal.format.type, shape, shape,
+          frontend::ProgramDistributionKind::Replicated,
+          ProgramDataRangeOrigin::OriginalSource, zeros, shape, ones, *source,
+          data.getSource(*source), nullptr);
+      if (!range)
+        return range.takeError();
+      if (auto error = data.addRange(std::move(*range)))
+        return std::move(error);
+    }
+    frontend::ProgramPartitionSlice slice;
+    slice.partitionId = 0;
+    slice.replicaId = 0;
+    slice.offsets.assign(zeros.begin(), zeros.end());
+    slice.sizes.assign(shape.begin(), shape.end());
+    slice.strides.assign(ones.begin(), ones.end());
+    slice.payloadPath = locator;
+    bindings.push_back({ProgramResourceRole::Constant,
+                        id,
+                        -1,
+                        id.roleIndex,
+                        {},
+                        literal.format.type,
+                        frontend::ProgramDistributionKind::Replicated,
+                        {shape.begin(), shape.end()},
+                        {shape.begin(), shape.end()},
+                        std::move(slice)});
+  }
+  std::vector<std::vector<ProgramResourceBinding>> result(modules.size(),
+                                                          bindings);
+  if (modules.empty())
+    return result;
+  mlir::IRRewriter rewriter(modules.front()->getContext());
+  for (auto [tile, entry] : llvm::enumerate(entries)) {
+    llvm::SmallVector<mlir::Value> arguments;
+    for (auto [i, literal] : llvm::enumerate(literals)) {
+      unsigned index = entry.getNumArguments();
+      entry.insertArgument(index, literal.type, mlir::DictionaryAttr{},
+                           entry.getLoc());
+      arguments.push_back(entry.getArgument(index));
+      result[tile][i].index = index;
+    }
+    llvm::DenseMap<std::pair<mlir::Operation *, unsigned>, mlir::Value>
+        regionInputs;
+    for (auto [read, index] : reads[tile]) {
+      llvm::SmallVector<TileRegionOp> scopes;
+      for (auto *parent = read->getParentOp(); parent != entry;
+           parent = parent->getParentOp())
+        if (auto region = mlir::dyn_cast<TileRegionOp>(parent))
+          scopes.push_back(region);
+      mlir::Value value = arguments[index];
+      for (auto region : llvm::reverse(scopes)) {
+        auto key = std::make_pair(region.getOperation(), index);
+        auto found = regionInputs.find(key);
+        if (found == regionInputs.end()) {
+          region.getInputsMutable().append(value);
+          value = region.getBody().front().addArgument(value.getType(),
+                                                       read.getLoc());
+          regionInputs.try_emplace(key, value);
+        } else {
+          value = found->second;
+        }
+      }
+      rewriter.replaceOp(read, value);
+    }
+    if (mlir::failed(mlir::verify(modules[tile])))
+      return llvm::createStringError(
+          "inline buffer constant binding produced invalid IR");
+  }
+  return result;
+}
 
 llvm::Error
 outlineInlineConstantData(mlir::ModuleOp module,

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -606,6 +607,12 @@ private:
       return std::nullopt;
     if (mlir::isa<mlir::arith::IndexCastOp, mlir::arith::IndexCastUIOp>(op))
       return index(op->getOperand(0));
+    if (auto select = mlir::dyn_cast<mlir::arith::SelectOp>(op)) {
+      auto condition = index(select.getCondition());
+      return condition ? index(*condition ? select.getTrueValue()
+                                          : select.getFalseValue())
+                       : std::nullopt;
+    }
     if (op->getNumOperands() != 2)
       return std::nullopt;
     auto a = index(op->getOperand(0)), b = index(op->getOperand(1));
@@ -622,10 +629,24 @@ private:
       result = *a / *b;
     else if (mlir::isa<mlir::arith::RemUIOp>(op) && *a >= 0 && *b > 0)
       result = *a % *b;
+    else if (mlir::isa<mlir::arith::AndIOp>(op))
+      result = *a & *b;
+    else if (mlir::isa<mlir::arith::OrIOp>(op))
+      result = *a | *b;
+    else if (mlir::isa<mlir::arith::XOrIOp>(op))
+      result = *a ^ *b;
+    else if (mlir::isa<mlir::arith::MinSIOp>(op))
+      result = std::min(*a, *b);
+    else if (mlir::isa<mlir::arith::MaxSIOp>(op))
+      result = std::max(*a, *b);
     else if (auto comparison = mlir::dyn_cast<mlir::arith::CmpIOp>(op)) {
-      if (comparison.getPredicate() != mlir::arith::CmpIPredicate::eq)
-        return std::nullopt;
-      result = *a == *b;
+      // Compare at the actual operand width, including unsigned i1/index
+      // predicates. Sign extension to int64 is only the evaluator storage.
+      auto type = comparison.getLhs().getType();
+      unsigned width = type.isIndex() ? 64 : type.getIntOrFloatBitWidth();
+      result = mlir::arith::applyCmpPredicate(comparison.getPredicate(),
+                                              llvm::APInt(width, *a, true),
+                                              llvm::APInt(width, *b, true));
     } else
       return std::nullopt;
     if (result < std::numeric_limits<int64_t>::min() ||
@@ -713,6 +734,98 @@ private:
     return true;
   }
 
+  // Split a loop at every change of its affine integer predicates. Clocks
+  // may be summarized only within one such interval; observing two equal
+  // early iterations does not prove that a later causal boundary is equal.
+  std::optional<llvm::SmallVector<uint64_t>>
+  getControlIntervals(mlir::scf::ForOp loop, int64_t lower, int64_t step,
+                      uint64_t count) {
+    struct Linear {
+      __int128 slope, offset;
+    };
+    std::function<std::optional<Linear>(mlir::Value)> linear =
+        [&](mlir::Value value) -> std::optional<Linear> {
+      if (value == loop.getInductionVar())
+        return Linear{step, lower};
+      if (auto constant = mlir::getConstantIntValue(value))
+        return Linear{0, *constant};
+      if (loop.isDefinedOutsideOfLoop(value)) {
+        auto constant = index(value);
+        return constant ? std::optional<Linear>(Linear{0, *constant})
+                        : std::nullopt;
+      }
+      auto *op = value.getDefiningOp();
+      if (!op || !value.getType().isIndex() || op->getNumOperands() != 2)
+        return std::nullopt;
+      auto a = linear(op->getOperand(0)), b = linear(op->getOperand(1));
+      if (!a || !b)
+        return std::nullopt;
+      Linear result;
+      if (mlir::isa<mlir::arith::AddIOp>(op))
+        result = {a->slope + b->slope, a->offset + b->offset};
+      else if (mlir::isa<mlir::arith::SubIOp>(op))
+        result = {a->slope - b->slope, a->offset - b->offset};
+      else
+        return std::nullopt;
+      for (__int128 part : {result.slope, result.offset})
+        if (part < std::numeric_limits<int64_t>::min() ||
+            part > std::numeric_limits<int64_t>::max())
+          return std::nullopt;
+      return result;
+    };
+    llvm::SmallVector<uint64_t> cuts{0, count};
+    std::function<bool(mlir::Value)> condition = [&](mlir::Value value) {
+      if (mlir::getConstantIntValue(value) ||
+          loop.isDefinedOutsideOfLoop(value))
+        return true;
+      auto *op = value.getDefiningOp();
+      if (mlir::isa_and_nonnull<mlir::arith::AndIOp, mlir::arith::OrIOp>(op))
+        return condition(op->getOperand(0)) && condition(op->getOperand(1));
+      auto cmp = mlir::dyn_cast_or_null<mlir::arith::CmpIOp>(op);
+      if (!cmp || !cmp.getLhs().getType().isIndex())
+        return false;
+      auto a = linear(cmp.getLhs()), b = linear(cmp.getRhs());
+      if (!a || !b)
+        return false;
+      // Nonnegative index operands make signed and unsigned ordering agree;
+      // also prove that the affine evaluation cannot wrap at either endpoint.
+      for (auto expression : {*a, *b})
+        for (uint64_t point : {uint64_t{0}, count ? count - 1 : 0}) {
+          __int128 value = expression.slope * point + expression.offset;
+          if (value < 0 || value > std::numeric_limits<int64_t>::max())
+            return false;
+        }
+      __int128 slope = a->slope - b->slope, offset = a->offset - b->offset;
+      if (slope) {
+        __int128 root = -offset / slope;
+        // Integer rounding and EQ/NE singleton intervals are covered by both
+        // neighbours of the zero crossing. Extra cuts only reduce summaries.
+        for (int delta = -1; delta <= 2; ++delta)
+          if (root + delta > 0 && root + delta < count)
+            cuts.push_back(static_cast<uint64_t>(root + delta));
+      }
+      return true;
+    };
+    bool known = true;
+    loop.getRegion().walk([&](mlir::Operation *op) {
+      if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op))
+        known &= condition(branch.getCondition());
+      if (auto select = mlir::dyn_cast<mlir::arith::SelectOp>(op))
+        known &= condition(select.getCondition());
+      if (auto nested = mlir::dyn_cast<mlir::scf::ForOp>(op))
+        for (auto bound : {nested.getLowerBound(), nested.getUpperBound(),
+                           nested.getStep()}) {
+          auto expression = linear(bound);
+          known &= expression && expression->slope == 0;
+        }
+    });
+    if (!known)
+      return std::nullopt;
+    llvm::sort(cuts);
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    return cuts;
+  }
+
   bool executeLoop(mlir::scf::ForOp loop) {
     auto lower = index(loop.getLowerBound()),
          upper = index(loop.getUpperBound()), step = index(loop.getStep());
@@ -737,10 +850,18 @@ private:
           auto [argument, result] = pair;
           return !argument.getType().isIndex() || argument == result;
         });
+    auto intervals = getControlIntervals(loop, *lower, *step, count);
+    canSummarize &= intervals.has_value();
+    size_t interval = 0;
     llvm::SmallVector<Storage> thirdAliases;
     llvm::DenseMap<mlir::Value, uint64_t> thirdTokens;
     uint64_t third = 0;
     for (uint64_t iteration = 0; iteration < count; ++iteration) {
+      if (intervals)
+        while (iteration >= (*intervals)[interval + 1])
+          ++interval;
+      uint64_t begin = intervals ? (*intervals)[interval] : 0;
+      uint64_t end = intervals ? (*intervals)[interval + 1] : count;
       indices[loop.getInductionVar()] = *lower + iteration * *step;
       if (!execute(*loop.getBody()))
         return false;
@@ -754,14 +875,15 @@ private:
            llvm::zip_equal(loop.getRegionIterArgs(), loop.getResults()))
         if (!bind(arg, result))
           return false;
-      if (iteration == 2) {
+      if (iteration == begin + 2) {
         third = maximum();
         thirdTokens = tokens;
+        thirdAliases.clear();
         for (auto argument : loop.getRegionIterArgs())
           if (mlir::isa<mlir::MemRefType>(argument.getType()))
             thirdAliases.push_back(aliases.lookup(argument));
       }
-      if (iteration == 4 && count > 5 && canSummarize) {
+      if (iteration == begin + 4 && end - begin > 5 && canSummarize) {
         unsigned position = 0;
         for (auto argument : loop.getRegionIterArgs())
           if (mlir::isa<mlir::MemRefType>(argument.getType())) {
@@ -772,7 +894,7 @@ private:
           }
         if (!canSummarize)
           continue;
-        uint64_t periods = (count - 5) / 2, delta;
+        uint64_t periods = (end - begin - 5) / 2, delta;
         if (!checkedMultiply(maximum() - third, periods, delta) ||
             !shift(delta, thirdTokens))
           return false;

@@ -261,6 +261,12 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
             TargetModelMemoryErrorCode::InvalidSlot,
             tileSlot(launchSlot, slot.ordinal) +
                 " has inconsistent TargetTensor materialization metadata");
+      if (slot.kind == compiler::TileEntryArgumentKind::TargetTensor &&
+          (slot.access != compiler::TileEntryArgumentAccess::ReadOnly ||
+           slot.zeroInitialize))
+        return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
+                           tileSlot(launchSlot, slot.ordinal) +
+                               " requires an immutable TargetTensor binding");
       if (slot.byteSize <= 0 || slot.alignment <= 0 ||
           !isPowerOfTwo(static_cast<uint64_t>(slot.alignment)))
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
@@ -365,9 +371,11 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     const bool sharedAcrossTiles = !resource.id.tileId.has_value();
     const bool sharedWorkspace =
         resource.slot.kind == compiler::TileEntryArgumentKind::SharedWorkspace;
+    const bool immutableTensor =
+        resource.slot.kind == compiler::TileEntryArgumentKind::TargetTensor;
     if ((sharedWorkspace && (resource.launchSlots.size() < 2 ||
                              !resource.read || !resource.write)) ||
-        (sharedAcrossTiles && !sharedWorkspace &&
+        (sharedAcrossTiles && !sharedWorkspace && !immutableTensor &&
          resource.launchSlots.size() != tileCount) ||
         (!sharedAcrossTiles && resource.launchSlots.size() != 1))
       return memoryError(

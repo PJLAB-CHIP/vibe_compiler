@@ -227,7 +227,8 @@ TEST(LowerInstrToTargetLLVMTest, DivisionSupportsMappedInputAndAliasedSubview) {
 TEST(LowerInstrToTargetLLVMTest,
      NativeReductionDoesNotDependOnOrderedExpansionBudget) {
   auto check = [](int64_t rows, int64_t width, llvm::StringRef type,
-                  llvm::StringRef kind, llvm::StringRef identity) {
+                  llvm::StringRef kind, llvm::StringRef identity,
+                  unsigned extraUnits = 0) {
     SCOPED_TRACE(llvm::formatv("rows={0} width={1} type={2} kind={3}", rows,
                                width, type, kind)
                      .str());
@@ -235,24 +236,30 @@ TEST(LowerInstrToTargetLLVMTest,
     registerTargetConversionDialects(registry);
     mlir::MLIRContext context(registry);
     context.loadAllAvailableDialects();
+    std::string prefix;
+    for (unsigned i = 0; i < extraUnits; ++i)
+      prefix += "1x";
+    auto resultLayout =
+        extraUnits ? wafer::MemLayout::NCx : wafer::MemLayout::Cx;
     auto text = llvm::formatv(R"mlir(
 module {{
   func.func @main() {{
     %token = arith.constant false
     %unused = wafer.tile.region(%token : i1) -> (i1) {{
     ^bb0(%done: i1):
-      %input = memref.alloc() : memref<1x{0}x{1}x{2}, #wafer.memory<spm, ncx>>
+      %input = memref.alloc() : memref<{5}1x{0}x{1}x{2}, #wafer.memory<spm, ncx>>
       %result = wafer.tile.reduce <{3}> %input
-          {{dimensions = array<i64: 2>, init_value = {4} : {2}}
-          : (memref<1x{0}x{1}x{2}, #wafer.memory<spm, ncx>>)
-         -> memref<1x{0}x{2}, #wafer.memory<spm, cx>>
+          {{dimensions = array<i64: {6}>, init_value = {4} : {2}}
+          : (memref<{5}1x{0}x{1}x{2}, #wafer.memory<spm, ncx>>)
+         -> memref<{5}1x{0}x{2}, #wafer.memory<spm, {7}>>
       wafer.tile.yield %done : i1
     }
     return
   }
 }
 )mlir",
-                              rows, width, type, kind, identity)
+                              rows, width, type, kind, identity, prefix,
+                              2 + extraUnits, extraUnits ? "ncx" : "cx")
                     .str();
     auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
     ASSERT_TRUE(source) << text;
@@ -278,21 +285,46 @@ module {{
     EXPECT_EQ(nativeType.getShape(), (llvm::ArrayRef<int64_t>{1, 1, rows, 1}));
     EXPECT_EQ(wafer::getWaferMemoryAttr(nativeType).getLayout(),
               wafer::MemLayout::NCx);
-    EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*source),
-              rows == 1024 ? 1u : 2u);
+    if (extraUnits) {
+      auto view =
+          reduce.getInput().getDefiningOp<mlir::memref::ReinterpretCastOp>();
+      ASSERT_TRUE(view);
+      auto originalType =
+          mlir::cast<mlir::MemRefType>(view.getSource().getType());
+      auto inputType = mlir::cast<mlir::MemRefType>(view.getType());
+      for (int64_t row = 0; row < rows; ++row)
+        for (int64_t column = 0; column < width; ++column) {
+          llvm::SmallVector<int64_t> original(extraUnits + 1, 0);
+          original.append({row, column});
+          auto before = wafer::computeWaferPhysicalElementByteOffset(
+              originalType, original);
+          auto after = wafer::computeWaferPhysicalElementByteOffset(
+              inputType, {0, 0, row, column});
+          ASSERT_TRUE(before && after);
+          ASSERT_EQ(*before, *after);
+        }
+    }
+    if (!extraUnits) {
+      EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*source),
+                rows == 1024 ? 1u : 2u);
+    }
     std::map<int64_t, int64_t> actualBytes;
     std::map<int64_t, int64_t> expectedBytes;
     source->walk([&](wafer::InstrGatherScatterOp move) {
       EXPECT_EQ(move.getSource(), reduce.getDest());
       auto resultType = mlir::cast<mlir::MemRefType>(move.getDest().getType());
-      EXPECT_EQ(resultType.getShape(), (llvm::ArrayRef<int64_t>{1, rows}));
+      llvm::SmallVector<int64_t> resultShape(extraUnits + 1, 1);
+      resultShape.push_back(rows);
+      EXPECT_EQ(resultType.getShape(), llvm::ArrayRef<int64_t>(resultShape));
       EXPECT_EQ(wafer::getWaferMemoryAttr(resultType).getLayout(),
-                wafer::MemLayout::Cx);
+                resultLayout);
       for (int64_t row = 0; row < rows; ++row) {
         auto src = wafer::computeWaferPhysicalElementByteOffset(nativeType,
                                                                 {0, 0, row, 0});
-        auto dst =
-            wafer::computeWaferPhysicalElementByteOffset(resultType, {0, row});
+        llvm::SmallVector<int64_t> coordinates(extraUnits + 1, 0);
+        coordinates.push_back(row);
+        auto dst = wafer::computeWaferPhysicalElementByteOffset(resultType,
+                                                                coordinates);
         ASSERT_TRUE(src && dst);
         for (int64_t byte = 0; byte < (type == "f32" ? 4 : 2); ++byte)
           expectedBytes[*dst + byte] = *src + byte;
@@ -339,6 +371,57 @@ module {{
     }
   for (int64_t width : {1, 8, 1023, 1024, 1025, 1031})
     check(1024, width, "f32", "sum", "0.0");
+  for (unsigned extraUnits : {2u, 3u})
+    for (int64_t rows : {1024, 1025, 1031}) {
+      check(rows, 32, "f32", "sum", "0.0", extraUnits);
+      check(rows, 32, "f32", "max", "0xFF800000", extraUnits);
+    }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     NativeReductionDoesNotDropNonUnitOrReducedPrefix) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant = 0; variant < 3; ++variant) {
+      mlir::DialectRegistry registry;
+      registerTargetConversionDialects(registry);
+      mlir::MLIRContext context(registry);
+      context.loadAllAvailableDialects();
+      std::string input =
+          llvm::formatv("memref<{0}x1x1x{1}x32xf32, #wafer.memory<spm, ncx>>",
+                        variant == 0 ? 2 : 1, extent)
+              .str();
+      std::string output =
+          variant == 1
+              ? llvm::formatv("memref<1x1x{0}x32xf32, #wafer.memory<spm, ncx>>",
+                              extent)
+                    .str()
+              : llvm::formatv(
+                    "memref<{0}x1x1x{1}xf32, #wafer.memory<spm, ncx>>",
+                    variant == 0 ? 2 : 1, extent)
+                    .str();
+      auto text = llvm::formatv(R"mlir(module {{ func.func @main() {{
+        wafer.tile.region() -> () {{
+          %input = memref.alloc() : {0}
+          %result = wafer.tile.reduce <sum> %input
+            {{dimensions = array<i64: {2}>, init_value = {3} : f32}
+            : ({0}) -> {1}
+          wafer.tile.yield
+        }
+        return
+      } })mlir",
+                                input, output, variant == 1 ? 0 : 4,
+                                variant == 2 ? "1.0" : "0.0")
+                      .str();
+      auto source = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(source) << text;
+      wafer::TileRegionOp region;
+      source->walk([&](wafer::TileRegionOp op) { region = op; });
+      wafer::TileRegionToInstrLoweringSession session(context);
+      ASSERT_TRUE(
+          mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+      EXPECT_EQ(countOps<wafer::InstrReduceOp>(*source), 0u);
+    }
 }
 
 TEST(LowerInstrToTargetLLVMTest,
@@ -1468,6 +1551,71 @@ module {{
         EXPECT_EQ(op.getDest().getType(), outputType);
       });
     }
+}
+
+TEST(LowerInstrToTargetLLVMTest, ScalarRHSHasNoStorageOrMovement) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (llvm::StringRef kind : {"add", "mul", "sub", "max", "min", "lt"}) {
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        auto text =
+            llvm::formatv(R"mlir(module {{ func.func @main() {{
+          %token = arith.constant false
+          %unused = wafer.tile.region(%token : i1) -> (i1) {{
+          ^bb0(%done: i1):
+            %lhs = memref.alloc() : memref<2x{0}x32x{1}, #wafer.memory<spm, tensor>>
+            %scalar = arith.constant 2.0 : {1}
+            %result = wafer.tile.elementwise <{2}> %lhs, %scalar
+              : (memref<2x{0}x32x{1}, #wafer.memory<spm, tensor>>, {1})
+                -> memref<2x{0}x32x{3}, #wafer.memory<spm, tensor>>
+            wafer.tile.yield %done : i1
+          }
+          return
+        } })mlir",
+                          extent, dtype, kind, kind == "lt" ? "i1" : dtype)
+                .str();
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        wafer::TileRegionOp region;
+        module->walk([&](wafer::TileRegionOp op) { region = op; });
+        wafer::TileRegionToInstrLoweringSession session(context);
+        ASSERT_TRUE(
+            mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), 2u);
+        EXPECT_EQ(countOps<wafer::InstrFillOp>(*module), 0u);
+        EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+        EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*module), 1u);
+        module->walk([&](wafer::InstrElementwiseOp op) {
+          EXPECT_TRUE(mlir::isa<mlir::FloatType>(op.getInputs()[1].getType()));
+          EXPECT_EQ(op.getRhsUnitElements(), 0);
+          op.setRhsUnitElements(1);
+          mlir::ScopedDiagnosticHandler handler(&context,
+                                                [](mlir::Diagnostic &) {});
+          EXPECT_TRUE(mlir::failed(mlir::verify(op)));
+          op.setRhsUnitElements(0);
+          auto lhs = op.getInputs()[0], rhs = op.getInputs()[1];
+          op->setOperand(0, rhs);
+          op->setOperand(1, lhs);
+          EXPECT_TRUE(mlir::failed(mlir::verify(op)));
+          op->setOperand(0, lhs);
+          op->setOperand(1, rhs);
+          mlir::OpBuilder builder(op);
+          mlir::Type otherType = rhs.getType().isF32()
+                                     ? mlir::Type(builder.getBF16Type())
+                                     : mlir::Type(builder.getF32Type());
+          auto wrongScalar = builder.create<mlir::arith::ConstantOp>(
+              op.getLoc(), builder.getFloatAttr(otherType, 2.0));
+          op->setOperand(1, wrongScalar.getResult());
+          EXPECT_TRUE(mlir::failed(mlir::verify(op)));
+          op->setOperand(1, rhs);
+          wrongScalar.erase();
+          EXPECT_TRUE(mlir::succeeded(mlir::verify(op)));
+        });
+      }
 }
 
 TEST(LowerInstrToTargetLLVMTest, MappedUnitBroadcastKeepsOnlyActualRHSStorage) {

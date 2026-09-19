@@ -1279,109 +1279,129 @@ TEST(TargetCodeGenTest,
       18u);
 }
 
-TEST(TargetCodeGenTest, SparseSharedResourcesUseEntryLocalRows) {
+TEST(TargetCodeGenTest, SparseResourcesUseEntryLocalRows) {
   using namespace wafer;
   using namespace wafer::compiler;
   for (int64_t extent : {1024, 1025, 1031})
     for (auto abi : {KernelEntryABI::TileMajorPointerTable,
                      KernelEntryABI::TileRowPointerTable})
-      for (bool conflict : {false, true}) {
-        SCOPED_TRACE(extent);
-        SCOPED_TRACE(conflict);
-        auto input = makeRuntimeLaunchModules(
-            makeKernelLaunch(KernelLaunchForm::Grid, abi),
-            TransportContract::None, std::nullopt, std::nullopt, 2, false,
-            false, std::nullopt, true, false,
-            [](llvm::Function &body) {
-              llvm::IRBuilder<> builder(body.getEntryBlock().getTerminator());
-              auto callee = body.getParent()->getOrInsertFunction(
-                  "observe",
-                  llvm::FunctionType::get(builder.getVoidTy(),
-                                          {builder.getInt64Ty()}, false));
-              for (auto &argument : body.args())
-                builder.CreateCall(callee, {&argument});
-            },
-            [&](int64_t tile, std::vector<TileEntryArgument> &slots) {
-              // Neither resource appears on Tile 0. Cross-Tile agreement
-              // must be by resource identity, not comparison to the first row.
-              for (int64_t resource = 0; resource < 2; ++resource) {
-                if (tile != 1 && tile != 3 + resource)
-                  continue;
-                TileEntryArgument slot{0,
-                                       TileEntryArgumentKind::SharedWorkspace,
-                                       resource,
-                                       "payload",
-                                       LogicalFormat::F16,
-                                       MemLayout::Tensor,
-                                       {1, extent, 64},
-                                       extent * 128,
-                                       64,
-                                       tile == 1
-                                           ? TileEntryArgumentAccess::WriteOnly
-                                           : TileEntryArgumentAccess::ReadOnly};
-                if (conflict && tile == 4)
-                  slot.alignment = 128;
-                slots.insert(slots.end() - 1, std::move(slot));
-              }
-              for (auto [ordinal, slot] : llvm::enumerate(slots))
-                slot.ordinal = ordinal;
-            });
-        ASSERT_TRUE(static_cast<bool>(input))
-            << llvm::toString(input.takeError());
-        auto result =
-            wafer::compiler::detail::buildKernelAggregateTargetModule(*input);
-        if (conflict) {
-          ASSERT_FALSE(static_cast<bool>(result));
-          EXPECT_NE(llvm::toString(result.takeError()).find("alignment"),
-                    std::string::npos);
-          continue;
-        }
-        ASSERT_TRUE(static_cast<bool>(result))
-            << llvm::toString(result.takeError());
-        EXPECT_FALSE(llvm::verifyModule(*result->module, &llvm::errs()));
-        auto *main = result->module->getFunction("main");
-        unsigned rows = 0;
-        uint64_t base = 0;
-        for (auto &block : *main)
-          for (auto &instruction : block) {
-            auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
-            auto *body = call ? call->getCalledFunction() : nullptr;
-            if (!body || !body->hasInternalLinkage())
-              continue;
-            const auto count =
-                input->getModules()[rows].getTileEntryArguments().size();
-            auto *row =
-                llvm::dyn_cast<llvm::Instruction>(call->getArgOperand(0));
-            ASSERT_NE(row, nullptr);
-            if (abi == KernelEntryABI::TileMajorPointerTable) {
-              auto *address = llvm::dyn_cast<llvm::GetElementPtrInst>(row);
-              ASSERT_NE(address, nullptr);
-              EXPECT_EQ(llvm::cast<llvm::ConstantInt>(address->getOperand(1))
-                            ->getZExtValue(),
-                        base);
-            } else {
-              auto *acquire =
-                  llvm::dyn_cast<llvm::CallInst>(row->getPrevNode());
-              ASSERT_NE(acquire, nullptr);
-              EXPECT_EQ(llvm::cast<llvm::ConstantInt>(acquire->getArgOperand(1))
-                            ->getZExtValue(),
-                        count * 8);
-            }
-            unsigned loads = 0;
-            for (auto &op : body->getEntryBlock())
-              if (auto *load = llvm::dyn_cast<llvm::LoadInst>(&op)) {
-                auto *address = llvm::cast<llvm::GetElementPtrInst>(
-                    load->getPointerOperand());
+      for (bool targetTensor : {false, true})
+        for (bool conflict : {false, true}) {
+          SCOPED_TRACE(extent);
+          SCOPED_TRACE(conflict);
+          auto input = makeRuntimeLaunchModules(
+              makeKernelLaunch(KernelLaunchForm::Grid, abi),
+              TransportContract::None, std::nullopt, std::nullopt, 2, false,
+              false, std::nullopt, true, false,
+              [](llvm::Function &body) {
+                llvm::IRBuilder<> builder(body.getEntryBlock().getTerminator());
+                auto callee = body.getParent()->getOrInsertFunction(
+                    "observe",
+                    llvm::FunctionType::get(builder.getVoidTy(),
+                                            {builder.getInt64Ty()}, false));
+                for (auto &argument : body.args())
+                  builder.CreateCall(callee, {&argument});
+              },
+              [&](int64_t tile, std::vector<TileEntryArgument> &slots) {
+                // Neither resource appears on Tile 0. Cross-Tile agreement
+                // must be by resource identity, not comparison to the first
+                // row.
+                for (int64_t resource = 0; resource < 2; ++resource) {
+                  if (tile != 1 && tile != 3 + resource)
+                    continue;
+                  TileEntryArgument slot{
+                      0,
+                      TileEntryArgumentKind::SharedWorkspace,
+                      resource,
+                      "payload",
+                      LogicalFormat::F16,
+                      MemLayout::Tensor,
+                      {1, extent, 64},
+                      extent * 128,
+                      64,
+                      tile == 1 ? TileEntryArgumentAccess::WriteOnly
+                                : TileEntryArgumentAccess::ReadOnly};
+                  if (targetTensor) {
+                    slot.kind = TileEntryArgumentKind::TargetTensor;
+                    slot.access = TileEntryArgumentAccess::ReadOnly;
+                    slot.shape = {1, extent + tile, 64};
+                    slot.byteSize = (extent + tile) * 128;
+                    slot.targetTensorMaterialization = llvm::cantFail(
+                        TargetTensorMaterializationAction::create(
+                            LogicalFormat::F16, LogicalFormat::F16,
+                            std::nullopt));
+                  }
+                  if (conflict && tile == 4) {
+                    if (targetTensor)
+                      slot.access = TileEntryArgumentAccess::WriteOnly;
+                    else
+                      slot.alignment = 128;
+                  }
+                  slots.insert(slots.end() - 1, std::move(slot));
+                }
+                for (auto [ordinal, slot] : llvm::enumerate(slots))
+                  slot.ordinal = ordinal;
+              });
+          ASSERT_TRUE(static_cast<bool>(input))
+              << llvm::toString(input.takeError());
+          auto result =
+              wafer::compiler::detail::buildKernelAggregateTargetModule(*input);
+          if (conflict) {
+            ASSERT_FALSE(static_cast<bool>(result));
+            EXPECT_NE(llvm::toString(result.takeError())
+                          .find(targetTensor ? "immutable target tensor"
+                                             : "alignment"),
+                      std::string::npos);
+            continue;
+          }
+          ASSERT_TRUE(static_cast<bool>(result))
+              << llvm::toString(result.takeError());
+          EXPECT_FALSE(llvm::verifyModule(*result->module, &llvm::errs()));
+          auto *main = result->module->getFunction("main");
+          unsigned rows = 0;
+          uint64_t base = 0;
+          for (auto &block : *main)
+            for (auto &instruction : block) {
+              auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction);
+              auto *body = call ? call->getCalledFunction() : nullptr;
+              if (!body || !body->hasInternalLinkage())
+                continue;
+              const auto count =
+                  input->getModules()[rows].getTileEntryArguments().size();
+              auto *row =
+                  llvm::dyn_cast<llvm::Instruction>(call->getArgOperand(0));
+              ASSERT_NE(row, nullptr);
+              if (abi == KernelEntryABI::TileMajorPointerTable) {
+                auto *address = llvm::dyn_cast<llvm::GetElementPtrInst>(row);
+                ASSERT_NE(address, nullptr);
                 EXPECT_EQ(llvm::cast<llvm::ConstantInt>(address->getOperand(1))
                               ->getZExtValue(),
-                          loads++);
+                          base);
+              } else {
+                auto *acquire =
+                    llvm::dyn_cast<llvm::CallInst>(row->getPrevNode());
+                ASSERT_NE(acquire, nullptr);
+                EXPECT_EQ(
+                    llvm::cast<llvm::ConstantInt>(acquire->getArgOperand(1))
+                        ->getZExtValue(),
+                    count * 8);
               }
-            EXPECT_EQ(loads, count);
-            base += count;
-            ++rows;
-          }
-        EXPECT_EQ(rows, 16u);
-      }
+              unsigned loads = 0;
+              for (auto &op : body->getEntryBlock())
+                if (auto *load = llvm::dyn_cast<llvm::LoadInst>(&op)) {
+                  auto *address = llvm::cast<llvm::GetElementPtrInst>(
+                      load->getPointerOperand());
+                  EXPECT_EQ(
+                      llvm::cast<llvm::ConstantInt>(address->getOperand(1))
+                          ->getZExtValue(),
+                      loads++);
+                }
+              EXPECT_EQ(loads, count);
+              base += count;
+              ++rows;
+            }
+          EXPECT_EQ(rows, 16u);
+        }
 }
 
 TEST(TargetCodeGenTest, KernelRowBodiesPreserveSlotSnapshotsAndInputModules) {

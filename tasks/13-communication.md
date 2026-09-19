@@ -254,6 +254,11 @@ send issue先于matching token wait，publisher先于同resource的acquire。这
 图只作当前IR无环验证，不输出schedule、提前wait或全局drain；materializer在candidate-owned IR上先创建通知op，再验证实际图，失败销毁候选。
 NCC完成放置从publish的数据访问要求生成对应pending worker join。Acquire不完成NCC或DTE事件；跨Tile verifier检查唯一publisher、
 全部reader的获取位置、无发布后写入及联合依赖无环。无跨Tile读写的资源不生成通知。
+两个publication op的rootless SyncResource effect只描述通知次序；NCC冲突从实际data/ready operands派生，
+不能因此drain无关worker。没有本地pending writer冲突的acquire不插join；publish保留对应data/ready hazard的参与者。
+Lifetime分析采用同一规则，并在DDR域保留被publication观察的pending访问身份，直至对应完成；
+不能先折叠为丢失storage身份的同worker摘要，再跳过publication的实际数据检查。
+覆盖rank3、1024/1025/1031、独立worker、data/ready alias及pending DMA写入；检查精确participant和最终完成。
 
 Target/CRT将publish实现为完成标记的单writer 32-bit写入和显式cache clean，将acquire实现为显式invalidate后观察该标记；
 沿用已确认的C908 cache-line操作与fence/sync序列，不能把volatile当作cache一致性。通知不承载tensor数值，不借用DTE ready slot。

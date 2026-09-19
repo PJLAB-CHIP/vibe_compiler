@@ -117,9 +117,11 @@ TEST(SystemCTargetModelDDRPublicationTest, MatchesPublicationAndFirstRead) {
           builder.CreateAdd(entry->getArg(1),
                             builder.getInt64(tile * elements * 2 + offset)),
           bytes);
-      join();
+      // Reader NCC work can remain pending across the next DDR acquire.
+      // Publication only waits for the writer's actual data dependency.
       offset += bytes;
     }
+    join();
     builder.CreateRetVoid();
     ASSERT_FALSE(llvm::verifyModule(*module, &llvm::errs()));
     modules.push_back(TargetLLVMModulesBuilder::makeModule(

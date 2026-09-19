@@ -15,9 +15,11 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -830,6 +832,79 @@ TEST_F(ProgramDataTest, InlineBooleanLiteralsOwnCanonicalSourceBytes) {
         wafer::readProgramElement(wafer::ProgramElementType::Bool, bytes, 0);
     EXPECT_FALSE(static_cast<bool>(invalid));
     llvm::consumeError(invalid.takeError());
+  }
+}
+
+TEST_F(ProgramDataTest, CandidateLiteralsBindThroughIsolatedRegions) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    ProgramDataHandoff handoff(temporaryDirectory.str().str());
+    std::string type = "memref<2x" + std::to_string(extent) +
+                       "x2xf32, #wafer.memory<ddr, tensor>>";
+    std::string text =
+        "module { memref.global \"private\" constant @data : " + type +
+        " = dense<0.0> func.func @entry() { wafer.tile.region() -> () { "
+        "%a = memref.get_global @data : " +
+        type + " %b = memref.get_global @data : " + type +
+        " wafer.tile.yield } return } }";
+    auto first = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    auto second = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    llvm::SmallVector<float> values(4 * extent);
+    for (int64_t i = 0; i < 4 * extent; ++i)
+      values[i] = static_cast<float>(i);
+    for (auto module : {*first, *second}) {
+      auto global = *module.getOps<mlir::memref::GlobalOp>().begin();
+      global.setInitialValueAttr(mlir::DenseElementsAttr::get(
+          mlir::RankedTensorType::get({2, extent, 2},
+                                      mlir::Float32Type::get(&context)),
+          llvm::ArrayRef<float>(values)));
+    }
+    auto bindings = wafer::compiler::detail::bindInlineConstantBuffers(
+        {*first, *second}, handoff);
+    ASSERT_TRUE(static_cast<bool>(bindings))
+        << llvm::toString(bindings.takeError());
+    ASSERT_EQ(bindings->size(), 2u);
+    ASSERT_EQ((*bindings)[0].size(), 1u);
+    EXPECT_EQ((*bindings)[0][0].programTensorId,
+              (*bindings)[1][0].programTensorId);
+    ASSERT_EQ(handoff.getRanges().size(), 1u);
+    for (auto module : {*first, *second}) {
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
+      auto function = *module.getOps<mlir::func::FuncOp>().begin();
+      ASSERT_EQ(function.getNumArguments(), 1u);
+      module.walk([&](wafer::TileRegionOp region) {
+        ASSERT_EQ(region.getInputs().size(), 1u);
+        EXPECT_EQ(region.getInputs()[0], function.getArgument(0));
+        EXPECT_EQ(region.getBody().front().getNumArguments(), 1u);
+      });
+      unsigned reads = 0;
+      module.walk([&](mlir::memref::GetGlobalOp) { ++reads; });
+      EXPECT_EQ(reads, 0u);
+    }
+    const auto &range = handoff.getRanges().front();
+    std::vector<uint8_t> bytes(range.getRegionLength());
+    ASSERT_FALSE(handoff.materializeRange(range, bytes));
+    ASSERT_EQ(bytes.size(), values.size() * sizeof(float));
+    EXPECT_EQ(
+        llvm::ArrayRef<uint8_t>(bytes),
+        llvm::ArrayRef<uint8_t>(
+            reinterpret_cast<const uint8_t *>(values.data()), bytes.size()));
+    auto invalid = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    auto global = *invalid->getOps<mlir::memref::GlobalOp>().begin();
+    global.setConstant(false);
+    auto rejected =
+        wafer::compiler::detail::bindInlineConstantBuffers({*invalid}, handoff);
+    ASSERT_FALSE(static_cast<bool>(rejected));
+    llvm::consumeError(rejected.takeError());
+    EXPECT_EQ(
+        invalid->lookupSymbol<mlir::func::FuncOp>("entry").getNumArguments(),
+        0u);
   }
 }
 

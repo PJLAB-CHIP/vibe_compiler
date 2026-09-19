@@ -524,6 +524,14 @@ SSA/明确IR字段解释，不能用局部Q/K shape差重新推断。普通prefi
 全屏蔽行保持来源算子的结果语义；finite additive值与负无穷不能未经证明互换。
 边界屏蔽由10/11号验证硬件可实现的局部操作及其真实成本，不能预设GPU寄存器mask在本目标上免费。
 
+有效长度和causal分别证明。证明使用current SSA与ValueBounds；正的常量步长SCF循环按实际可达的最后一个IV
+收紧边界，不能把exclusive upper误当成最后一个block起点。不能证明时保留原比较。
+边界causal使用candidate局部F32 `k−q`模板，与夹界后的`query_start−key_start`标量比较；padding仅在需要时使用
+一维key坐标。局部坐标范围总和不超过F32精确整数范围，绝对位置仍为index；不生成Kcore逐元素循环、
+SPM mapping或完整序列mask。模板是actual DenseElementsAttr，晚期绑定走14号ProgramData；batch/head共享同一模板。
+全可见块没有该模板读/比较；select继续覆盖负无穷，不能用AddVS替代会改变NaN/+inf结果的覆盖语义。
+原additive常量及scale分别保持AddVS/MulVS，所需state初始化与不支持immediate的select源按真实硬件合同物化。
+
 Score/probability只覆盖当前query tile×KV block；Maximum/Sum/归一化系数保持行级，通过indexing maps表达广播。
 不得借通用decomposition将中间值重新扩大到完整迭代域。DPS准确表达新旧state关系，必要复制由实际旧值用途决定。
 layout、physical transpose、broadcast指令与copy cleanup分别属于08/10/11号，不能全部归因或堆入本decomposition。

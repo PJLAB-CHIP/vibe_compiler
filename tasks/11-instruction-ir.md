@@ -658,7 +658,7 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
 | `wafer.instr.fill` | `dest: SPM memref`, `value: scalar` | none | attr缺省为`logical_valid`且只接受Tensor；显式`physical_footprint`按physical elements计数，BOOL按physical bytes×8计数，scalar按原始storage bits写入32-bit ABI字段；current TX81的BOOL只准入`physical_footprint` |
-| `wafer.instr.elementwise` | `inputs: Variadic<SPM memref>`, `dest: SPM memref` | none | `kind: #wafer.instr_elementwise_kind`; operands/dest same-shape；`indexing_maps`不属于terminal op合同 |
+| `wafer.instr.elementwise` | `inputs: Variadic<SPM memref or float scalar>`, `dest: SPM memref` | none | `kind: #wafer.instr_elementwise_kind`; vector operands/dest同shape；binary右端可为同dtype F16/BF16/F32 scalar（VS），或`rhs_unit_elements`指定的SPM unit（VuV），两者互斥；`indexing_maps`不属于terminal op合同 |
 | `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_reduce_kind`, `dim` target reduce code；init operand/`init_value`不属于terminal op合同 |
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_convert_kind`; required `zero_point` for INT8->FP kinds, required `rounding_mode` for rounding wrapper kinds, no extra attrs for plain kinds |
 
