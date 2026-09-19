@@ -43,7 +43,8 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 用户进一步授权layout修正：依次保留PBQP预算中断前的最佳完整可行解、删除固定邻接驱动的错误domain剪枝、
 在layout query前显式分解逐元素中间SSA并由下游消费所选layout。完整合同及机制矩阵见08号2.2节。
 验证限于直接受影响的solver/layout/lowering回归、canonical增量构建，以及prefill、Q=1和短Q decode的定向产品witness；
-不自动重启此前已停止的长时间全矩阵，不启动设备。当前改动不能代签整项attention性能完成。
+上述局部修复期间不重启此前已停止的长时间全矩阵，也不启动设备。用户已补充授权后续先完成本轮全部编译，再上卡验证，
+按下文第5、6步执行；当前改动不能代签整项attention性能完成。
 
 已执行的检查点验证（均早于最后两处退化修正草稿，不是当前工作区的通过结论）：
 
@@ -129,15 +130,22 @@ ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充�
 4. **补规模与成本选择，继续精简同步。** 先审计已有CPU/CT选择与目标能力，再把未建模成本补到实际owner，
    不在payload分解中擅自把所有标量外提到CPU或强制CT。逐actual loop复核join/wait的participant、token和执行次数，
    将RISC-V发射成本与CT/TDMA搬运一起评价，避免指令减少却总耗时增加。
-5. **设备恢复后做最终验收。** 先达到同版本board-ready；收到人工恢复信息后，按全系统占用检查、单进程逐case、异常即停的流程，
-   完成完整数值、actual KV接续、guard及匹配计时。LLaMA block、大GEMM和其它受影响既有case承担必要性能保护。
-   当前ViT1025 TDMA Timeout未恢复，不自动retry/reset/power cycle；静态结构改善不能代签实卡性能。
+5. **先完成本轮全部编译和主机准备。** 冻结最终源码与compiler/runtime身份，完成canonical完整增量构建、第二次no-op及受影响主机回归。
+   对下文attention可执行矩阵和本轮受影响的LLaMA block、大GEMM等保护用例，先全部完成source→ExecutablePackage编译，
+   准备本轮输入、原module reference、runner、guard与decode两步接续，并逐项通过fresh no-card。
+   逐项记录源码/工具/包身份及实际结果；整批达到同版本board-ready后才开始首个设备case，不边编译边启动板测。
+6. **卡恢复后执行实卡验证。** 用户已说明离开前会人工重启，并授权第5步完成后上卡；执行前核实实际恢复状态及软硬件身份，
+   每次launch前检查全系统设备占用，再按既定矩阵单进程、逐case运行。覆盖完整数值、两步actual KV接续与旧prefix不变、
+   实际guard回读、正常清理及至少三次匹配计时；LLaMA block、大GEMM和其它受影响既有case完成必要性能保护。
+   汇报prefill、Q1、Q2及其余矩阵项的正确性、实际耗时和回归结果，静态结构改善不能代签实卡性能。
+   重启计划不登记为已恢复；若发生timeout或设备异常，立即停止批次、保存原始记录，不自动retry/reset/power cycle。
 
-更早保留的完整LM S1024/1025、4K/28与32 heads、ViT、搜索性能回归/deep收益及模型三轮调优仍按原合同验收，
-不会随本次交接自动开启。不得把它们或旧的长时间全矩阵插到上述两处退化修复之前。
+下文attention矩阵中的4K/28与32 heads、ViT等用例纳入第5、6步，仍按各自原合同验收。
+更早保留的独立完整LM S1024/1025、搜索性能回归/deep收益及模型三轮调优不随本次授权自动开启。
+不得把整批长验证或此前停止的其它搜索批次插到上述两处退化修复之前。
 
-设备异常尚未人工恢复。本轮先完成主机修改、fresh package/no-card和数值模型，保留既有实现、原始实测及
-最好健康目标；禁止启动设备、重试或复位。主机完成不改变本项实卡完成条件。
+用户计划在离开前人工重启，实际恢复状态尚未核实。先按第1至5步完成主机修改、整批fresh package/no-card和所需数值模型，
+再按第6步执行已授权的实卡验证；保留既有实现、原始实测及最好健康目标。主机完成不改变本项实卡完成条件。
 
 输入为当前structured/Tile/Instr及已冻结的健康对照；输出为同一产品路径的verified Instr、TargetCall和包。
 直接下游为completion、actual SPM规划、CRT及TargetModel；不新增旁路后端、mapped-SPM数据生成或运行时任务队列。
