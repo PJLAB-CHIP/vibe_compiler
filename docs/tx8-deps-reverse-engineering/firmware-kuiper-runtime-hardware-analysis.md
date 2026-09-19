@@ -719,6 +719,24 @@ The dispatch table is about `0x1c0` bytes and covers device, memory,
 stream/event, module/kernel/model/graph, rank/tile, P2P, and deprecated Kcore
 power functions.
 
+#### 当前安装版本的进程退出对照（2026-09-20）
+
+本节独立于前述5.6 SDK快照，依据本轮安装的`libhpgr.so`做离线二进制审计，未初始化runtime或访问设备。
+库SHA-256为`3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c`，
+ELF build ID为`b9837b8e662beef81ef01f7193b7f7b67c33a4bd`。
+
+| 事实 | 证据与范围 |
+| --- | --- |
+| `supported`：全局device manager进入正常进程析构链 | `0x232480`静态初始化函数通过`__cxa_atexit`注册manager shared pointer析构；`TxDeviceMgr::~TxDeviceMgr`（`0x2313c0`）释放device容器。 |
+| `supported`：device析构有额外用户态清理 | `TxDevice::~TxDevice`（`0x225250`）释放module/signal管理器、默认stream、DMA管理器及BAR task管理器，解除映射，调用`txkmd_power_manage(fd, 0)`，再`txkmd_close`。电源管理调用不能等同于整卡power cycle。 |
+| `supported`：signal监控线程有有序停止 | `stopSignalMonitor`（`0x25f7f0`）清运行标志、shutdown队列并join监控线程。 |
+| `supported`：名为`tearDown`的回调不是上述资源清理主体 | `tearDown`（`0x281d70`）仅调用日志函数；实际资源析构由全局C++对象承担。 |
+| `unknown`：全量硬件状态复原及TDMA因果 | 这些调用链不能证明全部寄存器、队列或跨context状态均已复原，也不能证明跳过析构导致已有TDMA异常。 |
+
+正常返回与`_Exit`的差异是是否运行上述用户态退出链；两者退出后均由操作系统回收进程资源和关闭句柄。
+Wafer的成功/失败退出政策由[15号6.3节](../../tasks/15-launch-runtime-package.md#63-completionreadback与cleanup)定义，
+厂商退出流程与Wafer executor的poison后停止规则分开；不从二进制调用链推导额外reset或恢复操作。
+
 ### 5.3 Device, Tile, and Rank APIs
 
 Header and disassembly agree on these semantics:
@@ -795,8 +813,10 @@ logical or physical tile identifier. `txStreamQuery` returns
 `TX_ERROR_NOT_READY` for normal pending work; that value must not be promoted to
 a device/context failure. A host deadline can therefore be built from bounded
 query polling, but the runtime exposes no cancellation operation: query error
-or deadline leaves the invocation quarantined and forbids blocking stream
-destroy, module unload, memory free, reset, or power calls in that context.
+or deadline leaves the invocation quarantined. The Wafer executor stops further
+stream destroy, module unload, memory free, reset, or power calls in that
+invocation. This restriction does not suppress the vendor's process-exit
+handlers; the current CLI exit policy is defined in design 15, section 6.3.
 
 ### 5.6 Module, Kernel, Model, and Graph APIs
 

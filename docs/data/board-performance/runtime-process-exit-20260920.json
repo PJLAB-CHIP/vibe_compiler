@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-20",
+  "baseCommit": "6e8662513f9dd57012a0cbf6a4ac538f7b99b78b",
+  "scope": "CLI成功和可返回的失败统一正常退出，由厂商注册的退出处理和全局析构清理；不改变invocation资源协议。",
+  "boardExecution": false,
+  "runtimeLibrarySha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "runnerSha256": "8fa7dd5bac0e10a86ca660d09ed48d73468c3653e7adcefb29a5f791d81ef793",
+  "sourceSha256": {
+    "tools/wafer-run/wafer-run.cpp": "c5bc6df010d3bee751bb1817ca683ea220fa8f4af253b48f460b01faf380526f",
+    "tools/wafer-run/TxBoardRuntime.cpp": "a899cceb41bd2bca1c933635a9a9bdfb94e1d0d28c6b11352cdfed99e72e32dc",
+    "include/Wafer/Runtime/Board/BoardRuntime.h": "d0d648610fb468d97cecc35a3f1d8b8054fb40d63da156c6671e71dffa52ae02"
+  },
+  "artifactDirectory": "/data/vibe_compiler-validation/runtime-lifecycle-audit-20260920",
+  "validation": {
+    "canonicalBuild": "passed",
+    "secondBuild": "ninja: no work to do.",
+    "txEnabledRunnerBuild": "passed; compile/link only",
+    "ctestPassed": [
+      "WaferRuntimeUnitTests",
+      "WaferRunBoardIOUnitTests",
+      "wafer-runtime-adapter-python"
+    ],
+    "litPassed": [
+      "Runtime/wafer-run.test"
+    ],
+    "skipped": 0,
+    "processExitProbe": {
+      "implementation": "actual CLI source + existing fake provider fixture + host-only test DSO",
+      "timeout": "injected std::errc::timed_out with poisoned context; not a device timeout experiment",
+      "initialProbeLimitation": "Initial fake waitDelay did not implement timeout; corrected to explicit typed failure injection before qualification.",
+      "results": [
+        {
+          "mode": "success",
+          "exit_code": 0,
+          "callbacks": [
+            "dso-loaded",
+            "dso-atexit",
+            "dso-global-destructor"
+          ],
+          "main_returned": true,
+          "passed": true
+        },
+        {
+          "mode": "setup-failure",
+          "exit_code": 1,
+          "callbacks": [
+            "dso-loaded",
+            "dso-atexit",
+            "dso-global-destructor"
+          ],
+          "main_returned": true,
+          "passed": true
+        },
+        {
+          "mode": "provider-failure",
+          "exit_code": 1,
+          "callbacks": [
+            "dso-loaded",
+            "dso-atexit",
+            "dso-global-destructor"
+          ],
+          "main_returned": true,
+          "passed": true
+        },
+        {
+          "mode": "timeout",
+          "exit_code": 1,
+          "callbacks": [
+            "dso-loaded",
+            "dso-atexit",
+            "dso-global-destructor"
+          ],
+          "main_returned": true,
+          "passed": true
+        },
+        {
+          "mode": "output-mismatch",
+          "exit_code": 1,
+          "callbacks": [
+            "dso-loaded",
+            "dso-atexit",
+            "dso-global-destructor"
+          ],
+          "main_returned": true,
+          "passed": true
+        },
+        {
+          "mode": "qualification-failure",
+          "exit_code": 1,
+          "callbacks": [
+            "dso-loaded",
+            "dso-atexit",
+            "dso-global-destructor"
+          ],
+          "main_returned": true,
+          "passed": true
+        }
+      ],
+      "reproduce": [
+        "PYTHONDONTWRITEBYTECODE=1 python3 <artifactDirectory>/build_exit_probe.py",
+        "PYTHONDONTWRITEBYTECODE=1 python3 <artifactDirectory>/run_exit_probe.py"
+      ],
+      "files": {
+        "build_exit_probe.py": "98570a13d74e595ad890475d65f42f0d71c2dc1e13902744039a6aa14f8db475",
+        "run_exit_probe.py": "142b61c453a8b0da9ff903e1eb4630a517f5d7184331fc968b6eb74d77e131fa",
+        "exit_probe.cpp": "ca319c14becf38066962ee418f0e3b10479d8d88de18ced514b3cd087bee6414",
+        "exit_probe_dso.cpp": "decf8bf6a0c62af29075e648e27f6fea57d5ca0258f65aaf59a15015e0c96b15"
+      }
+    }
+  },
+  "limitations": [
+    "No vendor DSO initialization or real device execution in the process probe.",
+    "Does not establish TDMA causality, device recovery, or vendor finalizer latency."
+  ]
+}

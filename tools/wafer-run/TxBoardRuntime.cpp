@@ -162,9 +162,9 @@ public:
         runtimeLibraryDigest(std::move(runtimeLibraryDigest)),
         providerEnvironment(makeTxProviderEnvironment()) {}
 
-  // The board CLI is a one-shot process and exits with std::_Exit after the
-  // explicit TX lifecycle. The handle intentionally remains process-owned so
-  // neither success nor quarantine invokes unqualified provider finalizers.
+  // Keep the DSO loaded until normal process exit, on success and failure alike.
+  // The vendor owns process teardown; destroying an invocation's driver must
+  // not unload the library or run its global finalizers early.
   ~TxBoardRuntimeDriver() override = default;
 
   BoardRuntimeContextState getContextState() const override {
@@ -591,7 +591,7 @@ public:
         }
         // A completion observation counts only when the query itself returned
         // before the host deadline. Once expired, this local quarantine is the
-        // final action and no later stream is queried.
+        // final invocation action and no later stream is queried.
         if (observationTime >= deadline)
           return deadlineExceeded();
       }

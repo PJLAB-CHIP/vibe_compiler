@@ -40,7 +40,8 @@ llvm::StringRef stringifyBoardRuntimeStage(BoardRuntimeStage stage);
 /// Provider-owned state of the selected device context after a runtime call.
 /// Once poisoned, the executor must not issue another provider call. Recovery
 /// is an explicit operation outside this invocation; it is never implicit
-/// cleanup, reset, or retry.
+/// executor cleanup, reset, or retry. This does not suppress the vendor's own
+/// process-exit handlers and global destructors.
 enum class BoardRuntimeContextState {
   Usable,
   Poisoned,
@@ -182,7 +183,7 @@ public:
   /// Marks this invocation-local provider context sticky poisoned without
   /// issuing a runtime or device call. The executor uses this after a
   /// terminal command produced an untrustworthy transport outcome. No later
-  /// provider call is permitted.
+  /// executor provider call is permitted. Vendor process teardown is separate.
   virtual void quarantine() = 0;
 
   /// Returns cached provider-owned semantic capability. This accessor must not

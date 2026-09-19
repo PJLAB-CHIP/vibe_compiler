@@ -324,7 +324,17 @@ fake provider分别破坏首guard、末guard和child间guard，验证typed失败
 - output按exact physical bytes D2H；decode属于调用适配层；
 - cleanup按load/allocate的reverse order执行并聚合error；
 - known pre-submit failure可正常cleanup；partial/unknown accepted subset、timeout或不可信provider状态使session poisoned，
-  禁止继续provider call，不自动retry/reset/power。
+  executor停止后续provider call，不自动retry/reset/power。
+
+`wafer-run`的成功、provider初始化失败、执行失败、timeout及输出校验/写出失败均从`main`正常返回，
+分别保留成功或失败退出码，由厂商库注册的进程退出处理和全局析构完成其内部清理。不得用`_Exit`跳过厂商析构，
+也不手工调用厂商内部析构或额外添加reset/power。DSO保留到进程退出，不随invocation或driver对象销毁而`dlclose`。
+poison限制的是Wafer executor继续提交、查询和显式资源操作，不屏蔽厂商自身的进程退出流程；该流程的等待、
+内部电源管理及驱动行为由厂商实现决定，invocation deadline不保证整个进程退出耗时。
+
+本边界输入为invocation的typed成功/失败及context状态，输出为进程退出码和厂商退出回调，直接消费者为调用CLI的runner。
+主机覆盖成功、初始化失败、poisoned失败、timeout、输出校验失败，检查退出码及退出回调实际执行；
+原runtime测试继续检查成功时显式cleanup和poison后不再调用provider。主机验证不证明TDMA根因或实卡恢复。
 
 ### 6.4 Qualified device session
 

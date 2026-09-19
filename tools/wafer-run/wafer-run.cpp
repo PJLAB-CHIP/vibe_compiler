@@ -426,27 +426,8 @@ int runBoard(const Options &options,
   llvm::Expected<std::unique_ptr<wafer::runtime::BoardRuntimeDriver>> driver =
       wafer::runtime::createTxBoardRuntimeDriver(
           options.expectedRuntimeLibraryDigest);
-  if (!driver) {
-    llvm::errs() << "wafer-run: " << llvm::toString(driver.takeError())
-                 << "\nwafer-run: ending TX provider setup without running "
-                    "provider finalizers\n";
-    llvm::outs().flush();
-    llvm::errs().flush();
-    std::_Exit(1);
-  }
-  auto terminateBoardProcess = [&](llvm::Error error, bool poisoned) -> int {
-    llvm::errs() << "wafer-run: " << llvm::toString(std::move(error));
-    if (poisoned)
-      llvm::errs() << "\nwafer-run: TX context quarantined; no further "
-                      "provider call, reset, power operation, or retry was "
-                      "attempted";
-    llvm::errs()
-        << "\nwafer-run: ending the one-shot board process without running "
-           "TX provider finalizers\n";
-    llvm::outs().flush();
-    llvm::errs().flush();
-    std::_Exit(1);
-  };
+  if (!driver)
+    return fail(driver.takeError());
   wafer::runtime::cli::BoardInvocationFilePlan completedPlan;
   std::string profileRunDirectory;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
@@ -467,14 +448,15 @@ int runBoard(const Options &options,
         package, std::move(completedPlan.request), **driver);
   }();
   if (!result) {
-    llvm::Error error = result.takeError();
-    bool poisoned = (*driver)->getContextState() ==
-                    wafer::runtime::BoardRuntimeContextState::Poisoned;
-    return terminateBoardProcess(std::move(error), poisoned);
+    if ((*driver)->getContextState() ==
+        wafer::runtime::BoardRuntimeContextState::Poisoned)
+      llvm::errs() << "wafer-run: TX context poisoned; invocation stopped; "
+                      "vendor process teardown follows\n";
+    return fail(result.takeError());
   }
   if (llvm::Error error = wafer::runtime::cli::validateAndWriteBoardOutputs(
           result->outputs, completedPlan))
-    return terminateBoardProcess(std::move(error), /*poisoned=*/false);
+    return fail(std::move(error));
 
   llvm::outs() << "board_device: id=" << result->device.deviceId
                << " name=" << result->device.name
@@ -556,7 +538,7 @@ int runBoard(const Options &options,
   llvm::outs() << "board_execution: true\n";
   llvm::outs().flush();
   llvm::errs().flush();
-  std::_Exit(0);
+  return 0;
 }
 #endif
 

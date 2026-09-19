@@ -14,6 +14,25 @@
 依据是不同case的运行窗口先后出现异常，本轮在18次健康执行后第19次报告告警；这些事实尚不足以区分会话状态与单包问题。
 先用已有日志核对执行顺序、前序case、context建立/清理及告警时间；不把假设写成硬件结论，不增加无依据的等待或reset来掩盖异常。
 
+### 厂商进程退出清理（2026-09-20）
+
+用户进一步指定成功和失败均沿厂商退出流程。本次修正归15号6.3节：CLI初始化失败、执行失败、timeout、
+输出校验/写出失败及成功均正常返回，不再调用`_Exit`；DSO保留到进程结束，由厂商注册的退出处理和全局析构清理。
+invocation的poison仍停止Wafer后续资源操作，厂商退出流程独立执行；不手工添加reset、power或内部析构调用。
+当前安装库的离线对照见[SDK证据](../../docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md#当前安装版本的进程退出对照2026-09-20)。
+
+本轮主机验证已完成，记录见[退出验证记录](../../docs/data/board-performance/runtime-process-exit-20260920.json)：
+
+- canonical完整增量构建通过，第二次为Ninja no-op；使用同一build的编译参数和库重新编译TX-enabled runner，未执行设备调用。
+- `WaferRuntimeUnitTests`、`WaferRunBoardIOUnitTests`及`wafer-runtime-adapter-python`实际执行并通过；Runtime CLI lit通过，无skip。
+- 离线进程probe复用实际CLI源码、现有fake provider及有界package fixture，加载仅记录回调的测试DSO。
+  成功、初始化失败、poisoned provider错误、注入completion timeout、输出不匹配和设备资格不匹配共六条路径，
+  均验证正常返回、准确退出码、DSO `atexit`及全局析构各执行一次。tiny输入只隔离进程退出，不作数值覆盖。
+- timeout使用typed错误注入；初版fake provider只延迟而未产生timeout，测试未通过，修正注入后六项全部通过。
+  该probe不加载厂商库，不验证真实设备timeout检测、厂商退出耗时或硬件状态复原。
+
+本轮未启动设备，未重新运行历史包，未retry/reset；既有TDMA停止状态保持。本次修正不签TDMA根因或板端通过。
+
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
 [模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
