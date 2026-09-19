@@ -228,6 +228,17 @@ verifyNativeInstruction(const llvm::Instruction &instruction) {
   if (const auto *binary = llvm::dyn_cast<llvm::BinaryOperator>(&instruction)) {
     if (binary->getType()->isIntegerTy())
       return llvm::Error::success();
+    if (binary->getType()->isFloatTy()) {
+      switch (binary->getOpcode()) {
+      case llvm::Instruction::FAdd:
+      case llvm::Instruction::FSub:
+      case llvm::Instruction::FMul:
+      case llvm::Instruction::FDiv:
+        return llvm::Error::success();
+      default:
+        break;
+      }
+    }
   }
   if (const auto *cast = llvm::dyn_cast<llvm::CastInst>(&instruction)) {
     if (cast->getSrcTy()->isIntegerTy() && cast->getDestTy()->isIntegerTy())

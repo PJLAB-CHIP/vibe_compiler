@@ -19,6 +19,7 @@
 #include "Wafer/Transforms/Tile/AccessReuse.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Transforms/Tile/ScalarExecution.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
@@ -73,8 +74,8 @@ struct TemporalPrefix : llvm::FoldingSetNode {
   std::vector<TemporalChoice> choices;
   CurrentCandidate tiled;
   bool canMerge = false;
-  std::array<std::shared_ptr<const LayoutInput>, 2> layouts;
-  std::array<std::array<std::shared_ptr<const CurrentCandidate>, 2>, 2>
+  std::array<std::shared_ptr<const LayoutInput>, 4> layouts;
+  std::array<std::array<std::shared_ptr<const CurrentCandidate>, 2>, 4>
       prepared;
 
   static void profile(llvm::FoldingSetNodeID &id, mlir::Operation *parent,
@@ -429,6 +430,7 @@ struct ImplementationChoice {
   bool pipeline = false;
   llvm::SmallVector<PipelineScope, 4> pipelineScopes;
   bool merged = false;
+  bool cpuScalars = false;
   LayoutMaterializationPlacement placement =
       LayoutMaterializationPlacement::FirstUse;
   std::optional<AccessReuseIntent> reuse;
@@ -446,8 +448,8 @@ struct ImplementationChoice {
                         [&](const auto &scope) {
                           return llvm::is_contained(b.pipelineScopes, scope);
                         }) &&
-           a.merged == b.merged && a.placement == b.placement &&
-           a.reuse == b.reuse;
+           a.merged == b.merged && a.cpuScalars == b.cpuScalars &&
+           a.placement == b.placement && a.reuse == b.reuse;
   }
 };
 
@@ -888,6 +890,8 @@ private:
     LayoutMaterializationPlacement placement =
         LayoutMaterializationPlacement::FirstUse;
     bool merged = false;
+    bool cpuScalars = false;
+    unsigned layoutIndex() const { return 2 * merged + cpuScalars; }
   };
   struct TemporalAttempt {
     std::vector<TemporalChoice> choices;
@@ -933,6 +937,7 @@ private:
     };
     count("structural-stratum", explorationStratum);
     count("merged", selected.merged);
+    count("cpu-scalars", selected.cpuScalars);
     count("invariant",
           selected.placement == LayoutMaterializationPlacement::LoopInvariant);
     count("pipeline", selected.pipeline);
@@ -1249,12 +1254,14 @@ private:
     attempt.choices = std::move(choices);
     attempt.prefix = std::move(prefix);
     attempt.region.merged = current().choice.merged;
+    attempt.region.cpuScalars = current().choice.cpuScalars;
     attempt.region.placement = current().choice.placement;
     if (statistics) {
       statistics->mergedRegionCandidates += attempt.region.merged;
       statistics->regionPreservingCandidates += !attempt.region.merged;
     }
-    attempt.region.layoutInput = attempt.prefix->layouts[attempt.region.merged];
+    attempt.region.layoutInput =
+        attempt.prefix->layouts[attempt.region.layoutIndex()];
     if (attempt.region.layoutInput && statistics)
       ++statistics->layoutPrefixHits;
     pending.emplace(std::move(attempt));
@@ -1302,6 +1309,26 @@ private:
       if (!prepared.succeeded())
         return fail(classifyLayoutFailure(prepared.status),
                     "search-layout-input", prepared.detail);
+      const bool cpuAvailable = hasCPUScalarAlternative(*candidate->module);
+      if (attempt.cpuScalars) {
+        if (!cpuAvailable)
+          return fail(ExecutableCompilationStatus::UnsupportedFailure,
+                      "search-scalar-execution",
+                      "selected CPU arithmetic has no current register scope");
+        auto materialized = materializeCPUScalarAlternative(
+            *candidate->module, candidate->relations);
+        if (mlir::failed(materialized) || !*materialized)
+          return fail(
+              ExecutableCompilationStatus::CompilerFailure,
+              "search-scalar-execution",
+              "CPU scalar materialization failed its current-IR contract");
+        support::addCompileCounter("search", "cpu-scalar-materializations",
+                                   *materialized);
+      } else if (cpuAvailable) {
+        auto sibling = current().choice;
+        sibling.cpuScalars = true;
+        discover(std::move(sibling), temporal.choices);
+      }
       auto query = queryCurrentLayoutAssignment(*candidate->module);
       if (!query.query)
         return fail(classifyLayoutFailure(query.outcome.status),
@@ -1314,7 +1341,7 @@ private:
                     "current layout PBQP has no complete assignment");
       attempt.layoutInput = std::make_shared<LayoutInput>(LayoutInput{
           std::move(*candidate), std::move(query.query), std::move(first)});
-      temporal.prefix->layouts[attempt.merged] = attempt.layoutInput;
+      temporal.prefix->layouts[attempt.layoutIndex()] = attempt.layoutInput;
       return RegionPreparationYielded{};
     }
     const auto &input = *attempt.layoutInput;
@@ -1327,7 +1354,7 @@ private:
                                1);
     auto &prepared =
         temporal.prefix
-            ->prepared[attempt.merged][static_cast<unsigned>(placement)];
+            ->prepared[attempt.layoutIndex()][static_cast<unsigned>(placement)];
     if (prepared) {
       if (statistics)
         ++statistics->preparedPrefixHits;

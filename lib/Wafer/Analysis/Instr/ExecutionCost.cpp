@@ -25,6 +25,18 @@
 #include <optional>
 
 namespace wafer::analysis::detail {
+bool isCPUScalarOperation(mlir::Operation *operation) {
+  return operation->getDialect() &&
+         operation->getDialect()->getTypeID() ==
+             mlir::TypeID::get<mlir::arith::ArithDialect>() &&
+         !mlir::isa<mlir::arith::ConstantOp>(operation) &&
+         !operation->getNumRegions() && operation->getNumResults() &&
+         llvm::all_of(operation->getResultTypes(), [](mlir::Type type) {
+           return mlir::isa<mlir::IntegerType, mlir::IndexType,
+                            mlir::FloatType>(type);
+         });
+}
+
 namespace {
 
 static Quantity getElementCount(mlir::Value value) {
@@ -511,6 +523,11 @@ static void collectInstructionCost(mlir::Operation *op,
   if (multiplicity.exact.knowledge == ScheduleCostKnowledge::Known &&
       multiplicity.exact.value == 0)
     return;
+  if (isCPUScalarOperation(op)) {
+    addExecutionCount(cost.work.cpuScalarOperations, multiplicity, 1,
+                      countStaticSite);
+    return;
+  }
   collectInstructionWork(op, cost.work, multiplicity, countStaticSite);
   collectResourceCost(op, cost, multiplicity.exact);
   collectComputeCost(op, cost, multiplicity.exact);
@@ -638,9 +655,11 @@ public:
   ProgramWalker(
       llvm::function_ref<void(mlir::Operation *, ExecutionMultiplicity)>
           onInstruction,
-      llvm::function_ref<void()> onUnsupportedControlFlow)
+      llvm::function_ref<void()> onUnsupportedControlFlow,
+      bool includeCPUScalarWork = false)
       : onInstruction(onInstruction),
-        onUnsupportedControlFlow(onUnsupportedControlFlow) {}
+        onUnsupportedControlFlow(onUnsupportedControlFlow),
+        includeCPUScalarWork(includeCPUScalarWork) {}
 
   void walkRoot(mlir::Operation *root) {
     if (auto module = mlir::dyn_cast<mlir::ModuleOp>(root)) {
@@ -739,7 +758,8 @@ private:
       return;
     }
 
-    if (isInstructionProgramOperation(op)) {
+    if (isInstructionProgramOperation(op) ||
+        (includeCPUScalarWork && isCPUScalarOperation(op))) {
       onInstruction(op, multiplicity);
       return;
     }
@@ -770,6 +790,7 @@ private:
       onInstruction;
   llvm::function_ref<void()> onUnsupportedControlFlow;
   llvm::DenseSet<mlir::Operation *> activeFunctions;
+  bool includeCPUScalarWork;
 };
 
 template <typename Callback>
@@ -965,7 +986,8 @@ private:
                             mergeConditionalExactCost(thenCost, elseCost));
       return;
     }
-    if (isInstructionProgramOperation(operation)) {
+    if (isInstructionProgramOperation(operation) ||
+        isCPUScalarOperation(operation)) {
       if (!includeOperation(operation))
         return;
       InstructionProgramCost instruction;
@@ -1116,7 +1138,8 @@ void collectExecutionCost(
     for (InstructionWorkCountMember member : kInstructionWorkCountMembers)
       markCount(cost.work.*member);
   };
-  walkInstructionProgramWork(root, collect, markAllUnsupported);
+  ProgramWalker(collect, markAllUnsupported, /*includeCPUScalarWork=*/true)
+      .walkRoot(root);
   refinePathInvariantExactCost(root, cost, includeOperation);
 
   auto exact = [](const InstructionExecutionCount &count) {

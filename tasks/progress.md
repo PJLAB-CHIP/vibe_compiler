@@ -37,7 +37,7 @@ attention性能目标仍未达到；匹配重复计时、实卡guard及最终同
 先完成本轮全部编译和no-card，再核实设备身份、占用和恢复状态并执行实卡验证。scalar VS、规则mask常量模板、
 私有DPS复用、GQA单位前缀native归约及DDR通知的精确NCC依赖已实现；此前扩大验证已按用户要求停止、记录保留。
 用户现已授权修复layout三项问题：预算中断丢失较优解、缺少完整factor依据的剪枝，以及下游隐藏中间布局选择；
-按08号合同先修求解结果保留，再恢复完整合法域，最后提前物化逐元素中间SSA。三项已有实现及前一检查点的定向验证，尚未提交代码。
+按08号合同先修求解结果保留，再恢复完整合法域，最后提前物化逐元素中间SSA；已随后续退化修复提交为`0e231204`。
 该检查点的prefill静态GS由976增至1084；已定位layout名称比较触发的多余搬运，以及逐元素分解阻断select原地复用两处问题。
 两处修正及其直接target、私有publication正反例已通过本轮主机验证；扩大回归发现的跨dtype factor与完整blocked BOOL copy缺口也已修复。
 修复后168项相关transform、37项conversion及lit通过，canonical完整增量构建后第二次Ninja no-op；原失败与复测记录保留。
@@ -48,7 +48,11 @@ Q2还通过完整TargetModel输出。相同逐Tile GEMM/循环结构下，本轮
 全部编译、构包和fresh no-card，再核实设备恢复并逐例实卡验证。具体第5、6步见
 [当前实施计划](plans/board-workload-matrix.md#交接与接续计划)；此前停止的其它搜索/验证批次不随此授权重启。
 不再通过CPU逐元素生成规则mask；decode已在SPM中的私有rank-0广播源按现有证明直接用于VuV，避免SPM mapping读取。
-这不表示scalar数学统一由CT执行；本次layout修复保留已有执行路径，尚未实现按实际规模和成本选择执行单元。
+这不表示scalar数学统一由CT执行。后续已补current Instr的CPU scalar计费和独立register-only F32算术候选，
+两种执行方案沿同一actual leaf比较；定向layout/cost/search、正式target LLVM及完整Driver回归已通过。
+TargetModel同步接入四种F32算术，精确位型、拒绝边界及完整Simulator/SystemC/lit回归通过。
+三个产品已fresh no-card通过，Q2完整TargetModel通过；完整source/package与已提交layout版本逐字节相同。
+CPU先验仍未校准，prefill的条件内动态工作量仍可为unknown，不能把其counter占位零当作无CPU开销。
 本轮整批board-ready且设备恢复核实前不启动实卡，不自动重试或复位；下文更早的Add通过记录不解除这次新异常后的阻塞。
 主机验证结果及版本边界见同一实施计划。
 

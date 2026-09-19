@@ -1,6 +1,7 @@
 //===- CostModel.cpp - Instruction program performance model ----------===//
 
 #include "Wafer/Analysis/Instr/CostModel.h"
+#include "Internal.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/NCCCompletion.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -138,7 +139,7 @@ std::optional<uint64_t> ddrServiceTime(uint64_t bytes,
 mlir::FailureOr<SearchCostCohort>
 SearchCostCohort::create(const SearchCostPolicy &policy,
                          std::string *failureReason) {
-  const std::array<uint64_t, 17> rates{
+  const std::array<uint64_t, 18> rates{
       policy.unmodeledInstructionPicosecondsEstimate,
       policy.ddrNominalBytesPerSecond,
       policy.ddrSegmentPicosecondsEstimate,
@@ -148,6 +149,7 @@ SearchCostCohort::create(const SearchCostPolicy &policy,
       policy.dteMessageStartupPicosecondsEstimate,
       policy.noCHopPicosecondsEstimate,
       policy.instructionFixedPicosecondsEstimate,
+      policy.cpuScalarOperationPicosecondsEstimate,
       policy.gatherScatterInnerIterationPicosecondsEstimate,
       policy.dteWaitedEventPicosecondsEstimate,
       policy.nccJoinPicosecondsEstimate,
@@ -221,8 +223,14 @@ deriveResourceObjective(const InstructionProgramAggregateCost &cost,
         return tile.noc.waitedEventCount;
       },
       cost.aggregateNoC.waitedEventCount);
+  auto cpuScalars = maximumTileMetric(
+      cost,
+      [](const InstructionProgramCost &tile) -> const ScheduleCostMetric & {
+        return tile.work.cpuScalarOperations.exactExecutions;
+      },
+      cost.aggregateWork.cpuScalarOperations.exactExecutions);
   if (!npu || !vectorF16 || !vectorF32 || !spm || !instructions || !dteWaits ||
-      !cost.aggregateDDRReadBytes.isKnown() ||
+      !cpuScalars || !cost.aggregateDDRReadBytes.isKnown() ||
       !cost.aggregateDDRWriteBytes.isKnown() ||
       !cost.aggregateNoC.staticIssueSiteCount.isKnown() ||
       !cost.maximumTileNoCTransmitBytes.isKnown() ||
@@ -307,6 +315,9 @@ deriveResourceObjective(const InstructionProgramAggregateCost &cost,
       !checkedMultiply(*instructions,
                        policy.instructionFixedPicosecondsEstimate,
                        durations.instructionControlPicoseconds) ||
+      !checkedMultiply(*cpuScalars,
+                       policy.cpuScalarOperationPicosecondsEstimate,
+                       durations.cpuScalarPicoseconds) ||
       !checkedMultiply(*dteWaits, policy.dteWaitedEventPicosecondsEstimate,
                        durations.dteWaitControlPicoseconds))
     return UnknownSearchObjective{
@@ -359,7 +370,7 @@ std::optional<uint64_t> localServiceTime(const InstructionProgramCost &tile,
   auto movement =
       movementServiceTime(tile.spmMovementBytes, tile.gatherScatterBytes,
                           tile.gatherScatterInnerIterations, policy);
-  if (!movement)
+  if (!movement || !tile.work.cpuScalarOperations.exactExecutions.isKnown())
     return std::nullopt;
   uint64_t total = *movement;
   auto addWork = [&](uint64_t work, uint64_t rate) {
@@ -381,6 +392,8 @@ std::optional<uint64_t> localServiceTime(const InstructionProgramCost &tile,
                policy.dteEndpointBytesPerSecondEstimate) ||
       (includeIssue && !addFixed(tile.instructionCount.value,
                                  policy.instructionFixedPicosecondsEstimate)) ||
+      !addFixed(tile.work.cpuScalarOperations.exactExecutions.value,
+                policy.cpuScalarOperationPicosecondsEstimate) ||
       !addFixed(tile.noc.waitedEventCount.value,
                 policy.dteWaitedEventPicosecondsEstimate) ||
       !addFixed(tile.nccJoinCount.value, policy.nccJoinPicosecondsEstimate) ||
@@ -403,6 +416,31 @@ uint64_t estimateInstructionCount(const InstructionExecutionCount &work,
     return work.upperBound.value;
   // Static sites are an explicit one-visit estimate, not a dynamic work fact.
   return work.staticSites.isKnown() ? work.staticSites.value : 1;
+}
+
+uint64_t coarseServiceTime(const InstructionProgramWork &work,
+                           const ScheduleCostMetric &instructions,
+                           const SearchCostPolicy &policy) {
+  uint64_t count = std::max(
+      uint64_t{1}, estimateInstructionCount(work.instructions, instructions));
+  const auto &cpu = work.cpuScalarOperations;
+  // Unknown calls may hide arbitrary work. Their generic service prior
+  // already covers that uncertainty; only separately price bounded current
+  // scalar sites, without inventing a scalar instruction inside the call.
+  uint64_t cpuCount = cpu.exactExecutions.isKnown() ? cpu.exactExecutions.value
+                      : cpu.upperBound.isKnown()    ? cpu.upperBound.value
+                      : cpu.staticSites.isKnown()   ? cpu.staticSites.value
+                                                    : 0;
+  uint64_t instructionTime, cpuTime, total;
+  if (cpu.exactExecutions.knowledge == ScheduleCostKnowledge::Overflow ||
+      cpu.upperBound.knowledge == ScheduleCostKnowledge::Overflow ||
+      !checkedMultiply(count, policy.unmodeledInstructionPicosecondsEstimate,
+                       instructionTime) ||
+      !checkedMultiply(cpuCount, policy.cpuScalarOperationPicosecondsEstimate,
+                       cpuTime) ||
+      !checkedAdd(instructionTime, cpuTime, total))
+    return std::numeric_limits<uint64_t>::max();
+  return total;
 }
 
 // Current-IR endpoints and estimates live only for this immutable comparison.
@@ -1142,12 +1180,7 @@ private:
         !cost.compute.vectorOtherLogicalOps.isKnown() ||
         cost.compute.vectorOtherLogicalOps.value ||
         !checkedAdd(cost.ddrReadBytes.value, cost.ddrWriteBytes.value, bytes)) {
-      uint64_t count = std::max(
-          uint64_t{1}, estimateInstructionCount(cost.work.instructions,
-                                                cost.instructionCount));
-      if (!checkedMultiply(
-              count, policy.unmodeledInstructionPicosecondsEstimate, duration))
-        duration = std::numeric_limits<uint64_t>::max();
+      duration = coarseServiceTime(cost.work, cost.instructionCount, policy);
     } else {
       auto ddr = ddrServiceTime(bytes, cost.ddrSegmentCount, policy);
       if (!ddr || !checkedAdd(*service, *ddr, duration))
@@ -1243,6 +1276,10 @@ private:
                        operation)) {
           if (!executeInstruction(&operation))
             return false;
+        } else if (detail::isCPUScalarOperation(&operation)) {
+          if (!checkedAdd(issue, policy.cpuScalarOperationPicosecondsEstimate,
+                          issue))
+            return false;
         } else if (!mlir::isMemoryEffectFree(&operation) &&
                    !mlir::isa<mlir::memref::AllocOp, mlir::memref::DeallocOp>(
                        operation)) {
@@ -1296,22 +1333,18 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
     // Last-resort service prior when detailed work cannot be priced. Reuse the
     // explicit generic instruction service estimate; do not invent IR or return
     // zero for unavailable work. This is only a ranking estimate.
-    uint64_t count = 0;
+    uint64_t duration = 0;
     if (cost.tileCosts.empty()) {
-      count = estimateInstructionCount(cost.aggregateWork.instructions,
-                                       cost.aggregateInstructionCount);
+      duration =
+          coarseServiceTime(cost.aggregateWork, cost.aggregateInstructionCount,
+                            cohort->getPolicy());
     } else {
       for (const auto &tile : cost.tileCosts)
-        count =
-            std::max(count, estimateInstructionCount(tile.work.instructions,
-                                                     tile.instructionCount));
+        duration = std::max(duration,
+                            coarseServiceTime(tile.work, tile.instructionCount,
+                                              cohort->getPolicy()));
     }
-    count = std::max(count, uint64_t{1});
-    if (!checkedMultiply(
-            count, cohort->getPolicy().unmodeledInstructionPicosecondsEstimate,
-            coarse.estimatedDurationPicoseconds))
-      coarse.estimatedDurationPicoseconds =
-          std::numeric_limits<uint64_t>::max();
+    coarse.estimatedDurationPicoseconds = duration;
     result = coarse;
     known = std::get_if<KnownSearchObjective>(&result);
     uint64_t bytes;
@@ -1334,7 +1367,7 @@ deriveSearchObjective(const InstructionProgramAggregateCost &cost,
             d.vectorF32Picoseconds, d.spmMovementPicoseconds,
             d.dteEndpointPicoseconds, d.dteStartupPicoseconds,
             d.instructionControlPicoseconds, d.dteWaitControlPicoseconds,
-            d.nccWaitControlPicoseconds})
+            d.nccWaitControlPicoseconds, d.cpuScalarPicoseconds})
         local += term;
     } else {
       for (const auto &tile : cost.tileCosts) {

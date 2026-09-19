@@ -1607,6 +1607,38 @@ DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工
 
 ### 7.4 Cost 与feedback
 
+#### Current Instr中的CPU标量工作
+
+- Upstream IR / input：完成target、completion与actual memory验证的逐Tile Instr，以及其中实际存在的scalar Arith SSA和SCF。
+- Current stage responsibility：ScheduleCostAnalysis按同一control-flow multiplicity统计非constant scalar Arith operation；
+  CostModel用同一cohort的CPU先验计入control issue时间，保留CPU、CT/NE及搬运分项。
+- Output IR / files：只读工作量、上下界与SearchObjective；不修改IR。
+- Downstream consumer：ActualResultController、SearchCurrentIR及UnifiedSearch的实际候选比较和diagnostic。
+- User-level driver / named pipeline：`wafer-compile --optimization-policy=search`。
+- Explicit non-goals：不把MLIR operation数称为RISC-V机器指令数；不推算尚未lower的地址计算、循环控制或runtime实现；
+  不在此分析中移动scalar到CPU、改变dtype/算术、增加同步或改变SPM合法性。
+- Completion criteria：计数使用current IR及真实循环/分支语义，已知零与unknown不同；CPU时间只计一次，
+  参数属于cohort，有限粗估/overflow保持；下表及最终产品矩阵通过。
+
+分类仅覆盖无region、scalar integer/index/float结果的非constant Arith operation。Constant materialization和metadata view
+不在此逻辑工作维度中；tensor/vector Arith不是CPU scalar。现有Wafer instruction总数、engine issue及NCC terminal判定不改。
+复用同一工作量聚合与条件上下界路径；每次IR mutation后重算。该逻辑工作量不能直接换算为精确机器指令数，
+因为LLVM仍可折叠、组合、legalize或消除operation。
+
+统一CPU先验为每个scalar Arith operation 1 ns，明确为未校准的排序参数，不是任何CPU opcode的实测延迟。
+当前IR估计器在operation位置推进control issue时钟，允许已提交的异步engine与CPU计算重叠；aggregate路径逐Tile求和后取最大。
+未知控制流沿既有上界/静态site有限估计，标记coarse，不能当作零成本。CPU先验与runtime提交的1 us分别拥有含义，不能互换或重复收费。
+算法参照[LLVM vectorizer成本选择](https://llvm.org/docs/Vectorizers.html)对scalar/vector及转换成本的区分；
+具体能力以pinned ArithToLLVM和当前TargetLLVMConversion为准。现有路径没有MathToLLVM，不能据此宣称exp/rsqrt支持CPU选择。
+
+| 覆盖 | exact输出与下游witness |
+| --- | --- |
+| rank3输入、1024/1025/1031，32/33次循环及tail | scalar静态site与动态次数分开，Wafer instruction计数不变，CPU/提交各计一次 |
+| scalar在循环内/外、scalar重复使用、tensor/vector/constant | 计算按定义的动态scope计数，不按广播后的元素数或user数重复计费 |
+| 已知条件、未知条件同work/异work、零次循环 | exact或上下界正确，unknown显式保留，有限coarse不为零 |
+| actual CT/搬运前后CPU计算、NCC、两Tile | control时钟与异步engine正确重叠，terminal语义不变，逐Tile最大值 |
+| 参数变更、溢出及无current IR调用 | cohort隔离、排序敏感性、饱和，aggregate与current-IR路径分项一致 |
+
 #### DDR descriptor的连续段与服务估计
 
 输入是final Instr RDMA/WDMA的inner bytes、三层DDR strides/iterations及实际动态执行次数。

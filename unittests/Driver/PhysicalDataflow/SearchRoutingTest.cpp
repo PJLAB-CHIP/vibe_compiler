@@ -1,8 +1,11 @@
 //===- SearchRoutingTest.cpp ------------------------------------------===//
 
 #include "TestSupport/CodeGen/ExecutableTestSupport.h"
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/PhysicalDataflow/SearchCurrentIR.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -250,6 +253,73 @@ TEST(SearchRoutingTest, MissingInspectionDoesNotReturnAnEarlierWinner) {
   ASSERT_TRUE(accepted) << text;
   EXPECT_EQ(result.status, ExecutableCompilationStatus::IndeterminateFailure);
   EXPECT_FALSE(result.executable);
+}
+
+TEST(SearchRoutingTest, ScalarExecutionChoicesConsumeTheSameActualLeafBudget) {
+  using namespace wafer::compiler::detail;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto parsed = parseRealScaleDependentProgram(extent);
+    ASSERT_TRUE(parsed.module);
+    auto function = *parsed.module->getOps<mlir::func::FuncOp>().begin();
+    auto generic = *function.getOps<mlir::linalg::GenericOp>().begin();
+    auto *original = &generic.getBody()->front();
+    mlir::OpBuilder builder(original);
+    auto loc = original->getLoc();
+    auto lhs = builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getF32FloatAttr(3.25));
+    auto rhs = builder.create<mlir::arith::ConstantOp>(
+        loc, builder.getF32FloatAttr(1.75));
+    auto quotient = builder.create<mlir::arith::DivFOp>(loc, lhs, rhs);
+    auto wide = builder.create<mlir::arith::ExtFOp>(loc, builder.getF32Type(),
+                                                    original->getOperand(0));
+    auto added = builder.create<mlir::arith::AddFOp>(loc, wide, quotient);
+    auto narrowed =
+        builder.create<mlir::arith::TruncFOp>(loc, builder.getF16Type(), added);
+    original->getResult(0).replaceAllUsesWith(narrowed);
+    original->erase();
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*parsed.module)));
+    std::string text;
+    llvm::raw_string_ostream diagnostics(text);
+    auto timing =
+        std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+    wafer::support::ScopedCompileTimingActivation activation(timing);
+    wafer::compiler::ProgramDataHandoff data;
+    SearchCurrentIROptions options;
+    options.limits = wafer::SearchLimits{2, 8};
+    SearchCurrentIRStatistics statistics;
+    auto result = compileSearchCurrentIR(
+        *parsed.module, realScaleDependentProgramMetadata(extent),
+        executionConfig(), diagnostics, data, options, &statistics);
+    timing->finishAndPrintSummary();
+    diagnostics.flush();
+    ASSERT_TRUE(result.isAccepted()) << text << result.detail;
+    EXPECT_NE(text.find("-cpu-scalars value=0"), std::string::npos) << text;
+    EXPECT_NE(text.find("-cpu-scalars value=1"), std::string::npos) << text;
+    EXPECT_NE(text.find("name=cpu-scalar-materializations value="),
+              std::string::npos)
+        << text;
+    EXPECT_EQ(statistics.traversal.candidateActualizations,
+              statistics.traversal.trialsUsed);
+    EXPECT_LE(statistics.traversal.trialsUsed, 8u);
+    EXPECT_GT(statistics.acceptedCandidates, 0u);
+    for (const auto &tile : result.executable->tiles)
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(tile.getModule())));
+    // Transfer the selected owner to the public target LLVM consumer, including
+    // its ordinary program bindings and managed entry ABI preparation.
+    auto lowered = result.takeExecutable();
+    auto executable =
+        wafer::compiler::DeviceExecutableBuilder::makeDeviceExecutable(
+            executionConfig(), std::move(lowered.runtimeLaunchContract),
+            parsed.context, std::move(lowered.tiles),
+            std::make_unique<wafer::compiler::ProgramDataHandoff>(
+                std::move(data)));
+    auto targets = wafer::compiler::compileDeviceExecutableToTargetLLVMModules(
+        executable, diagnostics);
+    ASSERT_TRUE(static_cast<bool>(targets))
+        << text << llvm::toString(targets.takeError());
+    EXPECT_EQ(targets->getModules().size(), 16u);
+  }
 }
 
 } // namespace

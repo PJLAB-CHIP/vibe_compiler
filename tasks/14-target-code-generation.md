@@ -464,7 +464,8 @@ constant与dynamic值、raw bits及完整LM的缩放系数；映射及跨worker�
 Instr浮点binary RHS标量按原dtype bitcast，零扩展到TargetCall的rhs i64字段；新增`rhs_is_scalar`
 i32取0/1，并与`rhs_unit_elements`互斥。CRT直接发射VS；decoder/numeric model只对vector读取SPM。
 闭合的native model control接受i≤64的signed/unsigned整数转F32以及F32/i32 bitcast，供运行时相对阈值使用，
-不开放任意浮点运算或地址访问。常量值保留包括负无穷在内的原始bits。
+08号register-only CPU候选对应的F32 add/sub/mul/div由17号同一host frontend执行；其它浮点运算或地址访问不因此开放。
+常量值保留包括负无穷在内的原始bits。
 
 实际候选中新建的tensor literal使用本节既有ProgramData绑定。在Target ABI删除未使用常量后，
 各Tile的只读TargetTensor列表允许不同；`resourceIndex`仍按该entry自己的ProgramResourceBinding解析，

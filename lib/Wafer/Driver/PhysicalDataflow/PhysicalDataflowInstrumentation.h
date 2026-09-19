@@ -61,6 +61,8 @@ inline void recordAcceptedPhysicalDataflowInstrumentation(
   wafer::support::addCompileCounter("accepted-instr", "tiles",
                                     cost.tileCosts.size());
   recordExecutionCount("instructions", cost.aggregateWork.instructions);
+  recordExecutionCount("cpu-scalar-operations",
+                       cost.aggregateWork.cpuScalarOperations);
   recordExecutionCount("async-events", cost.aggregateWork.asynchronousEvents);
   recordExecutionCount("rdma", cost.aggregateWork.rdmaIssues);
   recordExecutionCount("wdma", cost.aggregateWork.wdmaIssues);

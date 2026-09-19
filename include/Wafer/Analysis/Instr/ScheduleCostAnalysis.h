@@ -111,6 +111,9 @@ struct InstructionExecutionCount {
 /// both `dteOperations` and its concrete send/receive counter.
 struct InstructionProgramWork {
   InstructionExecutionCount instructions;
+  /// Nonconstant scalar Arith operations in current IR, not machine
+  /// instructions or estimated address/loop-control work introduced later.
+  InstructionExecutionCount cpuScalarOperations;
   InstructionExecutionCount asynchronousEvents;
   InstructionExecutionCount rdmaIssues;
   InstructionExecutionCount wdmaIssues;

@@ -1,6 +1,7 @@
 //===- LayoutOptimizationTest.cpp --------------------------------------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
@@ -12,6 +13,7 @@
 #include "Wafer/Transforms/Tile/BooleanReduction.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LoopSubsetState.h"
+#include "Wafer/Transforms/Tile/ScalarExecution.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 #include "Wafer/Transforms/Tile/TensorInitialization.h"
@@ -31,6 +33,7 @@
 
 #include "gtest/gtest.h"
 
+#include <array>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -2964,6 +2967,7 @@ TEST_F(LayoutOptimizationTest, PayloadSSAExposesCompactPredicatesAndCasts) {
       EXPECT_EQ(steps, 7u);
       EXPECT_EQ(predicates, 1u);
       EXPECT_EQ(scalarComputes, 1u);
+      EXPECT_FALSE(hasCPUScalarAlternative(*module));
       auto query = queryCurrentLayoutAssignment(*module);
       ASSERT_TRUE(query.query) << query.outcome.detail;
       auto assignment = query.query->solve(1048576);
@@ -2998,6 +3002,285 @@ TEST_F(LayoutOptimizationTest, PayloadSSAExposesCompactPredicatesAndCasts) {
       ASSERT_TRUE(mlir::succeeded(planned));
       EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
     }
+}
+
+TEST_F(LayoutOptimizationTest, CPUScalarAlternativeKeepsActualCostAndStorage) {
+  for (auto element : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      SCOPED_TRACE(element);
+      SCOPED_TRACE(extent);
+      std::string type =
+          "tensor<2x" + std::to_string(extent) + "x64x" + element + ">";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+          << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+          << "func.func @entry(%arg: " << type << ", %scale: f32) { "
+          << "%r = wafer.tile.region(%arg, %scale : " << type << ", f32) -> ("
+          << type << ") { ^bb0(%a: " << type
+          << ", %s: f32): %empty = tensor.empty() : " << type
+          << " %r = linalg.generic {indexing_maps = [#id,#id], "
+             "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+          << "ins(%a : " << type << ") outs(%empty : " << type
+          << ") { ^bb1(%x: " << element << ", %old: " << element << "): "
+          << "%product = arith.mulf %s, %s : f32 ";
+      if (llvm::StringRef(element) != "f32")
+        out << "%wide = arith.extf %x : " << element << " to f32 ";
+      out << "%added = arith.addf %"
+          << (llvm::StringRef(element) == "f32" ? "x" : "wide")
+          << ", %product : f32 ";
+      if (llvm::StringRef(element) != "f32")
+        out << "%narrow = arith.truncf %added : f32 to " << element << " ";
+      out << "linalg.yield %"
+          << (llvm::StringRef(element) == "f32" ? "added" : "narrow") << " : "
+          << element << " } -> " << type << " wafer.tile.yield %r : " << type
+          << " } return } } }";
+      std::array<mlir::OwningOpRef<mlir::ModuleOp>, 2> actual;
+      for (bool cpu : {false, true}) {
+        auto module = parse(text);
+        ASSERT_TRUE(module) << text;
+        auto relations = outputRelation(*module);
+        auto prepared = prepareCurrentLayoutInput(*module, relations);
+        ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+        ASSERT_TRUE(hasCPUScalarAlternative(*module));
+        if (cpu) {
+          auto materialized =
+              materializeCPUScalarAlternative(*module, relations);
+          ASSERT_TRUE(mlir::succeeded(materialized));
+          EXPECT_EQ(*materialized, 1u);
+          EXPECT_FALSE(hasCPUScalarAlternative(*module));
+        }
+        auto query = queryCurrentLayoutAssignment(*module);
+        ASSERT_TRUE(query.query) << query.outcome.detail;
+        auto assignment = query.query->solve(1048576);
+        auto layout = query.query->apply(*module, relations, assignment);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), cpu ? 1u : 2u);
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        std::string detail;
+        auto standalone =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+        auto &tile = standalone->front();
+        TileRegionToInstrLoweringSession session(*context);
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*tile.module, session)));
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        EXPECT_EQ(countOps<mlir::memref::LoadOp>(*tile.module), 0u);
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        actual[cpu] = std::move(*planned);
+      }
+      for (uint64_t cpuPrior : {uint64_t{1}, uint64_t{1'000'000'000}}) {
+        analysis::SearchCostPolicy policy;
+        policy.cpuScalarOperationPicosecondsEstimate = cpuPrior;
+        auto cohort = *analysis::SearchCostCohort::create(policy);
+        std::array<analysis::SearchObjective, 2> costs{
+            analysis::UnknownSearchObjective{},
+            analysis::UnknownSearchObjective{}};
+        for (bool cpu : {false, true}) {
+          llvm::SmallVector<analysis::TileInstructionProgram> programs{
+              {TileId(0), *actual[cpu]}};
+          auto cost = analysis::analyzeInstructionProgramAggregateCost(
+              programs, getTargetMemoryPolicy());
+          ASSERT_TRUE(
+              cost.aggregateWork.cpuScalarOperations.exactExecutions.isKnown());
+          EXPECT_EQ(
+              cost.aggregateWork.cpuScalarOperations.exactExecutions.value,
+              cpu ? 1u : 0u);
+          costs[cpu] = analysis::deriveSearchObjective(cost, cohort, programs);
+        }
+        EXPECT_EQ(analysis::compareSearchObjectives(costs[1], costs[0]),
+                  cpuPrior != 1 ? analysis::SearchObjectiveComparison::Worse
+                  : llvm::StringRef(element) == "f32"
+                      // Shared DDR service dominates both F32 alternatives.
+                      ? analysis::SearchObjectiveComparison::Equivalent
+                      : analysis::SearchObjectiveComparison::Better);
+      }
+    }
+}
+
+TEST_F(LayoutOptimizationTest,
+       CPUScalarAlternativeRejectsStorageAndUnsupportedMath) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant : {0, 1, 2, 3, 4, 5, 6, 7, 8}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      std::string type = "tensor<2x" + std::to_string(extent) + "x64xf32>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+             "#scalar = affine_map<(b,m,k)->()>\n"
+             "#zero = affine_map<()->()>\nmodule { "
+             "wafer.tile.module card_id = 0 tile_id = 0 { "
+             "func.func private @unknown(f32) -> f32\n"
+             "func.func @entry(%arg: "
+          << type << ", %scale: f32, %memory: tensor<f32>) { "
+          << "%result = wafer.tile.region(%arg, %scale, %memory : " << type
+          << ", f32, tensor<f32>) -> (" << type << ") { ^bb0(%a: " << type
+          << ", %s: f32, %mem: tensor<f32>): ";
+      if (variant == 1)
+        out << "%seed = tensor.extract %mem[] : tensor<f32> ";
+      else if (variant == 2)
+        out << "%seed = func.call @unknown(%s) : (f32) -> f32 ";
+      out << "%empty = tensor.empty() : tensor<f32> "
+             "%scalar = linalg.generic {indexing_maps = [#zero], "
+             "iterator_types = []} outs(%"
+          << (variant == 5 ? "mem" : "empty")
+          << " : tensor<f32>) { ^bb1(%old: f32): %value = ";
+      if (variant == 3)
+        out << "math.rsqrt %s : f32 ";
+      else
+        out << "arith.addf %" << (variant == 1 || variant == 2 ? "seed" : "s")
+            << ", %s : f32 ";
+      out << "linalg.yield %" << (variant == 8 ? "s" : "value")
+          << " : f32 } -> tensor<f32> ";
+      if (variant == 4)
+        out << "%escape = tensor.extract %scalar[] : tensor<f32> ";
+      out << "%destination = tensor.empty() : " << type
+          << " %result = linalg.generic {indexing_maps = [#id,#scalar,#id], "
+             "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+             "ins(%a, %scalar : "
+          << type << ", tensor<f32>) outs(%destination : " << type
+          << ") { ^bb2(%x: f32, %rhs: f32, %old: f32): "
+             "%sum = arith.addf %x, %rhs : f32 linalg.yield %sum : f32 } -> "
+          << type << " wafer.tile.yield %result : " << type
+          << " } return } } }";
+      if (variant == 6 || variant == 7) {
+        llvm::StringRef dtype = variant == 6 ? "f16" : "bf16";
+        for (size_t offset = 0;
+             (offset = text.find("f32", offset)) != std::string::npos;) {
+          text.replace(offset, 3, dtype.str());
+          offset += dtype.size();
+        }
+      }
+      auto module = parse(text);
+      ASSERT_TRUE(module) << text;
+      auto relations = outputRelation(*module);
+      EXPECT_EQ(hasCPUScalarAlternative(*module), variant == 0);
+      std::string before, after;
+      llvm::raw_string_ostream beforeStream(before), afterStream(after);
+      module->print(beforeStream);
+      auto materialized = materializeCPUScalarAlternative(*module, relations);
+      ASSERT_TRUE(mlir::succeeded(materialized));
+      EXPECT_EQ(*materialized, variant == 0 ? 1u : 0u);
+      module->print(afterStream);
+      if (variant) {
+        EXPECT_EQ(before, after);
+      }
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
+TEST_F(LayoutOptimizationTest, CPUScalarChainsPreserveLoopScopeAndSharedUses) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    const unsigned trips = (extent + 31) / 32;
+    std::string type = "tensor<2x" + std::to_string(extent) + "x16xf32>";
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << "#id = affine_map<(b,m,k)->(b,m,k)>\n"
+           "#scalar = affine_map<(b,m,k)->()>\n#zero = affine_map<()->()>\n"
+           "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+           "func.func @entry(%arg: "
+        << type << ") { %result = wafer.tile.region(%arg : " << type << ") -> ("
+        << type << ") { ^bb0(%a: " << type
+        << "): %c0 = arith.constant 0 : index "
+           "%c1 = arith.constant 1 : index %end = arith.constant "
+        << trips << " : index %loop = scf.for %i = %c0 to %end step %c1 "
+        << "iter_args(%state = %a) -> " << type
+        << " { "
+           "%integer = arith.index_cast %i : index to i64 "
+           "%s = arith.sitofp %integer : i64 to f32 "
+           "%empty0 = tensor.empty() : tensor<f32> "
+           "%first = linalg.generic {indexing_maps = [#zero], "
+           "iterator_types = []} outs(%empty0 : tensor<f32>) { "
+           "^bb1(%old: f32): %product = arith.mulf %s, %s : f32 "
+           "linalg.yield %product : f32 } -> tensor<f32> "
+           "%empty1 = tensor.empty() : tensor<f32> "
+           "%second = linalg.generic {indexing_maps = [#zero,#zero], "
+           "iterator_types = []} ins(%first : tensor<f32>) "
+           "outs(%empty1 : tensor<f32>) { ^bb2(%v: f32, %old: f32): "
+           "%difference = arith.subf %v, %s : f32 "
+           "linalg.yield %difference : f32 } -> tensor<f32> ";
+    for (unsigned index : {0, 1})
+      out << "%empty" << index + 2 << " = tensor.empty() : " << type
+          << " %value" << index
+          << " = linalg.generic {indexing_maps = [#id,#scalar,#id], "
+             "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+             "ins(%"
+          << (index ? "value0" : "state") << ", %second : " << type
+          << ", tensor<f32>) outs(%empty" << index + 2 << " : " << type
+          << ") { ^bb3(%x: f32, %rhs: f32, %old: f32): "
+             "%next = arith.addf %x, %rhs : f32 linalg.yield %next : f32 } -> "
+          << type << " ";
+    out << "scf.yield %value1 : " << type
+        << " } wafer.tile.yield %loop : " << type << " } return } } }";
+    auto module = parse(text);
+    ASSERT_TRUE(module) << text;
+    auto relations = outputRelation(*module);
+    auto materialized = materializeCPUScalarAlternative(*module, relations);
+    ASSERT_TRUE(mlir::succeeded(materialized));
+    EXPECT_EQ(*materialized, 2u);
+    unsigned arithmetic = 0;
+    mlir::Value shared;
+    module->walk([&](mlir::arith::MulFOp op) {
+      EXPECT_TRUE(op->getParentOfType<mlir::scf::ForOp>());
+      EXPECT_FALSE(op->getParentOfType<mlir::linalg::GenericOp>());
+      ++arithmetic;
+    });
+    module->walk([&](mlir::arith::SubFOp op) {
+      EXPECT_TRUE(op->getParentOfType<mlir::scf::ForOp>());
+      EXPECT_FALSE(op->getParentOfType<mlir::linalg::GenericOp>());
+      shared = op.getResult();
+      ++arithmetic;
+    });
+    EXPECT_EQ(arithmetic, 2u);
+    ASSERT_TRUE(shared);
+    EXPECT_EQ(std::distance(shared.use_begin(), shared.use_end()), 2);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(*module), 1u);
+    EXPECT_EQ(countOps<mlir::linalg::GenericOp>(*module), 2u);
+    auto layout =
+        resolveCurrentLayoutsAndBufferize(*module, relations, 1048576);
+    ASSERT_TRUE(layout.succeeded()) << layout.detail;
+    auto lowered = lowerStructuredComputeToTile(*module, relations);
+    ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+    EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 2u);
+    EXPECT_EQ(countOps<mlir::memref::LoadOp>(*module), 0u);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    auto movement = materializeTileBoundaryMovement(*module, relations);
+    ASSERT_TRUE(movement.succeeded()) << movement.detail;
+    std::string detail;
+    auto standalone =
+        createStandaloneTileModules(std::move(module), &detail, &relations);
+    ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+    auto &tile = standalone->front();
+    TileRegionToInstrLoweringSession session(*context);
+    llvm::SmallVector<TileRegionOp> regions;
+    tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+    for (auto region : regions)
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+    ASSERT_TRUE(mlir::succeeded(
+        convertBufferizationCopiesToInstr(*tile.module, session)));
+    ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+    auto work = analysis::analyzeInstructionProgramCost(
+        *tile.module, getTargetMemoryPolicy());
+    EXPECT_TRUE(work.work.cpuScalarOperations.exactExecutions.isKnown());
+    EXPECT_EQ(work.work.cpuScalarOperations.exactExecutions.value, 4u * trips);
+    TileMemoryPlanningFailure failure;
+    auto planned = planTileMemory(std::move(tile.module), &failure);
+    ASSERT_TRUE(mlir::succeeded(planned));
+    EXPECT_EQ(countOps<mlir::memref::LoadOp>(**planned), 0u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+  }
 }
 
 TEST_F(LayoutOptimizationTest, BlockedPredicateUsesSupportedMappedTraversal) {

@@ -163,7 +163,7 @@ physical traversal与unit broadcast分别缓存，key包含shape、dtype、encod
 query结束即销毁，不跨candidate或IR mutation复用；预算、factor成本和可接受组合保持不变。
 本次分解保留原有scalar常量/cast及rank-0计算的执行路径，不建立“标量统一由CT执行”的规则。
 执行单元选择须比较actual计算次数、数据位置、复用，以及RISC-V计算和CT发射/搬运/同步成本；
-广播后的元素数不等于scalar自身的计算次数。本项不声称已实现这种规模与成本选择。
+广播后的元素数不等于scalar自身的计算次数。独立CPU候选的物化和比较边界见下文；payload分解自身不选择执行单元。
 Cast的输入use参与同一activation模型；直接执行由input/result的physical traversal证明决定，不能额外要求family名称相同。
 线性CT的结构检查与target validation边界由11号拥有；证明兼容的不同family不得仅因名称差异生成搬运。
 具有固定destination或非identity坐标的cast先暴露独立结果与publication/broadcast use，避免将destination约束误当成convert唯一执行布局。
@@ -181,6 +181,34 @@ One-Shot产生actual memref stride后，在同一layout transformation内验证c
 | prefill、Q=1及短Q decode | 正式source到包/no-card及实际转换次数/bytes；Q2补充完整TargetModel数值；未恢复设备不签性能或实卡通过 |
 | Private pointwise publication，rank3、1024/1025/1031、FP16/BF16 | 同一dynamic scope的fresh结果精确复制到私有allocation，后续只有已证明不逃逸的只读consumer时，消除publication后由既有last-use规则选择destination；select精确复用false buffer，直接Instr/completion/SPM通过 |
 | Publication的共享读、额外写入、view/escape、跨loop、pipeline绑定及无reader | 共享读保留旧值且不得原地覆盖；其余无充分证明的publication保持原有storage关系，不因消除copy改变可观察读写或pipeline绑定 |
+
+CPU scalar候选的pipeline合同：
+
+- Upstream IR / input：payload已分解、尚未layout query的candidate-owned Linalg；实际rank-0 F32算术、register scalar来源及完整uses。
+- Current stage responsibility：为已有CPU lowering支持的register-only F32 add/sub/mul/div建立独立implementation choice，
+  在原dynamic scope实际替换为同一个Arith operation；其它候选继续持有原CT形式。
+- Output IR / files：verified Linalg/Arith SSA与fresh buffer owner relations；不生成CPU数据读取或未来buffer记录。
+- Downstream consumer：同一layout query、bufferization、StructuredToTile、completion、Instr/SPM/target及06号CostModel。
+- User-level driver / named pipeline：正式search implementation branch；standard/deep沿用原预算与actual trial计费。
+- Explicit non-goals：不把SPM/Tensor数据搬回CPU，不扩大为逐元素CPU循环，不移动计算的loop位置，不接入未支持的MathToLLVM；
+  不改数值顺序、dtype或e-graph规则，不为baseline policy另加估算阈值。
+- Completion criteria：两个choice分别产生actual IR并经过同一leaf，winner保留其actual owner；CPU成本参数敏感性、
+  来源/consumer反例、1024/1025/1031及真实循环/复用范围、直接Instr/SPM/LLVM witness和产品验证闭合。
+
+Eligible输入只能是current scalar Arith链、函数scalar参数或可沿typed TileRegion entry追溯的同类值，
+以及SCF induction value；不能穿过tensor.extract、memref.load或未知定义来假设register位置。
+结果必须仅作为Linalg input以空indexing map使用，不能逃逸为storage/output、DPS init或跨Tile端口。
+每次CPU改写后重新检查后续rank-0依赖；纯算术保持原operation及属性，所有consumer复用同一scalar SSA。
+本项不根据rank-0直接签CPU更便宜。CPU/CT各自的实际计算次数、必要Fill/广播/搬运、completion和SPM结果
+进入同一06号估时；不合资格只是不产生该CPU choice，不能改变CT候选的合法性。
+
+| CPU候选覆盖 | exact输出与直接下游witness |
+| --- | --- |
+| rank3 1024/1025/1031输出，F32 register arithmetic接FP16/BF16/F32合法consumer | 同一scalar SSA只执行其原scope次数，未扩展到broadcast域；实际Instr、SPM及target LLVM |
+| 循环内/外、多个consumer及串联scalar arithmetic | 不外提，不按user数重复计算，CPU工作量与实际loop一致 |
+| SPM来源、未知来源、math.exp/rsqrt、非F32与escaping/DPS结果 | CPU候选不物化，原CT语义与合法域保持 |
+| CPU与CT完整actual候选、不同共享成本参数 | 同一cohort内按实际总成本选择，参数改变可翻转排序；无估算SPM、无winner重放 |
+| 无eligible scope的prefill/Q1/Q2 | 不创建空implementation branch，产品路径和预算不额外消耗trial |
 
 Solver output在mutation前重新验证，然后由唯一layout transformation立即创建或复用actual SSA：same-layout不建op，exact metadata
 view绑定原storage，多个use共享同一`(source, target layout)` conversion，per-use conversion保持独立，unused conversion不生成。

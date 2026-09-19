@@ -115,7 +115,33 @@ Q1第一步相比分解前静态GS 2984→2980、120,131,968→120,104,320 bytes
 Q1主机第二步使用reference KV；本轮尚未验证板端actual KV接续、guard和匹配设备耗时。
 这不表示第3至6步已完成，也不登记设备健康或新增实卡资格。
 
-接续前必须区分三个边界：
+第1、2步修复已提交为`0e231204`。后续CPU成本及执行选择的主机检查点如下，尚未签发新版整批board-ready：
+
+- 06号CostModel新增current非constant scalar Arith工作，按实际loop/branch分别记录site、exact/upper bound和unknown；
+  与runtime issue分开计费，CPU先验1 ns明确未校准，不推算LLVM未来指令或更改SPM准入。
+- 08号物化在原dynamic scope为register-only F32 add/sub/mul/div建立独立CPU choice，保留CT choice；
+  tensor/SPM读取、未知来源、exp/rsqrt、非F32与escaping/DPS结果不进入该候选。串联与共享use继续使用actual SSA。
+  两者共用原standard预算和完整layout、bufferization、completion、actual SPM/target路径。
+- 本轮63项cost、45项layout和8项search routing通过，包含1024/1025/1031、原loop次数、共享use、负例不改IR、
+  同cohort成本翻转及winner进入正式ABI/LLVM。完整canonical增量构建和第二次Ninja no-op通过；
+  CPU计费版本的IR/Analysis/Planning/Conversion/Transforms/Driver及lit均通过，新增choice后的完整Driver及lit也已通过。
+  直接host消费者同步允许F32 add/sub/mul/div；运行时SSA经16 Tile JIT/VS解码，APFloat普通值、舍入、正负零、subnormal和无穷
+  逐bit通过，NaN按分类验证；其它dtype/opcode在sink begin前拒绝。Simulator、41项独立SystemC及lit全部实际通过。
+  最终canonical完整增量构建及随后Ninja no-op通过，日志保存于本轮`host-checks/`。
+  原8/42的prefill、Q1两步及Q2本轮fresh构包/no-card全部通过，Q2完整TargetModel数值通过，两个KV输出exact。
+- 已审计既有visibility、局部mask模板、Q1/Q2和GQA路径；充分证明可见的块不再计算causal mask，边界及全屏蔽语义保持。
+  原三个产品的Instr没有SPM scalar load/store或mapping；Q2没有非constant scalar Arith，prefill为208个块级坐标/条件site，
+  动态次数保持unknown。Q1两步分别有836/1354个整数地址计算site、1672/2708次实际执行，不是新增CPU算术；
+  本轮计费前后原Arith operation类别/数量、Wafer指令次数、GS bytes及NCC次数均保持。各步steady-state NCC仍为0。
+  三项完整source及package均与`0e231204`的定向产物逐字节相同，没有eligible scope额外消耗trial；
+  详细逐步工作量与文件摘要保存在本轮`bounded-comparison.json`。Q1第二步的主机reference KV仍不代替actual board接续。
+  不把rank-0一律外提，也不增加逐元素CPU mask生成。Prefill等价转置和分组GS尚无qualified alternate及matched收益证据，
+  不能用未物化的工作量推断替换当前方案；这一限制继续保留到性能结论。
+- 后续同版本准备覆盖31项attention可执行配置、6项probability-rounding主机数值配置，以及受通用layout/cost影响的
+  51项已通过standard保护配置；去重后共82项主机配置、76项实卡配置。该集合保留原S16整网保护，
+  不重启已取消的deep、独立完整LM S1024/1025或模型三轮优化。大产物使用独立数据盘，主工程仍只有canonical `build/`。
+
+交接时曾区分以下三个边界；表内待做项由上文接续结果更新，不代表当前仍未构建：
 
 | 边界 | 已有内容 | 仍缺内容 |
 | --- | --- | --- |

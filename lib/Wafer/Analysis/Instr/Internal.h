@@ -17,6 +17,8 @@ namespace wafer::analysis::detail {
 
 unsigned getKnowledgeSeverity(ScheduleCostKnowledge knowledge);
 
+bool isCPUScalarOperation(mlir::Operation *operation);
+
 void degrade(ScheduleCostMetric &metric, ScheduleCostKnowledge knowledge,
              ScheduleCostReason reason);
 
@@ -46,6 +48,7 @@ using InstructionWorkCountMember =
 /// silently create a second, partial fact path.
 inline constexpr InstructionWorkCountMember kInstructionWorkCountMembers[] = {
     &InstructionProgramWork::instructions,
+    &InstructionProgramWork::cpuScalarOperations,
     &InstructionProgramWork::asynchronousEvents,
     &InstructionProgramWork::rdmaIssues,
     &InstructionProgramWork::wdmaIssues,

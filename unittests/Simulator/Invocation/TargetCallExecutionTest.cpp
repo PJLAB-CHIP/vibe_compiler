@@ -1599,6 +1599,156 @@ TEST(TargetCallExecutionTest, NativeIntegerThresholdBecomesVSStorageBits) {
   }
 }
 
+// Bounded scalar oracle for the CPU alternative. LayoutOptimizationTest and
+// SearchRoutingTest supply the rank-three materialization and target witnesses.
+TEST(TargetCallExecutionTest, NativeF32ArithmeticProducesExactVSStorageBits) {
+  const std::array<std::pair<uint32_t, uint32_t>, 10> inputs{
+      {{0, 0x80000000},
+       {0x80000000, 0x80000000},
+       {0x40500000, 0x3fe00000},
+       {0xbf800001, 0x3f800000},
+       {0x3f800000, 0x33800000},
+       {1, 0x40000000},
+       {0x7f7fffff, 0x40000000},
+       {0x7f800000, 0xbf800000},
+       {0, 0},
+       {0x7fc00001, 0x3f800000}}};
+  for (uint32_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    std::string diagnostics;
+    auto modules = compileElementwiseTargetModules(diagnostics);
+    ASSERT_TRUE(static_cast<bool>(modules))
+        << llvm::toString(modules.takeError());
+    const auto &descriptor =
+        wafer::getTargetCallDescriptor(wafer::TargetElementwiseOperation::Add);
+    struct ExpectedScalar {
+      uint32_t bits;
+      bool nan;
+    };
+    std::vector<ExpectedScalar> expected;
+    for (const auto &owner : modules->getModules()) {
+      auto &module = const_cast<llvm::Module &>(owner.getModule());
+      auto *entry = module.getFunction("main");
+      entry->deleteBody();
+      llvm::IRBuilder<> builder(
+          llvm::BasicBlock::Create(module.getContext(), "entry", entry));
+      llvm::SmallVector<llvm::Type *> types;
+      for (auto scalar : descriptor.arguments)
+        types.push_back(scalar == wafer::TargetCallScalarType::I64
+                            ? builder.getInt64Ty()
+                            : builder.getInt32Ty());
+      auto callee = module.getOrInsertFunction(
+          descriptor.symbol,
+          llvm::FunctionType::get(builder.getVoidTy(), types, false));
+      auto raw = makeDecodableArguments(descriptor);
+      raw[3] = 2 * extent * 64;
+      raw[5] = 0;
+      raw[6] = 1;
+      uint64_t address =
+          0x100000 + owner.getLaunchSlotId().getValue() * 0x100000;
+      auto *runtime = builder.CreateTrunc(
+          builder.CreateSub(entry->getArg(0), builder.getInt64(address)),
+          builder.getInt32Ty());
+      for (auto [lhs, rhs] : inputs) {
+        auto *left = builder.CreateBitCast(
+            builder.CreateAdd(runtime, builder.getInt32(lhs)),
+            builder.getFloatTy());
+        llvm::APFloat right(llvm::APFloat::IEEEsingle(), llvm::APInt(32, rhs));
+        for (auto opcode : {llvm::Instruction::FAdd, llvm::Instruction::FSub,
+                            llvm::Instruction::FMul, llvm::Instruction::FDiv}) {
+          auto *value = builder.CreateBinOp(
+              opcode, left, llvm::ConstantFP::get(module.getContext(), right));
+          auto *bits = builder.CreateBitCast(value, builder.getInt32Ty());
+          llvm::SmallVector<llvm::Value *> arguments;
+          for (auto [index, field] : llvm::enumerate(raw))
+            arguments.push_back(index < 3 ? builder.getInt64(field)
+                                          : builder.getInt32(field));
+          arguments[1] = builder.CreateZExt(bits, builder.getInt64Ty());
+          builder.CreateCall(callee, arguments);
+          llvm::APFloat oracle(llvm::APFloat::IEEEsingle(),
+                               llvm::APInt(32, lhs));
+          switch (opcode) {
+          case llvm::Instruction::FAdd:
+            oracle.add(right, llvm::APFloat::rmNearestTiesToEven);
+            break;
+          case llvm::Instruction::FSub:
+            oracle.subtract(right, llvm::APFloat::rmNearestTiesToEven);
+            break;
+          case llvm::Instruction::FMul:
+            oracle.multiply(right, llvm::APFloat::rmNearestTiesToEven);
+            break;
+          case llvm::Instruction::FDiv:
+            oracle.divide(right, llvm::APFloat::rmNearestTiesToEven);
+            break;
+          default:
+            llvm_unreachable("closed test opcode set");
+          }
+          expected.push_back(
+              {static_cast<uint32_t>(oracle.bitcastToAPInt().getZExtValue()),
+               oracle.isNaN()});
+        }
+      }
+      builder.CreateRetVoid();
+    }
+    RecordingSink sink;
+    auto result = wafer::compiler::executeTargetCalls(
+        *modules, makeInvocationArguments(*modules), sink);
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    EXPECT_EQ(result->completedTileCount, 16);
+    ASSERT_EQ(sink.commands.size(), expected.size());
+    for (auto [command, reference] : llvm::zip_equal(sink.commands, expected)) {
+      const auto &binary =
+          std::get<wafer::target::TargetElementwiseCommand>(command.payload);
+      EXPECT_EQ(binary.elementCount, 2u * extent * 64);
+      ASSERT_TRUE(binary.rhsScalar);
+      llvm::APFloat actual(llvm::APFloat::IEEEsingle(),
+                           llvm::APInt(32, *binary.rhsScalar));
+      if (reference.nan) {
+        EXPECT_TRUE(actual.isNaN());
+      } else {
+        EXPECT_EQ(*binary.rhsScalar, reference.bits);
+      }
+      EXPECT_FALSE(binary.rhs);
+    }
+  }
+}
+
+TEST(TargetCallExecutionTest,
+     NativeOtherFloatingArithmeticFailsBeforeSinkBegin) {
+  for (unsigned variant : {0, 1, 2, 3, 4}) {
+    SCOPED_TRACE(variant);
+    std::string diagnostics;
+    auto modules = compileElementwiseTargetModules(diagnostics);
+    ASSERT_TRUE(static_cast<bool>(modules))
+        << llvm::toString(modules.takeError());
+    auto &module =
+        const_cast<llvm::Module &>(modules->getModules().front().getModule());
+    auto *entry = module.getFunction("main");
+    llvm::IRBuilder<> builder(&entry->getEntryBlock().front());
+    llvm::Type *type = variant == 0   ? builder.getHalfTy()
+                       : variant == 1 ? builder.getBFloatTy()
+                       : variant == 2 ? builder.getDoubleTy()
+                       : variant == 3
+                           ? llvm::FixedVectorType::get(builder.getFloatTy(), 4)
+                           : builder.getFloatTy();
+    auto *zero = llvm::Constant::getNullValue(type);
+    auto *instruction = llvm::BinaryOperator::Create(
+        variant == 4 ? llvm::Instruction::FRem : llvm::Instruction::FAdd, zero,
+        zero);
+    builder.Insert(instruction);
+    RecordingSink sink;
+    auto result = wafer::compiler::executeTargetCalls(
+        *modules, makeInvocationArguments(*modules), sink);
+    ASSERT_FALSE(static_cast<bool>(result));
+    EXPECT_NE(llvm::toString(result.takeError())
+                  .find("outside the closed native frontend"),
+              std::string::npos);
+    EXPECT_FALSE(sink.began);
+    EXPECT_TRUE(sink.commands.empty());
+  }
+}
+
 // Scalar bitwidth oracles deliberately use scalar LLVM and a recording sink;
 // the rank-three window test below covers the direct address consumer at scale.
 TEST(TargetCallExecutionTest, NativeIntegerMinMaxPreservesRuntimeBitPatterns) {

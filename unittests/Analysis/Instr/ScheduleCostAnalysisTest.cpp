@@ -97,6 +97,61 @@ protected:
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
+TEST_F(ScheduleCostAnalysisTest, CPUScalarsKeepConditionalKnowledgeAndScope) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (unsigned variant : {0, 1, 2, 3}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { func.func @main(%condition: i1, %scalar: f32, "
+             "%tensor: tensor<2x"
+          << extent
+          << "x64xf32>, %vector: vector<32xf32>) -> f32 {\n"
+             "%zero = arith.constant 0 : index\n"
+             "%step = arith.constant 32 : index\n"
+             "%end = arith.constant "
+          << (variant == 3 ? 0 : extent)
+          << " : index\n%false = arith.constant false\n"
+             "%tensor_sum = arith.addf %tensor, %tensor : tensor<2x"
+          << extent
+          << "x64xf32>\n%vector_sum = arith.addf %vector, %vector : "
+             "vector<32xf32>\n"
+             "%result = scf.for %i = %zero to %end step %step "
+             "iter_args(%state = %scalar) -> f32 {\n"
+             "%value = scf.if "
+          << (variant == 2 ? "%false" : "%condition")
+          << " -> f32 {\n%sum = arith.addf %state, %scalar : f32\n"
+             "scf.yield %sum : f32\n} else {\n";
+      if (variant == 1)
+        out << "%product = arith.mulf %state, %scalar : f32\n"
+               "scf.yield %product : f32\n";
+      else
+        out << "scf.yield %state : f32\n";
+      out << "}\nscf.yield %value : f32\n}\nreturn %result : f32\n}}\n";
+      auto module = parse(text);
+      ASSERT_TRUE(module) << text;
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      auto cost = analyze(*module);
+      const auto &cpu = cost.work.cpuScalarOperations;
+      EXPECT_EQ(cost.instructionCount.value, 0u);
+      if (variant == 0) {
+        EXPECT_EQ(cpu.staticSites.value, 1u);
+        EXPECT_EQ(cpu.exactExecutions.knowledge,
+                  ScheduleCostKnowledge::Unavailable);
+        EXPECT_EQ(cpu.lowerBound.value, 0u);
+        EXPECT_EQ(cpu.upperBound.value, (extent + 31) / 32);
+      } else {
+        ASSERT_TRUE(cpu.exactExecutions.isKnown());
+        EXPECT_EQ(cpu.staticSites.value, variant == 1 ? 2u : 0u);
+        EXPECT_EQ(cpu.exactExecutions.value,
+                  variant == 1 ? (extent + 31) / 32 : 0u);
+        EXPECT_EQ(cpu.lowerBound.value, cpu.exactExecutions.value);
+        EXPECT_EQ(cpu.upperBound.value, cpu.exactExecutions.value);
+      }
+    }
+  }
+}
+
 TEST_F(ScheduleCostAnalysisTest, UsesTargetMemoryBoundsForExactHighWater) {
   auto policy = wafer::getTargetMemoryPolicy();
   EXPECT_EQ(policy.spmBase, 65536);

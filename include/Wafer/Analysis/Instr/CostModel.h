@@ -27,7 +27,7 @@ struct SearchCostPolicy {
   /// Stable provenance is part of the comparison cohort. A candidate scored
   /// with one profile can never silently outrank a candidate scored with
   /// another profile.
-  uint64_t profileIdentity = 6;
+  uint64_t profileIdentity = 7;
   SearchCostProfileProvenance profileProvenance =
       SearchCostProfileProvenance::BuiltInEstimate;
   uint64_t ddrNominalBytesPerSecond = 150'000'000'000ULL;
@@ -44,6 +44,9 @@ struct SearchCostPolicy {
   // Shared, uncalibrated runtime submission prior. This includes software
   // command construction/dispatch; it is not a single hardware issue cycle.
   uint64_t instructionFixedPicosecondsEstimate = 1'000'000ULL;
+  // Uncalibrated cost per current-IR scalar Arith operation, not per machine
+  // instruction. LLVM folding/legalization remains outside this work count.
+  uint64_t cpuScalarOperationPicosecondsEstimate = 1'000ULL;
   // Uncalibrated descriptor traversal prior, distinct from software issue.
   uint64_t gatherScatterInnerIterationPicosecondsEstimate = 1'000ULL;
   // Coarse service prior only when detailed work is not available/calibrated.
@@ -88,6 +91,8 @@ public:
            left.noCHopPicosecondsEstimate == right.noCHopPicosecondsEstimate &&
            left.instructionFixedPicosecondsEstimate ==
                right.instructionFixedPicosecondsEstimate &&
+           left.cpuScalarOperationPicosecondsEstimate ==
+               right.cpuScalarOperationPicosecondsEstimate &&
            left.gatherScatterInnerIterationPicosecondsEstimate ==
                right.gatherScatterInnerIterationPicosecondsEstimate &&
            left.unmodeledInstructionPicosecondsEstimate ==
@@ -127,6 +132,7 @@ struct SearchResourceDurations {
   uint64_t nocHopPicoseconds = 0;
   uint64_t spmMovementPicoseconds = 0;
   uint64_t instructionControlPicoseconds = 0;
+  uint64_t cpuScalarPicoseconds = 0;
   uint64_t dteWaitControlPicoseconds = 0;
   uint64_t nccWaitControlPicoseconds = 0;
   /// Actual storage facts used only to break equal-duration ties. They never
@@ -143,17 +149,19 @@ struct SearchResourceDurations {
                lhs.vectorF32Picoseconds, lhs.ddrPicoseconds, lhs.nocPicoseconds,
                lhs.dteEndpointPicoseconds, lhs.dteStartupPicoseconds,
                lhs.nocHopPicoseconds, lhs.spmMovementPicoseconds,
-               lhs.instructionControlPicoseconds, lhs.dteWaitControlPicoseconds,
-               lhs.nccWaitControlPicoseconds, lhs.spmHighWaterBytes,
-               lhs.ddrHighWaterBytes, lhs.spmBufferCount, lhs.ddrBufferCount) ==
+               lhs.instructionControlPicoseconds, lhs.cpuScalarPicoseconds,
+               lhs.dteWaitControlPicoseconds, lhs.nccWaitControlPicoseconds,
+               lhs.spmHighWaterBytes, lhs.ddrHighWaterBytes, lhs.spmBufferCount,
+               lhs.ddrBufferCount) ==
            std::tie(
                rhs.neF16Bf16Picoseconds, rhs.vectorF16Bf16Picoseconds,
                rhs.vectorF32Picoseconds, rhs.ddrPicoseconds, rhs.nocPicoseconds,
                rhs.dteEndpointPicoseconds, rhs.dteStartupPicoseconds,
                rhs.nocHopPicoseconds, rhs.spmMovementPicoseconds,
-               rhs.instructionControlPicoseconds, rhs.dteWaitControlPicoseconds,
-               rhs.nccWaitControlPicoseconds, rhs.spmHighWaterBytes,
-               rhs.ddrHighWaterBytes, rhs.spmBufferCount, rhs.ddrBufferCount);
+               rhs.instructionControlPicoseconds, rhs.cpuScalarPicoseconds,
+               rhs.dteWaitControlPicoseconds, rhs.nccWaitControlPicoseconds,
+               rhs.spmHighWaterBytes, rhs.ddrHighWaterBytes, rhs.spmBufferCount,
+               rhs.ddrBufferCount);
   }
 };
 

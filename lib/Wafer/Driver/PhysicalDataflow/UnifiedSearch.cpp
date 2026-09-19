@@ -134,6 +134,8 @@ void recordStructuralCandidateMetrics(
                                durations.spmMovementPicoseconds);
   recordRegionCandidateCounter(index, "objective-instruction-picoseconds",
                                durations.instructionControlPicoseconds);
+  recordRegionCandidateCounter(index, "objective-cpu-scalar-picoseconds",
+                               durations.cpuScalarPicoseconds);
   recordRegionCandidateCounter(index, "objective-dte-wait-picoseconds",
                                durations.dteWaitControlPicoseconds);
   recordRegionCandidateCounter(index, "objective-ncc-wait-picoseconds",

@@ -114,6 +114,17 @@ pinned `ArithToLLVM.cpp`将`arith.minsi/maxsi/minui/maxui`直接映射到这四�
 | rank3 F16/BF16 `[2,S,64]`、S=1024/1025/1031、16 Tiles、64行block及tail | 每个实际窗口的clamp地址、计数、Tile身份和调用顺序精确；所有行恰好一次 | final target LLVM→JIT→实际decoded RDMA参数；不代签DMA执行或数值readback |
 | vector min/max、其它intrinsic及既有native负例 | 精确unsupported诊断；sink未begin、无partial结果 | 同一host frontend |
 
+#### F32标量算术的主机执行合同
+
+08号CPU scalar候选的直接host消费者接受final LLVM中的F32 `fadd/fsub/fmul/fdiv`：
+输入是原scalar SSA及operation flags，职责仅为白名单验证后由同一native JIT执行；输出的F32 bits经既有VS decoder进入
+同一TargetCommandSink。正式target-model入口使用同一路径，不另写浮点解释器，不改变CT numeric backend或添加memory access。
+依据[LLVM浮点指令语义](https://llvm.org/docs/LangRef.html#fadd-instruction)及pinned LLVM `Instruction.def`、`APFloat`。
+该边界不接受F16/BF16/F64/vector浮点算术、其它opcode、浮点控制流或未知外部数学调用。
+完成条件为运行期SSA的四种F32算术经16 Tile JIT及VS解码，与APFloat nearest-even的普通值、舍入边界、正负零、
+subnormal和无穷结果逐bit比较；NaN只验证分类，不给target未规定的payload作承诺。反例必须在sink begin前拒绝。
+rank3 1024/1025/1031的实际CPU/CT物化、动态scope及正式target LLVM覆盖由08号矩阵提供；host验证不代签CPU硬件数值或耗时。
+
 ### 映射内存标量访问的主机消费者
 
 14号lowering输出SDK mapping call及原生LLVM整数load/store。Host frontend只接受从已注册mapping返回值经GEP得到的
@@ -302,7 +313,8 @@ Bit2FP按logical bit解包为目标F16/BF16/F32的0/1。MaskMove消费相同格�
 覆盖rank3 1024/1025/1031 Bool常量、广播mask、两种半精度、inline与参数常量的source→package→SystemC完整输出；
 直接命令检查false保留、packed tail和不支持的mask编码。本项不增加compiler opcode或修改target ABI。
 
-Native控制流白名单允许i32与F32之间的等宽bitcast，以承接mapped scalar读取和Memset raw value；不由此开放native浮点算术、
+Native控制流白名单允许i32与F32之间的等宽bitcast，以承接mapped scalar读取、Memset raw value及VS immediate；
+F32算术只按上文四种opcode合同开放，不由bitcast额外开放
 pointer reinterpretation或浮点control flow。逐bit检查正负零、普通值、Infinity和NaN payload，经16个Tile的实际host JIT转回同一原始字段。
 
 Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是精确扩宽；写回复用共享`convertTargetScalar`的F32→BF16 nearest-even规则，

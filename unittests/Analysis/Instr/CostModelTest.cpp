@@ -36,6 +36,7 @@ SearchCostPolicy unitCostPolicy() {
   policy.dteFirstMessagePicosecondsEstimate = 1;
   policy.noCHopPicosecondsEstimate = 1;
   policy.instructionFixedPicosecondsEstimate = 1;
+  policy.cpuScalarOperationPicosecondsEstimate = 1;
   policy.gatherScatterInnerIterationPicosecondsEstimate = 1;
   policy.ddrSegmentPicosecondsEstimate = 1;
   policy.dteWaitedEventPicosecondsEstimate = 1;
@@ -621,7 +622,9 @@ TEST(CostModelTest,
       module->print(afterStream);
       EXPECT_EQ(before, after);
     }
-    EXPECT_EQ(times[0], times[1]);
+    // The first comparison precedes any asynchronous work; subsequent
+    // comparisons overlap the already submitted compute.
+    EXPECT_EQ(times[0] + 1, times[1]);
     EXPECT_GT(times[0], 256u * extent);
   }
 }
@@ -831,30 +834,19 @@ TEST(CostModelTest, LoopCarriedIndexRemainsExactForFollowingLoops) {
             << "\n}\nwafer.instr.ncc_join [0]\nreturn\n}}\n";
         auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
         ASSERT_TRUE(module) << text;
-        // Both execute the same static instruction workload. Only the SSA
-        // spelling of the second loop's bound differs.
-        auto constant = module->clone();
-        mlir::OwningOpRef<mlir::ModuleOp> staticOwner(constant);
-        if (carried) {
-          auto function = *constant.getOps<mlir::func::FuncOp>().begin();
-          auto loops = function.getOps<mlir::scf::ForOp>();
-          auto first = *loops.begin();
-          first.getResult(0).replaceAllUsesWith(first.getUpperBound());
-          first.erase();
-        }
-        llvm::SmallVector<TileInstructionProgram> staticPrograms{
-            {wafer::TileId(0), constant}};
-        auto cost = analyzeInstructionProgramAggregateCost(
-            staticPrograms, wafer::getTargetMemoryPolicy());
         llvm::SmallVector<TileInstructionProgram> programs{
             {wafer::TileId(0), *module}};
+        auto cost = analyzeInstructionProgramAggregateCost(
+            programs, wafer::getTargetMemoryPolicy());
         auto objective = deriveSearchObjective(cost, *cohort, programs);
         const auto *estimate = std::get_if<KnownSearchObjective>(&objective);
         ASSERT_TRUE(estimate);
-        EXPECT_FALSE(estimate->usesCoarseEstimate);
+        // Aggregate trip analysis cannot resolve the carried bound; the
+        // current-IR timeline still executes the exact second-loop work.
+        EXPECT_EQ(estimate->usesCoarseEstimate, carried);
         times[carried] = estimate->estimatedDurationPicoseconds;
       }
-      EXPECT_EQ(times[0], times[1]);
+      EXPECT_EQ(times[0] + trips, times[1]);
     }
 }
 
@@ -940,7 +932,8 @@ TEST(CostModelTest, TwoActualSlotsOverlapIdenticalLoadsAndComputations) {
       }
       EXPECT_EQ(bytes[0], bytes[1]);
       EXPECT_EQ(operations[0], operations[1]);
-      EXPECT_EQ(aggregate[0], aggregate[1]);
+      // The two-slot form adds one remainder and one comparison per body.
+      EXPECT_EQ(aggregate[0] + 2 * (trips - 1), aggregate[1]);
       EXPECT_LT(times[1], times[0]);
     }
 }
@@ -993,7 +986,9 @@ TEST(CostModelTest, AffineVisibilityIntervalsRetainLateBoundaryWork) {
       EXPECT_EQ(known->usesCoarseEstimate, conditional);
       times[conditional] = known->estimatedDurationPicoseconds;
     }
-    EXPECT_EQ(times[0], times[1]);
+    // Seventeen invisible iterations and the first visible iteration each
+    // execute three CPU operations before the first CT submission.
+    EXPECT_EQ(times[0] + 18 * 3, times[1]);
     EXPECT_GT(times[0], uint64_t(31 * 64 * extent));
   }
 }
@@ -1224,6 +1219,140 @@ TEST(CostModelTest, MissingWorkStillRanksAndStorageCannotVetoFasterTime) {
             SearchObjectiveComparison::Better);
   fast.aggregateCompute.npuOtherLogicalOps.value = 1024;
   expectCoarse(deriveSearchObjective(fast, cohort));
+}
+
+TEST(CostModelTest, CPUScalarWorkUsesItsDynamicScopeAndOverlapsSubmittedDMA) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (unsigned placement : {0, 1}) {
+      for (uint64_t scalarPrior : {3, 11}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << placement << "/" << scalarPrior);
+        const uint64_t trips = (extent + 31) / 32;
+        const uint64_t bytes = 2 * extent * 64 * 4;
+        std::string type = "memref<2x" + std::to_string(extent) + "x64xf32";
+        std::string ddr = type + ", #wafer.memory<ddr, tensor>>";
+        std::string spm = type + ", #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main(%input: " << ddr
+            << ", %scalar: f32) -> f32 {\n"
+            << "%buffer = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<65536>} : "
+            << spm
+            << "\n%c0 = arith.constant 0 : index\n"
+               "%c1 = arith.constant 1 : index\n%c32 = arith.constant 32 : "
+               "index\n%end = arith.constant "
+            << extent << " : index\n";
+        auto dma = [&] {
+          out << "wafer.instr.rdma %input to %buffer {byte_count = " << bytes
+              << " : i64, inner_bytes = " << bytes
+              << " : i64, src_strides = array<i64: 0, 0, 0>, "
+                 "src_iterations = array<i64: 1, 1, 1>} : "
+              << ddr << " to " << spm << "\n";
+        };
+        if (placement)
+          dma();
+        out << "%outer = arith.addf %scalar, %scalar : f32\n"
+               "%result = scf.for %i = %c0 to %end step %c32 "
+               "iter_args(%value = %outer) -> f32 {\n"
+               "%next = arith.mulf %value, %outer : f32\n"
+               "%twice = arith.addf %next, %next : f32\n"
+               "scf.yield %twice : f32\n}\n";
+        if (!placement)
+          dma();
+        out << "wafer.instr.ncc_join [0]\nreturn %result : f32\n}}\n";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        llvm::SmallVector<TileInstructionProgram> programs{
+            {wafer::TileId(0), *module}};
+        auto cost = analyzeInstructionProgramAggregateCost(
+            programs, wafer::getTargetMemoryPolicy());
+        const auto &cpu = cost.aggregateWork.cpuScalarOperations;
+        EXPECT_EQ(cpu.staticSites.value, 3u);
+        ASSERT_TRUE(cpu.exactExecutions.isKnown());
+        EXPECT_EQ(cpu.exactExecutions.value, 1 + 2 * trips);
+        EXPECT_EQ(cost.aggregateInstructionCount.value, 2u);
+        EXPECT_EQ(cost.aggregateWork.nonTerminalNCCJoins.exactExecutions.value,
+                  0u);
+        auto policy = unitCostPolicy();
+        policy.cpuScalarOperationPicosecondsEstimate = scalarPrior;
+        auto cohort = *SearchCostCohort::create(policy);
+        auto actual = deriveSearchObjective(cost, cohort, programs);
+        auto aggregate = deriveSearchObjective(cost, cohort);
+        const auto *known = std::get_if<KnownSearchObjective>(&actual);
+        const auto *serial = std::get_if<KnownSearchObjective>(&aggregate);
+        ASSERT_TRUE(known && serial);
+        EXPECT_FALSE(known->usesCoarseEstimate);
+        const uint64_t cpuTime = (1 + 2 * trips) * scalarPrior;
+        EXPECT_EQ(known->durations.cpuScalarPicoseconds, cpuTime);
+        EXPECT_EQ(serial->durations.cpuScalarPicoseconds, cpuTime);
+        // The unit service model charges DDR read and SPM write separately;
+        // terminal NCC costs two ps. Submission and CPU work after it fit
+        // inside this actual transfer.
+        EXPECT_EQ(known->estimatedDurationPicoseconds,
+                  2 * bytes + 2 + (placement ? 0 : cpuTime));
+        EXPECT_LE(known->estimatedDurationPicoseconds,
+                  serial->estimatedDurationPicoseconds);
+      }
+    }
+  }
+}
+
+TEST(CostModelTest, CPUScalarCostChecksCohortBoundsAndOverflow) {
+  // Bounded arithmetic oracle complements the rank-three actual-IR case.
+  auto policy = unitCostPolicy();
+  policy.cpuScalarOperationPicosecondsEstimate = 7;
+  auto cohort = *SearchCostCohort::create(policy);
+  InstructionProgramAggregateCost cost;
+  cost.aggregateWork.cpuScalarOperations.exactExecutions.value = 1031;
+  auto baseline = deriveSearchObjective(cost, cohort);
+  ASSERT_TRUE(std::holds_alternative<KnownSearchObjective>(baseline));
+  EXPECT_EQ(
+      std::get<KnownSearchObjective>(baseline).estimatedDurationPicoseconds,
+      1031u * 7);
+  auto slower = cost;
+  ++slower.aggregateWork.cpuScalarOperations.exactExecutions.value;
+  EXPECT_EQ(
+      compareSearchObjectives(baseline, deriveSearchObjective(slower, cohort)),
+      SearchObjectiveComparison::Better);
+  ++policy.cpuScalarOperationPicosecondsEstimate;
+  EXPECT_EQ(compareSearchObjectives(
+                baseline,
+                deriveSearchObjective(cost, *SearchCostCohort::create(policy))),
+            SearchObjectiveComparison::Incomparable);
+  policy.cpuScalarOperationPicosecondsEstimate = 0;
+  EXPECT_TRUE(mlir::failed(SearchCostCohort::create(policy)));
+  auto &cpu = cost.aggregateWork.cpuScalarOperations;
+  cpu.exactExecutions.knowledge = ScheduleCostKnowledge::Unavailable;
+  cpu.upperBound.value = 1031;
+  auto unknown = deriveSearchObjective(cost, cohort);
+  expectCoarse(unknown);
+  EXPECT_EQ(
+      std::get<KnownSearchObjective>(unknown).estimatedDurationPicoseconds,
+      1031u * 7 + unitCostPolicy().unmodeledInstructionPicosecondsEstimate);
+  cpu.exactExecutions.knowledge = ScheduleCostKnowledge::Known;
+  cpu.exactExecutions.value = std::numeric_limits<uint64_t>::max();
+  expectCoarse(deriveSearchObjective(cost, cohort), true);
+
+  InstructionProgramAggregateCost tiles;
+  tiles.tileCosts.resize(2);
+  tiles.tileCosts[0].work.cpuScalarOperations.exactExecutions.value = 20;
+  tiles.tileCosts[1].work.cpuScalarOperations.exactExecutions.value = 10;
+  tiles.tileCosts[1].instructionCount.value = 30;
+  auto parallel = deriveSearchObjective(tiles, cohort);
+  ASSERT_TRUE(std::holds_alternative<KnownSearchObjective>(parallel));
+  // Per-Tile services are 140 and 100 ps. Independent resource maxima must
+  // not be summed into a nonexistent 170 ps Tile.
+  EXPECT_EQ(
+      std::get<KnownSearchObjective>(parallel).estimatedDurationPicoseconds,
+      140u);
 }
 
 } // namespace
