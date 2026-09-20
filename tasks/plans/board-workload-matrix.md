@@ -27,7 +27,8 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 ### 当前版本attention与mask改进方案
 
 用户要求先收敛前述讨论的方案，空间切分与搜索预算问题暂缓。本节属于既有`board-testing`，
-算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)。
+算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)，
+其余attention计算的整改合同见[05号4.7](../05-local-compute-normalization.md#47-attention行级计算整改合同)。
 本轮只整理设计与实施合同；下面的优化尚未实施，不重启此前搜索、板测队列或TDMA故障boot。
 已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
 按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
@@ -35,7 +36,7 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 
 #### 本轮范围与实际能力边界
 
-目标是减少mask和重复准备的动态指令、DDR/SPM搬运，保留现有attention输入语义与通用性。
+目标是减少mask、重复准备及softmax/finalize多余计算的动态指令与DDR/SPM搬运，保留现有attention输入语义与通用性。
 覆盖causal、bool/additive mask、MHA/GQA、单/多token decode、不等长及tail。
 局部模板随actual candidate的`BQ×BK`生成，两轴可不等，tail使用实际剩余行列数；物理padding由选定layout决定。
 本版不新增动态长度入口、paged KV、跨调用准备缓存或任意Python mask callback。
@@ -52,6 +53,26 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 | 任意输入mask整块跳过 | 数据内容不能从shape推出 | 保持按块消费；只凭current常量/位置关系跳块，不额外扫描整张mask |
 | TDMA timeout | 首轮mask铺块与相邻copy是优先候选，尚无唯一fault packet/PC | 优化与根因两条验收分开，保留现场证据和正常厂商退出 |
 
+#### Attention其余计算的整改记录
+
+本次只读审查核对源码与已有最终Instr，用户要求将以下三项一并记录；它们都是软件生成方式的问题。
+当前仅记录待整改事项，尚未修改或验证新实现；不作为causal加法主路径的前置。
+
+| 问题 | 已确认的代码与指令证据 | 整改及验收入口 |
+| --- | --- | --- |
+| softmax逐score判断负无穷 | `AttentionMath.cpp::computeAttentionExponential`被`OnlineAttentionDecomposition.cpp::createProbability`用于整个score块；全可见分支也生成完整`BQ×BK` Eq、Bit2Fp、`-inf` fill及MaskMove | 05号4.7第1项：改为行级maximum处理；最终Instr无该整块链，old-state与FD merge一并核对 |
+| 最终零行结果使用整块覆盖 | `OnlineAttentionMaterialization.cpp::materializeOnlineAttentionFinalize`生成select；最终Instr的Eq已在行上，但条件随后广播为`BQ×D`数值mask，再fill零和MaskMove | 05号4.7第2项：在行归一化系数表达来源语义；无专用整块零源、mask广播及覆盖 |
+| 广播分母后重复求倒数 | 同一finalize生成带广播map的Div；最终Instr先铺开行sum，再对`BQ×D`执行Recip、Mul | 05号4.7第3项：先求行倒数，再广播乘法；Recip处理范围只含实际行数 |
+
+审计定位文件为`/data/vibe_compiler-validation/attention-search-audit-20260920/compiler-ir/instruction/tile_00000.mlir`：
+96--105行是全可见分支的整块指数判断，206--215行是边界分支的同一问题，259--273行是最终归一化与零行覆盖。
+该已有产物的实际块为`BQ=BK=256、D=128`，仅用于定位；整改和测试不能固定这些尺寸。
+源码审计基于`b496f71c`，上述已有产物只作结构证据；本次未重新编译、执行设备或把旧产物当新测试输入，不代表整改后的收益。
+
+同时核对了通用除法lowering和CRT的sqrt/rsqrt/exp/ln入口：前者已为Recip+Mul，后者直接调用相应厂商指令，
+未发现额外数值扫描或特殊值select。BatchNorm的来源epsilon、StableHLO Gather规定的clamp及原bool mask属于原算子语义，
+不列为任意防御逻辑删除；这次审查也不代表全部编译器路径已无其它问题。
+
 #### 实施顺序与直接产物
 
 各步提交时同步其owner编号设计、当前接口及实际测试；未完成步骤不能用前一步通过代签。
@@ -62,8 +83,9 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 | 2 | 08/10号：DPS与实际准备操作的共同placement | 同调用内bias load/convert复用及score原地Add；其余实际fill沿同一placement处理；交给fresh completion/SPM | 初始化位于合法共同复用域；无依赖名字的hoist、无猜测alias、无新增可避免join；实际SPM offset验证成功 |
 | 3 | 06号：actual SCF可见域 | 对已证明连续的可见域收紧KV loop；全可见与边界body保持原state SSA；直接消费步骤1/2结果 | 不可见块无读取/计算/更新；边界覆盖exact；不能证明的特殊mask保持原精确计算 |
 | 4 | 10/11/14号：其余predicate消费链、Instr、TargetCall/CRT | 常量Bit2Fp折叠；非恒定compare→Bit2Fp合成厂商value结果比较；交给原completion/SPM与target | bool和值结果的dtype/span/packet/模型一致；多use与不适用tuple保留正确路径；不作为causal Add的前置 |
-| 5 | 16号：完整主机产品与性能核对 | fresh source/reference→package/no-card、必要TargetModel与指令/字节统计；准备当前版本板测包 | 下表各分支及受影响共享算子通过；数字区分静态site、动态执行次数、模型估时和实测 |
-| 6 | 15/16号：设备恢复后的受控资格与TDMA调查 | 当前CT fill机制case→当前attention→受影响保护矩阵，正常厂商清理；每次异常立即停止 | 本轮数值/guard/cleanup与健康日志闭合后才签对应资格；TDMA根因另按已有定位合同判定 |
+| 5 | 05/08/10/11号：attention行级计算 | 按05号4.7收敛指数相关判断、零行归一化系数及行倒数；明确SSA/maps交给layout和现有lowering | 上述三项逐项核对最终Instr；FA/FD、空块接续、全屏蔽行、实际tail及SPM验证闭合；不新增输入扫描或修补 |
+| 6 | 16号：完整主机产品与性能核对 | fresh source/reference→package/no-card、必要TargetModel与指令/字节统计；准备当前版本板测包 | 下表与05号4.7各分支及受影响共享算子通过；数字区分静态site、动态执行次数、处理元素数、模型估时和实测 |
+| 7 | 15/16号：设备恢复后的受控资格与TDMA调查 | 当前CT fill机制case→当前attention→受影响保护矩阵，正常厂商清理；每次异常立即停止 | 本轮数值/guard/cleanup与健康日志闭合后才签对应资格；TDMA根因另按已有定位合同判定 |
 
 步骤1的bias及其load必须在实际IR中物化，步骤2的placement在相应操作已经存在的边界执行。
 同一PhysicalMovementPlacement实现可在需要的实际Tile/Instr边界调用，不能依赖后续会出现的buffer或另建attention专用搬运通路。
@@ -89,6 +111,7 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 | additive标量/按行/按head/完整块、finite负值与`-inf` | 保持原Add/cast顺序；不偷换成bool覆盖或跳块 | source score region→Instr及原容差/特殊值位置 |
 | Q=1、Q>1 decode、实际KV两步接续、GQA | 只在已证明前缀全可见时省causal；旧KV prefix exact，FD merge及输出owner不变 | fresh两步payload、TargetModel及设备actual KV接续 |
 | 原始source/线上状态全屏蔽行与`-inf - -inf` | 保留SDPA zero/eager特殊值分歧；finite输入与NaN/Inf机制case分开 | 原数学reference及模型，不用非法随机输入替代普通资格 |
+| softmax指数、最终零行结果、行sum倒数 | 按05号4.7检查行级处理范围；无对应整块防御链或重复Recip，actual block/tail与FA/FD均覆盖 | fresh source→最终Instr/TargetModel→SPM/package/no-card及指定实卡，不以源码select减少代签 |
 | value/BOOL relation、VV/VS/VuV/已准入VuVLoop、tail | numeric0/1及packed bit span分别验证；原i1 consumer不丢失，不对未测整数tuple宣称支持 | Instr verifier→同一CRT/SDK packet→模型及设备guard |
 | 模板重复/不同pattern、同Tile多head、独立Tile、可变源/alias/逃逸 | 不变准备恰在证明范围复用；其它保留必要copy；所有buffer有owner | actual load/fill次数、read/write/lifetime与SPM offset |
 | 原地score可用/旧score仍可观察、padding/非连续view | causal bias padding为0，Add遍历匹配；其余MaskMove的mask为canonical0/1；不越界、不删必要copy | layout→bufferization→Instr，完整span与guard |

@@ -512,8 +512,8 @@ DPS或copy消除不得绕过该target约束。
 Tiling将实际query/K2 offset分别加到前两项，end保持同一有效域；positions是标量输入，其访问map为空。
 `zero_fully_masked`保存来源算子的全屏蔽行语义：SDPA为true，普通eager softmax图为false；仅在最终sum为零时决定
 返回零或保留原除法特殊值。两字段属于现有op的语义，不是算法或精度选择。
-局部score或旧maximum为负无穷时，先将指数的输入选择为负无穷，使该贡献为零并避免`-inf - -inf`污染后续块；
-有限值仍执行原来的subtract与exp，不在exp之后重复生成完整张量select。
+当前实现对局部score或旧maximum逐元素判断负无穷，再选择指数输入，使空贡献为零；
+有限值仍执行原来的subtract与exp。该实现会在整个score块生成比较和select，行级整改合同见4.7。
 
 causal可见性使用真实`key_position <= query_position`及有效KV域。位置经空间切分、temporal tiling和tail后仍由
 SSA/明确IR字段解释，不能用局部Q/K shape差重新推断。普通prefill、带cache的多token decode、单token decode共用该规则。
@@ -658,14 +658,56 @@ VV/VS/VuV/VuVLoop只使用对应dtype、单位、tail和物理遍历已有证明
 普通broadcast优先消费合法VS/VuV形式，无法直接消费的映射保留有证明的GatherScatter/copy。
 非同值规律不能用两条fill伪造；位置模板由整数常量计算或原predicate产生，不按mask名字选择指令。
 
-本轮保留当前softmax及`zero_fully_masked`实现，不把行级maximum重写或额外特殊值处理设为causal加法实现的前置。
-原有运算仍受通用数值比较、fill复用和DPS优化覆盖；exp/exp2、其它算术顺序及验收容差保持。
+causal加法先独立落地；softmax及finalize的行级整改由4.7单独规定，不作为causal加法实现的前置。
+原有运算仍受通用数值比较、fill复用和DPS优化覆盖；保留`math.exp`、既定dtype及验收容差。
 
 采用[FlexAttention](https://pytorch.org/blog/flexattention/)区分块可见性与score修改的组织方式，
 以及[FlashInfer variants](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/variants.cuh)
 分离mask和logits transform的方式；它们的任意callback、paged KV和GPU线程级predicate不直接作为本版本接口或硬件能力。
-[FlashAttention softmax](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/softmax.h)
-仅作为行级保护候选的比较依据。本目标的SPM mask、CT/TDMA指令和completion成本必须由实际实现验证。
+本目标的SPM mask、CT/TDMA指令和completion成本必须由实际实现验证。
+
+### 4.7 Attention行级计算整改合同
+
+输入为当前attention的局部score及`m/l/A`状态；输出仍是现有Linalg/Tensor/SCF和Tile/Instr。
+目标是把只依赖行状态的工作留在行向量上，消除正常输入也会执行的整块判断、填充、覆盖和重复倒数。
+`BQ/BK/D`分别取actual candidate的query行数、KV块长和输出列数，包含实际tail；batch/head前缀沿实际indexing maps表达，不预设固定块长。
+问题证据和实施步骤在[统一计划](plans/board-workload-matrix.md#attention其余计算的整改记录)，资格状态由`progress.md`拥有。
+
+Pipeline position：
+
+- Upstream IR / input：tiled `online_attention`、FD contribution states、finalize的行sum与accumulator，及来源`zero_fully_masked`语义。
+- Current stage responsibility：05号decomposition与merge/finalize物化明确的行SSA；08/10/11号保留其广播依赖和实际计算范围。
+- Output IR / files：行级maximum处理、指数缩放和归一化系数，局部score的subtract/exp及输出multiply；使用既有op与DPS/maps。
+- Downstream consumer：layout/bufferization、StructuredToTile、Instr、completion/SPM及原package/TargetModel/runtime。
+- User-level driver / named pipeline：现有`wafer-compile`和attention相关named transformations共用同一实现。
+- Explicit non-goals：不新增NaN/Inf扫描、输入修补、clamp、通用safe算子或运行时回退；不改变原score region、exp算法、dtype、KV顺序或验收容差。
+- Completion criteria：下面三项的最终Instr结构及覆盖矩阵闭合；fresh产品数值、实际SPM规划及统一板测计划规定的验收通过。
+
+整改要求：
+
+1. **Softmax指数计算**：按行处理需要的maximum，再让整个`BQ×BK` score直接执行subtract与exp。
+   删除为此生成的逐score负无穷比较、Bit2Fp、整块`-inf`源和MaskMove。
+   原maximum state与供指数计算的行值用明确SSA区分；old-state缩放和FD merge使用同一行级规则，不能把临时值写回maximum语义状态。
+2. **最终输出的零行结果**：来源要求全屏蔽行输出零时，在行归一化系数中表达；删除专用于该判断的`BQ×D`数值mask、零源和MaskMove。
+   `zero_fully_masked=false`保持来源的结果语义。合法mask产生的空行按算子合同处理，不扩大成对非法输入的通用防御。
+3. **分母倒数**：先在行sum上计算倒数，再广播用于输出multiply；最终Instr的Recip只消费行向量。
+   不先将分母铺成`BQ×D`后重复求倒数，不额外生成整块倒数计算；普通broadcast按既有VS/VuV/GS规则实现。
+
+[FlashAttention softmax实现](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/softmax.h)
+将maximum处理和最终归一化系数放在行循环中，再用于列元素。本合同采用这种计算范围划分，继续使用本目标既有指数和倒数指令。
+普通纯图的broadcast/逐元素等价优化仍由既有e-graph规则拥有，不在attention之外新增同义greedy旁路。
+可消除的工作按actual use-def与indexing maps判定，不能根据buffer名字或样本输入推断。
+
+| 输入等价类/结构分支 | exact检查或typed失败 | 直接下游witness |
+| --- | --- | --- |
+| FP16/BF16，rank≥3，S1024/1025/1031，多Tile、多KV block；无mask、causal全可见/边界 | 指数相关处理只覆盖行状态；score无上述整块比较/fill/MaskMove链，保留原subtract/exp与窄化位置 | tiled online→Linalg→Instr，完整数值reference |
+| bool/additive合法mask；中间空块后出现可见块、最终全屏蔽行 | `m/l/A`正确接续；SDPA零输出与eager原语义分别保持；空行条件不扩成完整score/output mask | online recurrence→finalize→TargetModel及完整输出 |
+| FA/FD、多contribution、空局部贡献与非空贡献合并 | maximum state保持原值，行缩放及merge的owner、覆盖和dtype正确 | 实际state endpoints/merge→Instr→输出 |
+| 多种实际`BQ/BK/D`、矩形块、主块/tail、不同layout | Recip只遍历行向量及其布局padding，不随D重复；输出整块Recip和零行覆盖链为零 | actual Instr工作量/物理span→completion/SPM→package/no-card |
+| 旧state仍被使用、共享operand、非法map/type/region | 保留必要copy和observable use；沿现有verifier/typed failure拒绝非法结构 | bufferization/owner/lifetime验证及原拒绝测试 |
+
+指令条数、处理元素数、broadcast字节、实际allocation/SPM峰值分别统计，不能把元素数减少直接写成issue数或设备耗时同比下降。
+共享路径的普通Add/compare/select和原合法mask继续回归；输入使用合法有限Q/K/V，既有mask的`-inf`按其真实语义生成。
 
 ## 5. Attention Algorithms
 

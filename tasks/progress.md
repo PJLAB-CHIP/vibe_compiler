@@ -61,6 +61,10 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 动态长度入口、paged KV和跨调用缓存延后；空间切分与搜索预算继续暂缓。
 方案已明确模板尺寸随实际tiling及tail确定，资源量和准备次数按实际布局与复用域描述，移除固定尺寸的正文示例。
 本轮仅完成方案，新增优化尚未实施；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
+用户随后要求记录其它计算中的多余开销：softmax逐score负无穷判断、最终零行结果的整块覆盖、广播分母后重复求倒数。
+三项已归入同一`board-testing`的[整改记录](plans/board-workload-matrix.md#attention其余计算的整改记录)和
+[05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，均待实施；
+接在causal主路径及其余predicate整改之后、完整主机/板端验收之前，不作为causal加法的前置。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。

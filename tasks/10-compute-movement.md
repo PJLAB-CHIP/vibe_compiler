@@ -229,6 +229,7 @@ QK contraction
 
 固定展开顺序为QK(K1 reduction)→原score region（scale与bool/additive mask）→位置定义的causal/有效KV域屏蔽→row maximum→
 old-state normalization→probability→row sum→PV(K2 reduction)。位置屏蔽的当前实现和改进合同分别见05号4.5、4.6。
+softmax与finalize的行级计算整改见05号4.7；broadcast依赖必须保留到直接consumer，不能把行倒数重新扩大成整个输出上的计算。
 Score/probability destination只覆盖current M tile×K2 block及batch/head coordinates；QK/PV和state update使用普通DPS
 Linalg，保留既有SCF iter args；current arithmetic和dtype语义不变。
 展开只保留tensor SSA数值与SCF state语义；通用循环destination绑定由08号layout/bufferization阶段负责。
