@@ -37,7 +37,7 @@
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9
 # DMA: DMA packet byte geometry: 156 configurations passed
 # GEMM: GEMM final registers: 2161 configurations passed
-# FILL: CT fill: 3276 configurations, two whole-range issues each
+# FILL: CT fill: 1638 configurations, two whole-range issues each
 # RELATION: relation SDK dispatch: 1620 configurations passed
 
 # ARGMAX-LABEL: <wafer_tx81_peripheral_argmax>:

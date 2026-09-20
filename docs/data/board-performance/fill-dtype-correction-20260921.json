@@ -1,0 +1,128 @@
+{
+  "date": "2026-09-21",
+  "work_item": "board-testing",
+  "base_commit": "f32e3a85b7379c18e26222b80eb013485f2d26a0",
+  "correction": {
+    "owner": "implementation choice, not a vendor or user requirement",
+    "before": "CRT replaced floating fill format with same-width integer; cost classified all fills as integer",
+    "after": "XorVV and AddVS preserve destination Data_Format; cost follows actual dtype; existing packed BOOL physical-byte contract unchanged",
+    "scalar_one_encoding": {
+      "F16": {
+        "format": 2,
+        "bits": "0x3c00"
+      },
+      "BF16": {
+        "format": 3,
+        "bits": "0x3f80"
+      },
+      "F32": {
+        "format": 5,
+        "bits": "0x3f800000"
+      }
+    }
+  },
+  "board_findings": {
+    "boot_id": "f8a96643-1b42-4329-a3fc-08ef49df0e0a",
+    "add": "fresh FP16 exact output, guard and vendor cleanup passed",
+    "attention": "diagnostic loaded, returned DDR trace, then rejected due to TDMA alarm",
+    "first_ct_status": {
+      "tiles": 16,
+      "site": "first nonzero F32 fill, changed by CRT to INT32 AddVS",
+      "scalar": "0x3f800000",
+      "count": 256,
+      "csr_before": 0,
+      "csr_after": 2048,
+      "tdma_stream_at_first_ct_status": 0
+    },
+    "tdma_causality": "unknown; early CT status is not a TDMA fault PC",
+    "postmortem": "two 1024-byte spans read through GET_TILE_MEM after cleanup contained zeros; subsequent-write and cleanup effects not excluded, not an instruction-time result",
+    "new_compute_after_fault": false,
+    "dtype_fix_board_qualified": false
+  },
+  "host_checks": {
+    "production_crt_interception_configurations": 1638,
+    "actual_sdk_constructor_and_issuer_configurations": 504,
+    "actual_sdk_numeric_execution": false,
+    "schedule_cost_tests": 43,
+    "layout_cost_test": 1,
+    "instr_to_llvm_lit": 30,
+    "crt_and_device_link_lit": 2,
+    "canonical_build": "passed",
+    "second_build": "Ninja no-op"
+  },
+  "format_flow_review": [
+    {
+      "scope": "IR type to logical format to vendor code",
+      "result": "13 enum codes match vendor definitions; floating types map directly, no width-based integer substitution"
+    },
+    {
+      "scope": "arithmetic VV/VS/VuV, relation value/BOOL, logic, transcendental, activation, reduce",
+      "result": "reviewed lowering format operand and CRT macro dispatch; format forwarded unchanged; relation uses input format independently from result representation"
+    },
+    {
+      "scope": "GEMM/Conv",
+      "result": "input, output and GEMM partial-sum formats flow from their typed operands separately"
+    },
+    {
+      "scope": "explicit conversion",
+      "result": "separate typed source/destination routes; not inferred from equal storage width"
+    },
+    {
+      "scope": "physical storage",
+      "result": "DMA unsigned/64-bit byte packets, packed BOOL fill and mapped scalar stores are storage encodings, not changes to ordinary arithmetic dtype"
+    }
+  ],
+  "review_limit": "bounded source/ABI/SDK encoding review, not a new hardware numeric qualification of every instruction",
+  "diagnostic_prepared": {
+    "ready": "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/ready.json",
+    "elf_sha256": "65bfb60b4e20208ce5a0ee91a5dd00b95d0bcb25b56e034fc27dd29d5253b17d",
+    "manifest_sha256": "7da94f4f99457e52cfbf848e60ec263e79b79eb4770e4b1642203f69cdebce12",
+    "no_card": true,
+    "original_abi_calls_checked": 159530,
+    "crt_change": "XorVV/AddVS preserve destination dtype",
+    "first_ct_status_and_tdma_ring_separate": true,
+    "board_execution": false,
+    "input_reference": "freshly regenerated; existing original LLVM path retained deliberately for fault diagnosis, not a newly searched winner"
+  },
+  "validation_corrections": [
+    "F32 low-CPU-cost comparison returned Equivalent after typed cost correction; obsolete integer-path expectation corrected and test passed",
+    "Fresh-input tool rejected existing output directory before preparation; rerun in a new directory passed; failed attempt retained"
+  ],
+  "files": {
+    "/data/vibe_compiler-validation/fill-dtype-20260921/build.log": "95efe7b7881ca831bd55d583b506cb38bd1aa062700cb3d684b26368d1df1774",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/build-final.log": "1cecb3147ac5a0893092c427cf353253cf1e2ceb82dd1bfe3c9224f06dd44258",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/lit.log": "0340049e4fcc8905b2b90776bd04d512ca319ae0b312096c4b549a94da2bdeca",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/cost-tests.log": "1e002d3573af5dcc53d5222c589ddac32817299b59926c749964267deae472da",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/layout-cost-test.log": "c9cbaee9bb7af5b2d80c856979236aea1fa3daaf54f8ce7979a1d12a275f45e0",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/layout-cost-test-final.log": "5b5b90342dc4e58b83217e96dbddf991e1284500e883cb5e31c1a3e33ca4d329",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/target-lowering-tests.log": "70f923a7f1aa69018cc72a642e9fdec3eb490b2315799b5881e3a39e74feba01",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/sdk-ct-packet-audit.json": "37219617c9064f4b35bcb4f7f65188d34a0bc9013ed9f463a1c5fd5b27745d3c",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/check-sdk-ct.py": "b523a2d152f88e57e7faa7d8212711e9dd87076ea0408b3844f0efeb6d776e1d",
+    "/data/vibe_compiler-validation/fill-dtype-20260921/diagnostic-host.log": "3d173cc0d9eeecc1372bc1c81944305ee18799250dcc8054de599d5d23bf7ea1",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/ready.json": "0df5fb19c3e8cf78bfe23d3fb8d3f610c1ae9fd22ce6979f95b82847c4f04e78",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/build-result.json": "bde4588f368b67e2a25616d1a981c1edd5b616709ea903d68e4ad81227d1fe11",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/fresh-result.json": "ab995b5ba03c486161714c47034a995cb2402691bb58468f58c49a164f07dfc4",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/fresh-dtype-inputs.log": "2ed7fcf616a67ae7823d493fbc3b67f57a6cfeda13c99b34e43a6676df0894db",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/loader-audit.json": "1b6df2f1af8a8fca0a2a99161c819d06f4aab276ec434e18005d6149fdf095e3",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/elf-audit/results.json": "1407e944ec1afffb0a51c88e627dda7a526119b35198c1fba7eb91ce52e69b10",
+    "/data/vibe_compiler-validation/tdma-fatal-trace-20260921/debug-checks.json": "deef10fc97b233d4235c4d6eff27a6868f60424319b557128b939c3f6b1b6bc1",
+    "/data/vibe_compiler-validation/tdma-original-monitor-trace-20260921/launch/record.json": "b33f6f6f5b9ac4be48ff934fe214cfc38aa2cb921df886ff5e93300fd529f2c3",
+    "/data/vibe_compiler-validation/tdma-original-monitor-trace-20260921/launch/first-ct-exception.json": "5657e23c2ca5791343ff1138c235c5a6ec5f0f7ccc37b17ced8a4fc52fe3589f",
+    "/data/vibe_compiler-validation/tdma-original-monitor-trace-20260921/launch/trace.i8.raw": "63771d77388c2f5e8f37189cf1257e8838b5643e885c240a99a883a765208eba",
+    "/data/vibe_compiler-validation/tdma-original-monitor-trace-20260921/postmortem-spm/tile-4-fill.raw": "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+    "/data/vibe_compiler-validation/tdma-original-monitor-trace-20260921/postmortem-spm/tile-12-fill.raw": "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+    "/data/vibe_compiler-validation/add-reboot-20260921-f8a96643/launch/record.json": "b717b96e1c32a73d5777771d39d4fb2b8c881a1a4a54694e6832b2620fc1ade8"
+  },
+  "source_sha256": {
+    "runtime/crt/src/wafer_tx81_crt.c": "42a9888a42677de0b47cbaeb2b9c3032a5b38f1a8d143df629692d04c4094fba",
+    "lib/Wafer/Analysis/Instr/ExecutionCost.cpp": "248e28692092b3a7f9c2f8598f9c12ab4d4689a8f07698e4ab8b31aa36292943",
+    "lib/Wafer/Conversion/InstrToLLVM/ComputeTargetCallLowering.cpp": "462cb6fe6dcca06b18242dd26614b5a5a4f7fe24510a830e9b4c5a72cdf9f6e7",
+    "lib/Wafer/Conversion/InstrToLLVM/PeripheralTargetCallLowering.cpp": "0faadedc714927609d2fd6ab2e9dcea1e386c90e917614c39597e64cf0d62926",
+    "lib/Wafer/Conversion/InstrToLLVM/TargetLoweringVerification.cpp": "40af9ed7ca1abf5e7821ae59d3a3d019dbb548c75e3360af816f00f80a42d145",
+    "lib/Wafer/Target/TargetFormat.cpp": "55e621894bfe75cbab7847a1bf4b3ad2e89f65cedb9a4be616ee33602d7dd73d",
+    "third_party/tx8_deps/include/instr_adapter_plat.h": "51686d9b8b53274dc45fae4785e4000a74203f1a5b18ecf182c0aaee5d07b49c",
+    "third_party/tx8_deps/include/instr_def.h": "c6fc37f1f475ead1b9b03419c8d6c472c35a73c5b161d18fc788c4caf3eeea2f",
+    "tools/wafer_device_link.py": "61c8bff0216c65f7d8e604ca2c61c24df034997f4eaf4667f835951341a83b10"
+  }
+}

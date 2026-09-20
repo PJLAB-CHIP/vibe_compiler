@@ -104,7 +104,7 @@ def Wafer_InstrFillOp : Wafer_NCCInstrOp<"instr.fill", [
     MemoryEffects<[MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "instruction-level CT storage-bit fill (XorVV then AddVS)";
+  let summary = "instruction-level CT fill (XorVV then AddVS)";
   let arguments = (ins
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
     AnyType:$value,

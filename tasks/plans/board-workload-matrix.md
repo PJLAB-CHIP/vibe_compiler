@@ -2,10 +2,46 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
-### TDMA首次故障定位与后续隔离实验（2026-09-21）
+### 本轮首次CT异常与TDMA因果分支（2026-09-21）
+
+当前 CRT 将浮点 fill 的 format 按存储宽度改成了整数，成本统计也随之全部归入整数类；
+这是实现自行增加的规则，没有硬件数值验证支持。本轮修正为保留 destination dtype，
+同步成本统计、已有回归和当前设计；BOOL owned-byte 合同保持。
+原 INT32 诊断包保留作为审计记录；修正后的诊断包使用相同地址和元素数，记录实际 F32 packet。
+软件格式修正与 TDMA 因果关系分开验收，不能仅凭改格式就签发根因闭合。
+
+原程序采集现已执行。16 Tile均在首次非零fill的INT32 `AddVS`后读到CSR `0x800`，
+此前task-done为1、CSR异常为0，当时stream TDMA fatal为0；稍后AP/host报告TDMA。
+用户明确要求考虑早期异常引发后续TDMA的可能，不能把二者预先判成独立故障。
+当前故障boot停止计算；下面先准备，恢复后按结果选择单个case，不自动连跑。
+
+- 输入：本次实际packet与对应F32调用；修正后保留scalar `0x3f800000`、256元素、worker0及SPM地址，format按F32传递；使用新生成输入和reference。
+- 职责：在诊断副本中隔离首次异常窗口；记录Xor/AddVS前后状态，回读填充值及相邻guard，再决定是否需要原程序或依赖对照。
+- 输出：单次诊断package、fresh/no-card、DDR记录、host/AP/Kcore日志及exact值/guard判定；直接消费者为当前runner与离线分析。
+- 非目标：不改同步、timeout或异常mask，不因SDK字段正确就宣称硬件计算通过，也不以NaN标志直接归因TDMA。
+- 完成条件：外部符号全部匹配同身份固件的实际导出表，实际ELF与packet参数一致，诊断oracle/边界通过；因果结论须有对应实卡对照。
+
+| 顺序/分支 | 控制变量与判据 |
+| --- | --- |
+| 恢复后验证修正 | 先检查实际packet中的F32格式、首次CT状态及后续TDMA窗口；不把dtype修正或单次通过当原TDMA根因已闭合 |
+| fill仍出现异常 | 在同地址、256元素、worker0及有限初值下隔离生产XorVV＋AddVS，无TDMA命令；分别记录Xor/Add前后状态、填充值和邻接guard |
+| 孤立fill正常 | 回到实际原程序前缀/依赖；继续保留首次CT状态和真正TDMA fatal两套记录，判断上下文相关性 |
+| 后续TDMA因果 | 在已有CT和movement独立结果后比较相同数据/地址的组合前缀；仅有时间先后不能证明传播因果 |
+
+原采集器在任意raw/CSR非零时冻结，导致本轮只留下早期CT窗口，未留下后续TDMA packet。
+修正为首次非零状态单独保存，ring继续记录，仅由已核对的stream TDMA bit 12冻结；不写硬件mask或clear寄存器。
+新覆盖包含CT `0x800`持续存在、跨越64条ring、随后TDMA触发、首次状态不被覆盖和预存TDMA拒绝。
+`monitor_write_log`已完成实际加载，但本轮系统Kcore日志未收集到其标记；后续采用当前固件实际导出的`rcs_ep_log`，
+其五个固定参数及va-list转发、EP ring写入由实际固件核对，系统日志可达性仍待实卡，不以符号存在代签。
+
+上一boot的诊断包因未导出的`tx8_kernel_printf`在loader失败，同boot随后Add也未加载成功。
+用户再次重启后fresh FP16 Add精确数值、guard、正常厂商清理通过；随后本次原程序诊断加载、执行及DDR回读成功，
+仍因TDMA告警停批。原loader allowlist错误和本次TDMA分别记录，不混为同一根因。
+
+### TDMA首次故障定位与后续隔离实验（2026-09-21准备记录，结果见上节）
 
 用户要求先定位原程序实际故障点，再分析原因；不能把优先候选当成已经定位的指令。
-下一次首测入口是原attention执行路径的首次异常记录，不是下表的候选单指令包。
+该次准备选择原attention执行路径的首次异常记录作为入口，不是下表的候选单指令包。
 在同一次current target LLVM/CRT调用链上记录静态site、动态packet序号、engine/worker、传入SDK发射器的packet原始字节、
 发射前后PMU及stream fatal。首次观察到异常时冻结记录并保存到独立DDR诊断输出，同时打印有界Kcore日志；
 不更改原指令参数、顺序、同步、timeout或厂商退出。记录只能证明发射及观测先后，不能把最近发射指令当fault PC。
@@ -62,7 +98,7 @@ canonical完整增量和随后Ninja no-op通过；系统默认旧CMake不能识�
 当前故障boot未访问设备；尚无插桩实卡结果。入口和文件摘要已冻结，具体路径与结果见
 [本轮证据](../../docs/data/board-performance/tdma-original-trace-preparation-20260921.json)。
 
-### 同值填充替换（2026-09-20）
+### 同值填充替换（2026-09-20历史检查点，dtype已在本轮修正）
 
 用户要求生产填充统一使用两条整块 `XorVV + AddVS`，并明确普通broadcast/其它高效GatherScatter保留。
 合同和覆盖矩阵见14号“同值填充的CT实现”；属于本work item，不改厂商退出、timeout或同步规则。
@@ -92,7 +128,7 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 用户随后授权按下述顺序实施并验收。2026-09-21检查点：步骤1--5已实现，步骤2的产品复用缺口已闭合，
 步骤6下述主机矩阵通过。当时主机环境没有设备节点；随后用户重启后已执行一次当前BF16 prefill并再次发生TDMA，
 当前停止设备执行，先按本页“TDMA首次故障定位”准备原程序采集。
-步骤7、整数CT fill/tail实际写入资格及TDMA根因仍未完成，不签整项done或完整board-ready。
+步骤7、当前dtype的CT fill/tail实际写入资格及TDMA根因仍未完成，不签整项done或完整board-ready。
 本轮实际结果见[主机验收证据](../../docs/data/board-performance/attention-additive-host-validation-20260921.json)。
 
 此前实现检查点如下，仅说明修复过程，产品资格以本轮同版本记录为准。
@@ -161,7 +197,7 @@ SPM实际offset的最大末端由2,035,712变为2,038,784字节，增加3,072字
 | causal加法 | 现有AddVV可消费同dtype数值向量 | 编译期生成最终`0/-inf` bias；causal不再准备独立`-inf`源 |
 | MaskMove覆盖 | 普通bool/select仍有数值mask与源SPM buffer路径 | 保留这些来源的覆盖语义；不要求causal继续使用它 |
 | template/fill/转换反复执行 | 准备位置、DPS和movement的软件缺口已修复，本轮产品复用目标通过 | 使用共同证明与变换，记录实际动态次数；设备收益待实测 |
-| `XorVV + AddVS`填充 | 代码、模型和SDK字段主机检查已完成 | 补整数CT、tail和guard实卡资格；不以浮点Add或旧Memset结果代签 |
+| `XorVV + AddVS`填充 | 本轮修正CRT中按宽度替换dtype的问题；SDK字段主机检查通过 | 补当前dtype的fill组合、tail和guard实卡资格；不以单条Add或旧Memset结果代签 |
 | 任意输入mask整块跳过 | 数据内容不能从shape推出 | 保持按块消费；只凭current常量/位置关系跳块，不额外扫描整张mask |
 | TDMA timeout | 首轮mask铺块与相邻copy是优先候选，尚无唯一fault packet/PC | 优化与根因两条验收分开，保留现场证据和正常厂商退出 |
 

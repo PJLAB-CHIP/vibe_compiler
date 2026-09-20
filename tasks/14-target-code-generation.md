@@ -43,10 +43,14 @@ Pipeline position:
 输出保持唯一 `wafer_tx81_memset` ABI，由 CRT 固定发射同一 worker 的整块 `XorVV(dst,dst,dst,N)`
 和整块 `AddVS(dst,bits,dst,N)`。直接消费者是 SDK CT issuer、profile 与设备；不调用厂商 `Memset`。
 这里的两条命令是 fill 的固定实现，不是逐元素循环，不从 destination 未定义内容读取语义值，也不增加 wait。
-为保持 `-0`、NaN payload、Inf 和整数原始位型，运算采用相同 storage width 的有符号整数格式；
-packed BOOL 先转换为完整 owned byte 的 0/255 填充。不能以浮点 `0 + value` 代替按位填充。
+两条命令均保留 destination 的数据格式：F16、BF16、F32 和整数分别使用自身格式，不能按 storage width
+把浮点改成整数运算。`bits` 只是 SDK `uint32_t` 标量字段中的该 dtype 编码，不表示数值转换成整数。
+例如 `1.0` 在 F16、BF16、F32 下分别传 `0x3c00`、`0x3f80`、`0x3f800000`，同时保留对应 format。
+packed BOOL 按既有物理存储合同转换为完整 owned byte 的 I8 0/255 填充。
+浮点填充沿目标格式的厂商 AddVS 数值语义执行；不额外承诺任意 NaN payload 或有符号零的逐位复制，
+也不为此改换 dtype、增加特殊值分支或回退到 TDMA。
 Instr/TargetCall 的 engine、effect、issue count 和 profile 均归 CT；一个 fill 对应两次 CT issue。
-整数 CT 吞吐尚无本轮校准，成本必须保留未校准边界，不能直接冒用浮点吞吐或写成零算术工作。
+成本按实际 destination dtype 计入对应 CT 工作量；真正的整数 CT 保留未校准边界，不能把浮点 fill 计入整数类。
 
 普通 broadcast、copy、transpose 和非同值规则数据继续使用原有已证明的 movement；
 只有 current IR 能证明 scalar fill 支配使用、没有其它写入或 alias 逃逸时，才直接物化目标 fill。
@@ -60,8 +64,8 @@ broadcast保留输入数据及维度映射。这里没有新的广播算法；�
 
 | 覆盖 | exact 输出 / failure 边界 | 直接下游 |
 | --- | --- | --- |
-| rank3、1024/1025/1031 与 65,536 元素整块；F16/BF16/F32、8/16/32-bit integer、BOOL | 每个连续 fill 两次 CT issue，worker 一致，raw bits 与元素数精确；无 TDMA Memset | production CRT 主机拦截、device 交叉编译与实际 SDK packet 检查 |
-| `+0/-0`、Inf、NaN payload、整数极值、动态 scalar | 独立位型 oracle，guard 与空/非法参数边界 | TargetModel 与 CRT 测试；未测整数 CT/tail 实卡语义不代签 |
+| rank3、1024/1025/1031 与 65,536 元素整块；F16/BF16/F32、8/16/32-bit integer、BOOL | 每个连续 fill 两次 CT issue，原 dtype、scalar 编码、元素数和 worker 精确；无 TDMA Memset | production CRT 主机拦截、device 交叉编译与实际 SDK packet 检查 |
+| 合法有限值、attention 的 `-inf`、整数边界、动态 scalar | 按 dtype 核对输入与 reference；guard 与空/非法参数边界保持 | TargetModel 与 CRT 测试；单条浮点 Add 已有资格不代签 fill 组合的实卡资格 |
 | 私有 scalar fill 经 mapped select 铺满大块；普通输入 broadcast、其它写入/逃逸 | 前者生成 fill，后者保留原有 movement；不能按 mask 名称判断 | actual Instr、completion/SPM、LLVM/package/no-card |
 | strided logical view 与 physical domain | 保留连续 suffix、实际 count、holes 和 owned padding 合同 | 原 strided lowering 回归；CT 非对齐/tail 的真实写入范围须单独实卡确认 |
 
@@ -410,6 +414,13 @@ writing在私有 staging root中完成 LLVM IR、object、CRT、device link、EL
 6. 无未引用module、临时文件或部分输出泄漏。
 
 失败时删除本次 staging transaction；不从已有output directory恢复语义，也不保留旧格式副本。
+
+Loader ABI的undefined allowlist必须来自对应固件的实际导出表；SDK头文件声明、archive内部定义和
+链接成功均不能证明动态loader能解析。该规则同样约束诊断插桩和extra object。
+当前Kcore loader允许`monitor_write_log`和`rcs_ep_log`，不允许未导出的`tx8_kernel_printf`、`tx8_kernel_vprintf`或`tsm_ep_log`；
+任一引用须在原子发布前报`target_symbol_not_allowed`，保留已有输出并清理本次staging。
+覆盖由真实device-link的三符号拒绝/原子性负例和两个已导出日志入口的链接正例闭合；
+上板诊断另将最终ELF全部undefined符号逐项对照同身份已安装固件，不能只检查所改日志入口。
 
 ## 5. Profile-only target writing
 

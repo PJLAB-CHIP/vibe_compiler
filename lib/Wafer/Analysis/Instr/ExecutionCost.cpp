@@ -267,9 +267,10 @@ static void collectComputeCost(mlir::Operation *op,
                       : Quantity::unavailable(
                             ScheduleCostReason::UnavailablePhysicalGeometry);
     }
-    // Fixed raw-integer XorVV + AddVS implementation. Integer CT service is
-    // not calibrated; retain that fact instead of borrowing floating rates.
-    addVectorCost(cost, ScalarClass::Other, multiply(elements, 2), multiplicity);
+    // XorVV and AddVS execute in the destination format. Packed BOOL uses
+    // byte storage and remains in the uncalibrated integer class.
+    addVectorCost(cost, fill.getDest().getType(), multiply(elements, 2),
+                  multiplicity);
     return;
   }
   if (auto elementwise = mlir::dyn_cast<InstrElementwiseOp>(op)) {

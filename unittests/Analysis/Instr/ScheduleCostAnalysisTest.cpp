@@ -1057,8 +1057,8 @@ TEST_F(ScheduleCostAnalysisTest, FillCountsTwoWholeRangeCTIssues) {
     EXPECT_EQ(cost.work.ctIssues.exactExecutions.value, 6u);
     EXPECT_EQ(cost.work.tdmaIssues.exactExecutions.value, 0u);
     ASSERT_TRUE(cost.compute.vectorOtherLogicalOps.isKnown());
-    EXPECT_EQ(cost.compute.vectorOtherLogicalOps.value, 36u * extent);
-    EXPECT_EQ(cost.compute.vectorF32LogicalOps.value, 0u);
+    EXPECT_EQ(cost.compute.vectorOtherLogicalOps.value, 0u);
+    EXPECT_EQ(cost.compute.vectorF32LogicalOps.value, 36u * extent);
     EXPECT_EQ(cost.nccJoinCount.value, 0u);
     EXPECT_EQ(cost.intrinsicNCCDrainCount.value, 0u);
   }

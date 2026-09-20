@@ -2916,3 +2916,14 @@ runner返回0且10,752 guard bytes通过，health wrapper仍拒绝资格。事�
 独立DDR/Kcore证据和新boot单次入口。原ELF调用对照、采集故障注入、解码、新输入及strict no-card通过；尚未执行诊断实卡。
 本次准备不把候选隔离包作为下一入口，不重开矩阵，不签TDMA修复或产品board-ready。
 完整摘要见[故障与诊断准备记录](data/board-performance/tdma-original-trace-preparation-20260921.json)。
+
+## 2026-09-21：Add恢复检查与原路径诊断结果
+
+首次诊断因未导出的日志符号在loader失败；同boot后续Add也未完成加载，不计计算资格。
+再次重启后，fresh FP16 Add的131,072个输出exact，9,728 guard bytes及16 Tile正常厂商清理通过，设备时间0.787 ms。
+随后原attention诊断成功加载、返回DDR记录，11,264 guard bytes通过，但出现TDMA告警，批次停止。
+诊断事件时间1796.428955 ms受插桩影响且来自故障运行，不作健康性能比较。
+
+16 Tile的首次CT异常窗口均落在被CRT改成INT32的F32 `1.0`填充上；此时TDMA fatal尚为0。
+该软件格式替换及成本分类已修正，后续TDMA采集窗口也已补齐；本轮主机验证通过，尚未运行修正后的实卡。
+这不新增attention健康资格，也不签发TDMA根因或修复完成，见[本轮证据](data/board-performance/fill-dtype-correction-20260921.json)。

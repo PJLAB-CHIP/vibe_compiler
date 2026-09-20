@@ -366,7 +366,7 @@ geometry无法direct traversal时保留显式movement。
 TileToInstr物化mapped elementwise输入时，若实际私有allocation仅由支配当前使用的fill写入、没有view/其它使用或逃逸，
 可直接在目标allocation上生成同值physical fill；不为这种同值铺块生成逐元素GatherScatter。
 支配关系包括循环外初始化到循环内使用，不要求同block；placement不改变此uniform事实。
-普通broadcast和非同值规律仍按原有IndexRelation与movement合同处理。目标fill的整块CT实现与位型约束见14号。
+普通broadcast和非同值规律仍按原有IndexRelation与movement合同处理。目标fill的整块CT实现与dtype/标量编码合同见14号。
 
 TileToInstr可以将rank>4输入的多余前导单位轴从native CT geometry中省去，条件是这些轴不参与归约；
 不能仅因rank>4把这类实际Tile展开为逐归约位置的GS/elementwise循环。输入仍为上述typed Tile reduce，

@@ -216,7 +216,8 @@ SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入�
 即使source是刚由fill定义、没有其它写入的私有rank-0 allocation，仍只按source/result relation生成GatherScatter。
 因此F32 `-inf`的同值铺块成为inner=4、source stride=0、65,536次迭代的单条TDMA命令。
 当前修改从实际fill/use-def证明同值，直接生成目标整块fill；一般broadcast及其它GatherScatter保持原路径。
-生产fill随后统一由同一worker的整块integer-storage `XorVV + AddVS`实现，保留scalar原始位型。
+生产fill随后改为同一worker的整块 `XorVV + AddVS`。最初CRT自行把浮点format替换成同宽整数，
+本轮已移除该替换，按实际destination dtype发射；详见14号合同。
 
 这定位了低效铺块的生成原因，**没有锁定硬件TDMA timeout的根因**：
 
@@ -224,7 +225,7 @@ SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入�
   `0xffff` timeout配置的单位及与iteration的关系未闭合，不能用数值相邻建立因果关系。
 - 原故障包同时含厂商Memset和GatherScatter。既有native BOOL Memset失败不能外推到本次F32填充；
   替换这两类路径后即使case成功，也只能证明新序列在该次执行通过，不能单独归因其中一类旧指令。
-- 新实现的整数AddVS、非对齐/tail实际写入范围尚待本轮板端资格。SDK count/end正确及主机位型检查不能替代真实guard回读。
+- 当前dtype下的fill组合及非对齐/tail实际写入范围尚待本轮板端资格。SDK count/end正确不能替代真实数值和guard回读。
 - 重启后首个计算已复现，因而“必须连续跑多个case才能触发”已被本次反例排除；
   尚不能排除同一launch内部命令/资源状态累积。厂商清理超时发生在TDMA之后，不能倒置因果。
 
@@ -247,3 +248,24 @@ SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入�
 完成条件是拿到一次可关联实际指令的故障现场，据此修正确定缺陷，再以当前原始 case 及相应连续运行序列验证。
 目前完成了安装版本核对、告警路径还原及重启后首个计算的寄存器观测；尚未取得可关联实际指令的故障 packet/PC，
 **TDMA 根因与修复仍未完成**。
+
+## 原路径采集与fill格式修正（2026-09-21）
+
+首次诊断包因未导出的`tx8_kernel_printf`在loader失败。SDK声明不能代替当前固件实际导出；
+已按RTMSymTab修正allowlist，并通过实际链接正反例。`monitor_write_log`可以加载，但本轮系统EP日志未取得标记；
+后续诊断使用实际导出的`rcs_ep_log`，ABI和EP ring路径已由固件静态核对，日志可达性仍待实卡。
+
+再次重启后，fresh FP16 Add全输出exact、guard及正常清理通过。随后原attention诊断成功加载，
+取得16 Tile DDR记录并报告TDMA。所有Tile的首次非零fill调用均是F32 `1.0`，却被CRT发为INT32 AddVS：
+Tile 0--10为packet 8，Tile 11--15为packet 12。发射前CSR异常为0，发射后为`0x800`，当时stream TDMA为0；
+SDK将CSR该位定义为CT输入NaN。此记录定位了首次状态变化窗口，不能单凭时间先后证明它导致后续TDMA。
+
+代码原因已经明确：CRT为额外保留特殊值位型，自行按字节宽度替换了浮点格式，成本统计和测试也照抄了这一规则。
+本轮删除该替换；两条CT均保留实际dtype。F32 `1.0`仍以`0x3f800000`传入标量字段，执行format恢复为5。
+实际SDK构造/issuer主机检查通过；这不是硬件数值验证。其它常规计算wrapper的类型传参审查未发现同类替换，
+具体检查范围及原始文件摘要见[修正证据](data/board-performance/fill-dtype-correction-20260921.json)。
+
+原采集器遇到CT状态即冻结，漏掉后续TDMA窗口；现改为单独保存首次CT状态，继续记录packet，
+仅在stream TDMA bit 12出现时冻结ring。故障注入、16 Tile原ABI调用对照、新输入/reference及no-card通过。
+当前故障boot没有新增计算；清理后只读两个填充地址所得全零不能代替指令时刻的数据。dtype修正的实卡资格、
+实际TDMA故障指令及两者因果关系仍未闭合。

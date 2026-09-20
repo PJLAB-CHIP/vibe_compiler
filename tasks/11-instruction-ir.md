@@ -344,7 +344,7 @@ Scratch、Recip和Mul均经同一buffer recorder进入current IR；不推算SPM�
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
 | TDMA | `wafer.instr.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy是descriptor特例，但selected TileModule set中只有无法安全coalesce storage的copy才保留 |
-| CT | `wafer.instr.fill` | `wafer.tile.fill` | 同一worker的整块integer-storage `XorVV + AddVS`，一个语义fill、两次CT issue；实现与资格边界见14号 |
+| CT | `wafer.instr.fill` | `wafer.tile.fill` | 同一worker、按实际dtype的整块 `XorVV + AddVS`，一个语义fill、两次CT issue；实现与资格边界见14号 |
 | CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | `#wafer.instr_elementwise_kind` target kind；不含 select |
 | CT | `wafer.instr.bit2fp` | tile semantic select lowering | i1 mask -> floating mask target peripheral op |
 | CT | `wafer.instr.mask_move` | tile semantic select lowering | `TsmMaskDataMove::MaskMove`使用CT packet并最终发往CT/CGRA queue的masked SPM data movement target op |

@@ -41,6 +41,17 @@
 # RUN:   2>&1 | FileCheck %s --check-prefix=NOTALLOWED
 # RUN: %python -c 'from pathlib import Path; output = Path("%t.unexpected-symbol.so"); assert output.read_bytes() == b"sentinel-final"; assert not Path("%t.unexpected-symbol.o").exists(); assert not Path("%t.unexpected-symbol.crt.o").exists(); assert not list(output.parent.glob(f".{output.name}.staging-*"))'
 
+# RUN: %python -c 'from pathlib import Path; Path("%t.unexported-log.so").write_bytes(b"sentinel-final")'
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/unexported-loader-log.ll \
+# RUN:   --output %t.unexported-log.so \
+# RUN:   --loader-abi tx8-kcore-loader-grid 2>&1 | FileCheck %s --check-prefix=UNEXPORTED-LOG
+# RUN: %python -c 'from pathlib import Path; output = Path("%t.unexported-log.so"); assert output.read_bytes() == b"sentinel-final"; assert not list(output.parent.glob(f".{output.name}.staging-*"))'
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/monitor-log-target-kernel.ll \
+# RUN:   --output %t.monitor-log.so
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.monitor-log.so | FileCheck %s --check-prefix=MONITOR-LOG
+
 # RUN: rm -f %t.success.so %t.success.o %t.success.crt.o
 # RUN: %python -c 'from pathlib import Path; Path("%t.success.so").write_bytes(b"sentinel-final")'
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
@@ -176,6 +187,10 @@
 # UNDEF: error: undefined Wafer target CRT symbols remain after link: wafer_tx81_missing
 
 # NOTALLOWED: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader: unexpected_loader_hook
+
+# UNEXPORTED-LOG: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-grid: tsm_ep_log, tx8_kernel_printf, tx8_kernel_vprintf
+# MONITOR-LOG-DAG: U monitor_write_log
+# MONITOR-LOG-DAG: U rcs_ep_log
 
 # HEAP-DAG: U rt_free
 # HEAP-DAG: U rt_malloc

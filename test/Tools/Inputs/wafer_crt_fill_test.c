@@ -41,29 +41,38 @@ static void wafer_execute_ct(CT_Param *p, uint32_t w) {
 /* PRODUCTION_FUNCTIONS */
 
 int main(void) {
-  const Data_Format storage[] = {
-      Fmt_INT8, Fmt_INT16, Fmt_INT16, Fmt_INT16, Fmt_INT32, Fmt_INT32,
-      Fmt_INT32, Fmt_INT8, Fmt_INT8, Fmt_INT16, Fmt_INT32,
-      Fmt_INT64, Fmt_INT64};
+  const Data_Format formats[] = {
+      Fmt_INT8, Fmt_INT16, Fmt_FP16, Fmt_BF16, Fmt_INT32, Fmt_FP32,
+      Fmt_TF32, Fmt_INT8, Fmt_UINT8, Fmt_UINT16, Fmt_UINT32,
+      Fmt_INT64, Fmt_UINT64};
   // Rank-3 [2,3,N], the observed 65,536-element fill, and scalar/strided-row
   // boundaries. Tiny counts are intentional ABI boundary witnesses.
   const uint32_t elements[] = {6*1024, 6*1025, 6*1031, 65536, 1, 64, 130};
-  // Raw +/-zero, infinities, subnormal and NaN payloads plus integer edges.
-  const uint32_t values[] = {0, 1, 0x8000, 0x7c00, 0xfc00, 0x7e35,
-                             0x80000000, 0x7f800000, 0xff800000,
-                             0x7fc01234, 0x7f801234, 0xffffffff};
+  // Each row encodes values in that input dtype. Floating rows include
+  // zero, one, negative finite values and the attention -inf initializer.
+  const uint32_t values[][6] = {
+      {0, 1, 0xff, 0x7f, 0x80, 42},
+      {0, 1, 0xffff, 0x7fff, 0x8000, 42},
+      {0, 0x3c00, 0xc100, 0xfc00, 0x3555, 0x4000},
+      {0, 0x3f80, 0xc020, 0xff80, 0x3eab, 0x4000},
+      {0, 1, 0xffffffff, 0x7fffffff, 0x80000000, 42},
+      {0, 0x3f800000, 0xc0200000, 0xff800000, 0x3eaaaaab, 0x40000000},
+      {0, 0x3f800000, 0xc0200000, 0xff800000, 0x3fc00000, 0x40000000},
+      {0, 1, 0, 1, 0, 1},
+      {0, 1, 0xff, 0x7f, 0x80, 42},
+      {0, 1, 0xffff, 0x7fff, 0x8000, 42},
+      {0, 1, 0xffffffff, 0x7fffffff, 0x80000000, 42},
+      {0, 1, 0xffffffff, 0x7fffffff, 0x80000000, 42},
+      {0, 1, 0xffffffff, 0x7fffffff, 0x80000000, 42}};
   unsigned configurations = 0;
   for (unsigned f = 0; f < 13; ++f)
     for (unsigned n = 0; n < sizeof(elements)/sizeof(elements[0]); ++n)
-      for (unsigned v = 0; v < sizeof(values)/sizeof(values[0]); ++v)
+      for (unsigned v = 0; v < 6; ++v)
         for (worker = 0; worker < 3; ++worker) {
           destination = 0x30006; // Also preserve a non-256B-aligned subview.
           count = f == Fmt_BOOL ? (elements[n] + 7)/8 : elements[n];
-          format = storage[f];
-          uint32_t value = f == Fmt_BOOL ? values[v] != 0
-                           : format == Fmt_INT8 ? values[v] & 0xff
-                           : format == Fmt_INT16 ? values[v] & 0xffff
-                                                : values[v];
+          format = formats[f];
+          uint32_t value = values[f][v];
           scalar = f == Fmt_BOOL ? (value ? 255 : 0) : value;
           constructed = calls = 0;
           // The compiler's BOOL domain owns complete bytes, including tail
