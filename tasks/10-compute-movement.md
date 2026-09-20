@@ -227,8 +227,9 @@ QK contraction
 这些Linalg ops使用current output piece、K2 tile/tail和FD contribution state；它们不得重新选择block、partition、merge owner或loop order。
 展开后的layout、view、buffer、movement和event只能由直接stage从current SSA/Instr生成。
 
-固定展开顺序为QK(K1 reduction)→scale→optional additive mask→row maximum→old-state normalization→probability→row sum→PV(K2
-reduction)。Score/probability destination只覆盖current M tile×K2 block及batch/head coordinates；QK/PV和state update使用普通DPS
+固定展开顺序为QK(K1 reduction)→原score region（scale与bool/additive mask）→位置定义的causal/有效KV域屏蔽→row maximum→
+old-state normalization→probability→row sum→PV(K2 reduction)。位置屏蔽的当前实现和改进合同分别见05号4.5、4.6。
+Score/probability destination只覆盖current M tile×K2 block及batch/head coordinates；QK/PV和state update使用普通DPS
 Linalg，保留既有SCF iter args；current arithmetic和dtype语义不变。
 展开只保留tensor SSA数值与SCF state语义；通用循环destination绑定由08号layout/bufferization阶段负责。
 本层不为Maximum、Accumulator或Sum另建state写回特判，也不根据loop boundary插入completion。

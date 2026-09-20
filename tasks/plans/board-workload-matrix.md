@@ -30,6 +30,8 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)。
 本轮只整理设计与实施合同；下面的优化尚未实施，不重启此前搜索、板测队列或TDMA故障boot。
 已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
+按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
+先完成这条主路径，再处理其它bool/select链的比较与复用；不增加有限性扫描、特殊值运行时分支或加法/覆盖选择开关。
 
 #### 本轮范围与实际能力边界
 
@@ -43,7 +45,8 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 | --- | --- | --- |
 | Relation数值0/1与packed BOOL结果 | 厂商已有两类entry；FP16/BF16/F32的已列VV/VS/VuV/VuVLoop tuple有各自板测记录 | 补软件的结果类型/ABI选择；不再把i1结果约束称为硬件限制 |
 | INT32坐标与比较 | host/index位置运算可用；vector INT32 relation的完整tuple资格未在本轮确认 | 静态规则用整数生成最终模板，消除该运行时依赖；残余整数比较先补精确证据，保持unknown而非unsupported |
-| MaskMove覆盖 | 已有数值mask与源SPM buffer路径，当前接口没有已验证的`-inf` scalar immediate替代 | 准备并复用`-inf`整块源，不凭空设计一条立即数masked fill |
+| causal加法 | 现有AddVV可消费同dtype数值向量 | 编译期生成最终`0/-inf` bias；causal不再准备独立`-inf`源 |
+| MaskMove覆盖 | 普通bool/select仍有数值mask与源SPM buffer路径 | 保留这些来源的覆盖语义；不要求causal继续使用它 |
 | template/fill/转换反复执行 | 当前软件的准备位置、DPS和movement处理尚有缺口 | 扩展共同证明与变换，记录实际动态次数；不归因于硬件必须重复 |
 | `XorVV + AddVS`填充 | 代码、模型和SDK字段主机检查已完成 | 补整数CT、tail和guard实卡资格；不以浮点Add或旧Memset结果代签 |
 | 任意输入mask整块跳过 | 数据内容不能从shape推出 | 保持按块消费；只凭current常量/位置关系跳块，不额外扫描整张mask |
@@ -55,20 +58,20 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 
 | 顺序 | 修改边界 | 实际产物与下一消费者 | 本步完成条件 |
 | --- | --- | --- | --- |
-| 1 | 10/11/14号：实际predicate消费链、Instr、TargetCall/CRT | 常量predicate转换折叠为显式数值常量；非恒定compare→Bit2Fp合成厂商value结果比较；交给原completion/SPM与target | bool和值结果的dtype/span/packet/模型一致；无重复转换；多use与不适用tuple保留正确路径 |
-| 2 | 05号：已tiled online-attention decomposition | 按实际`BQ×BK`和integer位置生成最终局部invalid模式，替换静态边界F32 `k−q`表；原score region与DPS交给08号 | 对齐、偏移、矩形块、tail的局部shape与predicate exact；不生成全序列mask或逐元素Kcore循环 |
-| 3 | 08/10号：DPS与实际准备操作的共同placement | 同调用内模板load/convert/fill复用；score原地MaskMove；actual alias/effect/owner交给fresh completion/SPM | 初始化位于合法共同复用域；无依赖名字的hoist、无猜测alias、无新增可避免join；实际SPM offset验证成功 |
-| 4 | 06号：actual SCF可见域 | 对已证明连续的可见域收紧KV loop；全可见与边界body保持原state SSA；直接消费步骤2/3结果 | 不可见块无读取/计算/更新；边界覆盖exact；不能证明的特殊mask保持原精确计算 |
+| 1 | 05号：已tiled online-attention decomposition | 按实际`BQ×BK`和integer位置生成最终`0/-inf` bias与Add，替换静态边界F32 `k−q`表；交给08号及已有AddVV lowering | 对齐、偏移、矩形块、tail的shape与bias exact；causal无坐标比较、Bit2Fp或独立`-inf`源 |
+| 2 | 08/10号：DPS与实际准备操作的共同placement | 同调用内bias load/convert复用及score原地Add；其余实际fill沿同一placement处理；交给fresh completion/SPM | 初始化位于合法共同复用域；无依赖名字的hoist、无猜测alias、无新增可避免join；实际SPM offset验证成功 |
+| 3 | 06号：actual SCF可见域 | 对已证明连续的可见域收紧KV loop；全可见与边界body保持原state SSA；直接消费步骤1/2结果 | 不可见块无读取/计算/更新；边界覆盖exact；不能证明的特殊mask保持原精确计算 |
+| 4 | 10/11/14号：其余predicate消费链、Instr、TargetCall/CRT | 常量Bit2Fp折叠；非恒定compare→Bit2Fp合成厂商value结果比较；交给原completion/SPM与target | bool和值结果的dtype/span/packet/模型一致；多use与不适用tuple保留正确路径；不作为causal Add的前置 |
 | 5 | 16号：完整主机产品与性能核对 | fresh source/reference→package/no-card、必要TargetModel与指令/字节统计；准备当前版本板测包 | 下表各分支及受影响共享算子通过；数字区分静态site、动态执行次数、模型估时和实测 |
 | 6 | 15/16号：设备恢复后的受控资格与TDMA调查 | 当前CT fill机制case→当前attention→受影响保护矩阵，正常厂商清理；每次异常立即停止 | 本轮数值/guard/cleanup与健康日志闭合后才签对应资格；TDMA根因另按已有定位合同判定 |
 
-步骤1的常量准备必须在实际IR中产生数值mask及load，步骤3必须位于这些操作已经物化的边界。
+步骤1的bias及其load必须在实际IR中物化，步骤2的placement在相应操作已经存在的边界执行。
 同一PhysicalMovementPlacement实现可在需要的实际Tile/Instr边界调用，不能依赖后续会出现的buffer或另建attention专用搬运通路。
 08号先证明score destination复用，lowering只消费已确定alias；constant/fill hoist增加的真实lifetime由唯一SPM gate判断。
 修改关系结果时同步11号当前“relation输出i1”和14号CRT发射合同，保留一种完整协议，不新增兼容reader或ABI旁路。
 
-本轮常规对齐causal的预期动态执行是：每Tile按实际形状、模式及布局，在合法作用域内复用mask和`-inf`源的准备；
-每query块先读Q并初始化自己的`m/l/A`，遍历全可见KV块，边界块执行QK和原score计算后用MaskMove覆盖，接续原online更新和PV，最后归一化输出。
+本轮常规对齐causal的预期动态执行是：每Tile按实际形状、模式及布局，在合法作用域内复用bias模板；
+每query块先读Q并初始化自己的`m/l/A`，遍历全可见KV块，边界块执行QK和原score计算后用AddVV加上bias，接续原online更新和PV，最后归一化输出。
 Q的必要layout转换每query块只准备一次，供同一块内full/boundary路径共享；KV与输入mask仍按实际需求读取。
 纯causal的未来KV块不进入计算循环；任意输入mask不会因causal的full分类被丢弃。
 
@@ -80,6 +83,7 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 | 输入等价类/分支 | exact检查或typed失败 | 直接下游witness |
 | --- | --- | --- |
 | 无mask、全可见、全不可见、跨边界causal | 三类区间正确；skip不读K/V/mask且state原样接续；full无causal处理 | actual SCF→Instr→completion/SPM→原PyTorch reference |
+| causal `0/-inf` bias与整块Add | 常量位置和值exact；边界执行AddVV，causal专用`-inf`源为零；特殊值按Add语义，无新增运行时检查 | 最终模板→Instr/TargetModel→fresh package及完整输出 |
 | query/key不同长度、不同block size（含`BQ != BK`矩形块）、非零绝对偏移、upper-left/lower-right来源 | 模板shape随实际块及tail变化；保留来源位置对齐，多边界模式及有效域exact，不能从局部shape差重建语义 | source capture→position tiling→局部模板/layout→最终结果 |
 | bool常量/运行时输入、全true/全false、棋盘/窗口/分段/非矩形 | True=keep、broadcast map与head依赖正确；非恒定模式不被当作uniform fill | rank3/4、1024/1025/1031实际读取窗口及完整输出 |
 | additive标量/按行/按head/完整块、finite负值与`-inf` | 保持原Add/cast顺序；不偷换成bool覆盖或跳块 | source score region→Instr及原容差/特殊值位置 |
@@ -87,12 +91,13 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 | 原始source/线上状态全屏蔽行与`-inf - -inf` | 保留SDPA zero/eager特殊值分歧；finite输入与NaN/Inf机制case分开 | 原数学reference及模型，不用非法随机输入替代普通资格 |
 | value/BOOL relation、VV/VS/VuV/已准入VuVLoop、tail | numeric0/1及packed bit span分别验证；原i1 consumer不丢失，不对未测整数tuple宣称支持 | Instr verifier→同一CRT/SDK packet→模型及设备guard |
 | 模板重复/不同pattern、同Tile多head、独立Tile、可变源/alias/逃逸 | 不变准备恰在证明范围复用；其它保留必要copy；所有buffer有owner | actual load/fill次数、read/write/lifetime与SPM offset |
-| 原地score可用/旧score仍可观察、padding/非连续view | MaskMove全物理遍历mask为canonical0/1；不越界、不删必要copy | layout→bufferization→Instr，完整span与guard |
+| 原地score可用/旧score仍可观察、padding/非连续view | causal bias padding为0，Add遍历匹配；其余MaskMove的mask为canonical0/1；不越界、不删必要copy | layout→bufferization→Instr，完整span与guard |
 | fill：raw `-inf`、-0、NaN payload、整数/BOOL、连续/strided/tail | `XorVV + AddVS`按storage bits精确填充；holes和guard未写；普通broadcast/GS仍正确 | 当前CRT host检查及恢复后的机制实卡 |
 | 共享lowering的Add/compare/select、LLaMA block、GEMM、ViT和既有attention矩阵 | 功能、dtype、layout与性能保护；原合法能力不因优化丢失 | 受影响组件/lit、canonical完整增量构建及no-op、fresh产品和指定板测 |
 
 常规对齐causal的完成目标：boundary steady-state不再生成坐标表比较、Bit2Fp、模板RDMA、完整`-inf` fill或可避免score copy；
-在DPS和物理遍历证明成立时仅保留一次MaskMove。初始化的RDMA/转换及两条fill CT必须单列，不能记成零成本。
+在DPS和物理遍历证明成立时，causal应用仅保留一次AddVV。模板初始化的RDMA/转换单列计费。
+统计causal专用buffer的消除、其它实际fill和整条attention的SPM峰值；不把局部少一份源直接记成总峰值下降。
 边界块数按实际Q/K分块、位置和有效域计算；准备次数按实际shape、模式、布局及合法复用作用域统计。
 同一模式在同一合法复用域内只准备一次，不因head或query块重复而复制；tail与不同模式分别核对。
 不得把某个候选的块长、块数或buffer字节数作为统一阈值，也不得仅凭静态GS减少签发设备性能收益。

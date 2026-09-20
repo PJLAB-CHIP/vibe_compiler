@@ -553,6 +553,8 @@ layout、physical transpose、broadcast指令与copy cleanup分别属于08/10/11
 
 本节规定下一步实现目标；4.5中的F32坐标模板仍是当前实现，不能把本节写成已经完成的优化。
 本轮范围是现有static attention、bool/additive mask、causal、MHA/GQA、单/多token decode及tail。
+本轮causal采用加法方案：按位置生成可见处为0、不可见处为`-inf`的局部bias，再加到score上。
+这项选择替代此前拟用的causal `0/1 + -inf源 + MaskMove`；普通bool/select及输入自带additive mask仍保留各自语义。
 不新增动态长度入口、paged KV、跨调用准备缓存、任意Python mask callback或新的空间搜索策略。
 实施顺序和资格状态分别由[板测计划](plans/board-workload-matrix.md#当前版本attention与mask改进方案)和`progress.md`拥有。
 
@@ -560,14 +562,18 @@ Pipeline position：
 
 - Upstream IR / input：已归一的attention、原score region、typed positions/position_map、mask indexing maps；
   actual spatial/temporal candidate给出当前Tile、query/KV区间、head映射和DPS state。
-- Current stage responsibility：05号保留可见性与数值语义，06号物化可达循环/分支；本节decomposition生成局部predicate与score操作。
-  08号确定layout和DPS复用，10/11号把实际predicate消费链合法化为目标比较、常量准备和masked update。
+- Current stage responsibility：05号按本节causal加法合同生成局部bias和score操作，保留其它原score region运算；06号物化可达循环/分支。
+  08号确定layout和DPS复用，10/11号消费实际常量、Add及其余predicate操作，发出已有目标指令。
 - Output IR / files：标准integer/index位置运算、Tensor/Linalg/SCF局部计算，以及实际Tile/Instr常量、allocation、读写和循环。
   不新增graph mask op、块表ABI、shadow schedule或隐含常驻buffer。
 - Downstream consumer：既有completion、唯一SPM规划、TargetCall/CRT、ProgramData/package、TargetModel及runtime。
 - User-level driver / named pipeline：现有`wafer-compile`的none/search与相应named transformations共用实现。
 - Explicit non-goals：不改softmax精度/算术顺序、SDPA与eager的全屏蔽行差异、KV状态接续、厂商清理或timeout；不把模板复用扩展成跨调用缓存。
 - Completion criteria：下述语义分支和计划覆盖矩阵闭合；常规causal无逐块坐标比较/模板准备，原合法特殊mask不丢失，实际SPM和直接下游通过。
+
+causal边界的数值合同为`bias = invalid ? -inf : 0; score = score + bias`，执行于原score region之后、row maximum之前。
+加法形式参考[PyTorch SDPA参考公式](https://docs.pytorch.org/docs/main/generated/torch.nn.functional.scaled_dot_product_attention.html)。
+特殊值按实际Add语义验收，不宣称与覆盖逐bit等价；不为切换causal实现增加score有限性扫描、运行时检查或备用分支。
 
 #### 可见性、跳块与mask数值分开
 
@@ -588,7 +594,7 @@ Pipeline position：
 | 输入语义 | 本版执行规则 | 整块跳过的依据 |
 | --- | --- | --- |
 | 无mask、全有效 | 直接执行原score与online更新，无mask准备 | 仅真实空区间 |
-| causal及现有有效KV域 | integer区间分类，边界局部模板或原精确predicate | 上述位置/长度证明 |
+| causal及现有有效KV域 | integer区间分类，边界生成局部`0/-inf` bias并加到score | 上述位置/长度证明 |
 | padding、window、prefix、分段等特殊bool mask | 现有入口能表达的常量和输入tensor继续按原map消费；常量局部值可折叠，运行时只读当前块 | 必须由current常量/关系证明整块不可见；不通过样本值、模型名猜规则 |
 | 任意运行时bool mask | 原`True=keep`规范化为内部`invalid=1`后masked update；仅在已有合法数据依赖范围复用读取 | 不新增CPU全mask扫描或每块额外reduction来强求跳块 |
 | 任意additive mask、bias | 保留原Add、cast位置和dtype；标量/合法unit广播使用已有VS/VuV形式 | finite负数或单独的`-inf`常量都不能自动当bool屏蔽证明 |
@@ -605,41 +611,43 @@ Pipeline position：
 选定layout所需的物理padding与逻辑形状分开表达，不扩大逻辑可见域。
 
 静态causal边界在编译期用整数计算`invalid[r,c] = (k0+c > q0+r) || (k0+c >= e)`，其中`0 <= r < BQ`、`0 <= c < BK`。
-常量折叠只生成当前局部shape的最终0/1模式，不生成F32 `k−q`表再在每个边界块比较。
+据此直接生成当前局部shape的最终`0/-inf` bias；位置计算使用整数，bias按score dtype存储。
+不生成F32 `k−q`表再在每个边界块比较，也不通过`0/1 * -inf`生成bias。
 按实际shape、相对位置及有效域去重；只有模式与布局确实相同才能共享。对齐的等长causal各对角块复用一个模式；
 tail、错位和不等块长分别处理，不为每个head或query块复制等价常量。
 
-上层predicate仍是i1语义，`select(invalid, -inf, score)`仍表示逐位置覆盖。
-10/11号在已物化的常量predicate消费链上折叠`Bit2Fp`，形成实际数值0/1常量和`MaskMove`的mask operand；
-常量沿既有ProgramData绑定，所有新buffer和读操作有current-IR owner。不能把F32冒充i1，也不能把转换藏在runtime或包格式里。
-选定布局后的物理padding必须具有canonical 0/1和正确的invalid含义；不默认NPY bool已经是硬件packed bits。
+causal常量沿既有ProgramData绑定，作为普通Add的数值operand；所有新buffer和读操作有current-IR owner。
+选定布局后的bias物理padding取0，有效域仍由实际layout表达。布局变换不能改变逻辑位置的`0/-inf`模式。
+其它bool/select消费链仍保留i1 predicate及所需的数值0/1表示；常量Bit2Fp可在该链折叠，不能把F32冒充i1。
+MaskMove路径继续要求canonical 0/1 mask；不默认NPY bool已经是硬件packed bits。
 布局转换若仍必要，计入一次准备；只有已有typed representation和编码器能表达时才在包生成时预排布。
 
-同一Tile、同一调用、已证明不变的复用域中，将模板load、必要转换和完整`-inf`源的fill移到共同循环外。
+同一Tile、同一调用、已证明不变的复用域中，将bias模板load和必要转换移到共同循环外。
 同Tile多个head可共享这些只读数据，跨Tile各有自己的实际SPM副本；online `m/l/A`仍按各output piece独立初始化。
 复用必须证明source不变、destination私有、没有后续写入或逃逸，并保留分支执行与生命周期约束。
 扩展共同PhysicalMovementPlacement处理实际load/fill/convert的destination mutation；在相关操作已物化后、completion/SPM前应用同一证明，
 不另写attention专用hoist。复用延长的lifetime仍交给唯一actual SPM路径，不用预估容量决定合法性。
 
-一份数值mask和一份`-inf`源的逻辑数据量为`BQ × BK × (mask元素字节数 + 源元素字节数)`。
-实际allocation大小还由各自layout、padding和physical span决定；整个attention的SPM峰值须包含其它实际buffer及lifetime，
-上述逻辑数据量不能用于SPM准入。模板内容可在package中去重，各Tile仍持有自己的local副本。
+causal只需一份bias模板，逻辑数据量为`BQ × BK × bias元素字节数`，不为它另建完整`-inf`源。
+实际allocation包含layout/padding；整个attention的SPM峰值由全部actual buffer及lifetime决定，仍走唯一SPM规划。
+模板内容可在package中去重，各Tile仍持有自己的local副本。
 多个不同模式不要求全部同时常驻。准备位置、实际load次数和lifetime必须从最终IR核对。
 
-当score的DPS/last-use证明允许原地覆盖、两输入物理遍历匹配时，常规边界的steady-state目标为一条`MaskMove`。
-`-inf`源通过一次整块`XorVV + AddVS`准备并复用；全可见块不发这条mask指令。
-不能用“加负无穷”代替覆盖，不能仅因shape相同删除copy；有其它score观察者或未知alias时保留必要复制。
+当score的DPS/last-use证明允许原地更新、两输入物理遍历匹配时，常规边界的mask应用为一条整块`AddVV`。
+全可见块省去causal bias和Add；有其它score观察者时按普通DPS规则保留必要复制。
+其它运算实际需要的同值fill继续使用`XorVV + AddVS`；causal改用Add不承担softmax实现的整体重写。
 
 #### 通用指令规则与方案取舍
 
 | 方法 | 本版选择与理由 |
 | --- | --- |
-| 局部最终模板＋复用＋MaskMove | 静态重复边界的主路径；减少逐块比较、转换、fill和DDR读取，代价是明确的SPM驻留 |
+| 局部`0/-inf`模板＋复用＋AddVV | 本轮causal主路径；省去causal专用`-inf`源、0/1转换和MaskMove，模板仍需实际SPM驻留 |
+| 数值0/1 mask＋源buffer＋MaskMove | 用于仍要求覆盖的普通bool/select消费链，按实际使用范围准备与复用 |
 | 实际比较直接输出数值0/1 | 用于仍需计算predicate的消费链；FP16/BF16/F32已有厂商value/BOOL两类比较，不必固定先i1再Bit2Fp |
 | 每行或每段fill | 同值连续区域可以用，细三角边界会产生随行数增长的issue；不作为常规大块causal默认方案 |
 | 按元素生成坐标并比较 | 仅用于无法静态折叠的已支持条件；避免完整二维坐标展开。INT32目标比较的具体tuple资格单独核实，不宣称硬件不支持 |
-| packed bool模板 | 可节约数据/存储，但MaskMove当前消费数值mask，转换和padding成本必须实计；不新增packed host mask ABI |
-| 乘0/1或加`-inf`代替覆盖 | 不采用：NaN、Inf和原source的覆盖语义不能由这种算术替代 |
+| packed bool模板 | 用于已有bool消费链时实计转换和padding；本轮causal直接生成数值bias，不新增packed host mask ABI |
+| 任意select改成加法或乘法 | 本轮causal选择不扩展为通用select改写；其它source显式覆盖语义保持 |
 
 通用比较优化保持source `arith.cmp*`的i1语义。在实际`comparison → Bit2Fp`链上选择厂商数值结果指令，
 Instr以destination type区分packed BOOL和数值0/1；必要的结果编码沿同一TargetCall/CRT ABI显式传递。
@@ -650,9 +658,8 @@ VV/VS/VuV/VuVLoop只使用对应dtype、单位、tail和物理遍历已有证明
 普通broadcast优先消费合法VS/VuV形式，无法直接消费的映射保留有证明的GatherScatter/copy。
 非同值规律不能用两条fill伪造；位置模板由整数常量计算或原predicate产生，不按mask名字选择指令。
 
-`-inf - -inf`可由合法mask及online初始状态产生，不归为非法测试输入。当前指数保护及`zero_fully_masked`语义继续保留。
-FA的行级安全maximum值得单独比较，但替换逐元素保护会涉及NaN/+inf传播与state语义；未完成全域证明前不纳入本轮必交，
-不借性能改动切换exp/exp2、算术顺序或容差。原保护链仍受通用数值比较、fill复用和DPS优化覆盖。
+本轮保留当前softmax及`zero_fully_masked`实现，不把行级maximum重写或额外特殊值处理设为causal加法实现的前置。
+原有运算仍受通用数值比较、fill复用和DPS优化覆盖；exp/exp2、其它算术顺序及验收容差保持。
 
 采用[FlexAttention](https://pytorch.org/blog/flexattention/)区分块可见性与score修改的组织方式，
 以及[FlashInfer variants](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/variants.cuh)
@@ -708,12 +715,14 @@ for k2Block in exact K2 partition selected from current online_attention:
   vTile      = slice(V, k2Block, output N piece)
   maskTile   = optional slice(mask, outputPiece, k2Block)
   scores     = linalg contraction(qTile, kTile)
-  scores     = scale(scores) + maskTile
+  scores     = evaluate original score region(scores, scale, maskTile)
+  scores     = apply position-based causal / valid-key mask when needed
   blockState = compute (maximum, sum, accumulator) for this block
   state      = combine(state, blockState)
 output = finalize(state)
 ```
 
+原score region中的bool/select与additive mask分别按源操作执行；位置屏蔽的当前实现与本轮改进分别见4.5和4.6。
 score和probability scratch最多覆盖当前`M tile × K2 block`及其batch/head coordinates，不允许物化完整score/probability tensor。
 state在K2 loop外建立并通过multi-result SCF iter args携带；block scratch按occurrence显式产生。K1 reduction是decomposition后每个score
 block内部的contraction reduction，可由后续普通contraction codegen继续分块，但不得与K2 online state混为同一个spatial split角色。
