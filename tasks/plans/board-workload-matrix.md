@@ -2,18 +2,62 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
-### 本轮首次CT异常与TDMA因果分支（2026-09-21）
+### 次日恢复前的完整诊断准备（2026-09-21）
 
-当前 CRT 将浮点 fill 的 format 按存储宽度改成了整数，成本统计也随之全部归入整数类；
+用户要求今晚只分析现有日志、firmware和SDK，把可区分原因的case一次准备齐，次日由用户重启。
+当前故障boot不再计算。修正dtype后的原路径实测仍出现首次CT `0x800`及稍后的TDMA；
+16 Tile的首次TDMA观测均落在最近一次task-done之后的四条命令内：行最大值GS广播、SubVV、Exp、后继GS。
+这已取得实际发射packet的有界窗口，尚不是唯一硬件fault PC。首次CT状态不能代替TDMA触发点。
+
+- 输入：本轮实际四命令窗口、首次fill前缀、匹配安装身份的固件/SDK；重新生成的确定性合法输入。
+- 职责：诊断副本独立控制fill初值、GS单命令规模和局部依赖；核对实际ELF、SDK字段、完整SPM回读及日志。
+- 输出：所有分支的ExecutablePackage、输入、独立expected、采集器、逐case判定和固定摘要；直接消费者是单进程runner和离线分析。
+- 入口：独立诊断准备及串行执行脚本；复用生产CRT、SDK、package loader和厂商正常退出。
+- 非目标：不改生产指令、dtype、同步、timeout、异常mask或firmware；不运行历史性能包；不将微用例当attention资格。
+- 完成条件：所有分支实际构包和本轮no-card、符号/packet/访问范围/采集故障注入通过；新boot与系统占用检查有效。
+  TDMA因果及硬件正确性仍需次日真实结果，不以准备完成代签。
+
+| 等价类/分支 | 控制变量 | exact判据和直接witness |
+| --- | --- | --- |
+| 搬运基线 | RDMA初始化与WDMA完整回读，同一SPM范围 | 全范围逐byte一致，邻接/未写区域不变，collector完整 |
+| 首次CT状态 | Xor单独、AddVS单独、生产fill二指令；256个F32，原地址/worker | 两条CT各自实际format/标量、前后CSR、全量输出及邻接guard；小shape只定位该实际指令 |
+| 初值/前缀 | 有限非零初值、合法mask `0/-inf` 初值、原程序首次fill前缀 | 区分单指令和原SPM复用上下文；不以清理后读值代替完成时回读 |
+| TDMA颗粒/规模 | 同262144 bytes的大颗粒搬运；原4-byte inner的1024、4096、16384、32768、65536次 | 逐点独立布局oracle，源不变、目标all-and-only写入、SDK end/stride/iter与真实地址闭合 |
+| 单命令与拆分 | 原三维完整GS、四条和十六条的等价GS，无中间wait | 相同访问序列和最终数据；单命令规模、packet数量和range粒度的差异均记入解释 |
+| 依赖前缀 | GS、GS+Sub、GS+Sub+Exp、原四命令；另备等价拆分后接原consumer | score预置为独立计算的广播结果，Sub应全0、Exp应全1；分别核对源复用和输出overlap |
+| 实际第二种布局 | Tile 12的二维GS及原四命令窗口，与Tile 4三维布局分别准备 | 保留各自实际地址/迭代；各有独立reference，不把布局差异混为单变量 |
+| 工具负例 | 旧boot、重复launch、文件被改、缺失符号、截断记录、CT状态后TDMA | 在设备provider之前拒绝错误准备；记录缺口明确失败，不补造硬件事实 |
+
+初始化完成后才进入受测窗口，窗口内不插join；只在已有终端completion边界增加有界只读状态采集，
+随后仍执行厂商join/cleanup。采集的轮询、flush和日志开销可能改变时序，须保留这一限制。
+先执行对照与较小规模，再到完整广播和组合；每case一次launch、完整检查后才进入下一项，
+任何设备异常、completion/cleanup失败或结果错误立即停批，不retry、不reset。纯CT非致命状态也单列判定，
+不能因raw非零就伪称TDMA，也不能静默忽略其后继续扩展批次。
+F32来自实际故障窗口；规模为该次winner的真实参数，不是编译器固定tile规则。本项不改tiling，整除/tail不另扩scope。
+
+本轮22个分支已完成构包、新输入/独立expected和strict no-card。实际ELF的352个Tile入口及CRT→SDK issuer
+通过主机执行核对，包含最终模拟MMIO中的CT、TDMA、RDMA/WDMA字段和已覆盖路径的malloc/free调用配对；
+模拟不执行NPU数值/时序，也不代替真实firmware allocator和硬件资源验证。三个完整广播变体的65,536对
+source/destination地址顺序逐项相同；每项完整2 MiB expected覆盖目标和未写区域。
+采集器wrap/首次CT后TDMA/终端poll budget、报告器坏值/坏packet/缺片段、批次首项或次项异常立即停批、
+同boot停止后拒绝恢复及符号检查通过。当前固件354个导出符号与全部22个ELF核对，未导出的旧日志符号被拒绝。
+no-card本身只检查package和guard规划，输入端口/dtype/字节数由独立检查覆盖；没有改CLI边界。
+canonical完整增量与第二次Ninja no-op通过。文件摘要冻结，默认次日先执行9个纯搬运case，异常即停；
+其余已准备分支按结果选择，不在现场临时补包。详见
+[诊断准备与本轮实测分析](../../docs/data/board-performance/tdma-causal-matrix-20260921.json)。
+
+### 前次首次CT异常与dtype修正（2026-09-21历史检查点，后续实测见上节）
+
+修正前 CRT 将浮点 fill 的 format 按存储宽度改成了整数，成本统计也随之全部归入整数类；
 这是实现自行增加的规则，没有硬件数值验证支持。本轮修正为保留 destination dtype，
 同步成本统计、已有回归和当前设计；BOOL owned-byte 合同保持。
 原 INT32 诊断包保留作为审计记录；修正后的诊断包使用相同地址和元素数，记录实际 F32 packet。
 软件格式修正与 TDMA 因果关系分开验收，不能仅凭改格式就签发根因闭合。
 
-原程序采集现已执行。16 Tile均在首次非零fill的INT32 `AddVS`后读到CSR `0x800`，
+前次原程序采集已执行。16 Tile均在首次非零fill的INT32 `AddVS`后读到CSR `0x800`，
 此前task-done为1、CSR异常为0，当时stream TDMA fatal为0；稍后AP/host报告TDMA。
 用户明确要求考虑早期异常引发后续TDMA的可能，不能把二者预先判成独立故障。
-当前故障boot停止计算；下面先准备，恢复后按结果选择单个case，不自动连跑。
+当时停止计算并准备下面分支；后续已实测正确F32仍复现，次日顺序以本页首节为准。
 
 - 输入：本次实际packet与对应F32调用；修正后保留scalar `0x3f800000`、256元素、worker0及SPM地址，format按F32传递；使用新生成输入和reference。
 - 职责：在诊断副本中隔离首次异常窗口；记录Xor/AddVS前后状态，回读填充值及相邻guard，再决定是否需要原程序或依赖对照。
@@ -32,7 +76,7 @@
 修正为首次非零状态单独保存，ring继续记录，仅由已核对的stream TDMA bit 12冻结；不写硬件mask或clear寄存器。
 新覆盖包含CT `0x800`持续存在、跨越64条ring、随后TDMA触发、首次状态不被覆盖和预存TDMA拒绝。
 `monitor_write_log`已完成实际加载，但本轮系统Kcore日志未收集到其标记；后续采用当前固件实际导出的`rcs_ep_log`，
-其五个固定参数及va-list转发、EP ring写入由实际固件核对，系统日志可达性仍待实卡，不以符号存在代签。
+其五个固定参数及va-list转发、EP ring写入由实际固件核对；后续实测取得16 Tile fault marker与283条完整packet日志，系统日志可达。
 
 上一boot的诊断包因未导出的`tx8_kernel_printf`在loader失败，同boot随后Add也未加载成功。
 用户再次重启后fresh FP16 Add精确数值、guard、正常厂商清理通过；随后本次原程序诊断加载、执行及DDR回读成功，

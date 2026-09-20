@@ -7,6 +7,66 @@
 本次证据见 [2026-09-20 审计记录](data/board-performance/tdma-firmware-localization-20260920.json)。
 首次 TDMA 告警、后续执行和最终清理错误分别归档。历史 raw 仅用于离线审计，不作为新测试输入。
 
+## 当前故障区间与因果分析（2026-09-21）
+
+修正fill dtype后，重启的首个原路径诊断仍复现TDMA。本轮取得真正的stream fatal窗口，
+16 Tile均落在最近一次观察到task-done之后的四条实际命令中：**行最大值GS广播 → SubVV → Exp → 后继GS**。
+Tile 0--10为issue 41--44，Tile 11--15为44--47；窗口前task-done为1，CSR的TDMA非法opcode/地址字段未置位。
+这是 **board-observed** 的实际packet区间，包含两条TDMA，尚不能宣布其中某条就是唯一硬件fault PC。
+原始记录、逐Tile字段和准备产物摘要见[本轮证据](data/board-performance/tdma-causal-matrix-20260921.json)。
+
+| 观测 | 本次结果 | 对原因的约束 |
+| --- | --- | --- |
+| kernel入口 | 16 Tile的CT/TDMA count、CSR exception、PMU exception raw均为0，task-done为1 | 本次复现不需要先连续运行多个case；不能据此排除本次invocation内部的问题 |
+| 首次CT状态 | 实际F32 AddVS仍在issue 8或12之后读到`0x800`；当时stream fatal为0 | dtype修正没有消除这两个现象；早期CT状态是否参与后续TDMA仍需隔离 |
+| 广播参数 | Tile 4：inner=4、iter=`[64,256,4]`；Tile 12：inner=4、iter=`[256,256,1]`，均搬262144 bytes | 每条descriptor内部有65,536次搬运；不是CPU循环发射65,536条指令 |
+| 实际SDK字段 | source/destination、inclusive end、byte stride和各维32-bit iteration与原ABI一致，SPM范围不越3 MiB | 未发现参数截断或越界证据；不由SDK字段正确推定硬件时序合法 |
+| 回读和退出 | runner返回0，16 Tile completion、11264 guard bytes及正常清理完成；同窗口有TDMA | 本次不是永久卡住，但仍是设备异常；106.581 ms不作健康性能数据 |
+| EP日志 | `rcs_ep_log`取得16个fault marker、283条完整packet记录，无缺片段 | 当前日志路径已实测可达；该结果与loader符号存在的静态证据分开 |
+
+本次广播复制的是256个不同的行最大值，属于普通broadcast；不是已移除的mask标量同值铺块。
+不能把它直接换成整块同值fill，也不能据此撤回当前mask方案。
+
+### 执行时长与timeout的关联
+
+从第一条GS发射前的TDMA execution原值做差，16 Tile最后一次无fatal的增量为54,427--65,263，
+全部小于现场LSU timeout值65,535。15 Tile首次fatal增量为65,868--76,673，已经越过该值。
+Tile 15在快照中先读到stream=0、后读到4096；中间execution增量是65,384，比配置少151，
+该顺序快照耗时691个Kcore cycle。它不是一个“已fatal但计数低于阈值”的原子反例。
+所有Tile的last-command原值也都与第一条GS destination的既有相关性相符；其编码仍未作为正式fault-PC使用。
+
+因此 **inference：单条小颗粒广播持续过久** 是当前首要假设。依据是实际计时与fatal的交叉窗口，
+不是仅把iteration乘积65,536和配置65,535作数值联想。仍为 **unknown** 的部分包括timeout的计时单位、
+是否按指令或无进展区间重新计数、PMU计时是否包含特定stall，以及last-command的更新/保留点。
+没有这些定义和独立对照，不能宣称硬件计数器溢出，也不能通过调大timeout或插join试修。
+
+### Firmware与资源路径的进一步核对
+
+当前AP二进制的TDMA handler仍只上报和累加计数；函数本身没有packet捕获或reset。
+Kcore实际`set_pmu_reg`在`0x25640`，已检查的直接调用包括`0xfd44/0xfd4c`写offset 4进行PMU clear，
+以及`0x10492`写offset 0进行enable。它们不是LSU timeout配置；不能把清PMU计数等同清NCC队列或所有硬件资源。
+SDK `pmu.h`区分TDMA execution时间和queue反压时间，但没有提供所需的LSU watchdog计时/重载合同。
+进一步检查了安装包FIP的boot payload和已安装Score/Kcore镜像，尚未恢复可确认的LSU timeout设置/复位规则；
+安装包静态检查也不等于读出了板上flash。firmware、driver、timeout和异常配置均未改动。
+
+诊断ELF沿实际CRT/SDK执行的对象分配/释放调用已成对核对；这排查了被覆盖wrapper路径漏调delete的情况，
+不证明真实firmware allocator、寄存器或硬件队列一定清干净。当前入口零状态和首次launch复现，
+使“必须有上次调用残留”不再是本例必要条件；本次窗口内的源覆盖、目标复用和跨engine依赖仍须区分。
+
+### 已准备的区分实验
+
+22个case已准备完整package、合法输入、独立expected及采集/判定。首批9项不含CT：
+完整回读基线、同字节量大颗粒搬运、1,024/4,096次前缀、16条等价拆分、16,384/32,768次、
+4条等价拆分、原样65,536次。三种完整广播的源/目的逐点访问序列完全相同。
+原样单条若在没有任何CT的invocation中复现，就能排除“早期CT状态是必要前置”这一解释；
+原样与等价拆分差异可以进一步区分单命令条件与总搬运量，仍不能单独判定具体硬件计时逻辑。
+
+另备原GS逐步接Sub/Exp/后继GS、移开后继destination、Tile 12布局，以及Xor/AddVS/fill/合法mask初值/原fill前缀。
+这些分支分别区分组合依赖、地址复用和CT初值；所有分支已构包，不等待下一次故障后再临时编写。
+每case完整回读2 MiB，核对目标、source和未写区域；只在终端completion处有界只读采样，随后仍执行厂商join/cleanup。
+no-card、实际ELF/SDK字段、符号、采集故障注入及停批控制均已主机验证；这不是硬件数值或因果验证。
+本次准备期间没有新增设备计算。用户计划次日重启后再执行，任何异常立即停批。
+
 ## 已确认的告警路径
 
 下列结论属于 **supported：当前二进制静态证据**，绑定记录中的文件摘要。
@@ -36,7 +96,7 @@
 | board-observed：当前 BF16 4K prefill | 厂商正常退出版本仍在执行窗口出现多个 Tile 的 TDMA；三个输入和回读均为有限值，离线数值门槛满足，guard 通过 | 不能把 NaN/Inf 输入或跳过全局析构当作这一次的已证实解释 |
 | board-observed：后续 FP16 | 用户明确要求继续后运行同 workload 的 FP16；固件再次报告 TDMA，随后出现 AP 资源清理超时及 Kcore 关闭失败 | 后续清理失败不能解释先前 TDMA 的初始触发条件 |
 | board-observed：重启后首个当前 BF16 4K prefill | 单次执行再次报告 TDMA；只读 PMU 采样取得配置、异常字段和变化中的计数，见下节 | 此次复现不需要本 boot 先连续执行多个 case；采样可能影响时序，不能外推到所有历史故障 |
-| unknown | 故障时实际 TDMA packet、源程序位置、raw/命令字段编码及其对应 worker、地址 | 尚不能区分非法命令/地址、依赖等待、状态残留或阈值问题 |
+| unknown（此前检查点） | 当时未取得故障附近实际packet；本日后续已取得四命令窗口，见页首 | 唯一fault PC、raw/命令字段编码和硬件触发原因仍未闭合 |
 
 当前 BF16 Q/K/V 各有 14,680,064 个元素，无非有限值；Q/K 范围为 ±0.416015625，V 范围为 ±3.328125。
 回读 relative L2 为 0.00194608，所有元素满足既定比较门槛。该检查只排除了这次输入含 NaN/Inf，
@@ -187,7 +247,7 @@ source stride为`[0,4,0]`、destination stride为`[4,256,65536]`、iteration为`
 
 新采集消费同一原target LLVM及CRT，产出显式诊断副本；它不修改production算法、packet参数、同步、timeout或厂商退出。
 在原ABI调用处记录source site，在五类engine进入SDK发射器之前复制packet并记录前后状态。
-同一个fill内部的两次CT分开记录。每Tile的64条ring在首次异常时冻结，独立DDR输出和有界Kcore日志相互补充。
+同一个fill内部的两次CT分开记录。采集器现将首次CT状态单独保存，64条ring继续记录，stream TDMA fatal才冻结；独立DDR输出和有界Kcore日志相互补充。
 发射前先flush记录，前128条另打印进入/返回标记；如果SDK阻塞且DDR无法回读，日志仍可保留部分执行位置。
 这种有界日志不能保证覆盖任意晚期阻塞；缺失片段会明确报告，不按离线期望序列补造。
 
@@ -203,7 +263,7 @@ source stride为`[0,4,0]`、destination stride为`[4,256,65536]`、iteration为`
 两次CT、不同Tile的存储隔离和非返回phase；DDR与有界日志解码一致，缺失片段和截断被识别。
 字段偏移/大小由当前SDK header生成，并以RISC-V编译器静态断言核对。新输入/reference、strict no-card及旧boot拒绝通过。
 
-限制属于 **unknown**：插桩的MMIO读取、cache flush及日志会改变时序；当前还没有诊断副本的实卡结果。
+限制属于 **unknown**：插桩的MMIO读取、cache flush及日志会改变时序；本节描述准备检查点，后续实卡结果见页首。
 SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入口packet。跨Tile cycle未校准，不据此判断物理首故障Tile。
 若再次复现且观察窗口内有多条在途指令，必须继续缩小触发区间；只有带证据的区间确定后，才选择隔离/拆分实验。
 本轮准备期间没有新增设备访问，不把原始异常的count减4当作fault ordinal。
@@ -229,31 +289,31 @@ SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入�
 - 重启后首个计算已复现，因而“必须连续跑多个case才能触发”已被本次反例排除；
   尚不能排除同一launch内部命令/资源状态累积。厂商清理超时发生在TDMA之后，不能倒置因果。
 
-本轮仅修改代码与主机验证，没有在当前故障boot新增launch、reset或历史包重测。
+上述填充修改检查点仅做代码与主机验证；后续实测及当前离线准备的边界见页首。
 
 ### 仍需的设备证据
 
-1. 在实际 TDMA handler 入口、错误状态被更改之前采集一次有界快照最可靠。
-   当前发行 handler 没有这项能力；普通PMU及89–126微秒的直接fatal采样已验证，仍不能代替handler入口快照。
-   先确认 PMU raw/command ID 的确切编码与保留规则，或取得厂商对应 debug 固件/采集支持。
-   即使在 host EID 之前采到 raw，也可能晚于出错指令退休，不能声称一定抓到了首条故障指令。
-2. 同时保留 Tile、worker、异常 raw/stat/mask、命令 ID、TDMA last-command、timeout/enable、进度计数，
-   并保留触发时的实际 packet 参数。参数必须来自真实 issue，不能由预期指令列表猜测。
-3. 若现有寄存器不能映射回实际调用位置，再对一个当前包使用有界 issue 记录：关联实际 Tile/worker、
-   动态序号、ELF site 及 packet。诊断记录本身的开销需要单列，不以完整 Trace 卡死或普通计时替代它。
-4. 干净启动的单个当前失败配置已分别完成普通PMU与快速fatal采集。先离线核查首轮mask广播及相邻copy，
-   补齐计数/last-command更新语义，或使用有界实际issue记录消除动态序号歧义；
-   不直接重复采样，不重跑矩阵或历史对照包，也不改同步、timeout或reset来试运气。
+1. 已有实际issue记录把本次现场收敛为四命令窗口。下一次先执行不含CT且仅有一条TDMA的原样广播，
+   并与预先准备的小规模、大颗粒及等价拆分对照；具体顺序见页首。这样即使last-command编码仍未知，
+   单条原样若复现也能直接确定该invocation的TDMA指令，同时排除早期CT状态作为必要前置。
+2. 单条广播正常时，使用已经构包的GS→Sub→Exp→后继GS前缀及移开目标地址的对照，
+   区分跨engine依赖、源覆盖和目标复用。初值与fill分支另有独立输出，不依赖故障后全attention的数值推断。
+3. 继续保留实际packet、Tile/worker、动态序号、CSR/PMU/stream状态、execution计数和timeout配置。
+   计时关联需要LSU watchdog单位、重载条件及counter更新规则才能成为完整因果解释；不调大timeout或插join试修。
+   采集会改变时序，SDK返回不等于硬件完成，顺序快照也不等于原子现场。
+4. 当前发行handler没有fault-PC快照。厂商debug固件或对应寄存器定义可以补足观测能力，
+   但不把取得它们作为上述已准备对照的前置，也不把普通PMU采样说成handler入口现场。
+   不重跑历史性能包，不在当前故障boot继续计算或自动reset。
 
 完成条件是拿到一次可关联实际指令的故障现场，据此修正确定缺陷，再以当前原始 case 及相应连续运行序列验证。
-目前完成了安装版本核对、告警路径还原及重启后首个计算的寄存器观测；尚未取得可关联实际指令的故障 packet/PC，
+目前完成了安装版本核对、告警路径还原、寄存器观测及实际四指令窗口捕获；尚未取得唯一硬件fault PC，
 **TDMA 根因与修复仍未完成**。
 
 ## 原路径采集与fill格式修正（2026-09-21）
 
 首次诊断包因未导出的`tx8_kernel_printf`在loader失败。SDK声明不能代替当前固件实际导出；
 已按RTMSymTab修正allowlist，并通过实际链接正反例。`monitor_write_log`可以加载，但本轮系统EP日志未取得标记；
-后续诊断使用实际导出的`rcs_ep_log`，ABI和EP ring路径已由固件静态核对，日志可达性仍待实卡。
+后续诊断使用实际导出的`rcs_ep_log`，ABI和EP ring路径由固件静态核对；系统日志可达性已在页首本轮实测闭合。
 
 再次重启后，fresh FP16 Add全输出exact、guard及正常清理通过。随后原attention诊断成功加载，
 取得16 Tile DDR记录并报告TDMA。所有Tile的首次非零fill调用均是F32 `1.0`，却被CRT发为INT32 AddVS：
@@ -267,5 +327,5 @@ SDK将CSR该位定义为CT输入NaN。此记录定位了首次状态变化窗口
 
 原采集器遇到CT状态即冻结，漏掉后续TDMA窗口；现改为单独保存首次CT状态，继续记录packet，
 仅在stream TDMA bit 12出现时冻结ring。故障注入、16 Tile原ABI调用对照、新输入/reference及no-card通过。
-当前故障boot没有新增计算；清理后只读两个填充地址所得全零不能代替指令时刻的数据。dtype修正的实卡资格、
-实际TDMA故障指令及两者因果关系仍未闭合。
+清理后只读两个填充地址所得全零不能代替指令时刻的数据。后续正确F32的原路径仍复现，见页首；
+fill独立数值资格、唯一TDMA故障指令及两者因果关系仍未闭合。
