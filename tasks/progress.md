@@ -53,6 +53,12 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 普通 broadcast 与其它高效 movement 保留。实现、SDK字段检查及当前BF16原始source/package/no-card已完成；
 当前故障 boot 未新增设备执行，新实现的整数 CT、非对齐/tail 写入范围及 TDMA 根因仍须实卡证据。
 
+用户要求暂缓空间切分/搜索预算问题，先收敛当前版本的attention与mask方案。
+已整理[05号改进合同](05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)及
+[本轮实施顺序与覆盖矩阵](plans/board-workload-matrix.md#当前版本attention与mask改进方案)：
+局部最终mask模板、数值比较、同调用准备复用、DPS原地覆盖及可见域循环；动态长度入口、paged KV和跨调用缓存延后。
+本轮仅完成方案，新增优化尚未实施；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
+
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
 顺序为composite接入→宽状态/causal局部展开→GEMM/layout/movement修正→原PyTorch/HF module新reference→完整实卡与性能保护。

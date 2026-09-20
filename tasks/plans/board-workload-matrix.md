@@ -24,6 +24,82 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 记录见[主机验证与SDK字段证据](../../docs/data/board-performance/ct-fill-host-validation-20260920.json)。
 本轮未上卡；整数CT数值、非对齐/tail实际写入、完整设备guard/cleanup和TDMA根因仍未闭合。
 
+### 当前版本attention与mask改进方案
+
+用户要求先收敛前述讨论的方案，空间切分与搜索预算问题暂缓。本节属于既有`board-testing`，
+算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)。
+本轮只整理设计与实施合同；下面的优化尚未实施，不重启此前搜索、板测队列或TDMA故障boot。
+已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
+
+#### 本轮范围与实际能力边界
+
+目标是减少mask和重复准备的动态指令、DDR/SPM搬运，保留现有attention输入语义与通用性。
+覆盖causal、bool/additive mask、MHA/GQA、单/多token decode、不等长及tail；不按28-head或256块硬编码。
+本版不新增动态长度入口、paged KV、跨调用准备缓存或任意Python mask callback。
+不调整head/Q切分、搜索预算和评分，也不将mask优化当作TDMA根因已定位。
+
+| 问题/能力 | 已有事实 | 本轮处置 |
+| --- | --- | --- |
+| Relation数值0/1与packed BOOL结果 | 厂商已有两类entry；FP16/BF16/F32的已列VV/VS/VuV/VuVLoop tuple有各自板测记录 | 补软件的结果类型/ABI选择；不再把i1结果约束称为硬件限制 |
+| INT32坐标与比较 | host/index位置运算可用；vector INT32 relation的完整tuple资格未在本轮确认 | 静态规则用整数生成最终模板，消除该运行时依赖；残余整数比较先补精确证据，保持unknown而非unsupported |
+| MaskMove覆盖 | 已有数值mask与源SPM buffer路径，当前接口没有已验证的`-inf` scalar immediate替代 | 准备并复用`-inf`整块源，不凭空设计一条立即数masked fill |
+| template/fill/转换反复执行 | 当前软件的准备位置、DPS和movement处理尚有缺口 | 扩展共同证明与变换，记录实际动态次数；不归因于硬件必须重复 |
+| `XorVV + AddVS`填充 | 代码、模型和SDK字段主机检查已完成 | 补整数CT、tail和guard实卡资格；不以浮点Add或旧Memset结果代签 |
+| 任意输入mask整块跳过 | 数据内容不能从shape推出 | 保持按块消费；只凭current常量/位置关系跳块，不额外扫描整张mask |
+| TDMA timeout | 首轮mask铺块与相邻copy是优先候选，尚无唯一fault packet/PC | 优化与根因两条验收分开，保留现场证据和正常厂商退出 |
+
+#### 实施顺序与直接产物
+
+各步提交时同步其owner编号设计、当前接口及实际测试；未完成步骤不能用前一步通过代签。
+
+| 顺序 | 修改边界 | 实际产物与下一消费者 | 本步完成条件 |
+| --- | --- | --- | --- |
+| 1 | 10/11/14号：实际predicate消费链、Instr、TargetCall/CRT | 常量predicate转换折叠为显式数值常量；非恒定compare→Bit2Fp合成厂商value结果比较；交给原completion/SPM与target | bool和值结果的dtype/span/packet/模型一致；无重复转换；多use与不适用tuple保留正确路径 |
+| 2 | 05号：已tiled online-attention decomposition | 用integer位置生成最终局部invalid模式，替换静态边界F32 `k−q`表；原score region与DPS交给08号 | 对齐、偏移、不等块长、tail的局部predicate exact；不生成全序列mask或逐元素Kcore循环 |
+| 3 | 08/10号：DPS与实际准备操作的共同placement | 同调用内模板load/convert/fill复用；score原地MaskMove；actual alias/effect/owner交给fresh completion/SPM | 初始化位于合法共同复用域；无依赖名字的hoist、无猜测alias、无新增可避免join；实际SPM offset验证成功 |
+| 4 | 06号：actual SCF可见域 | 对已证明连续的可见域收紧KV loop；全可见与边界body保持原state SSA；直接消费步骤2/3结果 | 不可见块无读取/计算/更新；边界覆盖exact；不能证明的特殊mask保持原精确计算 |
+| 5 | 16号：完整主机产品与性能核对 | fresh source/reference→package/no-card、必要TargetModel与指令/字节统计；准备当前版本板测包 | 下表各分支及受影响共享算子通过；数字区分静态site、动态执行次数、模型估时和实测 |
+| 6 | 15/16号：设备恢复后的受控资格与TDMA调查 | 当前CT fill机制case→当前attention→受影响保护矩阵，正常厂商清理；每次异常立即停止 | 本轮数值/guard/cleanup与健康日志闭合后才签对应资格；TDMA根因另按已有定位合同判定 |
+
+步骤1的常量准备必须在实际IR中产生数值mask及load，步骤3必须位于这些操作已经物化的边界。
+同一PhysicalMovementPlacement实现可在需要的实际Tile/Instr边界调用，不能依赖后续会出现的buffer或另建attention专用搬运通路。
+08号先证明score destination复用，lowering只消费已确定alias；constant/fill hoist增加的真实lifetime由唯一SPM gate判断。
+修改关系结果时同步11号当前“relation输出i1”和14号CRT发射合同，保留一种完整协议，不新增兼容reader或ABI旁路。
+
+本轮常规对齐causal的预期动态执行是：每Tile在合法作用域准备一次mask和一次`-inf`源；
+每query块先读Q并初始化自己的`m/l/A`，遍历全可见KV块，边界块执行QK和原score计算后用MaskMove覆盖，接续原online更新和PV，最后归一化输出。
+Q的必要layout转换每query块只准备一次，供同一块内full/boundary路径共享；KV与输入mask仍按实际需求读取。
+纯causal的未来KV块不进入计算循环；任意输入mask不会因causal的full分类被丢弃。
+
+#### 覆盖矩阵与验收量
+
+主机正例默认rank≥3，完整输入覆盖1024/1025/1031、多Tile、多block/wave及remainder；另保留真实4K 28-head产品。
+FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合同。Tiny仅作有界位置/位型oracle，不代替产品验证。
+
+| 输入等价类/分支 | exact检查或typed失败 | 直接下游witness |
+| --- | --- | --- |
+| 无mask、全可见、全不可见、跨边界causal | 三类区间正确；skip不读K/V/mask且state原样接续；full无causal处理 | actual SCF→Instr→completion/SPM→原PyTorch reference |
+| query/key不同长度、不同block size、非零绝对偏移、upper-left/lower-right来源 | 保留来源位置对齐；多边界模式及tail exact，不能从局部shape差重建语义 | source capture→position tiling→最终结果 |
+| bool常量/运行时输入、全true/全false、棋盘/窗口/分段/非矩形 | True=keep、broadcast map与head依赖正确；非恒定模式不被当作uniform fill | rank3/4、1024/1025/1031实际读取窗口及完整输出 |
+| additive标量/按行/按head/完整块、finite负值与`-inf` | 保持原Add/cast顺序；不偷换成bool覆盖或跳块 | source score region→Instr及原容差/特殊值位置 |
+| Q=1、Q>1 decode、实际KV两步接续、GQA | 只在已证明前缀全可见时省causal；旧KV prefix exact，FD merge及输出owner不变 | fresh两步payload、TargetModel及设备actual KV接续 |
+| 原始source/线上状态全屏蔽行与`-inf - -inf` | 保留SDPA zero/eager特殊值分歧；finite输入与NaN/Inf机制case分开 | 原数学reference及模型，不用非法随机输入替代普通资格 |
+| value/BOOL relation、VV/VS/VuV/已准入VuVLoop、tail | numeric0/1及packed bit span分别验证；原i1 consumer不丢失，不对未测整数tuple宣称支持 | Instr verifier→同一CRT/SDK packet→模型及设备guard |
+| 模板重复/不同pattern、同Tile多head、独立Tile、可变源/alias/逃逸 | 不变准备恰在证明范围复用；其它保留必要copy；所有buffer有owner | actual load/fill次数、read/write/lifetime与SPM offset |
+| 原地score可用/旧score仍可观察、padding/非连续view | MaskMove全物理遍历mask为canonical0/1；不越界、不删必要copy | layout→bufferization→Instr，完整span与guard |
+| fill：raw `-inf`、-0、NaN payload、整数/BOOL、连续/strided/tail | `XorVV + AddVS`按storage bits精确填充；holes和guard未写；普通broadcast/GS仍正确 | 当前CRT host检查及恢复后的机制实卡 |
+| 共享lowering的Add/compare/select、LLaMA block、GEMM、ViT和既有attention矩阵 | 功能、dtype、layout与性能保护；原合法能力不因优化丢失 | 受影响组件/lit、canonical完整增量构建及no-op、fresh产品和指定板测 |
+
+常规对齐causal的完成目标：boundary steady-state不再生成坐标表比较、Bit2Fp、模板RDMA、完整`-inf` fill或可避免score copy；
+在DPS和物理遍历证明成立时仅保留一次MaskMove。初始化的RDMA/转换及两条fill CT必须单列，不能记成零成本。
+以BQ=BK=256、S=4096为解释例，每head有16个边界块；模板不能重复准备16次，更不能为28个head各复制同一模式。
+任意tail/不同模式按真实模式和作用域计数，不把该例写成统一阈值。不得仅凭静态GS减少签发设备性能收益。
+
+主机完成前不进入设备批次；当前故障boot不试跑。恢复后先核实全系统占用、设备身份和健康基线，
+逐case单次launch、timeout、全输出/guard及正常厂商清理；异常即停，不自动retry/reset。
+性能对照继续只用已有健康记录，注明跨轮版本/环境差异；不重跑历史包。
+新mask序列成功仅证明该序列的本轮资格，不能在旧Memset与旧GatherScatter之间单独归因TDMA。
+
 ### 板测接续
 
 用户要求性能比较直接使用已有健康耗时记录，不再重新运行历史对照包。本约束覆盖下文尚未执行的旧包配对要求；
