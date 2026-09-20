@@ -102,6 +102,7 @@ void materialize(mlir::linalg::GenericOp op, mlir::IRRewriter &rewriter,
                                  : found->second;
   };
   bool reusedDestination = false;
+  llvm::SmallVector<mlir::Value> destinationValues{op.getDpsInits().front()};
   for (mlir::Operation &scalar : op.getBody()->without_terminator()) {
     if (mlir::isOpTriviallyDead(&scalar))
       continue;
@@ -166,12 +167,19 @@ void materialize(mlir::linalg::GenericOp op, mlir::IRRewriter &rewriter,
         (!cast ||
          op.getDpsInits().front().getDefiningOp<mlir::tensor::EmptyOp>());
     reusedDestination |= final;
-    mlir::Value destination =
-        final ? op.getDpsInits().front()
-              : rewriter
-                    .create<mlir::tensor::EmptyOp>(scalar.getLoc(), shape,
-                                                   type.getElementType())
-                    .getResult();
+    mlir::Value destination = final ? op.getDpsInits().front() : mlir::Value{};
+    if (!destination)
+      for (auto input : inputs)
+        if (llvm::is_contained(destinationValues, input.value) &&
+            input.value.getType() == type && input.map == map) {
+          // Preserve the original generic's destination relation. One-Shot owns
+          // the alias decision, including copies when an old value is live.
+          destination = input.value;
+          break;
+        }
+    if (!destination)
+      destination = rewriter.create<mlir::tensor::EmptyOp>(
+          scalar.getLoc(), shape, type.getElementType());
     auto step = rewriter.create<mlir::linalg::GenericOp>(
         scalar.getLoc(), mlir::TypeRange{type}, operands,
         mlir::ValueRange{destination}, maps,
@@ -191,6 +199,8 @@ void materialize(mlir::linalg::GenericOp op, mlir::IRRewriter &rewriter,
           builder.create<mlir::linalg::YieldOp>(loc, clone->getResults());
         });
     listener.recordLoweredOperation(op, step);
+    if (llvm::is_contained(destinationValues, destination))
+      destinationValues.push_back(step.getResult(0));
     values[scalar.getResult(0)] = {step.getResult(0), map};
   }
   auto result = lookup(yield.getOperand(0));

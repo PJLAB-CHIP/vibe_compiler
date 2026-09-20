@@ -337,6 +337,18 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
           return fail(ExecutableCompilationStatus::CompilerFailure,
                       "instr-transfer-cleanup",
                       "canonical Instr transfer cleanup failed");
+        auto moved = timed("instr-physical-movement-placement", [&] {
+          return optimizePhysicalMovementPlacement(
+              *tile.module, tile.materializationRelations,
+              options.movementPlacement);
+        });
+        if (mlir::failed(moved))
+          return fail(
+              ExecutableCompilationStatus::CompilerFailure,
+              "instr-physical-movement-placement",
+              "physical movement placement produced invalid current IR");
+        support::addCompileCounter("movement", "invariant-instruction-copies",
+                                   *moved);
         return std::nullopt;
       });
   if (cleanupFailure)

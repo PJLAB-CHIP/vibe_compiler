@@ -798,6 +798,7 @@ public:
           }
         };
     CurrentIRDownstreamOptions downstreamOptions = options.downstream;
+    downstreamOptions.movementPlacement = attempt.placement;
     downstreamOptions.communication =
         CommunicationProposalPolicy::DependencyOrdered;
     downstreamOptions.distanceOneLoadPipeline = choice.pipeline;

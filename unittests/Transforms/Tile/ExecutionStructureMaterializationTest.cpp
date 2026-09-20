@@ -627,16 +627,17 @@ TEST(ExecutionStructureMaterializationTest,
     UnknownAlias,
     Mapped,
     MappedAlias,
+    MappedOtherInput,
     DifferentLayout,
     ExtraUse,
     InterveningRead
   };
   for (int64_t extent : {1024, 1025, 1031}) {
-    for (Case test :
-         {Case::Disjoint, Case::InPlace, Case::Observer, Case::Loop,
-          Case::Materialized, Case::AliasView, Case::PartialOverlap,
-          Case::UnknownAlias, Case::Mapped, Case::MappedAlias,
-          Case::DifferentLayout, Case::ExtraUse, Case::InterveningRead}) {
+    for (Case test : {Case::Disjoint, Case::InPlace, Case::Observer, Case::Loop,
+                      Case::Materialized, Case::AliasView, Case::PartialOverlap,
+                      Case::UnknownAlias, Case::Mapped, Case::MappedAlias,
+                      Case::MappedOtherInput, Case::DifferentLayout,
+                      Case::ExtraUse, Case::InterveningRead}) {
       SCOPED_TRACE(extent);
       SCOPED_TRACE(static_cast<int>(test));
       auto context = createContext();
@@ -728,10 +729,18 @@ TEST(ExecutionStructureMaterializationTest,
               ? mlir::AffineMap::getPermutationMap(
                     llvm::ArrayRef<unsigned>{2, 1, 0}, context.get())
               : identity;
-      auto maps = builder.getAffineMapArrayAttr({inputMap, inputMap, identity});
+      mlir::Value other = input;
+      mlir::AffineMap otherMap = inputMap;
+      if (test == Case::MappedOtherInput) {
+        other = input;
+        input = dest;
+        otherMap = mlir::AffineMap::getPermutationMap(
+            llvm::ArrayRef<unsigned>{2, 1, 0}, context.get());
+      }
+      auto maps = builder.getAffineMapArrayAttr({inputMap, otherMap, identity});
       auto value = builder.create<ComputeElementwiseOp>(
           loc, type, ComputeElementwiseKind::Add,
-          mlir::ValueRange{input, input}, maps);
+          mlir::ValueRange{input, other}, maps);
       if (test == Case::InterveningRead)
         builder.create<MoveCopyOp>(loc, type, dest, DDRResourceAttr());
       builder.create<MoveCopyIntoOp>(loc, value, dest);
@@ -764,7 +773,8 @@ TEST(ExecutionStructureMaterializationTest,
       });
       bool eliminate = test == Case::Disjoint || test == Case::InPlace ||
                        test == Case::Observer || test == Case::Loop ||
-                       test == Case::Materialized || test == Case::Mapped;
+                       test == Case::Materialized || test == Case::Mapped ||
+                       test == Case::MappedOtherInput;
       EXPECT_EQ(updates, eliminate ? 1u : 0u);
       EXPECT_EQ(functional, eliminate && test != Case::Materialized ? 0u : 1u);
       EXPECT_EQ(copies, eliminate ? 0u : 1u);
@@ -803,15 +813,18 @@ TEST(ExecutionStructureMaterializationTest,
       region.walk([&](InstrGatherScatterOp) { ++transfers; });
       region.walk([&](mlir::memref::AllocOp) { ++afterAllocations; });
       EXPECT_EQ(instructions, test == Case::Materialized ? 2u : 1u);
-      EXPECT_EQ(transfers,
-                test == Case::Mapped                                   ? 2u
-                : test == Case::Observer || test == Case::Materialized ? 1u
-                                                                       : 0u);
+      EXPECT_EQ(transfers, test == Case::Mapped ? 2u
+                           : test == Case::Observer ||
+                                   test == Case::Materialized ||
+                                   test == Case::MappedOtherInput
+                               ? 1u
+                               : 0u);
       EXPECT_EQ(afterAllocations,
                 beforeAllocations +
                     (test == Case::Materialized || test == Case::Mapped ? 2u
-                     : test == Case::Observer                           ? 1u
-                                                                        : 0u));
+                     : test == Case::Observer || test == Case::MappedOtherInput
+                         ? 1u
+                         : 0u));
       ASSERT_TRUE(mlir::succeeded(
           rebuildRequiredNCCJoins(*materialized.materialized->module)));
       EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(

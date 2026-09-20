@@ -27,14 +27,19 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 ### 当前版本attention与mask改进方案
 
 用户要求先收敛前述讨论的方案，空间切分与搜索预算问题暂缓。本节属于既有`board-testing`，
-算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)，
+算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同)，
 其余attention计算的整改合同见[05号4.7](../05-local-compute-normalization.md#47-attention行级计算整改合同)。
-用户随后授权按下述顺序实施并验收。步骤1--4的主机机制已实现，步骤2产品复用仍有缺口，当前推进步骤5；当前TDMA故障boot未新增设备执行。
+用户随后授权按下述顺序实施并验收。2026-09-21检查点：步骤1--5已实现，步骤2的产品复用缺口已闭合，
+步骤6下述主机矩阵通过。当前执行环境没有`/dev/accel/dev-0`及`/sys/class/accel`，本轮未访问设备；
+步骤7、整数CT fill/tail实际写入资格及TDMA根因仍未完成，不签整项done或完整board-ready。
+本轮实际结果见[主机验收证据](../../docs/data/board-performance/attention-additive-host-validation-20260921.json)。
+
+此前实现检查点如下，仅说明修复过程，产品资格以本轮同版本记录为准。
 已接入integer位置bias/Add、私有准备操作placement及KV可见上界，并补充非恒定上界的completion/lifetime证明。
 对齐与尾块的分解、实际模板读取范围、私有初始化正反例及NCC/lifetime定向回归已通过；
-真实4K诊断构包已收敛为一份实际`256×256`模板，该尺寸只描述本次winner；但winner仍为FirstUse，模板RDMA仍在边界内，
-同Tile/invocation准备复用的产品完成目标尚未达到，须继续结合剩余行级计算及实际SPM结果核对，不能以placement机制通过代签。
-该诊断构包尚未包含随后补齐的通用条件子集publication；当前尚未签本轮完整产品/no-card/board-ready资格。
+当时真实4K诊断构包已收敛为一份实际`256×256`模板，该尺寸只描述该次winner；但winner仍为FirstUse，模板RDMA仍在边界内，
+该检查点未达到同Tile/invocation准备复用目标，不能以placement机制通过代签。
+该诊断构包尚未包含随后补齐的通用条件子集publication；当时未签完整产品/no-card/board-ready资格。
 主机代码检查点：130项Analysis、487项Transforms、151项Driver实际执行通过；305项lit中304项初次通过，
 一项未知i64动态地址的错误分类随有界范围分析变为address overflow，更新预期后该项独立复测通过。
 canonical无target增量构建通过，随后Ninja no-op。新增integer模板值、1/4/2种模式、矩形块、偏移37及1024/1025/1031 tail、
@@ -53,9 +58,30 @@ canonical完整增量及Ninja no-op通过。新导出的全屏蔽FP16、滑窗BF
 普通KV cache BF16两步均通过完整TargetModel输出和fresh no-card；两步KV输出的历史prefix均exact。
 上述数值使用原PyTorch reference及原容差，no-card本身仍不执行设备算术。
 新的4K 28-head诊断包已构建，行级结构已生效；当次winner仍含边界模板读取和score中间buffer，未签复用目标。
-步骤2正修复constant global未使用symbol不可写性、Instr阶段实际转换错过placement、payload中间DPS关系缺失三处原因。
-步骤6的完整同版本产品矩阵及步骤7实卡仍未完成；后续共享路径修改须重签影响范围，不能复用前一检查点的资格。
-已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
+步骤2随后修复constant global未使用symbol不可写性、Instr阶段实际转换错过placement、payload中间DPS关系缺失三处原因。
+同时将同一layout-copy复用逻辑用于placement后，按各输入的alias和坐标分别证明相邻写回，
+并让循环外private fill的uniform事实沿真实支配关系保留。非causal广播仍使用原movement路径。
+中间DPS只延续原generic的显式destination链，不把任意input改成destination；One-Shot保留旧值观察者所需的copy。
+初版过宽的DPS选择导致两个ring collective回归失败，收紧到该合同后定向及完整Transforms回归均通过。
+
+当前同版本验收完成490项Transforms、151项Driver、72项相关lit，全部实际执行且无skip/unsupported；
+lit命令额外指定的Driver目录无测试并产生一条warning，该目录不计入通过项，Driver由151项组件覆盖。
+canonical完整增量构建通过，紧接第二次Ninja no-op。
+14种attention及4种共享算子的FP16/BF16共36组配置完成fresh source/reference、payload、package及no-card；
+其中9组配置、10次invocation实际执行TargetModel完整输出比较，KV cache两步历史prefix exact，沿用原容差。
+长K GEMM最初误用none配置触发runner的row-sharding断言，按原矩阵的standard search 8/42重新生成两种dtype后通过；
+原失败产物保留，不计为通过。no-card只验证产品和guard规划，不执行设备算术或guard读回。
+
+额外两组4K、28-head FP16/BF16使用production compiler和原standard search 8/42配置通过fresh产品/no-card。
+各16 Tile的最终Instr均确认：bias模板每Tile/invocation读取一次，Q layout每query块转换一次并由full/boundary共享，
+boundary score原地Add，行级Recip；每Tile仅一个terminal NCC join，循环内没有join。
+该winner模板实际为`256×256`，不是预设尺寸；causal专用独立`-inf`源已消除。
+与本轮步骤5诊断产物的只读结构对照中，动态RDMA从8,512降至8,080次、减少113,246,208字节，
+GatherScatter从93,536降至82,512次、减少1,074,364,416字节；均来自最终IR的实际SCF展开计数，不是设备耗时。
+SPM实际offset的最大末端由2,035,712变为2,038,784字节，增加3,072字节；不声称整条attention的SPM峰值下降。
+指令、模板、字节、模型输出及当前产物摘要均在本轮证据中。
+步骤7须在可见板卡的环境完成；缺少设备节点不说明设备再次timeout，也不据此要求重启。
+已完成的CT fill替换继续有效，后续共享路径修改仍须重签实际影响范围；历史健康耗时只作记录对照。
 按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
 先完成这条主路径，再处理其它bool/select链的比较与复用；不增加有限性扫描、特殊值运行时分支或加法/覆盖选择开关。
 
@@ -73,15 +99,15 @@ canonical完整增量及Ninja no-op通过。新导出的全屏蔽FP16、滑窗BF
 | INT32坐标与比较 | host/index位置运算可用；vector INT32 relation的完整tuple资格未在本轮确认 | 静态规则用整数生成最终模板，消除该运行时依赖；残余整数比较先补精确证据，保持unknown而非unsupported |
 | causal加法 | 现有AddVV可消费同dtype数值向量 | 编译期生成最终`0/-inf` bias；causal不再准备独立`-inf`源 |
 | MaskMove覆盖 | 普通bool/select仍有数值mask与源SPM buffer路径 | 保留这些来源的覆盖语义；不要求causal继续使用它 |
-| template/fill/转换反复执行 | 当前软件的准备位置、DPS和movement处理尚有缺口 | 扩展共同证明与变换，记录实际动态次数；不归因于硬件必须重复 |
+| template/fill/转换反复执行 | 准备位置、DPS和movement的软件缺口已修复，本轮产品复用目标通过 | 使用共同证明与变换，记录实际动态次数；设备收益待实测 |
 | `XorVV + AddVS`填充 | 代码、模型和SDK字段主机检查已完成 | 补整数CT、tail和guard实卡资格；不以浮点Add或旧Memset结果代签 |
 | 任意输入mask整块跳过 | 数据内容不能从shape推出 | 保持按块消费；只凭current常量/位置关系跳块，不额外扫描整张mask |
 | TDMA timeout | 首轮mask铺块与相邻copy是优先候选，尚无唯一fault packet/PC | 优化与根因两条验收分开，保留现场证据和正常厂商退出 |
 
 #### Attention其余计算的整改记录
 
-本次只读审查核对源码与已有最终Instr，用户要求将以下三项一并记录；它们都是软件生成方式的问题。
-当前仅记录待整改事项，尚未修改或验证新实现；不作为causal加法主路径的前置。
+最初只读审查确认以下三项软件生成问题；目前已按步骤5实现，并由本轮组件、TargetModel及最终Instr验收。
+下表保留原始问题与对应合同，所列旧指令链不再描述当前实现；设备验收仍待完成。
 
 | 问题 | 已确认的代码与指令证据 | 整改及验收入口 |
 | --- | --- | --- |
@@ -92,7 +118,7 @@ canonical完整增量及Ninja no-op通过。新导出的全屏蔽FP16、滑窗BF
 审计定位文件为`/data/vibe_compiler-validation/attention-search-audit-20260920/compiler-ir/instruction/tile_00000.mlir`：
 96--105行是全可见分支的整块指数判断，206--215行是边界分支的同一问题，259--273行是最终归一化与零行覆盖。
 该已有产物的实际块为`BQ=BK=256、D=128`，仅用于定位；整改和测试不能固定这些尺寸。
-源码审计基于`b496f71c`，上述已有产物只作结构证据；本次未重新编译、执行设备或把旧产物当新测试输入，不代表整改后的收益。
+原始源码审计基于`b496f71c`，上述已有产物只作问题定位证据；没有把旧产物当新测试输入，不代表整改后的收益。
 
 同时核对了通用除法lowering和CRT的sqrt/rsqrt/exp/ln入口：前者已为Recip+Mul，后者直接调用相应厂商指令，
 未发现额外数值扫描或特殊值select。BatchNorm的来源epsilon、StableHLO Gather规定的clamp及原bool mask属于原算子语义，
@@ -139,7 +165,9 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 | softmax指数、最终零行结果、行sum倒数 | 按05号4.7检查行级处理范围；无对应整块防御链或重复Recip，actual block/tail与FA/FD均覆盖 | fresh source→最终Instr/TargetModel→SPM/package/no-card及指定实卡，不以源码select减少代签 |
 | value/BOOL relation、VV/VS/VuV/已准入VuVLoop、tail | numeric0/1及packed bit span分别验证；原i1 consumer不丢失，不对未测整数tuple宣称支持 | Instr verifier→同一CRT/SDK packet→模型及设备guard |
 | 模板重复/不同pattern、同Tile多head、独立Tile、可变源/alias/逃逸 | 不变准备恰在证明范围复用；其它保留必要copy；所有buffer有owner | actual load/fill次数、read/write/lifetime与SPM offset |
+| constant/mutable global、Tile及Instr阶段准备、分支内同源layout与view写入 | 4 Tile、1024/1025/1031；constant各Tile初始化一次，mutable保持snapshot；同源只读转换共享，view写入或source改写不共享 | 实际RDMA字节、支配关系、relation endpoint→Instr/completion/SPM；4K生产winner复用 |
 | 原地score可用/旧score仍可观察、padding/非连续view | causal bias padding为0，Add遍历匹配；其余MaskMove的mask为canonical0/1；不越界、不删必要copy | layout→bufferization→Instr，完整span与guard |
+| 原DPS链/独立input、旧值观察者、其它输入broadcast/permutation | 三种浮点dtype及1024/1025/1031；只延续原destination，观察者触发必要copy；aliased输入identity单独证明 | One-Shot实际Must/NoAlias、Instr与SPM；既有ring collective回归 |
 | fill：raw `-inf`、-0、NaN payload、整数/BOOL、连续/strided/tail | `XorVV + AddVS`按storage bits精确填充；holes和guard未写；普通broadcast/GS仍正确 | 当前CRT host检查及恢复后的机制实卡 |
 | 共享lowering的Add/compare/select、LLaMA block、GEMM、ViT和既有attention矩阵 | 功能、dtype、layout与性能保护；原合法能力不因优化丢失 | 受影响组件/lit、canonical完整增量构建及no-op、fresh产品和指定板测 |
 
@@ -150,7 +178,7 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 同一模式在同一合法复用域内只准备一次，不因head或query块重复而复制；tail与不同模式分别核对。
 不得把某个候选的块长、块数或buffer字节数作为统一阈值，也不得仅凭静态GS减少签发设备性能收益。
 
-主机完成前不进入设备批次；当前故障boot不试跑。恢复后先核实全系统占用、设备身份和健康基线，
+主机完成前不进入设备批次；既有故障boot不试跑。当前环境设备不可见；可见设备恢复后先核实全系统占用、设备身份和健康基线，
 逐case单次launch、timeout、全输出/guard及正常厂商清理；异常即停，不自动retry/reset。
 性能对照继续只用已有健康记录，注明跨轮版本/环境差异；不重跑历史包。
 新mask序列成功仅证明该序列的本轮资格，不能在旧Memset与旧GatherScatter之间单独归因TDMA。

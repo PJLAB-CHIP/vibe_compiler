@@ -237,6 +237,8 @@ Linalg，保留既有SCF iter args；current arithmetic和dtype语义不变。
 Bufferized Linalg的DPS destination已拥有确定storage/alias语义；structured-to-Tile必须把computed值写回该destination，
 即使type相同也不能用dominated-use替换把memref mutation当作tensor SSA重命名。现有view、loop-carried state和外部observer
 继续引用原buffer；必要copy是actual movement，后续cleanup只能凭既有exact alias/effect证明消除。
+相邻逐元素写回的共同消冗余规则见08号：精确destination输入的identity坐标与其它不重叠输入的broadcast/permutation分别证明，
+不能仅因另一输入需要映射而否定原地更新；进入Tile→Instr时destination及alias已经确定。
 随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
 `wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
 
@@ -363,6 +365,7 @@ geometry无法direct traversal时保留显式movement。
 `wafer.tile.fill`初始化既有destination，并以typed fill domain区分logical-valid或physical-footprint范围。
 TileToInstr物化mapped elementwise输入时，若实际私有allocation仅由支配当前使用的fill写入、没有view/其它使用或逃逸，
 可直接在目标allocation上生成同值physical fill；不为这种同值铺块生成逐元素GatherScatter。
+支配关系包括循环外初始化到循环内使用，不要求同block；placement不改变此uniform事实。
 普通broadcast和非同值规律仍按原有IndexRelation与movement合同处理。目标fill的整块CT实现与位型约束见14号。
 
 TileToInstr可以将rank>4输入的多余前导单位轴从native CT geometry中省去，条件是这些轴不参与归约；

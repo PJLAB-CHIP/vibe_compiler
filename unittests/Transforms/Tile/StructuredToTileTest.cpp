@@ -2857,6 +2857,179 @@ TEST_F(StructuredToTileTest,
   }
 }
 
+TEST_F(StructuredToTileTest, BranchLayoutCopiesShareAfterInvariantPlacement) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant = 0; variant < 3; ++variant) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      auto type = [&](llvm::StringRef layout) {
+        return "memref<2x" + std::to_string(extent) +
+               "x16xf16, #wafer.memory<spm, " + layout.str() + ">>";
+      };
+      auto tensor = type("tensor"), ncx = type("ncx");
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "module {\n";
+      for (unsigned tile = 0; tile < 4; ++tile) {
+        ir << "wafer.tile.module card_id = 0 tile_id = " << tile << " {\n"
+           << "func.func @entry() {\nwafer.tile.region() -> () {\n"
+           << "%zero = arith.constant 0 : index\n"
+           << "%step = arith.constant 128 : index\n"
+           << "%end = arith.constant " << extent << " : index\n"
+           << "%value = arith.constant 0.5 : f16\n"
+           << "%input = memref.alloc() : " << tensor << "\n"
+           << "wafer.tile.fill %input, %value : " << tensor << ", f16\n"
+           << "scf.for %i = %zero to %end step %step {\n"
+           << "%first = arith.cmpi eq, %i, %zero : index\n"
+           << "scf.if %first {\n";
+        for (unsigned branch = 0; branch < 2; ++branch) {
+          ir << "%layout = wafer.tile.materialize_layout %input : " << tensor
+             << " -> " << ncx << "\n"
+             << "%view = memref.cast %layout : " << ncx << " to " << ncx
+             << "\n";
+          if (variant == 1)
+            ir << "wafer.tile.fill %view, %value {fill_domain = "
+                  "#wafer.fill_domain<physical_footprint>} : "
+               << ncx << ", f16\n";
+          ir << "%read = wafer.tile.elementwise <add> %view, %view : (" << ncx
+             << ", " << ncx << ") -> " << ncx << "\n";
+          if (!branch)
+            ir << "} else {\n";
+        }
+        ir << "}\n";
+        if (variant == 2)
+          ir << "wafer.tile.fill %input, %value : " << tensor << ", f16\n";
+        ir << "}\nwafer.tile.yield\n}\nreturn\n}}\n";
+      }
+      ir << "}\n";
+      auto module = parse(text);
+      ASSERT_TRUE(module) << text;
+      StructuredMaterializationRelations relations;
+      auto moved = optimizePhysicalMovementPlacement(
+          *module, relations, LayoutMaterializationPlacement::LoopInvariant);
+      ASSERT_TRUE(mlir::succeeded(moved));
+      EXPECT_EQ(*moved, variant == 0 ? 8u : 0u);
+      unsigned copies = 0;
+      module->walk([&](LayoutMaterializeOp op) {
+        ++copies;
+        EXPECT_EQ(bool(op->getParentOfType<mlir::scf::ForOp>()), variant != 0);
+      });
+      EXPECT_EQ(copies, variant == 0 ? 4u : 8u);
+      std::string detail;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &detail, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+      ASSERT_EQ(standalone->size(), 4u);
+      for (auto &tile : *standalone) {
+        TileRegionToInstrLoweringSession session(*tile.module->getContext());
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure failure;
+        auto planned = planTileMemory(std::move(tile.module), &failure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+      }
+    }
+}
+
+TEST_F(StructuredToTileTest, ConstantGlobalPreparationsUseTheirSymbolContract) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool constant : {false, true})
+      for (bool instructions : {false, true}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << constant << "/" << instructions);
+        auto type = [&](llvm::StringRef dtype, llvm::StringRef space) {
+          return "memref<2x" + std::to_string(extent) + "x16x" + dtype.str() +
+                 ", #wafer.memory<" + space.str() + ", tensor>>";
+        };
+        auto ddr = type("f32", "ddr"), spm = type("f32", "spm");
+        auto narrow = type("f16", "spm"), output = type("f16", "ddr");
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module {\n";
+        for (unsigned tile = 0; tile < 4; ++tile) {
+          ir << "wafer.tile.module card_id = 0 tile_id = " << tile << " {\n"
+             << "memref.global \"private\" " << (constant ? "constant " : "")
+             << "@data : " << ddr << " = dense<0.0>\n"
+             << "func.func @entry(%out: " << output << ") {\n"
+             << "wafer.tile.region(%out : " << output << ") -> () {\n"
+             << "^bb0(%output: " << output << "):\n"
+             << "%zero = arith.constant 0 : index\n"
+             << "%step = arith.constant 128 : index\n"
+             << "%end = arith.constant " << extent << " : index\n"
+             << "scf.for %q = %zero to %end step %step {\n"
+             << "%next = arith.addi %q, %step : index\n"
+             << "%limit = arith.minsi %next, %end : index\n"
+             << "scf.for %k = %zero to %limit step %step {\n"
+             << "%boundary = arith.cmpi eq, %q, %k : index\n"
+             << "scf.if %boundary {\n"
+             << "%global = memref.get_global @data : " << ddr << "\n"
+             << "%loaded = memref.alloc() : " << spm << "\n";
+          if (instructions) {
+            ir << "wafer.instr.rdma %global to %loaded {byte_count = "
+               << 2 * extent * 16 * 4
+               << " : i64, inner_bytes = " << 2 * extent * 16 * 4
+               << " : i64, src_iterations = array<i64: 1, 1, 1>, src_strides = "
+                  "array<i64: 0, 0, 0>} : "
+               << ddr << " to " << spm << "\n"
+               << "%converted = memref.alloc() : " << narrow << "\n"
+               << "wafer.instr.convert <fp32_fp16> %loaded into %converted "
+                  "{rounding_mode = 0 : i64} : "
+               << spm << " to " << narrow << "\n";
+          } else {
+            ir << "memref.copy %global, %loaded : " << ddr << " to " << spm
+               << "\n%converted = wafer.tile.compute.convert %loaded : " << spm
+               << " to " << narrow << "\n";
+          }
+          ir << "wafer.tile.store %converted, %output : " << narrow << " -> "
+             << output << "\n}\n}\n}\nwafer.tile.yield\n}\nreturn\n}}\n";
+        }
+        ir << "}\n";
+        auto module = parse(text);
+        ASSERT_TRUE(module) << text;
+        StructuredMaterializationRelations relations;
+        auto moved = optimizePhysicalMovementPlacement(
+            *module, relations, LayoutMaterializationPlacement::LoopInvariant);
+        ASSERT_TRUE(mlir::succeeded(moved));
+        EXPECT_EQ(*moved, constant ? 8u : 0u);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        // A mutable global can alias the external output; its snapshot must
+        // remain inside the branch. Constant is a semantic symbol fact.
+        module->walk([&](mlir::memref::GetGlobalOp global) {
+          EXPECT_EQ(bool(global->getParentOfType<mlir::scf::ForOp>()),
+                    !constant);
+        });
+        std::string detail;
+        auto standalone =
+            createStandaloneTileModules(std::move(module), &detail, &relations);
+        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+        ASSERT_EQ(standalone->size(), 4u);
+        for (auto &tile : *standalone) {
+          TileRegionToInstrLoweringSession session(*tile.module->getContext());
+          llvm::SmallVector<TileRegionOp> regions;
+          tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+          for (auto region : regions)
+            ASSERT_TRUE(
+                mlir::succeeded(convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(
+              convertBufferizationCopiesToInstr(*tile.module, session)));
+          unsigned loads = 0;
+          tile.module->walk([&](InstrRDMAOp op) {
+            ++loads;
+            EXPECT_EQ(bool(op->getParentOfType<mlir::scf::ForOp>()), !constant);
+            EXPECT_EQ(op.getByteCount(), 2 * extent * 16 * 4);
+          });
+          EXPECT_EQ(loads, 1u);
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          TileMemoryPlanningFailure failure;
+          auto planned = planTileMemory(std::move(tile.module), &failure);
+          ASSERT_TRUE(mlir::succeeded(planned));
+        }
+      }
+}
+
 TEST_F(StructuredToTileTest, PrivatePreparationsShareActualLoopPlacement) {
   for (int64_t extent : {1024, 1025, 1031})
     for (unsigned variant = 0; variant < 8; ++variant) {

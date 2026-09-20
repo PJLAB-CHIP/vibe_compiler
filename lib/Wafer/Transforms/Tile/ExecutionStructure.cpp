@@ -620,14 +620,21 @@ static void eliminateElementwiseWritebacks(
     // Construct fresh analysis for this IR epoch, before making any mutation.
     {
       mlir::AliasAnalysis aliases(module);
-      const bool allowExactDestination =
-          hasMapFreeEquivalent(elementwise) &&
-          elementwise.getKind() != ComputeElementwiseKind::Select;
-      for (mlir::Value input : elementwise.getInputs())
+      auto maps = elementwise.getIndexingMapsAttr();
+      for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
+        // Only the aliased operand needs identity coordinates. Other inputs
+        // may have independent broadcast or permutation maps; lowering
+        // materializes those reads before issuing the destination update.
+        const bool allowExactDestination =
+            elementwise.getKind() != ComputeElementwiseKind::Select &&
+            (!maps || mlir::cast<mlir::AffineMapAttr>(maps[index])
+                          .getValue()
+                          .isIdentity());
         if (mlir::isa<mlir::MemRefType>(input.getType()) &&
             !(allowExactDestination && input == copy.getDest()) &&
             !aliases.alias(input, copy.getDest()).isNo())
           return;
+      }
     }
     rewriter.setInsertionPoint(elementwise);
     rewriter.create<ComputeElementwiseIntoOp>(

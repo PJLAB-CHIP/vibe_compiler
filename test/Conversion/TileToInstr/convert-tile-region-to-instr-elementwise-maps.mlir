@@ -326,3 +326,31 @@ func.func @predicate_select_into() {
 // CHECK: wafer.instr.bit2fp %[[PREDICATE]] into %[[PREDICATE_FP:[^ ]+]]
 // CHECK: wafer.instr.mask_move %[[TRUE_INPUT]], %[[PREDICATE_FP]] into %[[OUTPUT]]
 // CHECK-NOT: wafer.instr.gather_scatter
+
+// A dominating private scalar fill remains uniform when placement moves it
+// outside a repeated consumer. Real-size tail still uses one full-span fill.
+func.func @invariant_scalar_fill_select() {
+  wafer.tile.region() -> () {
+    %zero = arith.constant 0 : index
+    %end = arith.constant 1031 : index
+    %step = arith.constant 128 : index
+    %value = arith.constant 0.0 : f16
+    %scalar = memref.alloc() : memref<f16, #wafer.memory<spm, tensor>>
+    wafer.tile.fill %scalar, %value : memref<f16, #wafer.memory<spm, tensor>>, f16
+    scf.for %i = %zero to %end step %step {
+      %predicate = memref.alloc() : memref<2x1031x33xi1, #wafer.memory<spm, tensor>>
+      %input = memref.alloc() : memref<2x1031x33xf16, #wafer.memory<spm, tensor>>
+      %selected = wafer.tile.elementwise <select> %predicate, %scalar, %input
+          {indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->()>, affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>]}
+          : (memref<2x1031x33xi1, #wafer.memory<spm, tensor>>, memref<f16, #wafer.memory<spm, tensor>>, memref<2x1031x33xf16, #wafer.memory<spm, tensor>>)
+          -> memref<2x1031x33xf16, #wafer.memory<spm, tensor>>
+    }
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @invariant_scalar_fill_select
+// CHECK: %[[ZERO:[^ ]+]] = arith.constant 0.000000e+00 : f16
+// CHECK: scf.for
+// CHECK: wafer.instr.fill %[[FULL:[^,]+]], %[[ZERO]] {fill_domain = #wafer.fill_domain<physical_footprint>} : memref<2x1031x33xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.mask_move %[[FULL]],

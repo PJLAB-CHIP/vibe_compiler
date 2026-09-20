@@ -5,6 +5,7 @@
 
 #include "Wafer/Driver/ExecutableCompilation.h"
 #include "Wafer/Transforms/Tile/ExecutionStructure.h"
+#include "Wafer/Transforms/Tile/LayoutOptimization.h"
 
 #include <cstdint>
 #include <vector>
@@ -14,6 +15,8 @@ namespace wafer::compiler::detail {
 enum class CommunicationProposalPolicy { Fixed, DependencyOrdered };
 
 struct CurrentIRDownstreamOptions {
+  LayoutMaterializationPlacement movementPlacement =
+      LayoutMaterializationPlacement::FirstUse;
   std::vector<TilePipelineChoice> executionPipelines;
   ExecutionStructureLimits executionLimits;
   bool distanceOneLoadPipeline = false;

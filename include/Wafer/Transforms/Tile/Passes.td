@@ -18,7 +18,7 @@ def ResolveCurrentLayoutsAndBufferizePass
 }
 
 def HoistInvariantPhysicalMovementPass
-    : Pass<"wafer-hoist-invariant-physical-movement", "mlir::func::FuncOp"> {
+    : Pass<"wafer-hoist-invariant-physical-movement", "mlir::ModuleOp"> {
   let summary = "Reuse private physical copies with invariant source contents";
 }
 

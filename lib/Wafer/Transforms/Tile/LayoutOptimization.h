@@ -74,6 +74,12 @@ enum class LayoutMaterializationPlacement : uint8_t {
   LoopInvariant,
 };
 
+/// Share current read-only layout copies after bufferization or placement.
+/// All source effects, destination uses and relation endpoints stay explicit.
+void reuseReadOnlyLayoutMaterializations(
+    mlir::Operation *root, StructuredMaterializationRelations &relations,
+    LayoutOptimizationStatistics &statistics);
+
 /// Uses the same current-IR preflight as placement, without moving any copy.
 bool hasInvariantPhysicalMovement(mlir::Operation *root);
 

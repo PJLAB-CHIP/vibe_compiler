@@ -7,6 +7,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -442,6 +443,7 @@ static mlir::Value getPrivateFillValue(mlir::Value source,
   mlir::Value value;
   ComputeFillOp sourceFill;
   InstrFillOp loweredFill;
+  mlir::DominanceInfo dominance;
   for (mlir::OpOperand &use : source.getUses()) {
     mlir::Operation *owner = use.getOwner();
     if (owner == consumer)
@@ -460,8 +462,8 @@ static mlir::Value getPrivateFillValue(mlir::Value source,
     } else {
       return {};
     }
-    if (owner->getBlock() != consumer->getBlock() ||
-        !owner->isBeforeInBlock(consumer) || (value && value != fillValue))
+    if (!dominance.properlyDominates(owner, consumer) ||
+        (value && value != fillValue))
       return {};
     value = fillValue;
   }

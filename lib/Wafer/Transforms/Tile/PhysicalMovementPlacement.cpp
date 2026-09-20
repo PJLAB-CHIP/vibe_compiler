@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
@@ -59,7 +60,8 @@ struct HoistPlan {
   llvm::SmallVector<mlir::Operation *> metadata;
 };
 
-std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
+std::optional<HoistPlan> planHoist(mlir::Operation *root, mlir::Operation *copy,
+                                   mlir::scf::ForOp loop,
                                    mlir::AliasAnalysis &aliases) {
   mlir::Value source, destination;
   mlir::memref::AllocOp allocation;
@@ -72,6 +74,17 @@ std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
     if (!isWaferSPMMemRefType(destination.getType()))
       return std::nullopt;
   } else if (auto fill = mlir::dyn_cast<ComputeFillOp>(copy)) {
+    destination = fill.getDest();
+  } else if (auto load = mlir::dyn_cast<InstrRDMAOp>(copy)) {
+    source = load.getSource();
+    destination = load.getDest();
+  } else if (auto gather = mlir::dyn_cast<InstrGatherScatterOp>(copy)) {
+    source = gather.getSource();
+    destination = gather.getDest();
+  } else if (auto convert = mlir::dyn_cast<InstrConvertOp>(copy)) {
+    source = convert.getSource();
+    destination = convert.getDest();
+  } else if (auto fill = mlir::dyn_cast<InstrFillOp>(copy)) {
     destination = fill.getDest();
   } else {
     source = copy->getOperand(0);
@@ -161,6 +174,19 @@ std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
   if (!source)
     return plan;
   StorageRootMemo roots;
+  const auto &sources = roots.getStorageRoots(source);
+  if (!sources.empty() && llvm::all_of(sources, [&](mlir::Value value) {
+        auto global = value.getDefiningOp<mlir::memref::GetGlobalOp>();
+        if (!global)
+          return false;
+        auto *scope = mlir::SymbolTable::getNearestSymbolTable(global);
+        if (!scope || (scope != root && !root->isAncestor(scope)))
+          return false;
+        auto definition = mlir::dyn_cast_or_null<mlir::memref::GlobalOp>(
+            mlir::SymbolTable::lookupSymbolIn(scope, global.getNameAttr()));
+        return definition && definition.getConstant();
+      }))
+    return plan;
   auto walk = loop.walk([&](mlir::Operation *operation) {
     if (operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())
       return mlir::WalkResult::advance();
@@ -176,7 +202,8 @@ std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
       if (!effect.getValue()) {
         // Typed Tile operations separate resource occupancy from their
         // value-associated address effects, just like final Instr operations.
-        if (mlir::isa<WaferTileDataflowOpInterface>(operation) &&
+        if (mlir::isa<WaferTileDataflowOpInterface,
+                      WaferInstructionOpInterface>(operation) &&
             effect.getResource() != mlir::SideEffects::DefaultResource::get())
           continue;
         return mlir::WalkResult::interrupt();
@@ -209,7 +236,8 @@ collectPhysicalCopies(mlir::Operation *root) {
   root->walk([&](mlir::Operation *operation) {
     if (mlir::isa<LayoutMaterializeOp, MoveReshapeOp, MoveTransposeOp,
                   MoveBroadcastOp, MoveCopyOp, MoveExtractSliceOp,
-                  ComputeConvertOp, StorageLoadOp, ComputeFillOp,
+                  ComputeConvertOp, StorageLoadOp, ComputeFillOp, InstrRDMAOp,
+                  InstrGatherScatterOp, InstrConvertOp, InstrFillOp,
                   mlir::memref::CopyOp>(operation))
       copies.push_back(operation);
   });
@@ -222,7 +250,7 @@ bool hasInvariantPhysicalMovement(mlir::Operation *root) {
   mlir::AliasAnalysis aliases(root);
   for (auto *copy : collectPhysicalCopies(root))
     if (auto loop = getEnclosingLoop(copy))
-      if (planHoist(copy, loop, aliases))
+      if (planHoist(root, copy, loop, aliases))
         return true;
   return false;
 }
@@ -241,7 +269,7 @@ optimizePhysicalMovementPlacement(mlir::Operation *root,
     while (auto loop = getEnclosingLoop(copy)) {
       // Each query reads the current epoch, including previously moved copies.
       mlir::AliasAnalysis aliases(root);
-      auto plan = planHoist(copy, loop, aliases);
+      auto plan = planHoist(root, copy, loop, aliases);
       if (!plan)
         break;
       for (auto *metadata : plan->metadata)
@@ -252,6 +280,8 @@ optimizePhysicalMovementPlacement(mlir::Operation *root,
     moved += changed;
   }
   if (moved) {
+    LayoutOptimizationStatistics statistics;
+    reuseReadOnlyLayoutMaterializations(root, relations, statistics);
     rebuildCurrentBufferOwnerRelations(root, relations);
     if (mlir::failed(mlir::verify(root)) ||
         mlir::failed(checkStructuredBufferRelationsCurrent(root, relations)))

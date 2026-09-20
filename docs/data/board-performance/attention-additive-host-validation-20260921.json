@@ -1,0 +1,1447 @@
+{
+  "date": "2026-09-21",
+  "work_item": "board-testing",
+  "classification": "host-validated; board qualification pending",
+  "conclusion": "本轮步骤1--5实现及步骤6声明范围的主机检查通过；步骤7、CT整数/tail/guard实卡及TDMA根因未完成。",
+  "source": {
+    "base_commit": "078a3a2a57a048be0d074acbfe7d013ba4ce007b",
+    "qualification_identity": "基线提交加下列源文件摘要；本报告与对应修改在同一后续提交中保存。",
+    "changed_source_files": [
+      {
+        "path": "include/Wafer/Transforms/Tile/Passes.td",
+        "sha256": "5049d7db2ac619fbe324bcf1715bf00d6f9bdb4273d1651f42fb0eddefd4e13d"
+      },
+      {
+        "path": "lib/Wafer/Conversion/TileToInstr/ComputeLowering.cpp",
+        "sha256": "75af6577384edb4fbe87eae52e321090b359d414f64255aae6fbfce324fb9ff5"
+      },
+      {
+        "path": "lib/Wafer/Driver/CurrentIRExecutablePipeline.cpp",
+        "sha256": "8962dec5b678b3a0b57d1b95b13732b73acbcd0a8f98363b05b39edbff1440d0"
+      },
+      {
+        "path": "lib/Wafer/Driver/CurrentIRExecutablePipeline.h",
+        "sha256": "1cf566eba46f45cfc34b2d8bbe19566e62284df0aa3b87198870891b540a1a1a"
+      },
+      {
+        "path": "lib/Wafer/Driver/PhysicalDataflow/SearchCurrentIR.cpp",
+        "sha256": "5350a8bfd12f9ff67bd05fa0dd9d86cf0acb9fb7eaecb6737da6833ca2debbf3"
+      },
+      {
+        "path": "lib/Wafer/Transforms/Tile/ElementwisePayloads.cpp",
+        "sha256": "b09bcc69948c4749941fe60f1004c8fcc3da70dc9216bbee55db616339c0757f"
+      },
+      {
+        "path": "lib/Wafer/Transforms/Tile/ExecutionStructure.cpp",
+        "sha256": "a926ac94ee41faf19445e68613b14654db572552378110dc139169024d946462"
+      },
+      {
+        "path": "lib/Wafer/Transforms/Tile/LayoutOptimization.cpp",
+        "sha256": "5780bedfb6aaa2a60c0e4a658d311caa54b74718e29ef130d744c193b813b34c"
+      },
+      {
+        "path": "lib/Wafer/Transforms/Tile/LayoutOptimization.h",
+        "sha256": "30accf33550bc436085e1476ca3f1d784831298e32238a90ab2d354bc3d083d4"
+      },
+      {
+        "path": "lib/Wafer/Transforms/Tile/PhysicalMovementPlacement.cpp",
+        "sha256": "f23d3965f84d4cac735f04b41d6d100c83381ef703a30b4ab20c2b9941f2f525"
+      },
+      {
+        "path": "test/Conversion/TileToInstr/convert-tile-region-to-instr-elementwise-maps.mlir",
+        "sha256": "89d4486c4c701bd16b349196b34979f43dfde85ff2fdc40f012e54da4faed247"
+      },
+      {
+        "path": "unittests/Transforms/Tile/ExecutionStructureMaterializationTest.cpp",
+        "sha256": "cc5c1bbf99eb2bcc66bfd519080a7b102dddb596c5412d31fdfcb8eaa0998833"
+      },
+      {
+        "path": "unittests/Transforms/Tile/LayoutOptimizationTest.cpp",
+        "sha256": "63f19a80855cfd4b784030d9dda083fa611847afe39b2de33fcf75155ddf6429"
+      },
+      {
+        "path": "unittests/Transforms/Tile/StructuredToTileTest.cpp",
+        "sha256": "ecddd77da9547f520ee1ccedd19222d65a0b95b64b382b694e729ef960b058e3"
+      }
+    ],
+    "binaries": [
+      {
+        "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "sha256": "5cf00a62ec62f220e56849535503f45e084a65cbb23351555a3d9cb62d07f174"
+      },
+      {
+        "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile-test",
+        "sha256": "795792f74ff85d774741d6bde2408b4080019ebbae4f731a0545de9fd3f3e4e4"
+      },
+      {
+        "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-run",
+        "sha256": "dff280f0654e32d8c901add7243dd9519d53dd60294879417d18af706db45315"
+      },
+      {
+        "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/WaferTransformsUnitTests",
+        "sha256": "ff1cdaaf9246e2b4d91532106c7f02817f8d21b7b05476e7ea1745773c59a532"
+      },
+      {
+        "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/WaferDriverUnitTests",
+        "sha256": "3242e59cccd7e8291ccd87eb07d984f5e2fa3cce161d21d52516fcf72c73aacd"
+      }
+    ]
+  },
+  "build": {
+    "preset": "default",
+    "binary_dir": "build",
+    "parallelism": 80,
+    "canonical_incremental": "passed",
+    "second_build": "Ninja no work to do",
+    "build_log": {
+      "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-dps-scope-build.log",
+      "sha256": "be89529844f9c27d2ab919a833b6d1450c2730420c2fa71aaacdef221a61367e"
+    },
+    "no_op_log": {
+      "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-dps-scope-noop.log",
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    }
+  },
+  "tests": {
+    "components": {
+      "WaferTransformsUnitTests": {
+        "shards": 80,
+        "tests": 490,
+        "failures": 0,
+        "disabled": 0,
+        "errors": 0
+      },
+      "WaferDriverUnitTests": {
+        "shards": 80,
+        "tests": 151,
+        "failures": 0,
+        "disabled": 0,
+        "errors": 0
+      }
+    },
+    "component_results": {
+      "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/components/results.json",
+      "sha256": "8fb875546f5ad9abcc670087541519fe3ddaa26165769570f04902282bf08ded"
+    },
+    "lit": {
+      "executed": 72,
+      "passed": 72,
+      "unsupported": 0,
+      "log": {
+        "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-qualified-lit.log",
+        "sha256": "ddf85413acff1acf81d7eaad139b5ad547f03462c99041126579551afd6fe41b"
+      },
+      "warning": "命令包含无测试的build/test/Driver；未将其计为通过，Driver由151项组件覆盖。"
+    },
+    "coverage": "新增constant/mutable global与Tile/Instr准备、只读layout/view写入、DPS旧值观察者、独立mapped输入；rank3、1024/1025/1031及四Tile进入Instr/completion/SPM。"
+  },
+  "products": {
+    "configuration_count": 36,
+    "fresh_source_reference_payload_package_no_card": true,
+    "target_model_configuration_count": 9,
+    "target_model_invocation_count": 10,
+    "no_card_invocation_count": 40,
+    "comparison": "原PyTorch reference、原容差；完整输出；两步BF16 KV输出所有元素exact。",
+    "initial_results": {
+      "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/results.json",
+      "sha256": "4cd2dfa5fd253921ccabdc1c6e10feacd069535d3254f98a95e8e0d601b25a27"
+    },
+    "corrected_configuration_results": {
+      "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/long-k-search-results.json",
+      "sha256": "6ae17bc15d301b5435bd370cfcafe7acb5665289f8f90e0461289dffa622058e"
+    },
+    "configurations": [
+      {
+        "case": "attention-prefill",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-float16.log",
+          "sha256": "cbc2609e6d6b73b434742b00976974858781cfd39f143c6f71490e4195d34988"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-float16/package/manifest.json",
+            "sha256": "014ee13dd43d67c93742e5495906d9ea5f5e149685bc828b2e78acaa268a2ec3"
+          }
+        ]
+      },
+      {
+        "case": "attention-prefill",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-bfloat16.log",
+          "sha256": "fccb8cf7357b54b0af9af1c21fb9a621430e90eb6be86e5a87a94e36ce1014f3"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-bfloat16/package/manifest.json",
+            "sha256": "4a504c9a4bbc87798b01934d68773780931b66a274f02a67d7b442d01882d23c"
+          }
+        ]
+      },
+      {
+        "case": "attention-prefill-tail-1025",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1025-float16.log",
+          "sha256": "904a4aaf277b5d7e13cc3212044d5499164595921f12d92df7ee0a4fb6ca5e0d"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1025-float16/package/manifest.json",
+            "sha256": "3197061b004d4f2e01bbc184542dd15ae50b215710e2b1187b4cd67b3319fe59"
+          }
+        ]
+      },
+      {
+        "case": "attention-prefill-tail-1025",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1025-bfloat16.log",
+          "sha256": "075041bc2b077d13a4cf0babc5c56742493f3fa83b6d47d7545acd1ad80d6912"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1025-bfloat16/package/manifest.json",
+            "sha256": "d796d934cac9fb5dab471d263b0312f849742e87ffa8aad6e62bdc839cdac1d9"
+          }
+        ]
+      },
+      {
+        "case": "attention-prefill-tail-1031",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "65984",
+            "exact": "41678",
+            "exact_fraction": "0.63163797284190104",
+            "mean_abs": "7.2504898712082351e-06",
+            "p99_abs": "6.103515625e-05",
+            "p999_abs": "0.000244140625",
+            "max_abs": "0.0009765625",
+            "mean_ulp": "1.1194077352085354",
+            "p99_ulp": "16",
+            "p999_ulp": "96",
+            "max_ulp": "403",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999996881930953",
+            "relative_l2": "0.00024981430223640881",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1031-float16.log",
+          "sha256": "98014e051b1084312bdcebaef56a80cd9845723a4284c3430112f09b6f780d9a"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1031-float16/package/manifest.json",
+            "sha256": "9ca5e2d4bc78cbeeeb439631a7ddbf4a05574989aec75b49f19427b19f1d58fd"
+          }
+        ]
+      },
+      {
+        "case": "attention-prefill-tail-1031",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1031-bfloat16.log",
+          "sha256": "ee444ed53f30d5f5333b20130808b7520f86c2042dc6db43e8eda035ae13e1a7"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-prefill-tail-1031-bfloat16/package/manifest.json",
+            "sha256": "741cd12de1b4e8e71535dba8b38349061f9a80e9751ee7b6c627d7ed7e7424ef"
+          }
+        ]
+      },
+      {
+        "case": "attention-noncausal",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-float16.log",
+          "sha256": "50c42544d2e4ada0487133e44e7e808477d41285015bad5e3529a93a61367b71"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-float16/package/manifest.json",
+            "sha256": "c58eab8b4412ebc221c5d402e3f628318c85860dd856ba2954eb568ed20366da"
+          }
+        ]
+      },
+      {
+        "case": "attention-noncausal",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-bfloat16.log",
+          "sha256": "5fd00d8d68c2863cab93038f0c9ac191d146e890de281fa4a5da7f527649276f"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-bfloat16/package/manifest.json",
+            "sha256": "b38a590da1c7a2ff8a44af95313546a04bf8dead9af247e820f543b8c045f846"
+          }
+        ]
+      },
+      {
+        "case": "attention-noncausal-additive",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-additive-float16.log",
+          "sha256": "79e3da8a1a9394f8b27da607e22278de87599a31da498b1db292293e90544cc1"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-additive-float16/package/manifest.json",
+            "sha256": "da30ef758356d2297a4b26149b12cf1deea9105bcdc55bfff3c47c220af95f9c"
+          }
+        ]
+      },
+      {
+        "case": "attention-noncausal-additive",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "65536",
+            "exact": "41687",
+            "exact_fraction": "0.6360931396484375",
+            "mean_abs": "0.00019764257694987464",
+            "p99_abs": "0.001953125",
+            "p999_abs": "0.001953125",
+            "max_abs": "0.00390625",
+            "mean_ulp": "10.332626342773438",
+            "p99_ulp": "11",
+            "p999_ulp": "117",
+            "max_ulp": "29397",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999708024893597",
+            "relative_l2": "0.0024165698284312098",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-additive-bfloat16.log",
+          "sha256": "d31dee79becc2cc27eef1c68d4e4dd4846bc7ad3c47f741ce577089c3a88f294"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-noncausal-additive-bfloat16/package/manifest.json",
+            "sha256": "a66b51be6fc7c0e92bb4a8e104f908734cb88efdd0013c742f4188452b3ed1d5"
+          }
+        ]
+      },
+      {
+        "case": "attention-padding",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "65536",
+            "exact": "44727",
+            "exact_fraction": "0.6824798583984375",
+            "mean_abs": "2.2470356270787306e-05",
+            "p99_abs": "0.000244140625",
+            "p999_abs": "0.000244140625",
+            "max_abs": "0.000244140625",
+            "mean_ulp": "1.4943695068359375",
+            "p99_ulp": "21",
+            "p999_ulp": "205",
+            "max_ulp": "1057",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999997051192713",
+            "relative_l2": "0.00024286205086520226",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-padding-float16.log",
+          "sha256": "6b436576af9d1743433faa6d008af8408b8cb75d8f71c16c53b1876cace60b98"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-padding-float16/package/manifest.json",
+            "sha256": "bc5ee1419b3c156f91eb7c8b21941dd7c75e00eb66778cb5e30fb224fef4dbec"
+          }
+        ]
+      },
+      {
+        "case": "attention-padding",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-padding-bfloat16.log",
+          "sha256": "8de4219d67deac935132802a4a927088e976403747c7bbd8f99d542c4d505cde"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-padding-bfloat16/package/manifest.json",
+            "sha256": "4d15a0a07a8d22c0af4ea9ad86f8c55f2d0452de35783a21087635dc80c0b6b5"
+          }
+        ]
+      },
+      {
+        "case": "attention-fully-masked",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "65536",
+            "exact": "65536",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-fully-masked-float16.log",
+          "sha256": "b402a85d5eef6098592e103a9b0c083f3e24c12e877a8821c25dea2b87990c7b"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-fully-masked-float16/package/manifest.json",
+            "sha256": "bc5ee1419b3c156f91eb7c8b21941dd7c75e00eb66778cb5e30fb224fef4dbec"
+          }
+        ]
+      },
+      {
+        "case": "attention-fully-masked",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-fully-masked-bfloat16.log",
+          "sha256": "307ced917b29406a20748ce914e3c9b7fe8841cbe8fb4888701eb842a7b29c58"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-fully-masked-bfloat16/package/manifest.json",
+            "sha256": "4d15a0a07a8d22c0af4ea9ad86f8c55f2d0452de35783a21087635dc80c0b6b5"
+          }
+        ]
+      },
+      {
+        "case": "attention-valid-kv-prefix",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-valid-kv-prefix-float16.log",
+          "sha256": "9ecabf3ca71d789a55887d50e3d7ba8eed996238498d1e315d74194c05e4c2d2"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-valid-kv-prefix-float16/package/manifest.json",
+            "sha256": "460c5dc3708b6a52a350d4f3ffb88ea64713153772ee4c31bb4a36facbf28903"
+          }
+        ]
+      },
+      {
+        "case": "attention-valid-kv-prefix",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "65600",
+            "exact": "42802",
+            "exact_fraction": "0.65246951219512195",
+            "mean_abs": "5.5684753375627647e-05",
+            "p99_abs": "0.00048828125",
+            "p999_abs": "0.001953125",
+            "max_abs": "0.0078125",
+            "mean_ulp": "9.7064176829268298",
+            "p99_ulp": "12",
+            "p999_ulp": "119",
+            "max_ulp": "29146",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999815145182736",
+            "relative_l2": "0.0019230434062081816",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-valid-kv-prefix-bfloat16.log",
+          "sha256": "b7093283b731ba87b6dfe4ee78ec13918bd8e11e87a34e08c53ca0177ceebfc3"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-valid-kv-prefix-bfloat16/package/manifest.json",
+            "sha256": "b9585ccee75e9ff61631c2131a72dadf718ed2e5ebe6c01a9345714e5d6d1122"
+          }
+        ]
+      },
+      {
+        "case": "attention-sliding-window",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-sliding-window-float16.log",
+          "sha256": "df4c5f6391840407c29bfe1a28e23ca11e64ec74956a2d76073b543388dbd0b3"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-sliding-window-float16/package/manifest.json",
+            "sha256": "822d88845eec547d8a646469a5b6fba7adb658b4ebee7150aecb21d9c49dd4d2"
+          }
+        ]
+      },
+      {
+        "case": "attention-sliding-window",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "65600",
+            "exact": "42309",
+            "exact_fraction": "0.64495426829268288",
+            "mean_abs": "0.00011756989724434367",
+            "p99_abs": "0.0009765625",
+            "p999_abs": "0.001953125",
+            "max_abs": "0.00390625",
+            "mean_ulp": "12.975899390243903",
+            "p99_ulp": "14",
+            "p999_ulp": "153",
+            "max_ulp": "29480",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999780702870711",
+            "relative_l2": "0.0020942666611359012",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-sliding-window-bfloat16.log",
+          "sha256": "3422d2f16b168d34599203d8a06c5e221ca8f1539cfc0a8032b60069ff0a9d90"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-sliding-window-bfloat16/package/manifest.json",
+            "sha256": "64c93b02d4f0268741991065ee1c3e07839ff01f9ab61b6970f653cbb83c2cbf"
+          }
+        ]
+      },
+      {
+        "case": "attention-gqa",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-float16.log",
+          "sha256": "07d54021410880bef67312c4a536c24e2ac3ed8dd7a6a9c75abaa8d2bbf43b58"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-float16/package/manifest.json",
+            "sha256": "94d716266ef5e5307dd31d923cbe8d5d74fa3418ad617607deda878d0ad23271"
+          }
+        ]
+      },
+      {
+        "case": "attention-gqa",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-bfloat16.log",
+          "sha256": "b916075f60f14b0bc33ab8dddb8f5f806241749d39ab9d94062765f8c0259dad"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-bfloat16/package/manifest.json",
+            "sha256": "3eb8387e6667841e91b159aade7b011fe472b5fc800d4e752d8cd4ad6fc88119"
+          }
+        ]
+      },
+      {
+        "case": "attention-gqa-tail-1025",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "4198400",
+            "exact": "2749463",
+            "exact_fraction": "0.65488352705792685",
+            "mean_abs": "6.9077120009219135e-06",
+            "p99_abs": "6.103515625e-05",
+            "p999_abs": "0.000244140625",
+            "max_abs": "0.001953125",
+            "mean_ulp": "1.0260220560213416",
+            "p99_ulp": "14",
+            "p999_ulp": "97",
+            "max_ulp": "2955",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999997115835282",
+            "relative_l2": "0.00024017460756281021",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-tail-1025-float16.log",
+          "sha256": "101a783c9b301a4b29c3891d14c1a2d937bc4d09ca55305822ee72e51f9a85f7"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-tail-1025-float16/package/manifest.json",
+            "sha256": "49766d3add7537e6d57c2d56a1583ef8050e55a1d888139c95bb37d2989fcd3f"
+          }
+        ]
+      },
+      {
+        "case": "attention-gqa-tail-1025",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-tail-1025-bfloat16.log",
+          "sha256": "ae3fd31dca41efde9babfd69f01ed14c8fc2868f1509429381734ba374297bec"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-gqa-tail-1025-bfloat16/package/manifest.json",
+            "sha256": "8c324fd78ef087e51b432dbaa10372ae2b58c2b3b03af2915a3fed197ca09708"
+          }
+        ]
+      },
+      {
+        "case": "attention-causal-decode-two-tokens",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 1,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "128",
+            "exact": "78",
+            "exact_fraction": "0.609375",
+            "mean_abs": "5.6438148021697998e-07",
+            "p99_abs": "3.814697265625e-06",
+            "p999_abs": "3.814697265625e-06",
+            "max_abs": "3.814697265625e-06",
+            "mean_ulp": "0.7265625",
+            "p99_ulp": "8",
+            "p999_ulp": "12",
+            "max_ulp": "12",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999996500389299",
+            "relative_l2": "0.00026459875147204697",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "1",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "65664",
+            "exact": "65664",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "2",
+            "launch_slot": "0",
+            "dtype": "f16",
+            "elements": "65664",
+            "exact": "65664",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-causal-decode-two-tokens-float16.log",
+          "sha256": "f4b2dc349b760770be63788aba6ad16d28d909219b90b69c9f3b51a85fc1ae91"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-causal-decode-two-tokens-float16/package/manifest.json",
+            "sha256": "540f15ccf2c753657cf90a500798f65cf35de6e3dde7ac9b48df46d3292a217e"
+          }
+        ]
+      },
+      {
+        "case": "attention-causal-decode-two-tokens",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-causal-decode-two-tokens-bfloat16.log",
+          "sha256": "f596f210f14635d9783f01a23cadf92ca478b42a0a2ddc28741301452c836c5f"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-causal-decode-two-tokens-bfloat16/package/manifest.json",
+            "sha256": "82360db3c7b54984e31bbbc046b4702b5adb49fa626ded6ba6567bfba7e3e7bb"
+          }
+        ]
+      },
+      {
+        "case": "attention-decode-kv-cache",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 2,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-float16.log",
+          "sha256": "b7229120997cc3bbb8dc2da29984afebd059ccbea60f8a4503e6200b49d7985b"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-float16/step_01/package/manifest.json",
+            "sha256": "add26c33077175b4ace03c720221755e995aeccbe818cd20f614e33e22c93de6"
+          },
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-float16/step_02/package/manifest.json",
+            "sha256": "a1be733851eeea4b528e992eeb3729680ac46e722e802309d212d112260331b4"
+          }
+        ]
+      },
+      {
+        "case": "attention-decode-kv-cache",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 2,
+        "target_model_invocations": 2,
+        "model_outputs": [
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "4096",
+            "exact": "1751",
+            "exact_fraction": "0.427490234375",
+            "mean_abs": "4.2850509998970665e-05",
+            "p99_abs": "0.000244140625",
+            "p999_abs": "0.000244140625",
+            "max_abs": "0.000244140625",
+            "mean_ulp": "16.148681640625",
+            "p99_ulp": "35",
+            "p999_ulp": "282",
+            "max_ulp": "28580",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999311245497902",
+            "relative_l2": "0.0037162527448324893",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "1",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "4194304",
+            "exact": "4194304",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "2",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "4194304",
+            "exact": "4194304",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "0",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "4096",
+            "exact": "1856",
+            "exact_fraction": "0.453125",
+            "mean_abs": "3.9357358218694571e-05",
+            "p99_abs": "0.000244140625",
+            "p999_abs": "0.000244140625",
+            "max_abs": "0.000244140625",
+            "mean_ulp": "23.228271484375",
+            "p99_ulp": "37",
+            "p999_ulp": "402",
+            "max_ulp": "28405",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "0.99999388746146156",
+            "relative_l2": "0.003496597676103328",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "1",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "4198400",
+            "exact": "4198400",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          },
+          {
+            "index": "2",
+            "launch_slot": "0",
+            "dtype": "bf16",
+            "elements": "4198400",
+            "exact": "4198400",
+            "exact_fraction": "1",
+            "mean_abs": "0",
+            "p99_abs": "0",
+            "p999_abs": "0",
+            "max_abs": "0",
+            "mean_ulp": "0",
+            "p99_ulp": "0",
+            "p999_ulp": "0",
+            "max_ulp": "0",
+            "elementwise_mismatches": "0",
+            "atol": "8.000000e-03",
+            "rtol": "6.000000e-03",
+            "cosine": "1",
+            "relative_l2": "0",
+            "comparison": "similarity",
+            "minimum_cosine": "9.999000e-01",
+            "maximum_relative_l2": "1.000000e-02"
+          }
+        ],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-bfloat16.log",
+          "sha256": "e53910988be86ce3c80d4294c0f3322d83e34430179d5ebe73d091a46de892a4"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-bfloat16/step_01/package/manifest.json",
+            "sha256": "ea3f0e741a129e4270135ca87812dd262756924e014ad2c40f1d28fab7ea5ff7"
+          },
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-bfloat16/step_02/package/manifest.json",
+            "sha256": "8ed4ac0b8f7caa0740c58024884210e0d6c20254eb255ad7ee844f2287abb0a3"
+          }
+        ]
+      },
+      {
+        "case": "attention-decode-kv-cache-long-4096",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 2,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-long-4096-float16.log",
+          "sha256": "9f917ab8bcb7c8f993f1d66fa86956cebfe6f413a3e8d3ca5f138280bad6ef2a"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-long-4096-float16/step_01/package/manifest.json",
+            "sha256": "9b87265b183045a9285e7043614589ce810073a18003d87a21f50ad3783d8f54"
+          },
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-long-4096-float16/step_02/package/manifest.json",
+            "sha256": "1ed1020ae4f00f090d20a88e5f0143dc5cebaeb9a22d0e1fc290605b03e01b77"
+          }
+        ]
+      },
+      {
+        "case": "attention-decode-kv-cache-long-4096",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 2,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-long-4096-bfloat16.log",
+          "sha256": "99fff114fbbfb4a9fe046623bb24b0ff1f09107c6ec850e75dd70cfb276bc9d7"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-long-4096-bfloat16/step_01/package/manifest.json",
+            "sha256": "c0da7bfba690c6c0314ddf7db831594445c0089211a09df6a006319cb0ecebd9"
+          },
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/attention-decode-kv-cache-long-4096-bfloat16/step_02/package/manifest.json",
+            "sha256": "e2035b17758ebc11ec8497b3f0ebf90f38dc6952c4c2e2f043474d0204f2749e"
+          }
+        ]
+      },
+      {
+        "case": "single-card-gemm",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/single-card-gemm-float16.log",
+          "sha256": "751ab1b6daa73d22dfc70ba38eb12a6cdcdc55e4d45f7841f3a72aa2b0b673ba"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/single-card-gemm-float16/package/manifest.json",
+            "sha256": "e41e4bbe0105b7df4d45ed1c693e5d482dac55cb346fe0b4b52da9d82cb7abba"
+          }
+        ]
+      },
+      {
+        "case": "single-card-gemm",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/single-card-gemm-bfloat16.log",
+          "sha256": "016df6652ac462d5925036ca4d4b41c2518288e48babe7adee36eb7c5bd27bb4"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/single-card-gemm-bfloat16/package/manifest.json",
+            "sha256": "b9e75387cb8c591a539f87050d5ef582a40cbae3ce410d7ba88263653d16c9fe"
+          }
+        ]
+      },
+      {
+        "case": "gemm-long-k-1025",
+        "dtype": "float16",
+        "policy": "search",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/gemm-long-k-1025-float16-search.log",
+          "sha256": "298cd454d8514a9081c74c3a747c745e3f622b2fbca4522b66fd7bba86d6e2d5"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/gemm-long-k-1025-float16-search/package/manifest.json",
+            "sha256": "58395a29f9b94a2594d45408f59aa6384c97a57961c4f541ada0e77870f0681e"
+          }
+        ]
+      },
+      {
+        "case": "gemm-long-k-1025",
+        "dtype": "bfloat16",
+        "policy": "search",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/gemm-long-k-1025-bfloat16-search.log",
+          "sha256": "505725944d4dad6499735aa0806e71078bd796babbc0eb88b0476978b7cd6294"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/gemm-long-k-1025-bfloat16-search/package/manifest.json",
+            "sha256": "78fe404069a4791101d31b778566c081bdad9af792e5abad17c15dacfdd1b92b"
+          }
+        ]
+      },
+      {
+        "case": "vit-encoder-block-tail-1025",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/vit-encoder-block-tail-1025-float16.log",
+          "sha256": "684997d246ceaa79eae6b9d07092a1861afd042222bd9498059a15684e2385a9"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/vit-encoder-block-tail-1025-float16/package/manifest.json",
+            "sha256": "7fe75e8ea328811c17b9794e2f74ad73bb168de91193f64cd033bb6810f628e9"
+          }
+        ]
+      },
+      {
+        "case": "vit-encoder-block-tail-1025",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/vit-encoder-block-tail-1025-bfloat16.log",
+          "sha256": "2e3428a3754d34956e0b2ba7fc02159bce995fef3b6f701afbb96d141fb55e05"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/vit-encoder-block-tail-1025-bfloat16/package/manifest.json",
+            "sha256": "cff1e8ab7a0197f9db6b9c0b231f7f91689e533bc952c929b31ca64003bf74b7"
+          }
+        ]
+      },
+      {
+        "case": "llama-2-7b-block",
+        "dtype": "float16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/llama-2-7b-block-float16.log",
+          "sha256": "70824b2f5f9cd0f959ad07123c0453f8538459f183da89737eadaca78f671690"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/llama-2-7b-block-float16/package/manifest.json",
+            "sha256": "a2f6f3df7f4d4703d0af5b8020044685ff916fcf3e46bd6789012fd4350df57c"
+          }
+        ]
+      },
+      {
+        "case": "llama-2-7b-block",
+        "dtype": "bfloat16",
+        "policy": "none",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "model_outputs": [],
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/llama-2-7b-block-bfloat16.log",
+          "sha256": "04e2e18be25d0f796c02d6e0ba467eec8a8db839cee3677dd7fbaf8bdd103fa6"
+        },
+        "package_manifests": [
+          {
+            "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-products/llama-2-7b-block-bfloat16/package/manifest.json",
+            "sha256": "d25bd10e0a4a0637307fcca79a1942fce4df6cb96fa4c0d25174172af3e1d074"
+          }
+        ]
+      }
+    ],
+    "additional_large_prefill": [
+      {
+        "case": "attention-prefill-28-heads-4096",
+        "dtype": "bfloat16",
+        "policy": "search standard width=8 trials=42",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-qualified-prefill-bf16.log",
+          "sha256": "fcbfe7aeaca3985c4ce606cca6ee0a1f9491125b8efb41931918d6a2d7b865f8"
+        },
+        "manifest": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-prefill-bf16/package/manifest.json",
+          "sha256": "3d257608595c3cb39572538f44aa2456aa35ac4265fd49533c6fb39f4da5294b"
+        },
+        "structure_audit": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-prefill-bf16/instruction-structure-audit.json",
+          "sha256": "577eaf49f0bd518dc5eba06612b8eca8383efcbc5714396b976fc059fd4f1c7d"
+        },
+        "static_instruction_sites": 1604,
+        "terminal_ncc_joins": 16,
+        "nonterminal_ncc_joins": 0,
+        "causal_template_rdma_invocations": 16,
+        "query_layout_conversions": 448,
+        "program_data": {
+          "relative_path": "data/program-data.bin",
+          "total_bytes": 262144,
+          "base_alignment": 256,
+          "digest": "sha256:3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b"
+        }
+      },
+      {
+        "case": "attention-prefill-28-heads-4096",
+        "dtype": "float16",
+        "policy": "search standard width=8 trials=42",
+        "status": "passed",
+        "no_card_invocations": 1,
+        "target_model_invocations": 0,
+        "log": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-qualified-prefill-fp16.log",
+          "sha256": "a6e2af352e414d2f74da91f58f8120e0306ad2a2882d942315417e8e4f4548b5"
+        },
+        "manifest": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-prefill-fp16/package/manifest.json",
+          "sha256": "e5ff7d42a3511115430fc0e9c3c541becceb73f1e0447e856b6ffbd4c3bdb38e"
+        },
+        "structure_audit": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/qualified-prefill-fp16/instruction-structure-audit.json",
+          "sha256": "577eaf49f0bd518dc5eba06612b8eca8383efcbc5714396b976fc059fd4f1c7d"
+        },
+        "static_instruction_sites": 1604,
+        "terminal_ncc_joins": 16,
+        "nonterminal_ncc_joins": 0,
+        "causal_template_rdma_invocations": 16,
+        "query_layout_conversions": 448,
+        "program_data": {
+          "relative_path": "data/program-data.bin",
+          "total_bytes": 262144,
+          "base_alignment": 256,
+          "digest": "sha256:3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b"
+        }
+      }
+    ]
+  },
+  "instruction_audit": {
+    "method": "只读helper解析并验证实际最终Instr，按已知SCF loop/if展开，累加typed instruction descriptor的byte_count；未知控制流失败，不推算未来IR。",
+    "helper": {
+      "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-ir-audit.cpp",
+      "sha256": "ce7867535e166e96015d9e777ead32ace42604c07d67f21fa8fd7baa281d555d"
+    },
+    "helper_build": "使用canonical compile_commands与wafer-opt的相同静态库，在/tmp编译只读审计程序；没有第二主工程build。",
+    "counting_boundary": "WaferInstructionOpInterface计数；不含NCC join，join由结构审计单列。InstrFill在CRT展开成XorVV+AddVS两次issue，因此Instr次数不是厂商packet数。",
+    "spm_boundary": "实际SPMOffsetAttr加computeWaferPhysicalTensorInfo的最大末端；不是估算footprint或准入判据。",
+    "current": {
+      "bf16": {
+        "tiles": 16,
+        "dynamic_instruction_counts": {
+          "wafer.instr.convert #wafer.instr_convert_kind<fp32_bf16>": 4256,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<add>": 4256,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<eq>": 4256,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<exp>": 7616,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<max>": 3808,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<mul>": 12320,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<recip>": 448,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<sub>": 7616,
+          "wafer.instr.fill": 4410,
+          "wafer.instr.gather_scatter": 82512,
+          "wafer.instr.gemm": 7616,
+          "wafer.instr.mask_move": 4256,
+          "wafer.instr.rdma": 8080,
+          "wafer.instr.reduce #wafer.instr_reduce_kind<max>": 3808,
+          "wafer.instr.reduce #wafer.instr_reduce_kind<sum>": 3808,
+          "wafer.instr.wdma": 448
+        },
+        "rdma_bytes": 532676608,
+        "gather_scatter_bytes": 8042020864,
+        "wdma_bytes": 29360128,
+        "spm_static_allocations": 1060,
+        "spm_max_end_offset": 2038784,
+        "raw": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-qualified-bf16-ir.jsonl",
+          "sha256": "b53ce16d1befe5c8eba7e943efac27d8e99661b75c8a2dd80ad9e39b548643aa"
+        }
+      },
+      "fp16": {
+        "tiles": 16,
+        "dynamic_instruction_counts": {
+          "wafer.instr.convert #wafer.instr_convert_kind<fp32_fp16>": 4256,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<add>": 4256,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<eq>": 4256,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<exp>": 7616,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<max>": 3808,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<mul>": 12320,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<recip>": 448,
+          "wafer.instr.elementwise #wafer.instr_elementwise_kind<sub>": 7616,
+          "wafer.instr.fill": 4410,
+          "wafer.instr.gather_scatter": 82512,
+          "wafer.instr.gemm": 7616,
+          "wafer.instr.mask_move": 4256,
+          "wafer.instr.rdma": 8080,
+          "wafer.instr.reduce #wafer.instr_reduce_kind<max>": 3808,
+          "wafer.instr.reduce #wafer.instr_reduce_kind<sum>": 3808,
+          "wafer.instr.wdma": 448
+        },
+        "rdma_bytes": 532676608,
+        "gather_scatter_bytes": 8042020864,
+        "wdma_bytes": 29360128,
+        "spm_static_allocations": 1060,
+        "spm_max_end_offset": 2038784,
+        "raw": {
+          "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-qualified-fp16-ir.jsonl",
+          "sha256": "8f53dc76d4c5db114ffebaab1120086f4d0025e9dff84cde133d60923e29f5af"
+        }
+      }
+    },
+    "comparison": {
+      "tiles": 16,
+      "dynamic_instruction_counts": {
+        "wafer.instr.convert #wafer.instr_convert_kind<fp32_bf16>": 4256,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<add>": 4256,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<eq>": 4256,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<exp>": 7616,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<max>": 3808,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<mul>": 12320,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<recip>": 448,
+        "wafer.instr.elementwise #wafer.instr_elementwise_kind<sub>": 7616,
+        "wafer.instr.fill": 3600,
+        "wafer.instr.gather_scatter": 93536,
+        "wafer.instr.gemm": 7616,
+        "wafer.instr.mask_move": 4256,
+        "wafer.instr.rdma": 8512,
+        "wafer.instr.reduce #wafer.instr_reduce_kind<max>": 3808,
+        "wafer.instr.reduce #wafer.instr_reduce_kind<sum>": 3808,
+        "wafer.instr.wdma": 448
+      },
+      "rdma_bytes": 645922816,
+      "gather_scatter_bytes": 9116385280,
+      "wdma_bytes": 29360128,
+      "spm_static_allocations": 1264,
+      "spm_max_end_offset": 2035712,
+      "raw": {
+        "path": "/data/vibe_compiler-validation/attention-additive-20260921/host-audit/wafer-attention-prior-ir.jsonl",
+        "sha256": "7eebe9dd71f6b07ce73775a9b60f05851506738ced55e74bf735ad05a4cafa4b"
+      }
+    },
+    "comparison_scope": "本轮步骤5的fifth-prefill诊断产物，只读结构对照；不是健康历史计时基线，没有执行旧包。",
+    "delta": {
+      "rdma_bytes": -113246208,
+      "gather_scatter_bytes": -1074364416,
+      "wdma_bytes": 0,
+      "spm_max_end_offset": 3072,
+      "spm_static_allocations": -204
+    },
+    "limitations": "无设备时间；SPM最大末端增加3072字节；不宣称整体SPM峰值下降或TDMA修复。"
+  },
+  "corrected_failures": [
+    "初版中间DPS选择扩大到任意input，两个ring collective回归失败；收紧为原generic显式destination链后定向及完整490项Transforms通过。",
+    "最终矩阵两个gemm-long-k-1025误用none，触发runner固定row-sharding断言；恢复该case原standard search 8/42，重新生成两种dtype并通过。初始失败日志和产物保留。",
+    "在DPS收紧前启动的扩大产品/组件检查已终止并标为superseded，不计入本轮资格；终止记录保留。"
+  ],
+  "board": {
+    "executed": false,
+    "device_node_exists": false,
+    "sysfs_class_exists": false,
+    "boot_id": "f970b3e0-52ec-495c-9713-47e56fae402a",
+    "tdma_root_cause": "unknown",
+    "remaining": [
+      "CT fill整数数值及非对齐/tail实际写入、guard和正常清理",
+      "当前attention及受影响共享板端矩阵",
+      "设备实测性能及TDMA故障指令证据"
+    ],
+    "interpretation": "当前环境设备不可见，不能据此推断设备再次timeout或需要重启；本轮无launch/retry/reset，未运行历史包。"
+  },
+  "limitations": [
+    "no-card仅验证产品、ABI及guard规划，不执行设备算术、completion或guard读回。",
+    "TargetModel数值资格为所列9组配置10次invocation；4K两种dtype及其它产品只有fresh构包/no-card。",
+    "本轮未调整head/Q切分、搜索预算或评分，未新增动态长度、paged KV或跨调用缓存。"
+  ]
+}

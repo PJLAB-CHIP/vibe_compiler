@@ -54,7 +54,7 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 当前故障 boot 未新增设备执行，新实现的整数 CT、非对齐/tail 写入范围及 TDMA 根因仍须实卡证据。
 
 用户要求暂缓空间切分/搜索预算问题，先收敛当前版本的attention与mask方案。
-已整理[05号改进合同](05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)及
+已整理[05号改进合同](05-local-compute-normalization.md#46-当前版本的mask改进合同)及
 [本轮实施顺序与覆盖矩阵](plans/board-workload-matrix.md#当前版本attention与mask改进方案)：
 用户最新选择已收敛为causal局部`0/-inf`模板＋整块AddVV；先实现模板与Add，再做同调用复用/DPS和可见域循环，
 随后优化其余bool/select的数值比较。普通覆盖语义保留；不新增有限性扫描或特殊值运行时分支。
@@ -63,13 +63,17 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 方案现已进入实现；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
 用户随后要求记录其它计算中的多余开销：softmax逐score负无穷判断、最终零行结果的整块覆盖、广播分母后重复求倒数。
 三项已归入同一`board-testing`的[整改记录](plans/board-workload-matrix.md#attention其余计算的整改记录)和
-[05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，主机改动及定向产品验证已完成，完整矩阵仍待验收；
+[05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，主机改动及本轮产品矩阵已通过，设备矩阵仍待验收；
 接在causal主路径及其余predicate整改之后、完整主机/板端验收之前，不作为causal加法的前置。
-用户已授权按该计划推进到验收完成；当前实施causal bias/Add、实际准备复用及KV可见域循环。
-分解、placement、条件子集写回及completion/lifetime的组件回归通过；真实4K诊断包已收敛模板模式，
-但winner中的模板复用目标尚未达到。数值compare整改已通过主机组件、CRT接口和精确span验证；
-行级计算已通过组件及定向fresh产品模型/no-card；当前补齐模板复用与DPS的产品缺口，完整主机产品和恢复后的板端验收尚未完成，
-不签整项或产品资格。实际证据及诊断产物的版本边界见同一计划。
+用户已授权按该计划推进到验收完成；2026-09-21已完成causal bias/Add、实际准备复用、KV可见域循环、数值compare及行级计算。
+constant global、late Instr placement及原DPS链的缺口已修复；4K、28-head FP16/BF16生产winner均为
+每Tile/invocation一次模板读取、每query块一次Q转换、boundary score原地Add及每Tile一个terminal join。
+本轮490项Transforms、151项Driver、72项lit通过；canonical完整增量及随后Ninja no-op通过。
+36组attention/共享产品配置及额外两组4K产品完成fresh source/reference、payload、package/no-card；
+其中9组、10次invocation完成TargetModel完整数值检查，KV历史prefix exact，原容差保持。
+证据与原失败/修复边界见[主机验收记录](../docs/data/board-performance/attention-additive-host-validation-20260921.json)及同一计划。
+当前环境没有`/dev/accel/dev-0`和`/sys/class/accel`，本轮未访问设备；下一步为可见板卡环境中的CT fill整数/tail/guard机制验收，
+再接当前attention及受影响板端矩阵。实卡、设备性能及TDMA根因仍未完成；不签整项done或完整board-ready，不据此要求重启。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。

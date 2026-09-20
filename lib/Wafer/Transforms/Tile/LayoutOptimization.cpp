@@ -1662,20 +1662,31 @@ getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
 }
 
 static bool hasOnlyReadUses(LayoutMaterializeOp operation) {
-  return llvm::all_of(
-      operation.getResult().getUses(), [](mlir::OpOperand &use) {
-        auto effects =
-            mlir::dyn_cast<mlir::MemoryEffectOpInterface>(use.getOwner());
-        if (!effects)
+  llvm::SmallVector<mlir::Value> pending{operation.getResult()};
+  llvm::DenseSet<mlir::Value> visited;
+  while (!pending.empty()) {
+    auto value = pending.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    for (auto *user : value.getUsers()) {
+      if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
+        if (view.getViewSource() != value)
           return false;
-        llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> instances;
-        effects.getEffectsOnValue(use.get(), instances);
-        return !instances.empty() &&
-               llvm::all_of(instances, [](const auto &instance) {
-                 return mlir::isa<mlir::MemoryEffects::Read>(
-                     instance.getEffect());
-               });
-      });
+        pending.append(user->getResults().begin(), user->getResults().end());
+        continue;
+      }
+      auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(user);
+      if (!effects)
+        return false;
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> instances;
+      effects.getEffectsOnValue(value, instances);
+      if (instances.empty() || llvm::any_of(instances, [](const auto &effect) {
+            return !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+          }))
+        return false;
+    }
+  }
+  return true;
 }
 
 // Bufferization exposes the actual strides of tensor slices. A selected cast
@@ -1923,44 +1934,7 @@ static mlir::LogicalResult convertLayoutCopies(
   module.walk(
       [&](LayoutMaterializeOp) { ++statistics.layoutMaterializationsBefore; });
 
-  // Close dead and exactly shareable layout materializations on current IR.
-  mlir::DominanceInfo dominance(module);
-  mlir::AliasAnalysis aliases(module);
-  llvm::DenseMap<std::pair<mlir::Value, mlir::Type>,
-                 llvm::SmallVector<LayoutMaterializeOp, 2>>
-      available;
-  llvm::SmallVector<LayoutMaterializeOp, 8> materializations;
-  module.walk([&](LayoutMaterializeOp op) { materializations.push_back(op); });
-  for (LayoutMaterializeOp operation : materializations) {
-    if (operation.getResult().use_empty()) {
-      rewriter.eraseOp(operation);
-      ++statistics.unusedMaterializationsErased;
-      continue;
-    }
-    if (!hasOnlyReadUses(operation))
-      continue;
-    auto key =
-        std::make_pair(operation.getSource(), operation.getResult().getType());
-    auto &owners = available[key];
-    auto replacement = llvm::find_if(owners, [&](LayoutMaterializeOp prior) {
-      return hasNoInterveningWrite(prior, operation, aliases) &&
-             llvm::all_of(operation.getResult().getUses(),
-                          [&](mlir::OpOperand &use) {
-                            return dominance.dominates(prior.getResult(),
-                                                       use.getOwner());
-                          });
-    });
-    if (replacement == owners.end()) {
-      owners.push_back(operation);
-      continue;
-    }
-    retargetRelationValue(relations, operation.getResult(),
-                          replacement->getResult());
-    rewriter.replaceAllUsesWith(operation.getResult(),
-                                replacement->getResult());
-    rewriter.eraseOp(operation);
-    ++statistics.sharedMaterializationsReused;
-  }
+  reuseReadOnlyLayoutMaterializations(module, relations, statistics);
   return mlir::success();
 }
 
@@ -2043,6 +2017,50 @@ sharesOutputStorage(mlir::Value value,
 }
 
 } // namespace
+
+void reuseReadOnlyLayoutMaterializations(
+    mlir::Operation *root, StructuredMaterializationRelations &relations,
+    LayoutOptimizationStatistics &statistics) {
+  mlir::IRRewriter rewriter(root->getContext());
+  // Close dead and exactly shareable layout materializations on current IR.
+  mlir::DominanceInfo dominance(root);
+  llvm::DenseMap<std::pair<mlir::Value, mlir::Type>,
+                 llvm::SmallVector<LayoutMaterializeOp, 2>>
+      available;
+  llvm::SmallVector<LayoutMaterializeOp, 8> materializations;
+  root->walk([&](LayoutMaterializeOp op) { materializations.push_back(op); });
+  for (LayoutMaterializeOp operation : materializations) {
+    if (operation.getResult().use_empty()) {
+      rewriter.eraseOp(operation);
+      ++statistics.unusedMaterializationsErased;
+      continue;
+    }
+    if (!hasOnlyReadUses(operation))
+      continue;
+    auto key =
+        std::make_pair(operation.getSource(), operation.getResult().getType());
+    auto &owners = available[key];
+    mlir::AliasAnalysis aliases(root);
+    auto replacement = llvm::find_if(owners, [&](LayoutMaterializeOp prior) {
+      return hasNoInterveningWrite(prior, operation, aliases) &&
+             llvm::all_of(operation.getResult().getUses(),
+                          [&](mlir::OpOperand &use) {
+                            return dominance.dominates(prior.getResult(),
+                                                       use.getOwner());
+                          });
+    });
+    if (replacement == owners.end()) {
+      owners.push_back(operation);
+      continue;
+    }
+    retargetRelationValue(relations, operation.getResult(),
+                          replacement->getResult());
+    rewriter.replaceAllUsesWith(operation.getResult(),
+                                replacement->getResult());
+    rewriter.eraseOp(operation);
+    ++statistics.sharedMaterializationsReused;
+  }
+}
 
 mlir::LogicalResult verifyLayoutResolvedTileRegions(mlir::ModuleOp module) {
   if (!module || mlir::failed(mlir::verify(module)))

@@ -464,14 +464,15 @@ completion字段：FA/FD差异已经由graph op验证并由actual contribution c
 不选择tile、Tile、layout、movement、worker或completion。
 
 Decomposition从current maps构造score map`(B, M, K2)`：QK只reduction K1，随后按current op顺序应用scale和optional additive mask；
-Maximum/Sum只reduction K2，Accumulator由probability与V的K2 contraction更新。Old Maximum/Sum/Accumulator分别通过
-`exp(oldMaximum - newMaximum)`缩放后作为本block的DPS init，因此已有SCF loop自然承载running state。Score/probability复用一个
+Maximum/Sum只reduction K2，Accumulator由probability与V的K2 contraction更新。Old Sum/Accumulator通过
+`exp(oldMaximum - exponentMaximum)`缩放后作为本block的DPS init，maximum状态及其指数用行值的区分见4.7；
+已有SCF loop自然承载running state。Score/probability复用一个
 current tensor destination，shape只含本次actual batch/head、M tile和K2 block，不含K1或N。该变换保持current `math.exp`、scale/mask
 顺序和dtype语义；数值选择不属于本stage。
 
 ### 4.5 Composite、结构化causal与混合精度attention
 
-本节定义待实施的attention更新合同，顺序与实卡覆盖由
+本节定义attention的共同合同，顺序与实卡覆盖由
 [统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)拥有。先更新实现，再启用16号新reference；
 旧实现能否通过新reference不是施工前置，不修改原健康性能目标。
 
@@ -525,11 +526,10 @@ SSA/明确IR字段解释，不能用局部Q/K shape差重新推断。普通prefi
 
 有效长度和causal分别证明。证明使用current SSA与ValueBounds；正的常量步长SCF循环按实际可达的最后一个IV
 收紧边界，不能把exclusive upper误当成最后一个block起点。不能证明时保留原比较。
-当前实现的边界causal使用candidate局部F32 `k−q`模板，与夹界后的`query_start−key_start`标量比较；padding仅在需要时使用
-一维key坐标。局部坐标范围总和不超过F32精确整数范围，绝对位置仍为index；不生成Kcore逐元素循环、
-SPM mapping或完整序列mask。模板是actual DenseElementsAttr，晚期绑定走14号ProgramData；batch/head共享同一模板。
-全可见块没有该模板读/比较；select继续覆盖负无穷，不能用AddVS替代会改变NaN/+inf结果的覆盖语义。
-原additive常量及scale分别保持AddVS/MulVS，所需state初始化与不支持immediate的select源按真实硬件合同物化。
+静态边界causal按4.6由integer位置直接生成最终`0/-inf` bias，执行score加法；不再使用F32 `k−q`坐标表和逐块比较。
+模板是actual DenseElementsAttr，晚期绑定走14号ProgramData；按实际shape、模式和布局共享，准备复用遵守08号证明。
+全可见块没有causal模板读或Add；普通bool/select覆盖及原additive输入各自保持来源语义。
+原additive常量及scale分别保持合法AddVS/MulVS，state初始化与其它select源按真实硬件合同物化。
 
 Score/probability只覆盖当前query tile×KV block；Maximum/Sum/归一化系数保持行级，通过indexing maps表达广播。
 不得借通用decomposition将中间值重新扩大到完整迭代域。DPS准确表达新旧state关系，必要复制由实际旧值用途决定。
@@ -548,9 +548,9 @@ layout、physical transpose、broadcast指令与copy cleanup分别属于08/10/11
 | mask有无、additive数值、全屏蔽行、额外score use | 保持原mask与observable语义；非法位置/type/捕获/effect明确拒绝 | 合法行为进入实卡矩阵；verifier负例只在主机执行 |
 | 旧state仍被使用/可原地更新、共享输入/被写alias | DPS与effect准确；必要copy保留，消除有proof的冗余 | One-Shot bufferization→movement→实际Instr/SPM，不以copy数量为正确性证明 |
 
-### 4.6 当前版本的mask改进合同（待实现）
+### 4.6 当前版本的mask改进合同
 
-本节规定下一步实现目标；4.5中的F32坐标模板仍是当前实现，不能把本节写成已经完成的优化。
+本节规定局部mask生成、可见域循环和准备复用的共同合同；主机与实卡资格由计划和progress分别记录。
 本轮范围是现有static attention、bool/additive mask、causal、MHA/GQA、单/多token decode及tail。
 本轮causal采用加法方案：按位置生成可见处为0、不可见处为`-inf`的局部bias，再加到score上。
 这项选择替代此前拟用的causal `0/1 + -inf源 + MaskMove`；普通bool/select及输入自带additive mask仍保留各自语义。
@@ -587,7 +587,7 @@ causal边界的数值合同为`bias = invalid ? -inf : 0; score = score + bias`�
 
 可见域是连续区间且上下界可由current SSA证明时，06号直接收紧KV循环上下界，按原KV顺序物化全可见区和边界区。
 等长、零偏移、等块长causal中，query块`i`执行key块`0..i-1`及边界块`i`，不访问`i+1..end`。
-这改进当前“完整KV循环内if保护”的循环开销；当前已经跳过的不可见GEMM不能重复登记为新增收益。
+收紧循环消除原“完整KV循环内if保护”的额外迭代；原已跳过的不可见GEMM不能重复登记为新增收益。
 不同query/key块长、绝对偏移或tail可能产生多个边界块，不硬编码“一块对角线”。非连续特殊mask不套连续上界公式。
 
 | 输入语义 | 本版执行规则 | 整块跳过的依据 |
@@ -629,7 +629,7 @@ MaskMove路径继续要求canonical 0/1 mask；不默认NPY bool已经是硬件p
 扩展共同PhysicalMovementPlacement处理实际load/fill/convert的destination mutation；在相关操作已物化后、completion/SPM前应用同一证明，
 不另写attention专用hoist。复用延长的lifetime仍交给唯一actual SPM路径，不用预估容量决定合法性。
 
-causal只需一份bias模板，逻辑数据量为`BQ × BK × bias元素字节数`，不为它另建完整`-inf`源。
+每个causal模式只需一份bias模板，逻辑数据量为`BQ × BK × bias元素字节数`，不为它另建完整`-inf`源。
 实际allocation包含layout/padding；整个attention的SPM峰值由全部actual buffer及lifetime决定，仍走唯一SPM规划。
 模板内容可在package中去重，各Tile仍持有自己的local副本。
 多个不同模式不要求全部同时常驻。准备位置、实际load次数和lifetime必须从最终IR核对。
@@ -653,7 +653,8 @@ causal只需一份bias模板，逻辑数据量为`BQ × BK × bias元素字节�
 通用比较优化保持source `arith.cmp*`的i1语义。在实际`comparison → Bit2Fp`链上选择厂商数值结果指令，
 Instr以destination type区分packed BOOL和数值0/1；必要的结果编码沿同一TargetCall/CRT ABI显式传递。
 同步修改verifier、effect/physical span、模型、cost及packet发射；有其它bool consumer时保留其正确表示，不为融合增加未经比较的重复工作。
-VV/VS/VuV/VuVLoop只使用对应dtype、单位、tail和物理遍历已有证明的组合；`i1`结果限制是当前软件合同，不是比较输入只能为bool。
+VV/VS/VuV/VuVLoop只使用对应dtype、单位、tail和物理遍历已有证明的组合；source比较仍返回`i1`，
+Instr的packed BOOL与数值0/1结果按实际consumer选择，不能把结果类型与比较输入类型混为一谈。
 
 填充与broadcast分开：已证明uniform的完整或连续区域用fill，底层统一为按原始storage bits的`XorVV + AddVS`；
 普通broadcast优先消费合法VS/VuV形式，无法直接消费的映射保留有证明的GatherScatter/copy。
