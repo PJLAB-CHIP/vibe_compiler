@@ -79,6 +79,17 @@ Instr executable形成时沿用`ProgramDataHandoff`和`ProgramResourceBinding`�
 直接消费者为原target materialization/package/no-card路径。完成覆盖包含分块后局部常量、共享/不同Tile使用、
 主块/tail、完整内容逐位、非法global及fresh source到package的numeric witness；主机通过不代签板端。
 
+### Relation结果表示
+
+输入为verified Instr relation的实际destination dtype；输出为统一`wafer_tx81_elementwise_{eq,ne,ge,gt,le,lt}`调用。
+在`rhs_unit_elements`、`rhs_is_scalar`之后、worker之前显式携带`i32 numeric_result`：0选择厂商packed BOOL wrapper，
+1选择同输入format的数值0/1 wrapper。VV/VS/VuV沿原RHS合同选择，不引入第二套symbol或兼容reader。
+TargetCall以typed结果种类保存该字段；decoder拒绝其它编码。CRT、模型和span/effect检查使用同一结果format，
+数值结果不能按bitpacked字节数规划或读取；这里不扩大原VS/VuV或整数numeric-model tuple的准入范围。
+线性CT的`elementCount`已经是lowering确定的物理遍历长度；模型按此长度读写，不能再次按Cx layout补齐。
+验收覆盖全部六种比较、F16/BF16/F32、VV/VS/VuV、packed和值输出、1024/1025/1031及特殊值机制，
+同时核对最终SDK wrapper/packet、模型0/1位型、typed拒绝和原BOOL consumer；设备资格仍按16号单独签发。
+
 ### GEMM混合format调用
 
 输入是verified Tile/Instr上的低精度lhs/rhs、可选F32 psum及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/

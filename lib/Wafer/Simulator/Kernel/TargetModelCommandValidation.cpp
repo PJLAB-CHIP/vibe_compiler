@@ -167,6 +167,11 @@ llvm::Error validateElementwise(const target::TargetElementwiseCommand &value) {
                        "elementwise rhs presence differs from operation arity");
   const bool logic = isTargetElementwiseLogic(value.operation);
   const bool relation = isTargetElementwiseRelation(value.operation);
+  if (value.relationOutput != target::TargetRelationOutput::PackedBool &&
+      (!relation ||
+       value.relationOutput != target::TargetRelationOutput::Numeric))
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
+                       "elementwise relation output kind is invalid");
   if (value.rhsScalar &&
       (logic || value.rhsUnitElements ||
        (value.format != LogicalFormat::F16 &&

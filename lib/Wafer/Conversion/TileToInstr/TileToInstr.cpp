@@ -208,6 +208,7 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
     conversionTiming.markFailed();
     return mlir::failure();
   }
+  foldNumericPredicates(region, session.impl->descriptorCache, listener);
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");

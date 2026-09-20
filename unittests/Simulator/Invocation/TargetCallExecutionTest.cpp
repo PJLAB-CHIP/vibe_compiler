@@ -426,6 +426,8 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
       arguments[5] = 32;
       arguments[6] = 0;
     }
+    if (wafer::isTargetElementwiseRelation(*operation))
+      arguments[7] = 0;
     return arguments;
   }
   if (std::holds_alternative<wafer::TargetReduceOperation>(
@@ -1119,6 +1121,36 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     ++decoded;
   }
   EXPECT_EQ(decoded, 117u);
+}
+
+TEST(TargetCallRegistryTest, RelationOutputHasOneExplicitABIField) {
+  using namespace wafer;
+  for (auto operation :
+       {TargetElementwiseOperation::Eq, TargetElementwiseOperation::Ne,
+        TargetElementwiseOperation::Ge, TargetElementwiseOperation::Gt,
+        TargetElementwiseOperation::Le, TargetElementwiseOperation::Lt}) {
+    const auto &descriptor = getTargetCallDescriptor(operation);
+    auto arguments = makeDecodableArguments(descriptor);
+    ASSERT_EQ(arguments.size(), 9u);
+    for (uint64_t numeric : {0u, 1u}) {
+      arguments[7] = numeric;
+      auto payload = decodeTargetCallPayload(descriptor, {16}, arguments);
+      ASSERT_TRUE(bool(payload)) << llvm::toString(payload.takeError());
+      const auto &command =
+          std::get<target::TargetElementwiseCommand>(*payload);
+      EXPECT_EQ(command.relationOutput,
+                numeric ? target::TargetRelationOutput::Numeric
+                        : target::TargetRelationOutput::PackedBool);
+      EXPECT_EQ(command.getResultFormat(),
+                numeric ? LogicalFormat::F32 : LogicalFormat::Bool);
+    }
+    arguments[7] = 2;
+    auto rejected = decodeTargetCallPayload(descriptor, {16}, arguments);
+    ASSERT_FALSE(bool(rejected));
+    EXPECT_NE(llvm::toString(rejected.takeError())
+                  .find("numeric_result must be 0 or 1"),
+              std::string::npos);
+  }
 }
 
 TEST(TargetCallRegistryTest, DecodesIndependentGemmFormatsAndOrientations) {

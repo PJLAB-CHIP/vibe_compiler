@@ -253,9 +253,9 @@ func.func @nonidentity_chosen_map_stays_dynamic() {
 }
 
 // CHECK-LABEL: func.func @nonidentity_chosen_map_stays_dynamic
-// CHECK: wafer.instr.fill
+// CHECK: wafer.instr.fill {{.*}}f32
 // CHECK: wafer.instr.gather_scatter
-// CHECK: wafer.instr.bit2fp
+// CHECK-NOT: wafer.instr.bit2fp
 // CHECK: wafer.instr.mask_move
 
 // Padding participates in MaskMove's physical traversal. The predicate gather

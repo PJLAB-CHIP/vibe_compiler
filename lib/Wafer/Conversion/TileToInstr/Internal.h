@@ -66,6 +66,10 @@ using SharedMovementDescriptorPlan =
 
 enum class MovementEngine { RDMA, WDMA, GatherScatter };
 
+class MovementDescriptorCache;
+void foldNumericPredicates(TileRegionOp region, MovementDescriptorCache &cache,
+                           mlir::RewriterBase::Listener *listener);
+
 /// Request-local cache of exact descriptor plans. Entries contain only typed
 /// endpoint geometry and total projected IndexRelations; they own no
 /// Operation/Value handles and die with the TileRegion-to-Instr lowering

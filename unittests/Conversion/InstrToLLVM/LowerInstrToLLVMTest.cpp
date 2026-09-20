@@ -46,6 +46,202 @@ template <typename OpT> unsigned countOps(mlir::ModuleOp module) {
   return count;
 }
 
+TEST(LowerInstrToTargetLLVMTest, RelationsLowerWithExplicitResultFormat) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (llvm::StringRef kind : {"eq", "ne", "ge", "gt", "le", "lt"})
+        for (unsigned form = 0; form < 3; ++form)
+          for (bool numeric : {false, true}) {
+            SCOPED_TRACE(llvm::formatv("{0}/{1}/{2}/{3}/{4}", dtype, extent,
+                                       kind, form, numeric)
+                             .str());
+            mlir::DialectRegistry registry;
+            registerTargetConversionDialects(registry);
+            mlir::MLIRContext context(registry);
+            context.loadAllAvailableDialects();
+            auto type = [&](llvm::StringRef element) {
+              return llvm::formatv(
+                         "memref<2x32x{0}x{1}, #wafer.memory<spm, tensor>>",
+                         extent, element)
+                  .str();
+            };
+            auto input = type(dtype), output = type(numeric ? dtype : "i1");
+            auto rhs =
+                form == 1 ? dtype.str()
+                : form == 2
+                    ? llvm::formatv(
+                          "memref<32x{0}, #wafer.memory<spm, tensor>>", dtype)
+                          .str()
+                    : input;
+            std::string text;
+            llvm::raw_string_ostream out(text);
+            out << "module { func.func @entry() {\n"
+                << "%lhs = memref.alloc() {wafer.spm.offset = "
+                   "#wafer.spm_offset<65536>} : "
+                << input << "\n";
+            if (form == 1)
+              out << "%rhs = arith.constant 1.0 : " << dtype << "\n";
+            else
+              out << "%rhs = memref.alloc() {wafer.spm.offset = "
+                     "#wafer.spm_offset<589824>} : "
+                  << rhs << "\n";
+            out << "%dst = memref.alloc() {wafer.spm.offset = "
+                   "#wafer.spm_offset<1114112>} : "
+                << output << "\nwafer.instr.elementwise <" << kind
+                << "> %lhs, %rhs into %dst "
+                << (form == 2 ? "{rhs_unit_elements = 32 : i64}" : "") << " : "
+                << input << ", " << rhs << " into " << output
+                << "\nreturn\n}}\n";
+            auto module =
+                mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+            ASSERT_TRUE(module) << text;
+            mlir::PassManager manager(&context);
+            manager.addPass(wafer::createLowerInstrToTargetLLVMPass({}));
+            ASSERT_TRUE(mlir::succeeded(manager.run(*module)));
+            ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+            unsigned calls = 0;
+            module->walk([&](mlir::LLVM::CallOp call) {
+              if (call.getCallee() != ("wafer_tx81_elementwise_" + kind).str())
+                return;
+              ++calls;
+              ASSERT_EQ(call.getNumOperands(), 9u);
+              auto integer = [&](unsigned index) -> int64_t {
+                auto value = call.getOperand(index)
+                                 .getDefiningOp<mlir::LLVM::ConstantOp>();
+                EXPECT_TRUE(value);
+                return value ? mlir::cast<mlir::IntegerAttr>(value.getValue())
+                                   .getInt()
+                             : -1;
+              };
+              EXPECT_EQ(integer(0), 65536);
+              EXPECT_EQ(integer(1), form == 1 ? (dtype == "f16"    ? 0x3c00
+                                                 : dtype == "bf16" ? 0x3f80
+                                                                   : 0x3f800000)
+                                              : 589824);
+              EXPECT_EQ(integer(2), 1114112);
+              EXPECT_EQ(integer(3), 64 * extent);
+              EXPECT_EQ(integer(5), form == 2 ? 32 : 0);
+              EXPECT_EQ(integer(6), form == 1);
+              EXPECT_EQ(integer(7), numeric);
+              EXPECT_EQ(integer(8), 0);
+            });
+            EXPECT_EQ(calls, 1u);
+          }
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     NumericPredicatesKeepTheOriginalInputSnapshot) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (unsigned variant = 0; variant < 9; ++variant) {
+        SCOPED_TRACE(
+            llvm::formatv("{0}/{1}/{2}", dtype, extent, variant).str());
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        auto type = [&](llvm::StringRef element, int64_t unit = 0) {
+          return llvm::formatv("memref<{0}{1}x{2}, #wafer.memory<spm, tensor>>",
+                               unit ? "" : "2x32x", unit ? unit : extent,
+                               element)
+              .str();
+        };
+        std::string input = type(dtype), boolean = type("i1");
+        std::string numeric =
+            type(variant == 6 ? (dtype == "f32" ? "f16" : "f32") : dtype);
+        std::string rhs =
+            variant == 1 ? dtype.str() : type(dtype, variant == 2 ? 1 : 0);
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @entry() {\n%token = arith.constant false\n"
+            << "%r = wafer.tile.region(%token : i1) -> (i1) { ^bb0(%done: "
+               "i1):\n"
+            << "%lhs = memref.alloc() : " << input << "\n"
+            << "%zero = arith.constant 0.0 : " << dtype << "\n";
+        if (variant == 1)
+          out << "%rhs = arith.constant 1.0 : " << dtype << "\n";
+        else
+          out << "%rhs = memref.alloc() : " << rhs << "\n";
+        out << "%predicate = memref.alloc() : " << boolean << "\n";
+        bool fill = variant == 3 || variant == 8;
+        if (fill)
+          out << "%bit = arith.constant " << (variant == 3 ? "true" : "false")
+              << "\nwafer.instr.fill %predicate, %bit : " << boolean
+              << ", i1\n";
+        else
+          out << "wafer.instr.elementwise <eq> %lhs, %rhs into %predicate "
+              << (variant == 2 ? "{rhs_unit_elements = 1 : i64}" : "") << " : "
+              << input << ", " << rhs << " into " << boolean << "\n";
+        if (variant == 7)
+          out << "wafer.instr.fill %lhs, %zero : " << input << ", " << dtype
+              << "\n";
+        out << "%numeric = memref.alloc() : " << numeric << "\n"
+            << "%sink = memref.alloc() : " << numeric << "\n";
+        if (variant == 5)
+          out << "wafer.instr.elementwise <neg> %numeric into %sink : "
+              << numeric << " into " << numeric << "\n";
+        out << "wafer.instr.bit2fp %predicate into %numeric : " << boolean
+            << " to " << numeric << "\n";
+        if (variant == 4)
+          out << "%other = memref.alloc() : " << boolean
+              << "\nwafer.instr.elementwise <logic_not> %predicate into %other "
+                 ": "
+              << boolean << " into " << boolean << "\n";
+        out << "wafer.instr.elementwise <neg> %numeric into %sink : " << numeric
+            << " into " << numeric
+            << "\nwafer.tile.yield %done : i1\n}\nreturn\n}}\n";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        wafer::TileRegionOp region;
+        wafer::InstrBit2FpOp conversion;
+        wafer::InstrElementwiseOp comparison;
+        wafer::InstrFillOp predicateFill, mutation;
+        module->walk([&](wafer::TileRegionOp op) { region = op; });
+        module->walk([&](wafer::InstrBit2FpOp op) { conversion = op; });
+        module->walk([&](wafer::InstrElementwiseOp op) {
+          if (op.getKind() == wafer::InstrElementwiseKind::Eq)
+            comparison = op;
+        });
+        module->walk([&](wafer::InstrFillOp op) {
+          if (op.getDest().getType().getElementType().isInteger(1))
+            predicateFill = op;
+          else
+            mutation = op;
+        });
+        mlir::Value destination = conversion.getDest();
+        wafer::TileRegionToInstrLoweringSession session(context);
+        ASSERT_TRUE(
+            mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        bool folded = variant != 4 && variant != 5 && variant != 6;
+        EXPECT_EQ(countOps<wafer::InstrBit2FpOp>(*module), folded ? 0u : 1u);
+        if (!folded)
+          continue;
+        if (fill) {
+          EXPECT_EQ(predicateFill.getDest(), destination);
+          auto constant =
+              predicateFill.getValue().getDefiningOp<mlir::arith::ConstantOp>();
+          ASSERT_TRUE(constant);
+          auto value =
+              mlir::cast<mlir::FloatAttr>(constant.getValue()).getValue();
+          EXPECT_EQ(value.convertToDouble(), variant == 3 ? 1.0 : 0.0);
+        } else {
+          EXPECT_EQ(comparison.getDest(), destination);
+          EXPECT_EQ(comparison.getRhsUnitElements(), variant == 2 ? 1 : 0);
+          EXPECT_TRUE(destination.getDefiningOp()->isBeforeInBlock(comparison));
+          if (mutation) {
+            EXPECT_TRUE(comparison->isBeforeInBlock(mutation));
+          }
+        }
+        unsigned booleanAllocations = 0;
+        module->walk([&](mlir::memref::AllocOp allocation) {
+          booleanAllocations +=
+              allocation.getType().getElementType().isInteger(1);
+        });
+        EXPECT_EQ(booleanAllocations, 0u);
+      }
+}
+
 TEST(LowerInstrToTargetLLVMTest,
      DivisionUsesReciprocalProductWithSafeAliasing) {
   for (llvm::StringRef dtype : {"f16", "bf16", "f32"})

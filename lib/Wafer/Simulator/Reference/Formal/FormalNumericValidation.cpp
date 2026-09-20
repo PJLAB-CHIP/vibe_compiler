@@ -58,11 +58,11 @@ llvm::Error validateFormalElementwiseOperation(
                        "elementwise inputs have different formats");
   const bool logic = isTargetElementwiseLogic(operation.operation);
   const bool relation = isTargetElementwiseRelation(operation.operation);
-  LogicalFormat expectedDestination =
-      relation ? LogicalFormat::Bool : inputFormat;
+  LogicalFormat destination = operation.destination.getFormat();
   if ((logic && inputFormat != LogicalFormat::Bool) ||
       (!logic && !isFormalFloat(inputFormat)) ||
-      operation.destination.getFormat() != expectedDestination)
+      (destination != inputFormat &&
+       !(relation && destination == LogicalFormat::Bool)))
     return formalError(FormalNumericErrorCode::UnsupportedOperation,
                        "elementwise formats are outside the formal subset");
   return llvm::Error::success();

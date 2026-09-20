@@ -124,7 +124,16 @@ evaluateFormalElementwiseLLVM(const FormalElementwiseOperation &elementwise,
         llvm_unreachable("non-relation operation passed relation validator");
       }
     }
-    return finishRawResult(LogicalFormat::Bool, result, flags);
+    if (resultFormat == LogicalFormat::Bool)
+      return finishRawResult(resultFormat, result, flags);
+    auto numeric =
+        result ? llvm::APFloat::getOne(*getFloatSemantics(resultFormat))
+               : llvm::APFloat::getZero(*getFloatSemantics(resultFormat));
+    auto bits = encodeFloat(numeric, resultFormat);
+    if (!bits)
+      return formalError(FormalNumericErrorCode::InvalidResultEncoding,
+                         "numeric comparison result has an unexpected width");
+    return finishRawResult(resultFormat, *bits, flags);
   }
 
   if ((operation == TargetElementwiseOperation::Abs ||

@@ -201,7 +201,8 @@ createFormalElementwiseOperation(TargetElementwiseOperation operation,
                                      "logical CT elementwise operations "
                                      "require BOOL inputs and destination");
   } else if (isTargetElementwiseRelation(operation)) {
-    if (destination.getFormat() != LogicalFormat::Bool ||
+    if ((destination.getFormat() != LogicalFormat::Bool &&
+         destination.getFormat() != inputs.front().getFormat()) ||
         inputs.front().getFormat() == LogicalFormat::Bool ||
         std::any_of(inputs.begin(), inputs.end(),
                     [&](const PhysicalTensorDescriptor &key) {
@@ -210,7 +211,7 @@ createFormalElementwiseOperation(TargetElementwiseOperation operation,
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "relation CT elementwise operations require matching numeric inputs "
-          "and BOOL destination");
+          "and BOOL or matching numeric destination");
   } else if (destination.getFormat() == LogicalFormat::Bool ||
              std::any_of(inputs.begin(), inputs.end(),
                          [&](const PhysicalTensorDescriptor &key) {

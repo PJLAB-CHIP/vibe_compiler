@@ -16,15 +16,12 @@
 namespace wafer::model::kernel_detail {
 namespace {
 
-PhysicalTensorLayout getCountLayout(LogicalFormat format) {
-  return format == LogicalFormat::Bool ? PhysicalTensorLayout::Tensor
-                                       : PhysicalTensorLayout::Cx;
-}
-
 llvm::Expected<PhysicalTensorDescriptor>
 makeTensor(LogicalFormat format, std::vector<uint64_t> shape) {
+  // Linear CT counts already describe the physical traversal, including any
+  // padding selected by lowering. Do not round that span a second time.
   llvm::Expected<PhysicalTensorDescriptor> key =
-      PhysicalTensorDescriptor::create(format, getCountLayout(format),
+      PhysicalTensorDescriptor::create(format, PhysicalTensorLayout::Tensor,
                                        std::move(shape));
   if (!key)
     return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
@@ -295,9 +292,7 @@ executeElementwise(const compiler::TargetCommand &command,
                    const InvocationMemoryRegistry &memory,
                    TargetModelKernelBudget budget,
                    TargetModelExecutionPolicy policy) {
-  const LogicalFormat destinationFormat =
-      isTargetElementwiseRelation(value.operation) ? LogicalFormat::Bool
-                                                   : value.format;
+  const LogicalFormat destinationFormat = value.getResultFormat();
   llvm::Expected<PhysicalTensorDescriptor> inputKey =
       makeTensor(value.format, {value.elementCount});
   llvm::Expected<PhysicalTensorDescriptor> rhsKey =

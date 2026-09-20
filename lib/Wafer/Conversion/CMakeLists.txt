@@ -2,6 +2,7 @@ add_mlir_conversion_library(WaferTileToInstr
   TileToInstr/ComputeLowering.cpp
   TileToInstr/MovementLowering.cpp
   TileToInstr/MovementSupport.cpp
+  TileToInstr/NumericPredicateFolding.cpp
   TileToInstr/PackedMovementLowering.cpp
   TileToInstr/PeerLowering.cpp
   TileToInstr/TileToInstr.cpp

@@ -1156,9 +1156,11 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
 
 def check_relation_logic_convert(source_text: str) -> None:
     relation = require_macro_body(source_text, "WAFER_DEFINE_RELATION")
-    require_contains(relation, "relation->BOOL_METHOD", "typed relation output")
+    require_contains(relation, "if (numeric_result)", "typed relation output")
+    for form in ("VV", "VS", "VuV"):
+        require_contains(relation, "relation->METHOD##" + form, "numeric relation output")
+        require_contains(relation, "relation->Bool##METHOD##" + form, "packed relation output")
     require_absent(relation, "if (format == Fmt_BOOL)", "typed relation output")
-    require_absent(relation, "relation->METHOD", "typed relation output")
     for macro in [
         "WAFER_DEFINE_LOGIC_UNARY",
         "WAFER_DEFINE_LOGIC_BINARY",

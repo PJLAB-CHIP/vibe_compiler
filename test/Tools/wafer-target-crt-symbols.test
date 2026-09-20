@@ -3,6 +3,7 @@
 # RUN: %python %S/Inputs/wafer_crt_dma_test.py --repo-root %wafer_src_root --output %t.dma | FileCheck --check-prefix=DMA %s
 # RUN: %python %S/Inputs/wafer_crt_gemm_test.py --repo-root %wafer_src_root --output %t.gemm | FileCheck --check-prefix=GEMM %s
 # RUN: %python %S/Inputs/wafer_crt_fill_test.py --repo-root %wafer_src_root --output %t.fill | FileCheck --check-prefix=FILL %s
+# RUN: %python %S/Inputs/wafer_crt_relation_test.py --repo-root %wafer_src_root --output %t.relation | FileCheck --check-prefix=RELATION %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc \
 # RUN:   -E -P -DCONFIG_NO_PLATFORM_HOOK_H -DUSING_RISCV \
 # RUN:   -DWAFER_TX81_PROFILE_TRACE_CRT=1 \
@@ -37,6 +38,7 @@
 # DMA: DMA packet byte geometry: 156 configurations passed
 # GEMM: GEMM final registers: 2161 configurations passed
 # FILL: CT fill: 3276 configurations, two whole-range issues each
+# RELATION: relation SDK dispatch: 1620 configurations passed
 
 # ARGMAX-LABEL: <wafer_tx81_peripheral_argmax>:
 # ARGMAX: R_RISCV_CALL_PLT TsmWaitfinish_bywork

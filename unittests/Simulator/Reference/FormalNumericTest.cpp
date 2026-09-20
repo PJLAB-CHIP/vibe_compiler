@@ -86,10 +86,12 @@ PhysicalTensorDescriptor makeTensor(LogicalFormat format,
 
 std::optional<FormalElementwiseOperation>
 getElementwiseResolution(TargetElementwiseOperation operation,
-                         LogicalFormat inputFormat) {
+                         LogicalFormat inputFormat,
+                         bool numericResult = false) {
   const LogicalFormat destinationFormat =
-      wafer::isTargetElementwiseRelation(operation) ? LogicalFormat::Bool
-                                                    : inputFormat;
+      wafer::isTargetElementwiseRelation(operation) && !numericResult
+          ? LogicalFormat::Bool
+          : inputFormat;
   const PhysicalTensorDescriptor input =
       makeTensor(inputFormat, PhysicalTensorLayout::Tensor, {1});
   std::vector<PhysicalTensorDescriptor> inputs(
@@ -792,6 +794,57 @@ TEST(FormalNumericTest,
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->value.bits, UINT64_C(0x7c00));
   EXPECT_TRUE(result->flags.divByZero);
+}
+
+// Scalar bit/exception oracle; rank-3 complete memory spans are covered by the
+// TargetModelKernel relation tests.
+TEST(FormalNumericTest, RelationsProduceExactNumericZeroOrOne) {
+  for (auto format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32}) {
+    uint64_t one = format == LogicalFormat::F16    ? 0x3c00
+                   : format == LogicalFormat::BF16 ? 0x3f80
+                                                   : 0x3f800000;
+    uint64_t sign = format == LogicalFormat::F32 ? 0x80000000 : 0x8000;
+    uint64_t inf = format == LogicalFormat::F16    ? 0x7c00
+                   : format == LogicalFormat::BF16 ? 0x7f80
+                                                   : 0x7f800000;
+    uint64_t quiet = format == LogicalFormat::F16    ? 0x200
+                     : format == LogicalFormat::BF16 ? 0x40
+                                                     : 0x400000;
+    struct Pair {
+      uint64_t lhs, rhs;
+      int order;
+      bool invalid;
+    };
+    for (auto pair :
+         {Pair{0, sign, 0, false}, Pair{one, 0, 1, false},
+          Pair{sign | one, one, -1, false}, Pair{inf, inf, 0, false},
+          Pair{sign | inf, 0, -1, false}, Pair{inf | quiet | 1, one, 2, false},
+          Pair{one, inf | 1, 2, true}})
+      for (auto operation :
+           {TargetElementwiseOperation::Eq, TargetElementwiseOperation::Ne,
+            TargetElementwiseOperation::Ge, TargetElementwiseOperation::Gt,
+            TargetElementwiseOperation::Le, TargetElementwiseOperation::Lt}) {
+        bool expected =
+            operation == TargetElementwiseOperation::Eq   ? pair.order == 0
+            : operation == TargetElementwiseOperation::Ne ? pair.order != 0
+            : operation == TargetElementwiseOperation::Ge
+                ? pair.order == 0 || pair.order == 1
+            : operation == TargetElementwiseOperation::Gt ? pair.order == 1
+            : operation == TargetElementwiseOperation::Le
+                ? pair.order == 0 || pair.order == -1
+                : pair.order == -1;
+        auto key = getElementwiseResolution(operation, format, true);
+        ASSERT_TRUE(key);
+        auto result =
+            expectElementwise(*key, {{format, pair.lhs}, {format, pair.rhs}});
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result->value.format, format);
+        EXPECT_EQ(result->value.bits, expected ? one : 0);
+        EXPECT_EQ(result->flags.invalid, pair.invalid);
+        EXPECT_FALSE(result->flags.inexact);
+      }
+  }
 }
 
 TEST(FormalNumericTest, ElementwiseLLVMImplementsRelationsAndBooleanLogic) {

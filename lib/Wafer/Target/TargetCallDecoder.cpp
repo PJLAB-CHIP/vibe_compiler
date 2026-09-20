@@ -246,13 +246,21 @@ buildElementwiseCommand(const TargetCallDecodeConfig &config,
     return llvm::createStringError("elementwise scalar flag must be 0 or 1");
   if (scalar && arguments[1] > UINT32_MAX)
     return llvm::createStringError("elementwise scalar bits must fit uint32");
+  target::TargetRelationOutput output =
+      target::TargetRelationOutput::PackedBool;
+  if (isTargetElementwiseRelation(kind)) {
+    if (argument32(arguments, 7) > 1)
+      return llvm::createStringError("relation numeric_result must be 0 or 1");
+    if (argument32(arguments, 7))
+      output = target::TargetRelationOutput::Numeric;
+  }
   return TargetCommandPayload{TargetElementwiseCommand{
       kind, arguments[0],
       unary || scalar ? std::nullopt : std::optional<uint64_t>(arguments[1]),
       arguments[destinationIndex], argument32(arguments, countIndex), *format,
       !unary && !isTargetElementwiseLogic(kind) ? argument32(arguments, 5) : 0,
-      scalar ? std::optional<uint32_t>(argument32(arguments, 1))
-             : std::nullopt}};
+      scalar ? std::optional<uint32_t>(argument32(arguments, 1)) : std::nullopt,
+      output}};
 }
 
 static llvm::Expected<TargetCommandPayload>

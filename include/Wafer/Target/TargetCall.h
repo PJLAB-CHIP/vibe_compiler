@@ -91,6 +91,8 @@ struct TargetGemmCommand {
   std::optional<TargetGemmPartial> psum;
 };
 
+enum class TargetRelationOutput : uint8_t { PackedBool, Numeric };
+
 struct TargetElementwiseCommand {
   TargetElementwiseOperation operation;
   uint64_t lhs;
@@ -100,6 +102,14 @@ struct TargetElementwiseCommand {
   LogicalFormat format;
   uint32_t rhsUnitElements = 0;
   std::optional<uint32_t> rhsScalar;
+  TargetRelationOutput relationOutput = TargetRelationOutput::PackedBool;
+
+  LogicalFormat getResultFormat() const {
+    return isTargetElementwiseRelation(operation) &&
+                   relationOutput == TargetRelationOutput::PackedBool
+               ? LogicalFormat::Bool
+               : format;
+  }
 };
 
 struct TargetReduceCommand {

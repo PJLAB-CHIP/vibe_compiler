@@ -483,8 +483,10 @@ static mlir::LogicalResult verifySimpleInstrElementwiseContract(
                        "elementwise operand shapes must match dest shape")))
       return mlir::failure();
     if (isInstrRelationKind(kind)) {
-      if (!destTensor->getElementType().isInteger(1))
-        return op->emitOpError("relation dest element type must be i1");
+      if (!destTensor->getElementType().isInteger(1) &&
+          destTensor->getElementType() != firstInputTensor->getElementType())
+        return op->emitOpError(
+            "relation dest element type must be i1 or match input type");
       if (inputTensor->getElementType() != firstInputTensor->getElementType())
         return op->emitOpError(
             "relation operand element types must match each other");
@@ -819,7 +821,7 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
   std::optional<ComputeElementwiseKind> computeKind =
       toComputeElementwiseKind(getKindAttr().getValue());
   mlir::LogicalResult contract =
-      computeKind
+      computeKind && !isInstrRelationKind(getKind())
           ? verifyElementwiseTileContract(getOperation(), *computeKind,
                                           getInputs(), getDest().getType())
           : verifySimpleInstrElementwiseContract(

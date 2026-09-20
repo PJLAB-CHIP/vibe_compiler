@@ -332,6 +332,8 @@ runtime保持原storage bits，numeric model不对immediate产生SPM读取。una
 `wafer.tile.elementwise`以closed kind和typed inputs/result表达arithmetic、relation、logic、select及supported
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof
 支持。relation result保持logical i1，bitpacking只由encoding与Instr lowering决定。
+lowering形成实际Instr链后可按11号合同合成private compare/fill→Bit2Fp；数值结果由最终Instr destination type表达，
+不修改Tile层的logical predicate语义，也不为causal bias重新引入该比较链。
 
 ExecutionStructure可把同一dynamic scope内、Allocate effect明确、仅被当前op读取且与其它输入NoAlias的最后使用
 buffer选为实际destination，物化`elementwise_into`后替换result。被复用input的map必须identity且type与result相同；

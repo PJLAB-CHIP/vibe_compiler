@@ -973,6 +973,103 @@ TEST(TargetModelKernelTest,
       }
 }
 
+TEST(TargetModelKernelTest, RelationsUseExactResultSpansAndKeepGuards) {
+  for (auto format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32})
+    for (uint32_t extent : {1024, 1025, 1031})
+      for (unsigned form = 0; form < 3; ++form)
+        for (bool numeric : {false, true})
+          for (auto operation :
+               {TargetElementwiseOperation::Eq, TargetElementwiseOperation::Ne,
+                TargetElementwiseOperation::Ge, TargetElementwiseOperation::Gt,
+                TargetElementwiseOperation::Le,
+                TargetElementwiseOperation::Lt}) {
+            SCOPED_TRACE(::testing::Message()
+                         << unsigned(format) << "/" << extent << "/" << form
+                         << "/" << numeric << "/" << unsigned(operation));
+            InvocationMemoryRegistry memory = makeRegistry();
+            FormalNumericExecutionContext context;
+            uint64_t base = memory.getAddressPlan().getSPMBase();
+            uint64_t rhsAddress = base + 0x90000, output = base + 0x140000;
+            uint32_t count = 2 * 32 * extent, rhsCount = form == 2 ? 32 : count;
+            auto inputKey = makeTensor(format, PhysicalTensorLayout::Tensor,
+                                       {2, 32, extent});
+            auto outputFormat = numeric ? format : LogicalFormat::Bool;
+            auto outputKey = makeTensor(
+                outputFormat, PhysicalTensorLayout::Tensor, {2, 32, extent});
+            auto rhsKey =
+                makeTensor(format, PhysicalTensorLayout::Tensor, {rhsCount});
+            ASSERT_LT(rhsAddress +
+                          llvm::cantFail(getPhysicalTensorStorageBytes(rhsKey)),
+                      output - 16);
+            uint64_t one = format == LogicalFormat::F32   ? 0x3f800000
+                           : format == LogicalFormat::F16 ? 0x3c00
+                                                          : 0x3f80;
+            std::vector<RawLogicalValue> lhs(count, {format, 0}),
+                rhs(rhsCount, {format, 0});
+            for (uint32_t i = 0; i < count; ++i)
+              lhs[i].bits = i % 2 ? one : 0;
+            for (uint32_t i = 0; i < rhsCount; ++i)
+              rhs[i].bits = i % 3 ? one : 0;
+            writeTensor(memory, 0, base, inputKey, lhs);
+            if (form != 1)
+              writeTensor(memory, 0, rhsAddress, rhsKey, rhs);
+            uint64_t outputBytes =
+                llvm::cantFail(getPhysicalTensorStorageBytes(outputKey));
+            std::vector<uint8_t> guard(16, 0xa5);
+            llvm::cantFail(memory.applyAtomically(
+                {TargetModelByteWrite{0, TargetModelAddressSpace::TileSPM,
+                                      output - 16, 1, guard},
+                 TargetModelByteWrite{0, TargetModelAddressSpace::TileSPM,
+                                      output + outputBytes, 1, guard}}));
+            TargetElementwiseCommand payload{
+                operation,
+                base,
+                form == 1 ? std::nullopt : std::optional<uint64_t>(rhsAddress),
+                output,
+                count,
+                format,
+                form == 2 ? 32u : 0u,
+                form == 1 ? std::optional<uint32_t>(one) : std::nullopt,
+                numeric ? TargetRelationOutput::Numeric
+                        : TargetRelationOutput::PackedBool};
+            TargetCommand command{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                                  payload};
+            auto budget = TargetModelKernelBudget::create(
+                FormalNumericWorkBudget::create(count, 0), count * 16, 256);
+            auto effect = executeTargetModelCommand(command, memory, budget);
+            ASSERT_TRUE(bool(effect)) << llvm::toString(effect.takeError());
+            EXPECT_EQ(effect->pendingReads.size(), form == 1 ? 1u : 2u);
+            if (form != 1) {
+              EXPECT_EQ(effect->pendingReads[1].byteCount,
+                        rhsCount * (format == LogicalFormat::F32 ? 4 : 2));
+            }
+            ASSERT_EQ(effect->pendingWrites.size(), 1u);
+            EXPECT_EQ(effect->pendingWrites[0].bytes.size(), outputBytes);
+            llvm::cantFail(applyTargetModelCommandEffect(memory, context,
+                                                         std::move(*effect)));
+            auto result = readTensor(memory, 0, output, outputKey);
+            ASSERT_EQ(result.size(), count);
+            for (uint32_t i = 0; i < count; ++i) {
+              int a = i % 2, b = form == 1 ? 1 : (i % rhsCount) % 3 != 0;
+              bool expected =
+                  operation == TargetElementwiseOperation::Eq   ? a == b
+                  : operation == TargetElementwiseOperation::Ne ? a != b
+                  : operation == TargetElementwiseOperation::Ge ? a >= b
+                  : operation == TargetElementwiseOperation::Gt ? a > b
+                  : operation == TargetElementwiseOperation::Le ? a <= b
+                                                                : a < b;
+              ASSERT_EQ(result[i].bits, expected ? (numeric ? one : 1) : 0)
+                  << i;
+            }
+            for (uint64_t address : {output - 16, output + outputBytes})
+              EXPECT_EQ(
+                  llvm::cantFail(memory.readSnapshot(
+                      0, TargetModelAddressSpace::TileSPM, address, 16, 1)),
+                  guard);
+          }
+}
+
 TEST(TargetModelKernelTest, ScalarImmediateHasExactBitsAndNoRHSRead) {
   for (auto format :
        {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32})

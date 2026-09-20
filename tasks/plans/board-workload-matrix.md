@@ -29,7 +29,7 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 用户要求先收敛前述讨论的方案，空间切分与搜索预算问题暂缓。本节属于既有`board-testing`，
 算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)，
 其余attention计算的整改合同见[05号4.7](../05-local-compute-normalization.md#47-attention行级计算整改合同)。
-用户随后授权按下述顺序实施并验收。当前实施步骤1--3，步骤4--7仍待完成；当前TDMA故障boot未新增设备执行。
+用户随后授权按下述顺序实施并验收。步骤1--4的主机机制已实现，步骤2产品复用仍有缺口，当前推进步骤5；当前TDMA故障boot未新增设备执行。
 已接入integer位置bias/Add、私有准备操作placement及KV可见上界，并补充非恒定上界的completion/lifetime证明。
 对齐与尾块的分解、实际模板读取范围、私有初始化正反例及NCC/lifetime定向回归已通过；
 真实4K诊断构包已收敛为一份实际`256×256`模板，该尺寸只描述本次winner；但winner仍为FirstUse，模板RDMA仍在边界内，
@@ -39,7 +39,15 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 一项未知i64动态地址的错误分类随有界范围分析变为address overflow，更新预期后该项独立复测通过。
 canonical无target增量构建通过，随后Ninja no-op。新增integer模板值、1/4/2种模式、矩形块、偏移37及1024/1025/1031 tail、
 私有准备的alias/提前读取/零次循环反例、条件子集观察者/支配关系和无额外内部join检查均通过；设备未访问。
-步骤4已开始接入统一relation结果类型/ABI及局部predicate合成，其验证与步骤5--7仍未完成。
+步骤4已实现统一relation结果类型/ABI及局部predicate合成。常量BOOL fill→Bit2Fp合并为数值fill；
+单写且无其它BOOL观察者的compare→Bit2Fp在原compare位置直接写数值结果，保留输入快照，
+不同dtype、提前观察或BOOL多use保留原路径。已通过六种比较、三种浮点dtype、VV/VS/VuV及1024/1025/1031的
+最终LLVM参数、形式数值、精确读写span及guard检查；CRT拦截验证1620种wrapper/参数/生命周期组合。
+SDK archive离线反汇编核对36个对应wrapper的packet操作码与public enum一致；这不代替SDK在设备上的数值执行。
+新guard检查发现并修复模型对linear CT的elementCount再次按Cx补齐的问题；现按实际physical count读写。
+Conversion、Simulator、ReferenceNumeric、Target、TargetNumericBackend及CodeGen组件回归通过；220项conversion/dialect/CRT lit通过，
+canonical完整增量构建与随后Ninja no-op通过。一次检查启动撞上链接中间态，未运行项已在构建结束后实际补跑通过。
+步骤5的行级计算与步骤6--7仍未完成，步骤2的产品复用缺口仍保持未签。
 已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
 按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
 先完成这条主路径，再处理其它bool/select链的比较与复用；不增加有限性扫描、特殊值运行时分支或加法/覆盖选择开关。
