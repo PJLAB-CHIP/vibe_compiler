@@ -15,6 +15,10 @@ mlir::Value computeAttentionExponential(mlir::Value value, mlir::Value maximum,
                                         mlir::OpBuilder &builder,
                                         mlir::Location location);
 
+mlir::Value materializeAttentionExponentialMaximum(mlir::Value maximum,
+                                                   mlir::OpBuilder &builder,
+                                                   mlir::Location location);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_TRANSFORMS_LINALG_ATTENTIONMATH_H

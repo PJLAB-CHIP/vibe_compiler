@@ -227,21 +227,28 @@ materializeOnlineAttentionFinalize(LinalgExtAttentionOp source,
       maps, iteratorTypes,
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
           mlir::ValueRange arguments) {
+        // Keep the coupled-state finalizer as one generic through temporal
+        // tiling. Its scalar SSA makes the coefficient depend only on the row
+        // sum; ordinary elementwise materialization projects it to the row map.
+        auto one = nestedBuilder.create<mlir::arith::ConstantOp>(
+            location, nestedBuilder.getFloatAttr(arguments[1].getType(), 1.0));
+        mlir::Value coefficient = nestedBuilder.create<mlir::arith::DivFOp>(
+            location, one, arguments[1]);
+        if (source.getZeroFullyMasked()) {
+          auto zero = nestedBuilder.create<mlir::arith::ConstantOp>(
+              location,
+              nestedBuilder.getFloatAttr(arguments[1].getType(), 0.0));
+          auto empty = nestedBuilder.create<mlir::arith::CmpFOp>(
+              location, mlir::arith::CmpFPredicate::OEQ, arguments[1], zero);
+          coefficient = nestedBuilder.create<mlir::arith::SelectOp>(
+              location, empty, zero, coefficient);
+        }
         mlir::Value accumulator = castAttentionFloatScalar(
             arguments[0], arguments[1].getType(), nestedBuilder, location);
         mlir::Value normalized =
-            accumulator ? nestedBuilder.create<mlir::arith::DivFOp>(
-                              location, accumulator, arguments[1])
+            accumulator ? nestedBuilder.create<mlir::arith::MulFOp>(
+                              location, accumulator, coefficient)
                         : mlir::Value{};
-        if (source.getZeroFullyMasked()) {
-          mlir::Value zero = nestedBuilder.create<mlir::arith::ConstantOp>(
-              location,
-              nestedBuilder.getFloatAttr(arguments[1].getType(), 0.0));
-          mlir::Value empty = nestedBuilder.create<mlir::arith::CmpFOp>(
-              location, mlir::arith::CmpFPredicate::OEQ, arguments[1], zero);
-          normalized = nestedBuilder.create<mlir::arith::SelectOp>(
-              location, empty, zero, normalized);
-        }
         mlir::Value result =
             normalized
                 ? castAttentionFloatScalar(normalized, arguments[2].getType(),
@@ -284,10 +291,12 @@ mlir::FailureOr<OnlineAttentionState> materializeOnlineAttentionStateMerge(
         nestedBuilder.create<mlir::linalg::YieldOp>(nestedLocation, value);
       });
 
+  mlir::Value exponentMaximum = materializeAttentionExponentialMaximum(
+      maximum.getResult(0), builder, location);
   auto createScale = [&](mlir::Value localMaximum) {
     return builder.create<mlir::linalg::GenericOp>(
         location, mlir::TypeRange{rowType},
-        mlir::ValueRange{localMaximum, maximum.getResult(0)},
+        mlir::ValueRange{localMaximum, exponentMaximum},
         mlir::ValueRange{localMaximum},
         llvm::ArrayRef<mlir::AffineMap>{rowIdentity, rowIdentity, rowIdentity},
         rowIterators,

@@ -3,6 +3,7 @@
 #include "AttentionMath.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 
 #include <limits>
@@ -12,20 +13,38 @@ namespace wafer::compiler::detail {
 mlir::Value computeAttentionExponential(mlir::Value value, mlir::Value maximum,
                                         mlir::OpBuilder &builder,
                                         mlir::Location location) {
-  mlir::Value negativeInfinity = builder.create<mlir::arith::ConstantOp>(
-      location, builder.getFloatAttr(value.getType(),
-                                     -std::numeric_limits<double>::infinity()));
-  mlir::Value empty = builder.create<mlir::arith::CmpFOp>(
-      location, mlir::arith::CmpFPredicate::OEQ, value, negativeInfinity);
   mlir::Value difference =
       builder.create<mlir::arith::SubFOp>(location, value, maximum);
-  // Empty contributions must not poison a later visible block with -inf - -inf.
-  // Finalization owns the source's zero-sum output behavior.
-  // exp(-inf) is already zero; masking its argument avoids a second full
-  // tensor select after the exponential without changing finite arithmetic.
-  difference = builder.create<mlir::arith::SelectOp>(
-      location, empty, negativeInfinity, difference);
   return builder.create<mlir::math::ExpOp>(location, difference);
+}
+
+mlir::Value materializeAttentionExponentialMaximum(mlir::Value maximum,
+                                                   mlir::OpBuilder &builder,
+                                                   mlir::Location location) {
+  auto type = mlir::cast<mlir::RankedTensorType>(maximum.getType());
+  auto identity = mlir::AffineMap::getMultiDimIdentityMap(type.getRank(),
+                                                          builder.getContext());
+  llvm::SmallVector<mlir::utils::IteratorType> iterators(
+      type.getRank(), mlir::utils::IteratorType::parallel);
+  auto rows = builder.create<mlir::linalg::GenericOp>(
+      location, mlir::TypeRange{type}, mlir::ValueRange{maximum},
+      mlir::ValueRange{maximum},
+      llvm::ArrayRef<mlir::AffineMap>{identity, identity}, iterators,
+      [&](mlir::OpBuilder &nested, mlir::Location loc,
+          mlir::ValueRange values) {
+        auto negativeInfinity = nested.create<mlir::arith::ConstantOp>(
+            loc, nested.getFloatAttr(type.getElementType(),
+                                     -std::numeric_limits<double>::infinity()));
+        auto zero = nested.create<mlir::arith::ConstantOp>(
+            loc, nested.getFloatAttr(type.getElementType(), 0.0));
+        auto empty = nested.create<mlir::arith::CmpFOp>(
+            loc, mlir::arith::CmpFPredicate::OEQ, values[0], negativeInfinity);
+        auto result =
+            nested.create<mlir::arith::SelectOp>(loc, empty, zero, values[0]);
+        nested.create<mlir::linalg::YieldOp>(loc, result.getResult());
+      });
+  // This is an exponent operand, not the maximum carried to the next block.
+  return rows.getResult(0);
 }
 
 mlir::Value castAttentionFloatScalar(mlir::Value value, mlir::Type targetType,

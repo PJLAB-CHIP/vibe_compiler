@@ -2643,7 +2643,8 @@ TEST(TemporalTilingTest, InvalidChoiceFailsBeforeMutation) {
 
 mlir::OwningOpRef<mlir::ModuleOp>
 createOnlineFinalizerModule(mlir::MLIRContext &context, int64_t extent,
-                            llvm::StringRef elementType) {
+                            llvm::StringRef elementType,
+                            bool zeroFullyMasked = false) {
   std::string text = R"mlir(
     %scale = arith.constant 0.0883883461 : f32
     %empty = tensor.empty() : tensor<1x2x4096x128xf16>
@@ -2678,6 +2679,7 @@ createOnlineFinalizerModule(mlir::MLIRContext &context, int64_t extent,
     return {};
   LinalgExtAttentionOp attention;
   module->walk([&](LinalgExtAttentionOp op) { attention = op; });
+  attention.setZeroFullyMasked(zeroFullyMasked);
   mlir::OpBuilder builder(attention);
   llvm::SmallVector<mlir::OpFoldResult, 6> offsets(6, builder.getIndexAttr(0));
   llvm::SmallVector<mlir::OpFoldResult, 6> sizes;
@@ -2804,7 +2806,8 @@ TEST(TemporalTilingTest, CoupledStateFinalizesInsideOutputTile) {
       for (int64_t extent : {1024, 1025, 1031, 4096, 4097}) {
         SCOPED_TRACE(dtype.str() + ":" + std::to_string(extent));
         auto context = createContext();
-        auto module = createOnlineFinalizerModule(*context, extent, dtype);
+        auto module = createOnlineFinalizerModule(*context, extent, dtype,
+                                                  extent % 2 != 0);
         ASSERT_TRUE(module);
         if (permuted) {
           module->walk([&](mlir::linalg::GenericOp generic) {
@@ -2931,6 +2934,26 @@ TEST(TemporalTilingTest, CoupledStateFinalizesInsideOutputTile) {
           ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(op, session)));
         ASSERT_TRUE(mlir::succeeded(
             convertBufferizationCopiesToInstr(*tile.module, session)));
+        unsigned reciprocals = 0;
+        tile.module->walk([&](InstrElementwiseOp op) {
+          if (op.getKind() == InstrElementwiseKind::Recip) {
+            ++reciprocals;
+            EXPECT_LE(mlir::cast<mlir::MemRefType>(op.getDest().getType())
+                          .getNumElements(),
+                      2 * 128);
+          }
+          if (op.getKind() == InstrElementwiseKind::Eq) {
+            EXPECT_LE(mlir::cast<mlir::MemRefType>(op.getDest().getType())
+                          .getNumElements(),
+                      2 * 128);
+          }
+        });
+        EXPECT_EQ(reciprocals, extent % 128 == 0 ? 1u : 2u);
+        tile.module->walk([&](InstrMaskMoveOp op) {
+          EXPECT_LE(mlir::cast<mlir::MemRefType>(op.getDest().getType())
+                        .getNumElements(),
+                    2 * 128);
+        });
         ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
         TileMemoryPlanningFailure memoryFailure;
         auto planned = planTileMemory(std::move(tile.module), &memoryFailure);

@@ -63,12 +63,12 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 方案现已进入实现；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
 用户随后要求记录其它计算中的多余开销：softmax逐score负无穷判断、最终零行结果的整块覆盖、广播分母后重复求倒数。
 三项已归入同一`board-testing`的[整改记录](plans/board-workload-matrix.md#attention其余计算的整改记录)和
-[05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，均待实施；
+[05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，主机改动及定向产品验证已完成，完整矩阵仍待验收；
 接在causal主路径及其余predicate整改之后、完整主机/板端验收之前，不作为causal加法的前置。
 用户已授权按该计划推进到验收完成；当前实施causal bias/Add、实际准备复用及KV可见域循环。
 分解、placement、条件子集写回及completion/lifetime的组件回归通过；真实4K诊断包已收敛模板模式，
 但winner中的模板复用目标尚未达到。数值compare整改已通过主机组件、CRT接口和精确span验证；
-当前推进行级计算，完整主机产品和恢复后的板端验收尚未完成，
+行级计算已通过组件及定向fresh产品模型/no-card；当前补齐模板复用与DPS的产品缺口，完整主机产品和恢复后的板端验收尚未完成，
 不签整项或产品资格。实际证据及诊断产物的版本边界见同一计划。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及

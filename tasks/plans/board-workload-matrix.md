@@ -47,7 +47,14 @@ SDK archive离线反汇编核对36个对应wrapper的packet操作码与public en
 新guard检查发现并修复模型对linear CT的elementCount再次按Cx补齐的问题；现按实际physical count读写。
 Conversion、Simulator、ReferenceNumeric、Target、TargetNumericBackend及CodeGen组件回归通过；220项conversion/dialect/CRT lit通过，
 canonical完整增量构建与随后Ninja no-op通过。一次检查启动撞上链接中间态，未运行项已在构建结束后实际补跑通过。
-步骤5的行级计算与步骤6--7仍未完成，步骤2的产品复用缺口仍保持未签。
+步骤5的行级maximum、sum倒数及零行系数已实现。最终Instr的Recip和相关Eq/MaskMove仅处理行向量，
+主块/tail、坐标置换及旧state保持经实际Instr/completion/SPM检查；487项Transforms、151项Driver与44项相关lit通过，
+canonical完整增量及Ninja no-op通过。新导出的全屏蔽FP16、滑窗BF16、causal S1031 FP16、Q2 FP16及
+普通KV cache BF16两步均通过完整TargetModel输出和fresh no-card；两步KV输出的历史prefix均exact。
+上述数值使用原PyTorch reference及原容差，no-card本身仍不执行设备算术。
+新的4K 28-head诊断包已构建，行级结构已生效；当次winner仍含边界模板读取和score中间buffer，未签复用目标。
+步骤2正修复constant global未使用symbol不可写性、Instr阶段实际转换错过placement、payload中间DPS关系缺失三处原因。
+步骤6的完整同版本产品矩阵及步骤7实卡仍未完成；后续共享路径修改须重签影响范围，不能复用前一检查点的资格。
 已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
 按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
 先完成这条主路径，再处理其它bool/select链的比较与复用；不增加有限性扫描、特殊值运行时分支或加法/覆盖选择开关。

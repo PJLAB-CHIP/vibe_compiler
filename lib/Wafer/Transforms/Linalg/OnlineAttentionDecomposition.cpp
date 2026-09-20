@@ -505,12 +505,15 @@ DecomposedState decomposeOne(const DecompositionDescriptor &descriptor,
   mlir::Value newMaximum = createReduction<mlir::arith::MaximumFOp>(
       operation.getLoc(), score, operation.getMaximum(), descriptor.scoreMap,
       operation.getMaximumMap(), builder);
-  mlir::Value norm = createNorm(descriptor, newMaximum, builder);
+  mlir::Value exponentMaximum =
+      compiler::detail::materializeAttentionExponentialMaximum(
+          newMaximum, builder, operation.getLoc());
+  mlir::Value norm = createNorm(descriptor, exponentMaximum, builder);
   mlir::Value normalizedOldSum = multiplyState(
       operation.getLoc(), operation.getSum(), operation.getSumMap(), norm,
       operation.getMaximumMap(), builder);
   mlir::Value probability =
-      createProbability(descriptor, score, newMaximum, builder);
+      createProbability(descriptor, score, exponentMaximum, builder);
   mlir::Value newSum = createReduction<mlir::arith::AddFOp>(
       operation.getLoc(), probability, normalizedOldSum, descriptor.scoreMap,
       operation.getSumMap(), builder);

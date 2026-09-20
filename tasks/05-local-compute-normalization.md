@@ -512,8 +512,7 @@ DPS或copy消除不得绕过该target约束。
 Tiling将实际query/K2 offset分别加到前两项，end保持同一有效域；positions是标量输入，其访问map为空。
 `zero_fully_masked`保存来源算子的全屏蔽行语义：SDPA为true，普通eager softmax图为false；仅在最终sum为零时决定
 返回零或保留原除法特殊值。两字段属于现有op的语义，不是算法或精度选择。
-当前实现对局部score或旧maximum逐元素判断负无穷，再选择指数输入，使空贡献为零；
-有限值仍执行原来的subtract与exp。该实现会在整个score块生成比较和select，行级整改合同见4.7。
+指数计算按4.7从maximum派生行向量，再执行subtract与exp；maximum语义状态不被该临时行值覆盖。
 
 causal可见性使用真实`key_position <= query_position`及有效KV域。位置经空间切分、temporal tiling和tail后仍由
 SSA/明确IR字段解释，不能用局部Q/K shape差重新推断。普通prefill、带cache的多token decode、单token decode共用该规则。
@@ -690,8 +689,15 @@ Pipeline position：
 1. **Softmax指数计算**：按行处理需要的maximum，再让整个`BQ×BK` score直接执行subtract与exp。
    删除为此生成的逐score负无穷比较、Bit2Fp、整块`-inf`源和MaskMove。
    原maximum state与供指数计算的行值用明确SSA区分；old-state缩放和FD merge使用同一行级规则，不能把临时值写回maximum语义状态。
+   具体为`exponentMaximum = (newMaximum == -inf ? 0 : newMaximum)`，只在行向量上生成一次。
+   概率计算为`exp(score - exponentMaximum)`，旧状态权重为`exp(oldMaximum - exponentMaximum)`；
+   FD合并的两侧权重共用合并后maximum对应的同一行向量，返回的maximum仍是原`newMaximum`。
 2. **最终输出的零行结果**：来源要求全屏蔽行输出零时，在行归一化系数中表达；删除专用于该判断的`BQ×D`数值mask、零源和MaskMove。
    `zero_fully_masked=false`保持来源的结果语义。合法mask产生的空行按算子合同处理，不扩大成对非法输入的通用防御。
+   行系数为`1 / sum`；仅来源要求零行输出时将`sum == 0`的行系数选为零。最终结果为accumulator乘行系数，
+   在既有位置窄化；不检查NaN，不更改未要求零行的`0 * inf`结果。
+   finalize在temporal tiling前仍为一个消费完整耦合状态的generic；其中系数SSA只依赖行sum。
+   实际分块后由通用逐元素物化按依赖与indexing map投影为行向量，再交给layout与Instr。
 3. **分母倒数**：先在行sum上计算倒数，再广播用于输出multiply；最终Instr的Recip只消费行向量。
    不先将分母铺成`BQ×D`后重复求倒数，不额外生成整块倒数计算；普通broadcast按既有VS/VuV/GS规则实现。
 

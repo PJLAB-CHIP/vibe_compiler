@@ -581,6 +581,27 @@ TEST(OnlineAttentionDecompositionTest,
       EXPECT_EQ(countRowReductions(module->getOperation()), onlineBefore * 2);
       EXPECT_EQ(countOps<mlir::math::ExpOp>(module->getOperation()),
                 onlineBefore * 2);
+      EXPECT_EQ(countOps<mlir::arith::CmpFOp>(module->getOperation()),
+                onlineBefore);
+      module->walk([&](mlir::arith::CmpFOp comparison) {
+        auto rows = comparison->getParentOfType<mlir::linalg::GenericOp>();
+        ASSERT_TRUE(rows);
+        auto type =
+            mlir::cast<mlir::RankedTensorType>(rows.getResult(0).getType());
+        EXPECT_EQ(type.getShape(), llvm::ArrayRef<int64_t>({2, 4, 1025}));
+        // Both old-state rescaling and score exponentiation consume this one
+        // row value, while the original maximum still feeds the state yield.
+        EXPECT_EQ(std::distance(rows.getResult(0).use_begin(),
+                                rows.getResult(0).use_end()),
+                  2);
+      });
+      module->walk([&](mlir::math::ExpOp exponential) {
+        auto generic = exponential->getParentOfType<mlir::linalg::GenericOp>();
+        EXPECT_EQ(countOps<mlir::arith::CmpFOp>(generic), 0u);
+        EXPECT_EQ(countOps<mlir::arith::SelectOp>(generic), 0u);
+        EXPECT_TRUE(
+            exponential.getOperand().getDefiningOp<mlir::arith::SubFOp>());
+      });
       module->walk([&](mlir::scf::ForOp loop) {
         EXPECT_EQ(loop.getNumRegionIterArgs(), 3u);
       });
