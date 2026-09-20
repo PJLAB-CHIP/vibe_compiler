@@ -2,6 +2,66 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### TDMA首次故障定位与后续隔离实验（2026-09-21）
+
+用户要求先定位原程序实际故障点，再分析原因；不能把优先候选当成已经定位的指令。
+下一次首测入口是原attention执行路径的首次异常记录，不是下表的候选单指令包。
+在同一次current target LLVM/CRT调用链上记录静态site、动态packet序号、engine/worker、传入SDK发射器的packet原始字节、
+发射前后PMU及stream fatal。首次观察到异常时冻结记录并保存到独立DDR诊断输出，同时打印有界Kcore日志；
+不更改原指令参数、顺序、同步、timeout或厂商退出。记录只能证明发射及观测先后，不能把最近发射指令当fault PC。
+如仍有多条在途指令，下一步以实际指令前缀建立最小触发区间；之后才做下表隔离/规模/依赖对照。
+用户授权补齐debug后再重启；当前故障boot停止设备执行。
+本轮首测采集边界如下：
+
+- 输入：当前原始attention的16份target LLVM和同版本CRT；新生成的原case输入与reference。
+- 职责：诊断副本在原ABI call处标记site，在SDK issuer入口/返回后记录；保留原控制流、参数、同步及退出。
+- 输出：独立DDR诊断端口中的每Tile有界packet ring、首次异常快照和有界Kcore日志；site映射只用于诊断，不参与编译选择。
+- 直接消费者：strict package/no-card、单次board runner和离线decoder；不接入production lowering。
+- 非目标：不优化broadcast、不改timeout/异常配置、不以发射数或最近packet签fault PC，不重开实卡矩阵。
+- 完成条件：实际插桩ELF通过原调用序列/参数对照；采集器故障注入、freeze/wrap及decoder通过；fresh输入和no-card齐全，
+  单次入口拒绝当前故障boot；实卡尚未执行和可能改变时序的限制必须明确。
+
+| 首测采集覆盖 | 直接核对 |
+| --- | --- |
+| 16 Tile原始控制流、五类engine、fill内部两次CT发射 | 原CRT调用序列/参数不变，实际packet含最终worker字段；记录SDK进入与返回，不把进入等同完成 |
+| 发射前/后首次异常、预存异常、ring覆盖 | 首次记录冻结不被后续异常覆盖，预存状态另标，丢失前缀显式计数 |
+| SDK阻塞或terminal join不返回 | 发射前记录先flush；有界进度日志保留进入位置，host/AP日志独立归档；DDR无法回读时不谎称完整捕获 |
+| NCC状态与PMU计数 | Kcore沿SDK读取CSR任务状态；记录观察到的完成前缀，PMU count只作原值，不减固定队列深度推fault ordinal |
+| 包/输入/runner | 新诊断输出跨度、guard、16 Tile参数表通过strict no-card；旧boot和重复launch在provider调用前拒绝 |
+
+下表是触发区间定位后的独立隔离分支，不是下一次首测。
+输入是本轮BF16 prefill实际ELF中Tile-4首轮行最大值广播的GS参数，以及新生成的有限F32行向量。
+诊断包保持实际SPM地址、worker和参数；用RDMA准备完整owned范围、WDMA回读，直接消费者是
+当前`wafer-run`和离线字段/guard判定。它是16号单点故障定位，不是attention产品资格或性能替代。
+准备阶段仅构包、SDK字段和实际ELF控制流检查及no-card，不改生产lowering、同步、timeout或厂商清理。
+
+| 顺序/分支 | 实验与控制变量 | 判据及边界 |
+| --- | --- | --- |
+| 定位触发区间后选择 | Tile-4/worker0只发原样一条GS：inner=4，iter=[64,256,4]，src stride=[0,4,0]，dst stride=[4,256,65536] | 本次invocation唯一TDMA若出现新TDMA告警，可将孤立复现归到该命令；不直接证明原程序的唯一fault site |
+| 原样复现后 | 相同总数据、源/目标地址访问顺序，沿最外层拆为4条、每条16,384次，不加中间wait | 原样失败而拆分通过支持单命令规模/进度条件；packet数量和range粒度也改变，不能直接认定timeout阈值 |
+| 仍需区分时 | 相同源/目标包络及总字节量，inner=1024、iter=[256,1,1]，源stride=0、目标stride=1024 | 区分大范围搬运与小粒度重复访问；字节排列/访问次序变化是明确限制，使用各自exact reference |
+| 原样不复现时 | 回到实际attention局部指令前后缀及依赖，只增加有编号的发射记录 | 继续区分资源/依赖/上下文和采样时序；不因孤立通过排除原GS，不先更换算法掩盖现场 |
+
+只按结果选择下一项，不自动连跑。记录kernel内前后PMU、cycle、配置、descriptor和host/AP异常日志，
+不开持续PCI高频采样；需要比较采样影响时保持同包同输入单独标注。
+覆盖核对原样1条/等价拆分4条/大颗粒1条、16 Tile中仅Tile-4实际工作、descriptor精确值、访问范围、
+源数据及前后guard、终端completion和厂商cleanup。F32来自被定位的实际4-byte行向量，不是普通纵向dtype选择。
+故障后输出只归档，不用于另起算术根因；任何新设备异常立即停批，后续执行等待用户恢复设备。
+完成本次准备不表示TDMA根因已闭合；不得把PMU count减4的经验相关性当成已定义fault-PC解码。
+
+原路径诊断准备已落地：16 Tile、1,604个静态ABI site；每Tile 64条packet ring，发射前flush，
+异常时冻结并有界打印最近16条packet及最多8条TDMA，前128条发射另有进入/返回标记。
+独立诊断输出为1,114,112字节；原BF16输入/输出、原控制流、指令参数、join和厂商退出保持。
+SDK可能在issuer内部派生寄存器字段，所录packet不是全套最终MMIO寄存器，也不是硬件fault PC。
+每Tile保留NCC CSR、PMU raw/cmd/count及stream fatal的顺序读值；跨Tile cycle未校准，不据其排序物理首故障。
+本轮实际ELF的159,530次原CRT调用顺序/参数对照通过；采集器host故障注入、两次CT、freeze/wrap、
+DDR与Kcore解码一致性、缺失片段、RISC-V字段布局和新boot拒绝路径通过。
+原case重新导出source并核对原包、新生成BF16输入/reference；诊断包strict no-card通过。
+canonical完整增量和随后Ninja no-op通过；系统默认旧CMake不能识别preset，实际使用该build记录的managed CMake。
+首次fresh导出因未设置`PYTHONPATH`失败，补齐现有环境后重新导出通过，失败目录保留。
+当前故障boot未访问设备；尚无插桩实卡结果。入口和文件摘要已冻结，具体路径与结果见
+[本轮证据](../../docs/data/board-performance/tdma-original-trace-preparation-20260921.json)。
+
 ### 同值填充替换（2026-09-20）
 
 用户要求生产填充统一使用两条整块 `XorVV + AddVS`，并明确普通broadcast/其它高效GatherScatter保留。
@@ -30,7 +90,8 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同)，
 其余attention计算的整改合同见[05号4.7](../05-local-compute-normalization.md#47-attention行级计算整改合同)。
 用户随后授权按下述顺序实施并验收。2026-09-21检查点：步骤1--5已实现，步骤2的产品复用缺口已闭合，
-步骤6下述主机矩阵通过。当前执行环境没有`/dev/accel/dev-0`及`/sys/class/accel`，本轮未访问设备；
+步骤6下述主机矩阵通过。当时主机环境没有设备节点；随后用户重启后已执行一次当前BF16 prefill并再次发生TDMA，
+当前停止设备执行，先按本页“TDMA首次故障定位”准备原程序采集。
 步骤7、整数CT fill/tail实际写入资格及TDMA根因仍未完成，不签整项done或完整board-ready。
 本轮实际结果见[主机验收证据](../../docs/data/board-performance/attention-additive-host-validation-20260921.json)。
 
@@ -80,7 +141,7 @@ boundary score原地Add，行级Recip；每Tile仅一个terminal NCC join，循�
 GatherScatter从93,536降至82,512次、减少1,074,364,416字节；均来自最终IR的实际SCF展开计数，不是设备耗时。
 SPM实际offset的最大末端由2,035,712变为2,038,784字节，增加3,072字节；不声称整条attention的SPM峰值下降。
 指令、模板、字节、模型输出及当前产物摘要均在本轮证据中。
-步骤7须在可见板卡的环境完成；缺少设备节点不说明设备再次timeout，也不据此要求重启。
+步骤7尚未验收；后续单次BF16实测的TDMA记录见本页首节，不能用此前无设备节点的状态覆盖该故障。
 已完成的CT fill替换继续有效，后续共享路径修改仍须重签实际影响范围；历史健康耗时只作记录对照。
 按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
 先完成这条主路径，再处理其它bool/select链的比较与复用；不增加有限性扫描、特殊值运行时分支或加法/覆盖选择开关。

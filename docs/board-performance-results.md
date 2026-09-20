@@ -2899,3 +2899,20 @@ source/input/reference重新生成，source与当前prepared package一致，fre
 后续快照时runner已消失，最终退出码未取得。没有设备输出、guard通过或健康耗时；不增加已验收配置数。
 没有第二次launch、手工reset、signal或历史包重跑。输入和reference全量BF16有限；采样扰动未隔离。
 完整binary、执行记录、后续清理日志及脚本摘要见[本轮证据](data/board-performance/tdma-fast-observation-20260920.json)。
+
+## 2026-09-21：additive mask版本仍报TDMA，转原程序指令采集
+
+用户重启后的boot `0684b449-11d5-431c-834d-91646e8f8356` 仅运行当前BF16 4K、28-head causal prefill一次。
+本轮source、输入和reference新生成；runtime沿厂商正常退出。运行窗口再次出现`NPU LSU TDMA Timeout`，
+runner返回0且10,752 guard bytes通过，health wrapper仍拒绝资格。事件时间120.511002 ms只归档，不作健康性能样本。
+输出14,680,064个BF16元素全零；故障后数值仅记录失败，不另起算术根因分析。没有新增健康配置。
+
+采集得到65,626条记录、393,756个原始字；顺序采样最先看到fatal的是Tile 4，不等于物理首故障Tile。
+最终16 Tile的TDMA count与同一ELF的82,512次GS调用逐Tile相符。last-command与行最大值广播destination的相关性
+仍未闭合成fault-PC编码，不能据PMU count减4认定某条GS。740个静态site和91种动态descriptor的范围/SDK字段检查通过，
+不证明硬件时序或根因。
+
+当前故障boot停止设备执行。用户要求首先定位真实卡死点，已准备原target LLVM/CRT的指令发射记录、首次异常冻结、
+独立DDR/Kcore证据和新boot单次入口。原ELF调用对照、采集故障注入、解码、新输入及strict no-card通过；尚未执行诊断实卡。
+本次准备不把候选隔离包作为下一入口，不重开矩阵，不签TDMA修复或产品board-ready。
+完整摘要见[故障与诊断准备记录](data/board-performance/tdma-original-trace-preparation-20260921.json)。

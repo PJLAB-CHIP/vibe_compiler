@@ -171,6 +171,43 @@ count、fatal，共六次 volatile 32-bit load，保存起止单调时钟；C �
 没有输出回读、guard通过或健康性能结果。采样扰动仍未隔离，也不能把本次completion卡住归因于采集器。
 原始binary、完整窗口日志、输入摘要及离线对照见[本轮证据](data/board-performance/tdma-fast-observation-20260920.json)。
 
+## 原程序发射记录的诊断准备（2026-09-21）
+
+本轮additive mask和CT fill版本仍在单次BF16 prefill中触发TDMA；实测与离线核对见
+[本轮证据](data/board-performance/tdma-original-trace-preparation-20260921.json)。
+新boot只执行一次，没有历史包重测或故障后retry。本次runtime返回0、guard通过，但输出全零，
+它只说明此次产品资格失败，不能用故障后的输出另行推断fill或数值根因。
+
+当前包的740个静态GS site、91种动态descriptor和82,512次实际ELF GS调用已核对。
+类型容量、SPM包络、byte stride、每维iteration、总搬运字节及linked SDK寄存器编码一致。
+单维iteration最大256，三维乘积最大65,536；这是单个descriptor的内部搬运循环，不是CPU发射65,536条指令。
+Tile-4首轮行最大值广播的source为`0xa1800`、destination为`0xa1c00`，inner为4字节，
+source stride为`[0,4,0]`、destination stride为`[4,256,65536]`、iteration为`[64,256,4]`。
+这些是当前程序参数事实，不是该命令已经触发TDMA的证明。
+
+新采集消费同一原target LLVM及CRT，产出显式诊断副本；它不修改production算法、packet参数、同步、timeout或厂商退出。
+在原ABI调用处记录source site，在五类engine进入SDK发射器之前复制packet并记录前后状态。
+同一个fill内部的两次CT分开记录。每Tile的64条ring在首次异常时冻结，独立DDR输出和有界Kcore日志相互补充。
+发射前先flush记录，前128条另打印进入/返回标记；如果SDK阻塞且DDR无法回读，日志仍可保留部分执行位置。
+这种有界日志不能保证覆盖任意晚期阻塞；缺失片段会明确报告，不按离线期望序列补造。
+
+| 记录 | 可以回答 | 不能代替 |
+| --- | --- | --- |
+| 静态site、动态序号、packet、SDK进入/返回 | 真实进入了哪个发射调用、实际传了什么参数、该调用是否返回 | 硬件接受/执行完成或fault PC |
+| SDK `get_ncc_reg(worker, 0x740/0x750)` | NCC任务状态、IB counter和CSR异常的实际读值；最近一次观察到task done的调用前缀 | 每条指令的退休序号；不按剩余数反推唯一故障命令 |
+| PMU raw/cmd ID/count/last-command及stream fatal | 首次非零状态出现于哪两次顺序采样之间、附近实际发射了什么 | 原子fault latch；raw、CSR、AP fatal位义不得混用 |
+| 冻结ring、SDK进入/返回前缀及厂商日志 | 区分发射未返回、异常后继续发射及terminal join/cleanup后续卡住 | 保证一次复现就锁定硬件根因 |
+
+这是 **supported：诊断实现及主机验证**。1,604个静态site覆盖16 Tile；插桩ELF的159,530次原CRT调用与
+原ELF的顺序及参数逐项相同，原程序未被替换为猜测的单GS程序。host故障注入确认前/后异常冻结、ring wrap、
+两次CT、不同Tile的存储隔离和非返回phase；DDR与有界日志解码一致，缺失片段和截断被识别。
+字段偏移/大小由当前SDK header生成，并以RISC-V编译器静态断言核对。新输入/reference、strict no-card及旧boot拒绝通过。
+
+限制属于 **unknown**：插桩的MMIO读取、cache flush及日志会改变时序；当前还没有诊断副本的实卡结果。
+SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入口packet。跨Tile cycle未校准，不据此判断物理首故障Tile。
+若再次复现且观察窗口内有多条在途指令，必须继续缩小触发区间；只有带证据的区间确定后，才选择隔离/拆分实验。
+本轮准备期间没有新增设备访问，不把原始异常的count减4当作fault ordinal。
+
 ## 后续定位仍需闭合的证据
 
 ### 同值铺块与填充实现的离线分析

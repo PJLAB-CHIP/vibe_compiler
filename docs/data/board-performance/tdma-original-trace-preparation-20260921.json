@@ -1,0 +1,395 @@
+{
+  "scope": "当前additive attention单次TDMA失败的归档、原程序诊断副本的主机准备；尚无插桩实卡结果",
+  "created_utc": "2026-09-20T18:18:43.838245+00:00",
+  "source_commit": "d5afa0ef30768a9961a92c7178e3464903a2dd35",
+  "board_attempt": {
+    "boot_id": "0684b449-11d5-431c-834d-91646e8f8356",
+    "case": "attention-prefill-28-heads-4096",
+    "dtype": "bf16",
+    "shape": [
+      1,
+      28,
+      4096,
+      128
+    ],
+    "search": {
+      "mode": "standard",
+      "width": 8,
+      "trials": 42
+    },
+    "launches": 1,
+    "runner_returncode": 0,
+    "health_passed": false,
+    "guard_bytes": 10752,
+    "device_elapsed_ns_unhealthy": 120511002,
+    "output_elements": 14680064,
+    "output_nonzero": 0,
+    "output_used_only_for_failed_qualification": true,
+    "normal_vendor_cleanup": true,
+    "manual_retry_reset": false,
+    "first_observed_tile": 4,
+    "physical_first_fault_tile": "unknown",
+    "capture": {
+      "total": 65626,
+      "kept": 65626,
+      "trigger_sequence": 48100,
+      "trigger_ns": 578842800441,
+      "same_tile_gap_ns_min": 89537,
+      "same_tile_gap_ns_max": 136991
+    },
+    "register_words": 393756
+  },
+  "offline_audit": {
+    "scope": "本轮当前包逐静态GS类型范围、实际ELF动态参数及厂商字节循环公式的离线核验；不证明硬件执行时序或fault PC",
+    "passed": true,
+    "static_sites": 740,
+    "unique_dynamic_descriptors": 91,
+    "dynamic_gs_calls": 82512,
+    "max_individual_iteration": 256,
+    "max_iteration_product": 65536,
+    "checks": [
+      "每个静态GS的source/destination extent不超过各自物理allocation类型容量",
+      "每个实际descriptor的destination逐块恰好覆盖一次，无孔洞或重叠",
+      "byte count与两端inner×iter乘积一致",
+      "实际src/dst包络不相交",
+      "字段均在32位范围",
+      "三条候选的全部65536个元素逐坐标符合row broadcast"
+    ],
+    "candidate_witnesses": [
+      {
+        "tile": 4,
+        "gs_ordinal_1based": 11,
+        "function": "wafer_tx81_gather_scatter",
+        "return_pc": 13540,
+        "arguments": [
+          661504,
+          662528,
+          262144,
+          4,
+          0,
+          4,
+          0,
+          64,
+          256,
+          4,
+          4,
+          256,
+          65536,
+          64,
+          256,
+          4,
+          0
+        ],
+        "source_range_inclusive": [
+          "0xa1800",
+          "0xa1bff"
+        ],
+        "destination_range_inclusive": [
+          "0xa1c00",
+          "0xe1bff"
+        ],
+        "exact_row_broadcast_elements_checked": 65536
+      },
+      {
+        "tile": 12,
+        "gs_ordinal_1based": 12,
+        "function": "wafer_tx81_gather_scatter",
+        "return_pc": 17100,
+        "arguments": [
+          1447936,
+          1448960,
+          262144,
+          4,
+          0,
+          4,
+          0,
+          256,
+          256,
+          1,
+          4,
+          1024,
+          0,
+          256,
+          256,
+          1,
+          0
+        ],
+        "source_range_inclusive": [
+          "0x161800",
+          "0x161bff"
+        ],
+        "destination_range_inclusive": [
+          "0x161c00",
+          "0x1a1bff"
+        ],
+        "exact_row_broadcast_elements_checked": 65536
+      },
+      {
+        "tile": 0,
+        "gs_ordinal_1based": 34,
+        "function": "wafer_tx81_gather_scatter",
+        "return_pc": 3854,
+        "arguments": [
+          990208,
+          991232,
+          262144,
+          4,
+          0,
+          4,
+          0,
+          64,
+          256,
+          4,
+          4,
+          256,
+          65536,
+          64,
+          256,
+          4,
+          0
+        ],
+        "source_range_inclusive": [
+          "0xf1c00",
+          "0xf1fff"
+        ],
+        "destination_range_inclusive": [
+          "0xf2000",
+          "0x131fff"
+        ],
+        "exact_row_broadcast_elements_checked": 65536
+      }
+    ]
+  },
+  "fault_instruction_identified": false,
+  "root_cause": "unknown",
+  "inference_limit": "last-command/address及count减4是未确认相关性，不是fault PC、退休序号或唯一候选集合",
+  "diagnostic_preparation": {
+    "host_preparation_complete": true,
+    "new_device_access": false,
+    "new_launches": 0,
+    "input": "原16 Tile target LLVM/CRT的显式诊断副本及fresh原case输入/reference",
+    "first_live_entry": "原attention路径首次异常采集；候选GS隔离包延后",
+    "static_sites": 1604,
+    "original_crt_calls_compared": 159530,
+    "per_tile_ring_records": 64,
+    "per_record_bytes": 1024,
+    "per_tile_bytes": 69632,
+    "total_trace_bytes": 1114112,
+    "sdk_before_after": true,
+    "packet_is_issuer_input_not_final_mmio_or_fault_pc": true,
+    "first_observation_freeze": true,
+    "sdk_entry_return_markers_per_tile": 128,
+    "bounded_fault_log": {
+      "last_packets": 16,
+      "additional_or_included_tdma_max": 8
+    },
+    "original_algorithm_parameters_order_sync_unchanged": true,
+    "timeout_and_vendor_cleanup_unchanged": true,
+    "canonical_build": "managed CMake full incremental passed; subsequent Ninja no-op",
+    "checks": {
+      "passed": true,
+      "board_execution": false,
+      "checks": [
+        "actual C recorder: 16-Tile isolation and guards",
+        "all engines, packet bytes preserved, ring wrap",
+        "two CT packets per ABI call",
+        "first pre/post issue fault freeze and nonreturning issuer phase",
+        "pre-existing raw and CSR-only exception distinct",
+        "DDR vs bounded Kcore packet/snapshot decoding exact",
+        "truncated capture and missing log fragments rejected or marked",
+        "blocked/current and mismatched boot rejected before provider",
+        "exact GS stride/iteration decoding",
+        "schema size/offsets verified with RISC-V compiler"
+      ]
+    },
+    "old_boot_cli_rejection": {
+      "passed": true,
+      "returncode": 1,
+      "message": "RuntimeError: current fault boot rejected; no device access or launch",
+      "launch_directory_created": false,
+      "provider_access": false
+    },
+    "limitations": [
+      "observations and bounded Kcore logging alter timing",
+      "issue entry/return and PMU counts are not fault PC or retirement order",
+      "DDR output may be unavailable after launch/cleanup failure; bounded Kcore logs retained separately",
+      "跨Tile cycle未校准；task_done观察值不保证与异常触发时刻相同",
+      "SDK若在第128条之后阻塞且DDR无法回读，前缀日志不保证包含最终卡住site",
+      "插桩可能改变复现条件；未复现不能签根因或修复"
+    ]
+  },
+  "preparation_failures_and_corrections": [
+    {
+      "stage": "fresh source export",
+      "failure": "missing wafer import because PYTHONPATH unset",
+      "correction": "使用现有build/python环境，重新导出source/input/reference并通过；原失败目录保留"
+    },
+    {
+      "stage": "ELF emulation",
+      "failure": "diagnostic tile helper默认可见性产生本地PLT跳转，简化host loader未解析",
+      "correction": "将聚合内部tile helper设hidden，重新链接并验证16 Tile全部原调用；非设备失败"
+    },
+    {
+      "stage": "canonical build invocation",
+      "failure": "system CMake cannot read checked-in preset version",
+      "correction": "使用build/CMakeCache中记录的managed CMake；full incremental和no-op通过"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/environment.json",
+      "bytes": 1606,
+      "sha256": "1b312edb6e07fbc3f005513f6ae930842bb5f771b18517b573f87e54248e9be4"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/launch-health/1789925308942767171/record.json",
+      "bytes": 43897,
+      "sha256": "146d17c38142d2c798f8aa99fc75341990b7868f30856ab3b6f54d6a939c879f"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/launch-health/1789925308942767171/pmu.bin",
+      "bytes": 3675120,
+      "sha256": "49118c2fd7d4c47c770f1363937075b129d7ea1dce2920517bb68b0252e2860d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/launch-health/1789925308942767171/runner.log",
+      "bytes": 3902,
+      "sha256": "982af23b4d94c964c21f63e877a7c08d16bf49425675395da4c2b0af1e754476"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/launch-health/1789925308942767171/kernel.log",
+      "bytes": 170,
+      "sha256": "304aea66050f19f0507b3d52a6c089f9946fcee80b7df3b876f2c7dd6e641b0a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/capture-analysis.json",
+      "bytes": 59025,
+      "sha256": "98773b245b1aa9e88e4137de08151865e03a50c44def2f0f1cd73dc532f24bae"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/descriptor-geometry.json",
+      "bytes": 298621,
+      "sha256": "d0fb45dbd177a6c74191f38fb009815f91fcc7e6068e6e8d0b9904fccba79ea4"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/numeric-diagnostic.json",
+      "bytes": 1497,
+      "sha256": "fcecc54d713eb759b57459d5523cbf2d1b0689b60d6279d5cf98e3006ab5e7ba"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/attention-additive-board-20260921/elf-audit/sdk-packet-audit.json",
+      "bytes": 117369,
+      "sha256": "cdccc82aa9827cdc303c41a063b58acfa4c512a8b848207629cc3981e44a5c84"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/ready.json",
+      "bytes": 7700,
+      "sha256": "94ee885decf517ad6b2b1d7562f324a03adf252ea011636da01ec241990f5bb3"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/build-result.json",
+      "bytes": 910,
+      "sha256": "f675105abcd591dd7119a5c02eb2b1dd1672288c2e3bd7b0e493aa37bfde374e"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/debug-checks.json",
+      "bytes": 634,
+      "sha256": "a3a831343355bae9218c15d0842813e7a98a1712df54305918d2872d6f6bfe4a"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/elf-audit/results.json",
+      "bytes": 2027,
+      "sha256": "e7c767c0fb7b8fc9557f3a56e11d02830e947a512252b64001fc5993cdc85973"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/fresh-result.json",
+      "bytes": 44,
+      "sha256": "7104bbc49941e9d6448dfee928559f42a4fe21ca98256b569b8b46979fcea351"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/fresh-command.json",
+      "bytes": 1179,
+      "sha256": "6f9668f24e0d89b1c9a09921b55afc3c6955b792ab9bd98b9104e47bfcf856c1"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/fresh-inputs.log",
+      "bytes": 8231,
+      "sha256": "6fa38adf85b96c20d4881235f7c47554c5627311c6641d62a96f642c6751b08c"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/no-card.log",
+      "bytes": 8492,
+      "sha256": "e3eae72534b86d05a980ebfd24fc5dad57f789d0126a2c27287f57cbe2febaae"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/old-boot-rejection.json",
+      "bytes": 191,
+      "sha256": "e245f17432a3a3d80958ac23f041da577022b89e0c0c0f7eaa808c4857ab8e3d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/trace.c",
+      "bytes": 8399,
+      "sha256": "bba1de2beb41a25add0b19f727dcde456a7892987ed5e5d0583fab290dba83e4"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/trace-crt.c",
+      "bytes": 80364,
+      "sha256": "fc1601edb2510d1a4f906b72453779b996c228137642086c9545a3015a16b5a0"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/platform.c",
+      "bytes": 1653,
+      "sha256": "747afc05a0562ee90b3b64e0f8d838e86bf2ff08bd09774b5f3eb74a95a63a76"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/prepare.py",
+      "bytes": 7801,
+      "sha256": "c0df47f9b5468e35a5c7bfbf328b849e301200b1679cfb905fbb756a6e1e73c7"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/decode.py",
+      "bytes": 6652,
+      "sha256": "ecb1a5578b35924c49ff11d1a4ceb7c657347ad7131a95dc37dcee5d3c2496ae"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/run-once.py",
+      "bytes": 6611,
+      "sha256": "bdb64a436ea0eb6bf1a9f362d194cb3910ad9853c840ef4da192b6ceabf9e717"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/verify-debug.py",
+      "bytes": 4919,
+      "sha256": "a5aaaa3f4a15980e910b1748316e4c38400f54683a3f247ae495983a3de12833"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/selftest.c",
+      "bytes": 4005,
+      "sha256": "ea485e19ebeacfb14880753970f4f3cdde18cc83a77abf365c8e94c02a70c047"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/packet-schema.json",
+      "bytes": 2635,
+      "sha256": "27b2d620f1ab0f700521f5640068992acf26c8fe25079af55b45f1350917fb7d"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/sites.json",
+      "bytes": 630998,
+      "sha256": "58ddb956848a47301c4d40acf2ccf0a6e514b4f9566111ef83d479eeeb4ebafe"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/descriptor-decode-witness.json",
+      "bytes": 2204,
+      "sha256": "28e7369a241e95620ed24ac96b0c047be13146b01ed9a1e662b1e2187d81ef7c"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/package/manifest.json",
+      "bytes": 12058,
+      "sha256": "5eb7f0b6606e922b2d29f3657cf2cd16bacaa6303bf1f12f30e009c1e5f140c8"
+    },
+    {
+      "path": "/data/vibe_compiler-validation/tdma-original-trace-20260921/package/modules/module_00000.so",
+      "bytes": 141032,
+      "sha256": "47c0c0a44ad2d34c812e9b1e3de1ff7aa6382a82780d6a8a5d0d2e50047693af"
+    }
+  ]
+}
