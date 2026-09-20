@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Instr/LifetimeAnalysis.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -81,13 +82,7 @@ static mlir::scf::ForOp getEnclosingFor(mlir::Operation *op) {
 }
 
 static bool isStaticallyNonEmpty(mlir::scf::ForOp loop) {
-  std::optional<int64_t> lower =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getLowerBound()));
-  std::optional<int64_t> upper =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getUpperBound()));
-  std::optional<int64_t> step =
-      mlir::getConstantIntValue(mlir::getAsOpFoldResult(loop.getStep()));
-  return lower && upper && step && *step > 0 && *lower < *upper;
+  return proveNonEmptyLoop(loop);
 }
 
 static ProgramPoint

@@ -2794,7 +2794,7 @@ TEST_F(StructuredToTileTest,
         auto moved =
             optimizePhysicalMovementPlacement(*module, relations, placement);
         ASSERT_TRUE(mlir::succeeded(moved));
-        EXPECT_EQ(*moved, hoisted ? 4u : 0u);
+        EXPECT_EQ(*moved, hoisted ? (variant == 6 ? 8u : 4u) : 0u);
         module->walk([&](MoveReshapeOp copy) {
           EXPECT_EQ(bool(copy->getParentOfType<mlir::scf::ForOp>()), !hoisted);
         });
@@ -2855,6 +2855,119 @@ TEST_F(StructuredToTileTest,
       }
     }
   }
+}
+
+TEST_F(StructuredToTileTest, PrivatePreparationsShareActualLoopPlacement) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant = 0; variant < 8; ++variant) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      auto type = [&](llvm::StringRef dtype, llvm::StringRef space) {
+        return "memref<2x" + std::to_string(extent) + "x16x" + dtype.str() +
+               ", #wafer.memory<" + space.str() + ", tensor>>";
+      };
+      auto spm = type("f16", "spm"), wide = type("f32", "spm");
+      auto ddr = type("f16", "ddr"), output = type("f32", "ddr");
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "module {\n";
+      for (unsigned tile = 0; tile < 4; ++tile) {
+        ir << "wafer.tile.module card_id = 0 tile_id = " << tile
+           << " { func.func @entry() { wafer.tile.region() -> () {\n"
+           << "%input = memref.alloc() : " << ddr << "\n"
+           << "%output = memref.alloc() : " << output << "\n"
+           << "%filled = memref.alloc() : " << ddr << "\n"
+           << "%zero = arith.constant 0 : index\n"
+           << "%step = arith.constant 128 : index\n"
+           << "%end = arith.constant " << (variant == 5 ? 0 : extent)
+           << " : index\n%value = arith.constant 0.0 : f16\n";
+        if (variant == 2)
+          ir << "%loaded = memref.alloc() : " << spm << "\n";
+        ir << "scf.for %iv = %zero to %end step %step {\n";
+        if (variant == 4)
+          ir << "%condition = arith.cmpi eq, %iv, %zero : index\n"
+                "scf.if %condition {\n";
+        if (variant != 2)
+          ir << "%loaded = memref.alloc() : " << spm << "\n";
+        // A read before the initialization cannot acquire its value early.
+        if (variant == 7)
+          ir << "wafer.tile.store %loaded, %filled : " << spm << " -> " << ddr
+             << "\n";
+        ir << (variant == 6 ? "memref.copy %input, %loaded : "
+                            : "wafer.tile.load %input into %loaded : ")
+           << ddr << (variant == 6 ? " to " : " into ") << spm << "\n"
+           << "%converted = wafer.tile.compute.convert %loaded : " << spm
+           << " to " << wide << "\n"
+           << "wafer.tile.store %converted, %output : " << wide << " -> "
+           << output << "\n"
+           << "%constant = memref.alloc() : " << spm << "\n"
+           << "wafer.tile.fill %constant, %value : " << spm << ", f16\n"
+           << "wafer.tile.store %constant, %filled : " << spm << " -> " << ddr
+           << "\n";
+        if (variant == 1)
+          ir << "wafer.tile.store %constant, %input : " << spm << " -> " << ddr
+             << "\n";
+        if (variant == 3)
+          ir << "wafer.tile.fill %loaded, %value : " << spm << ", f16\n";
+        if (variant == 4)
+          ir << "}\n";
+        ir << "}\nwafer.tile.yield\n}\nreturn\n}}\n";
+      }
+      ir << "}\n";
+      auto module = parse(text);
+      ASSERT_TRUE(module) << text;
+      StructuredMaterializationRelations relations;
+      auto moved = optimizePhysicalMovementPlacement(
+          *module, relations, LayoutMaterializationPlacement::LoopInvariant);
+      ASSERT_TRUE(mlir::succeeded(moved));
+      bool allHoisted = variant == 0 || variant == 4 || variant == 6;
+      EXPECT_EQ(*moved, 4u * (allHoisted ? 3u : variant == 5 ? 0u : 1u));
+      module->walk([&](StorageLoadOp op) {
+        EXPECT_EQ(bool(op->getParentOfType<mlir::scf::ForOp>()), !allHoisted);
+        EXPECT_EQ(bool(op.getDest()
+                           .getDefiningOp()
+                           ->getParentOfType<mlir::scf::ForOp>()),
+                  variant != 2 && !allHoisted);
+      });
+      module->walk([&](ComputeConvertOp op) {
+        EXPECT_EQ(bool(op->getParentOfType<mlir::scf::ForOp>()), !allHoisted);
+      });
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      // The zero-trip negative checks placement only; the nonempty variants
+      // below witness the actual instruction lifetimes and SPM offsets.
+      if (variant == 5)
+        continue;
+      std::string failure;
+      auto standalone =
+          createStandaloneTileModules(std::move(module), &failure, &relations);
+      ASSERT_TRUE(mlir::succeeded(standalone)) << failure;
+      ASSERT_EQ(standalone->size(), 4u);
+      for (auto &tile : *standalone) {
+        TileRegionToInstrLoweringSession session(*tile.module->getContext());
+        llvm::SmallVector<TileRegionOp> regions;
+        tile.module->walk(
+            [&](TileRegionOp region) { regions.push_back(region); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        unsigned loads = 0, conversions = 0;
+        tile.module->walk([&](InstrRDMAOp op) {
+          ++loads;
+          EXPECT_EQ(bool(op->getParentOfType<mlir::scf::ForOp>()), !allHoisted);
+          EXPECT_EQ(op.getByteCount(), 2u * extent * 16u * 2u);
+        });
+        tile.module->walk([&](InstrConvertOp op) {
+          ++conversions;
+          EXPECT_EQ(bool(op->getParentOfType<mlir::scf::ForOp>()), !allHoisted);
+        });
+        EXPECT_EQ(loads, 1u);
+        EXPECT_EQ(conversions, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+        TileMemoryPlanningFailure memoryFailure;
+        auto planned = planTileMemory(std::move(tile.module), &memoryFailure);
+        ASSERT_TRUE(mlir::succeeded(planned));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+      }
+    }
 }
 
 TEST_F(StructuredToTileTest,

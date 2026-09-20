@@ -10,7 +10,8 @@
 
 namespace wafer::compiler::detail {
 
-/// Promote proven invariant tensor subsets before layout assignment. All
+/// Publish conditional subsets on their incoming edges and promote proven
+/// invariant tensor subsets before layout assignment. All
 /// relations are retargeted through the same rewriter as the current SSA.
 mlir::LogicalResult
 normalizeLoopSubsetState(mlir::ModuleOp module,

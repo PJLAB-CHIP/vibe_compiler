@@ -184,7 +184,8 @@ func.func @reject_dynamic_loop_bound(
   return
 }
 
-// BOUND: unsupported_target_address: dynamic tensor subview offset #0 requires constant non-negative scf.for bounds and a positive constant step
+// The unbounded i64 load admits an IV range whose byte extent overflows.
+// BOUND: target_address_overflow: dynamic tensor subview maximum byte offset overflows int64
 
 //--- out-of-range.mlir
 

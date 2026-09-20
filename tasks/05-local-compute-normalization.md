@@ -615,6 +615,8 @@ causal边界的数值合同为`bias = invalid ? -inf : 0; score = score + bias`�
 不生成F32 `k−q`表再在每个边界块比较，也不通过`0/1 * -inf`生成bias。
 按实际shape、相对位置及有效域去重；只有模式与布局确实相同才能共享。对齐的等长causal各对角块复用一个模式；
 tail、错位和不等块长分别处理，不为每个head或query块复制等价常量。
+当一个实际循环body覆盖多个静态模式时，按当前SSA区间及循环步长确定模式集合，在ProgramData中保存模板集合，
+用标量integer/index选择实际`BQ×BK`切片；只搬入被选模板，不把整份集合展开到SPM，也不复制整个attention body。
 
 causal常量沿既有ProgramData绑定，作为普通Add的数值operand；所有新buffer和读操作有current-IR owner。
 选定布局后的bias物理padding取0，有效域仍由实际layout表达。布局变换不能改变逻辑位置的`0/-inf`模式。

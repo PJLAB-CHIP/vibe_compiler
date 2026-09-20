@@ -584,6 +584,24 @@ public:
                    ? ExecutableCompilationStatus::UnsupportedFailure
                    : ExecutableCompilationStatus::CompilerFailure,
                "search-boundary-movement", movement.detail));
+    if (attempt.placement == LayoutMaterializationPlacement::FirstUse &&
+        hasInvariantPhysicalMovement(candidate->module.get().getOperation())) {
+      auto sibling = choice;
+      sibling.placement = LayoutMaterializationPlacement::LoopInvariant;
+      discover(std::move(sibling), temporal.choices);
+    }
+    // Boundary movement has now materialized the actual DPS loads. Apply the
+    // same placement choice to them and their dependent conversions.
+    auto physicalPlacement = optimizePhysicalMovementPlacement(
+        candidate->module.get().getOperation(), candidate->relations,
+        attempt.placement);
+    if (mlir::failed(physicalPlacement))
+      return finish(
+          fail(ExecutableCompilationStatus::CompilerFailure,
+               "search-physical-movement-placement",
+               "physical movement placement produced invalid current IR"));
+    support::addCompileCounter("movement", "invariant-physical-copies",
+                               *physicalPlacement);
     if ((choice.recursive &&
          !movement.statistics.recursiveDoublingComponents) ||
         (choice.allToAll &&

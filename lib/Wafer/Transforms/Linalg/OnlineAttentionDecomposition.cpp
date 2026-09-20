@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
@@ -22,6 +23,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <limits>
@@ -50,6 +52,13 @@ struct DecompositionDescriptor {
   mlir::AffineMap scoreMap;
   llvm::SmallVector<int64_t, 5> scoreShape;
   uint64_t scoreElements = 0;
+  struct PositionBias {
+    int64_t queryExtent;
+    int64_t keyExtent;
+    AttentionPositionRange causal;
+    AttentionPositionRange valid;
+  };
+  std::optional<PositionBias> bias;
 };
 
 struct DecomposedState {
@@ -103,28 +112,15 @@ buildDescriptor(LinalgExtOnlineAttentionOp operation) {
     if (shaped && !shaped.hasStaticShape())
       return mlir::failure();
   }
-  // Absolute positions remain scalar index arithmetic. Vector comparisons use
-  // bounded local coordinates exactly representable in F32; this does not
-  // round absolute cache positions or require an integer vector target format.
-  int64_t coordinateRange = 0;
-  for (auto [i, position] : llvm::enumerate(operation.getPositions())) {
+  // Positions remain integer/index values, including template selection.
+  for (auto position : operation.getPositions()) {
     using Bounds = mlir::ValueBoundsConstraintSet;
     auto lower =
         Bounds::computeConstantBound(mlir::presburger::BoundType::LB,
                                      Bounds::Variable(position), nullptr, true);
-    int64_t size =
-        i < 2 ? extents[mlir::cast<mlir::AffineDimExpr>(
-                            operation.getPositionMapAttr().getValue().getResult(
-                                i))
-                            .getPosition()]
-              : 1;
-    if (mlir::failed(lower) || *lower < 0 || size > (1 << 24))
+    if (mlir::failed(lower) || *lower < 0)
       return mlir::failure();
-    if (i < 2)
-      coordinateRange += size;
   }
-  if (coordinateRange > (1 << 24))
-    return mlir::failure();
 
   const unsigned rank = operation.getIterationDomainRank();
   llvm::SmallBitVector scoreDimensions(rank, false);
@@ -157,8 +153,35 @@ buildDescriptor(LinalgExtOnlineAttentionOp operation) {
     expectedQueryKey.reset(dimension);
   if (scoreShape.empty() || expectedQueryKey != scoreDimensions)
     return mlir::failure();
-  return DecompositionDescriptor{operation, scoreMap, std::move(scoreShape),
-                                 scoreElements};
+  DecompositionDescriptor descriptor{operation, scoreMap, std::move(scoreShape),
+                                     scoreElements, std::nullopt};
+  if (!operation.getPositions().empty()) {
+    auto map = operation.getPositionMapAttr().getValue();
+    int64_t queryExtent =
+        extents[mlir::cast<mlir::AffineDimExpr>(map.getResult(0))
+                    .getPosition()];
+    int64_t keyExtent =
+        extents[mlir::cast<mlir::AffineDimExpr>(map.getResult(1))
+                    .getPosition()];
+    if (queryExtent > std::numeric_limits<int64_t>::max() - keyExtent)
+      return mlir::failure();
+    auto positions = operation.getPositions();
+    AttentionPositionRange causal{keyExtent - 1, keyExtent - 1, 1};
+    if (operation.getCausal())
+      causal = getAttentionPositionRange(positions[0], positions[1], operation,
+                                         -queryExtent, keyExtent - 1);
+    auto valid = getAttentionPositionRange(positions[2], positions[1],
+                                           operation, 0, keyExtent);
+    int64_t templateElements;
+    if (llvm::MulOverflow(causal.size(), valid.size(), templateElements) ||
+        llvm::MulOverflow(templateElements, queryExtent, templateElements) ||
+        llvm::MulOverflow(templateElements, keyExtent, templateElements))
+      return mlir::failure();
+    if (causal.first < keyExtent - 1 || valid.first < keyExtent)
+      descriptor.bias = DecompositionDescriptor::PositionBias{
+          queryExtent, keyExtent, causal, valid};
+  }
+  return descriptor;
 }
 
 llvm::SmallVector<mlir::utils::IteratorType, 6>
@@ -231,86 +254,93 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
     maps.push_back(*operation.getMaskMap());
   }
   const unsigned scoreArgumentCount = inputs.size();
-  std::optional<unsigned> validLimit, validCoordinates, causalLimit,
-      diagonalCoordinates;
-  if (!operation.getPositions().empty()) {
-    auto extents = operation.getStaticLoopRanges();
-    auto positionMap = operation.getPositionMapAttr().getValue();
+  if (descriptor.bias) {
+    const auto &bias = *descriptor.bias;
     auto loc = operation.getLoc();
-    int64_t queryExtent =
-        extents[mlir::cast<mlir::AffineDimExpr>(positionMap.getResult(0))
-                    .getPosition()];
-    int64_t keyExtent =
-        extents[mlir::cast<mlir::AffineDimExpr>(positionMap.getResult(1))
-                    .getPosition()];
-    auto keySize = builder.create<mlir::arith::ConstantIndexOp>(loc, keyExtent);
-    auto keyEnd = builder.createOrFold<mlir::arith::AddIOp>(
-        loc, operation.getPositions()[1], keySize);
-    auto boundedRelative = [&](mlir::Value position, int64_t lower,
-                               int64_t upper) -> mlir::Value {
-      auto relative = builder.createOrFold<mlir::arith::SubIOp>(
-          loc, position, operation.getPositions()[1]);
-      auto lo = builder.create<mlir::arith::ConstantIndexOp>(loc, lower);
-      auto hi = builder.create<mlir::arith::ConstantIndexOp>(loc, upper);
-      relative = builder.createOrFold<mlir::arith::MaxSIOp>(loc, relative, lo);
-      relative = builder.createOrFold<mlir::arith::MinSIOp>(loc, relative, hi);
-      auto integer = builder.createOrFold<mlir::arith::IndexCastOp>(
-          loc, builder.getI64Type(), relative);
-      return builder.createOrFold<mlir::arith::SIToFPOp>(
-          loc, builder.getF32Type(), integer);
-    };
-    auto append = [&](mlir::Value value, mlir::AffineMap map) {
-      unsigned index = inputs.size();
-      inputs.push_back(value);
-      maps.push_back(map);
-      return index;
-    };
-    auto literal = [&](llvm::ArrayRef<int64_t> shape,
-                       llvm::ArrayRef<float> values) {
-      auto type = mlir::RankedTensorType::get(shape, builder.getF32Type());
-      return builder.create<mlir::arith::ConstantOp>(
-          loc, mlir::DenseElementsAttr::get(type, values));
-    };
-    if (!proveAttentionPositionOrder(keyEnd, operation.getPositions()[2])) {
-      validLimit =
-          append(boundedRelative(operation.getPositions()[2], 0, keyExtent),
-                 operation.getScaleMap());
-      llvm::SmallVector<float> coordinates;
-      for (int64_t k = 0; k < keyExtent; ++k)
-        coordinates.push_back(static_cast<float>(k));
-      validCoordinates = append(
-          literal({keyExtent}, coordinates),
-          mlir::AffineMap::get(operation.getIterationDomainRank(), 0,
-                               positionMap.getResult(1), builder.getContext()));
+    auto scalarType = mlir::cast<mlir::FloatType>(operation.getScoreType());
+    auto zero = builder.getFloatAttr(scalarType, 0.0).getValue();
+    auto negativeInfinity =
+        builder
+            .getFloatAttr(scalarType, -std::numeric_limits<double>::infinity())
+            .getValue();
+    llvm::SmallVector<llvm::APFloat> values;
+    int64_t patterns = bias.causal.size() * bias.valid.size();
+    values.reserve(patterns * bias.queryExtent * bias.keyExtent);
+    for (int64_t c = 0; c < bias.causal.size(); ++c) {
+      int64_t diagonal = bias.causal.first + c * bias.causal.step;
+      for (int64_t v = 0; v < bias.valid.size(); ++v) {
+        int64_t valid = bias.valid.first + v * bias.valid.step;
+        for (int64_t q = 0; q < bias.queryExtent; ++q)
+          for (int64_t k = 0; k < bias.keyExtent; ++k)
+            values.push_back(k - q > diagonal || k >= valid ? negativeInfinity
+                                                            : zero);
+      }
     }
-    if (operation.getCausal()) {
-      causalLimit = append(
-          boundedRelative(operation.getPositions()[0], -queryExtent, keyExtent),
-          operation.getScaleMap());
-      // One local diagonal-offset template replaces two score-sized coordinate
-      // broadcasts and their vector arithmetic. All offsets and the clamped
-      // scalar threshold are exactly representable integers in F32. The
-      // candidate-owned literal uses the formal program-data ABI, never Kcore
-      // element generation. Batch/head axes reuse the same template.
-      llvm::SmallVector<float> offsets;
-      offsets.reserve(queryExtent * keyExtent);
-      for (int64_t q = 0; q < queryExtent; ++q)
-        for (int64_t k = 0; k < keyExtent; ++k)
-          offsets.push_back(static_cast<float>(k - q));
-      diagonalCoordinates =
-          append(literal({queryExtent, keyExtent}, offsets), positionMap);
+    llvm::SmallVector<int64_t> shape{bias.queryExtent, bias.keyExtent};
+    if (patterns > 1)
+      shape.insert(shape.begin(), patterns);
+    auto templateType = mlir::RankedTensorType::get(shape, scalarType);
+    mlir::Value positionBias = builder.create<mlir::arith::ConstantOp>(
+        loc, mlir::DenseElementsAttr::get(templateType, values));
+    if (patterns > 1) {
+      // ProgramData owns the template collection. The only runtime tensor
+      // demand is one actual BQ x BK slice; selection is scalar index math.
+      auto index = [&](AttentionPositionRange range, mlir::Value lhs) {
+        if (range.size() == 1)
+          return mlir::Value(
+              builder.create<mlir::arith::ConstantIndexOp>(loc, 0));
+        auto first =
+            builder.create<mlir::arith::ConstantIndexOp>(loc, range.first);
+        auto last =
+            builder.create<mlir::arith::ConstantIndexOp>(loc, range.last);
+        auto step =
+            builder.create<mlir::arith::ConstantIndexOp>(loc, range.step);
+        mlir::Value relative = builder.createOrFold<mlir::arith::SubIOp>(
+            loc, lhs, operation.getPositions()[1]);
+        relative =
+            builder.createOrFold<mlir::arith::MaxSIOp>(loc, relative, first);
+        relative =
+            builder.createOrFold<mlir::arith::MinSIOp>(loc, relative, last);
+        relative =
+            builder.createOrFold<mlir::arith::SubIOp>(loc, relative, first);
+        return builder.createOrFold<mlir::arith::DivUIOp>(loc, relative, step);
+      };
+      auto causalIndex = index(bias.causal, operation.getPositions()[0]);
+      auto validIndex = index(bias.valid, operation.getPositions()[2]);
+      auto validCount =
+          builder.create<mlir::arith::ConstantIndexOp>(loc, bias.valid.size());
+      auto base = builder.createOrFold<mlir::arith::MulIOp>(loc, causalIndex,
+                                                            validCount);
+      auto selected =
+          builder.createOrFold<mlir::arith::AddIOp>(loc, base, validIndex);
+      auto resultType = mlir::RankedTensorType::get(
+          {bias.queryExtent, bias.keyExtent}, scalarType);
+      positionBias = builder.create<mlir::tensor::ExtractSliceOp>(
+          loc, resultType, positionBias,
+          llvm::ArrayRef<mlir::OpFoldResult>{selected, builder.getIndexAttr(0),
+                                             builder.getIndexAttr(0)},
+          llvm::ArrayRef<mlir::OpFoldResult>{
+              builder.getIndexAttr(1), builder.getIndexAttr(bias.queryExtent),
+              builder.getIndexAttr(bias.keyExtent)},
+          llvm::ArrayRef<mlir::OpFoldResult>{builder.getIndexAttr(1),
+                                             builder.getIndexAttr(1),
+                                             builder.getIndexAttr(1)});
     }
+    inputs.push_back(positionBias);
+    maps.push_back(operation.getPositionMapAttr().getValue());
   }
   maps.push_back(descriptor.scoreMap);
   maps = mlir::compressUnusedDims(maps);
   auto type = mlir::RankedTensorType::get(descriptor.scoreShape,
                                           operation.getScoreType());
-  mlir::Value empty = builder.create<mlir::tensor::EmptyOp>(
-      operation.getLoc(), type.getShape(), type.getElementType());
+  mlir::Value destination = rawScores;
+  if (rawScores.getType() != type)
+    destination = builder.create<mlir::tensor::EmptyOp>(
+        operation.getLoc(), type.getShape(), type.getElementType());
   return builder
       .create<mlir::linalg::GenericOp>(
           operation.getLoc(), mlir::TypeRange{type}, inputs,
-          mlir::ValueRange{empty}, maps,
+          mlir::ValueRange{destination}, maps,
           getParallelIteratorTypes(maps.back().getNumDims()),
           [&](mlir::OpBuilder &nested, mlir::Location location,
               mlir::ValueRange arguments) {
@@ -325,26 +355,9 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
             auto yield =
                 mlir::cast<LinalgExtAttentionYieldOp>(body.getTerminator());
             mlir::Value score = mapping.lookup(yield.getValue());
-            if (validLimit || causalLimit) {
-              mlir::Value masked = nested.create<mlir::arith::ConstantOp>(
-                  location, nested.getFloatAttr(
-                                score.getType(),
-                                -std::numeric_limits<double>::infinity()));
-              auto mask = [&](mlir::arith::CmpFPredicate predicate,
-                              unsigned coordinates, unsigned limit) {
-                mlir::Value maskedPosition = nested.create<mlir::arith::CmpFOp>(
-                    location, predicate, arguments[coordinates],
-                    arguments[limit]);
-                score = nested.create<mlir::arith::SelectOp>(
-                    location, maskedPosition, masked, score);
-              };
-              if (validLimit)
-                mask(mlir::arith::CmpFPredicate::OGE, *validCoordinates,
-                     *validLimit);
-              if (causalLimit)
-                mask(mlir::arith::CmpFPredicate::OGT, *diagonalCoordinates,
-                     *causalLimit);
-            }
+            if (descriptor.bias)
+              score = nested.create<mlir::arith::AddFOp>(
+                  location, score, arguments[scoreArgumentCount]);
             nested.create<mlir::linalg::YieldOp>(location, score);
           })
       .getResult(0);

@@ -10,6 +10,10 @@
 #include <cstdint>
 #include <optional>
 
+namespace mlir::scf {
+class ForOp;
+}
+
 namespace wafer::memory_planning::detail {
 
 struct StaticIndexRange {
@@ -39,9 +43,10 @@ struct StaticIndexRangeResult {
 };
 
 /// Conservatively evaluates a non-negative index value from constants,
-/// constant-bounded scf.for induction variables, checked addition/subtraction,
-/// multiplication with at least one singleton operand, static unsigned
-/// division, signed min/max interval expressions, and identity-preserving
+/// bounded scf.for induction variables with constant lower bound and step,
+/// checked addition/subtraction, multiplication with at least one singleton
+/// operand, unsigned division by a positive constant, signed min/max intervals,
+/// and identity-preserving
 /// wafer.tile.region block/result edges.
 /// Fixed-width integer SSA and integer/index casts use InferIntRangeInterface
 /// with full type ranges for unknown leaves. Only a proven non-negative final
@@ -52,6 +57,10 @@ struct StaticIndexRangeResult {
 StaticIndexRangeResult
 evaluateNonNegativeStaticIndexRange(mlir::Value value,
                                     mlir::Operation *use = nullptr);
+
+/// Prove that every reachable invocation of this current loop executes at
+/// least once. Bounded, nonconstant upper limits are allowed; unknown is false.
+bool proveNonEmptyLoop(mlir::scf::ForOp loop);
 
 /// Exact remainder for a power-of-two modulus, when current index SSA proves
 /// one. Unknown expressions return nullopt; interval endpoints alone never

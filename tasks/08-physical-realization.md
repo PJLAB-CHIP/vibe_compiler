@@ -113,6 +113,11 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 不扩展成预测指令inventory或SPM准入；同一proof规则必须与convert/elementwise lowering一致。
 DPS不准确导致的复制回到producer修复；已确定storage的冗余copy只凭actual alias/effect/lifetime消除。
 循环不变转换沿用现有PhysicalMovementPlacement，不能为attention另建hoist或状态写回特判。
+同一placement处理实际allocating copy/convert及私有allocation的DPS load/fill：destination必须只由该操作初始化，
+其余uses只读且不逃逸，source在循环内无alias写入，metadata与allocation一并前移。loop外destination或可变源不适用。
+边界搬运物化load后，production driver继续应用同一placement choice；新增候选也只从此时已存在的操作发现。
+条件结果随后写入tensor子集时，若该结果单use且目标和索引已支配分支，在layout assignment前将实际insert_slice分配到各条分支边。
+这样bufferization在已知步幅的分支内完成写回，避免先合并紧凑分配和原状态切片而丢失copy几何；有独立观察者或后定义operand时不改写。
 
 覆盖rank3+、1024/1025/1031的elementwise/convert、row/scalar broadcast、多use、跨循环及alias写入反例；
 检查被选layout、actual转换和直接Instr/SPM结果，并按[板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)

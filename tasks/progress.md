@@ -60,11 +60,15 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 随后优化其余bool/select的数值比较。普通覆盖语义保留；不新增有限性扫描或特殊值运行时分支。
 动态长度入口、paged KV和跨调用缓存延后；空间切分与搜索预算继续暂缓。
 方案已明确模板尺寸随实际tiling及tail确定，资源量和准备次数按实际布局与复用域描述，移除固定尺寸的正文示例。
-本轮仅完成方案，新增优化尚未实施；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
+方案现已进入实现；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
 用户随后要求记录其它计算中的多余开销：softmax逐score负无穷判断、最终零行结果的整块覆盖、广播分母后重复求倒数。
 三项已归入同一`board-testing`的[整改记录](plans/board-workload-matrix.md#attention其余计算的整改记录)和
 [05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，均待实施；
 接在causal主路径及其余predicate整改之后、完整主机/板端验收之前，不作为causal加法的前置。
+用户已授权按该计划推进到验收完成；当前实施causal bias/Add、实际准备复用及KV可见域循环。
+分解、placement、条件子集写回及completion/lifetime的组件回归通过；真实4K诊断包已收敛模板模式，
+但winner中的模板复用目标尚未达到。已继续接入数值compare整改；行级计算、完整主机产品和恢复后的板端验收尚未完成，
+不签整项或产品资格。实际证据及诊断产物的版本边界见同一计划。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
 [统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。

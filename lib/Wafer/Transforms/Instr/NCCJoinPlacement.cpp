@@ -1,6 +1,7 @@
 //===- NCCJoinPlacement.cpp - Current-IR required NCC joins ------------===//
 
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/TargetMemory.h"
@@ -748,9 +749,9 @@ private:
         return mlir::success();
 
       bool guaranteedToExecute =
-          lower && upper && step && *step > 0 && *lower < *upper;
+          memory_planning::detail::proveNonEmptyLoop(forOp);
       std::optional<__int128> tripCount;
-      if (guaranteedToExecute) {
+      if (guaranteedToExecute && lower && upper && step) {
         __int128 span =
             static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
         tripCount = (span + static_cast<__int128>(*step) - 1) /

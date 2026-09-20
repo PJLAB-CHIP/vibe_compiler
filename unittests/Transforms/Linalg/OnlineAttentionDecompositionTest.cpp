@@ -1,6 +1,7 @@
 //===- OnlineAttentionDecompositionTest.cpp ---------------------------===//
 
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
+#include "Wafer/Transforms/Linalg/AttentionVisibility.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
@@ -20,6 +21,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Matchers.h"
@@ -28,8 +30,10 @@
 
 #include "gtest/gtest.h"
 
+#include <functional>
 #include <memory>
 #include <string>
+#include <tuple>
 
 namespace {
 
@@ -173,7 +177,8 @@ mlir::LogicalResult lowerPhysicalToInstr(mlir::ModuleOp module) {
   return mlir::verify(module);
 }
 
-TemporalChoice selectK2Tile(const TemporalDomain &domain, int64_t tileSize) {
+TemporalChoice selectK2Tile(const TemporalDomain &domain, int64_t tileSize,
+                            int64_t queryTileSize = 0) {
   TemporalSuccessor first = domain.getFirstChoice();
   EXPECT_EQ(first.getKind(), TemporalSuccessorKind::Choice);
   TemporalChoice choice = *first.getChoice();
@@ -190,6 +195,10 @@ TemporalChoice selectK2Tile(const TemporalDomain &domain, int64_t tileSize) {
     for (unsigned dimension : roles->keyValueReduction)
       scope.iteratorTileSizes[dimension] =
           std::min(tileSize, descriptor.iterationExtents[dimension]);
+    if (queryTileSize)
+      for (unsigned dimension : roles->query)
+        scope.iteratorTileSizes[dimension] =
+            std::min(queryTileSize, descriptor.iterationExtents[dimension]);
     auto order = buildFirstTemporalLoopOrder(descriptor.iterationExtents,
                                              scope.iteratorTileSizes,
                                              descriptor.precedence);
@@ -223,8 +232,131 @@ unsigned countRowReductions(mlir::Operation *root) {
   return count;
 }
 
+// Scalar-only proof fixture: the production tensor path is covered below.
+TEST(OnlineAttentionDecompositionTest, BoundaryPatternsFollowActualLoopGrids) {
+  for (auto [queryTile, keyTile, queryStart, expectedPatterns] :
+       {std::tuple{256, 256, 0, 1}, std::tuple{192, 128, 0, 4},
+        std::tuple{256, 256, 5, 2}}) {
+    auto context = createContext();
+    std::string text = R"mlir(module {
+      func.func @entry() {
+        %c0 = arith.constant 0 : index
+        %start = arith.constant QUERY_START : index
+        %c4096 = arith.constant 4096 : index
+        %qsize = arith.constant QUERY_TILE : index
+        %ksize = arith.constant KEY_TILE : index
+        %c1 = arith.constant 1 : index
+        scf.for %q = %start to %c4096 step %qsize {
+          %qend = arith.addi %q, %qsize : index
+          %upper = arith.minsi %c4096, %qend : index
+          scf.for %k = %c0 to %upper step %ksize {
+            %kend = arith.addi %k, %ksize : index
+            %first = arith.addi %q, %c1 : index
+            %visible = arith.cmpi ult, %k, %qend : index
+            %full = arith.cmpi ule, %kend, %first : index
+            scf.if %visible {
+              scf.if %full {
+              } else {
+                %delta = arith.subi %q, %k : index
+              }
+            }
+          }
+        }
+        return
+      }
+    })mlir";
+    for (auto [name, value] :
+         {std::pair{"QUERY_START", queryStart},
+          std::pair{"QUERY_TILE", queryTile}, std::pair{"KEY_TILE", keyTile}})
+      text.replace(text.find(name), std::string(name).size(),
+                   std::to_string(value));
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    mlir::arith::SubIOp difference;
+    module->walk([&](mlir::arith::SubIOp op) { difference = op; });
+    ASSERT_TRUE(difference);
+    auto keyLoop = difference->getParentOfType<mlir::scf::ForOp>();
+    auto limit = keyLoop.getUpperBound().getDefiningOp<mlir::arith::MinSIOp>();
+    ASSERT_TRUE(limit);
+    module->walk([&](mlir::arith::AddIOp add) {
+      if (add.getLhs() == keyLoop.getInductionVar()) {
+        EXPECT_TRUE(
+            proveAttentionPositionOrder(add.getResult(), limit.getLhs()));
+      }
+    });
+    auto range =
+        getAttentionPositionRange(difference.getLhs(), difference.getRhs(),
+                                  difference, -queryTile, keyTile - 1);
+    EXPECT_EQ(range.size(), expectedPatterns)
+        << range.first << ":" << range.last << ":" << range.step;
+    for (int64_t q = queryStart; q < 4096; q += queryTile)
+      for (int64_t k = 0; k < 4096; k += keyTile) {
+        if (k >= q + queryTile || k + keyTile <= q + 1)
+          continue;
+        EXPECT_GE(q - k, range.first);
+        EXPECT_LE(q - k, range.last);
+        EXPECT_EQ((q - k - range.first) % range.step, 0);
+      }
+  }
+}
+
+TEST(OnlineAttentionDecompositionTest, PositionBiasHasExactIntegerMaskValues) {
+  for (llvm::StringRef dtype : {"f16", "bf16"})
+    for (int64_t diagonal : {-73, 0, 37}) {
+      auto context = createContext();
+      auto module = parseOnlineModule(*context, 128, dtype, false);
+      ASSERT_TRUE(module);
+      LinalgExtOnlineAttentionOp source;
+      module->walk([&](LinalgExtOnlineAttentionOp op) { source = op; });
+      mlir::OpBuilder builder(source);
+      auto loc = source.getLoc();
+      // Absolute positions exceed F32's exact integer range. The score is F32,
+      // but no coordinate is represented in that type.
+      const int64_t base = INT64_C(1) << 40;
+      auto query =
+          builder.create<mlir::arith::ConstantIndexOp>(loc, base + diagonal);
+      auto key = builder.create<mlir::arith::ConstantIndexOp>(loc, base);
+      auto end = builder.create<mlir::arith::ConstantIndexOp>(loc, base + 123);
+      source.getPositionsMutable().append(mlir::ValueRange{query, key, end});
+      source.setCausal(true);
+      source.setPositionMapAttr(mlir::AffineMapAttr::get(mlir::AffineMap::get(
+          6, 0, {builder.getAffineDimExpr(2), builder.getAffineDimExpr(4)},
+          context.get())));
+      StructuredMaterializationRelations relations;
+      auto region = findRegion(*module);
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      OnlineAttentionDecompositionFailure failure;
+      ASSERT_TRUE(mlir::succeeded(
+          decomposeOnlineAttention(*module, relations, &failure)))
+          << failure.detail;
+      unsigned templates = 0;
+      module->walk([&](mlir::arith::ConstantOp constant) {
+        auto values =
+            mlir::dyn_cast<mlir::DenseFPElementsAttr>(constant.getValue());
+        if (!values)
+          return;
+        ASSERT_EQ(values.getType().getShape(),
+                  (llvm::ArrayRef<int64_t>{1025, 128}));
+        ++templates;
+        unsigned mismatches = 0;
+        int64_t offset = 0;
+        for (llvm::APFloat value : values.getValues<llvm::APFloat>()) {
+          int64_t q = offset / 128, k = offset % 128;
+          bool masked = k > q + diagonal || k >= 123;
+          mismatches += masked ? !(value.isInfinity() && value.isNegative())
+                               : !value.isZero();
+          ++offset;
+        }
+        EXPECT_EQ(mismatches, 0u);
+      });
+      EXPECT_EQ(templates, 1u);
+      EXPECT_EQ(countOps<mlir::arith::SIToFPOp>(module->getOperation()), 0u);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
 TEST(OnlineAttentionDecompositionTest,
-     CausalPositionsSurviveTailRefinementAndGuardInputReads) {
+     CausalPositionsSurviveTailRefinementWithoutRedundantGuards) {
   for (llvm::StringRef dtype : {"f16", "bf16"})
     for (int64_t extent : {1024, 1025, 1031}) {
       SCOPED_TRACE(dtype.str() + " " + std::to_string(extent));
@@ -255,39 +387,25 @@ TEST(OnlineAttentionDecompositionTest,
       ASSERT_TRUE(mlir::succeeded(applyTemporalTiling(
           {{*domain.domain, choice}}, relations, &tilingFailure)))
           << tilingFailure.detail;
-      unsigned guardedTiles = 0, unmaskedTiles = 0, constantBoundaryTiles = 0;
+      unsigned mainTiles = 0, tailTiles = 0;
       region.walk([&](LinalgExtOnlineAttentionOp op) {
-        auto branch = mlir::dyn_cast<mlir::scf::IfOp>(op->getParentOp());
-        if (!branch) {
-          ++constantBoundaryTiles;
-          EXPECT_TRUE(op.getCausal());
-          EXPECT_EQ(op.getPositions().size(), 3u);
-          llvm::APInt keyStart;
-          ASSERT_TRUE(mlir::matchPattern(op.getPositions()[1],
-                                         mlir::m_ConstantInt(&keyStart)));
-          EXPECT_EQ(keyStart.getSExtValue(), 1024);
-          EXPECT_EQ(op.getPositions()[2], end.getResult());
-          return;
-        }
-        ASSERT_TRUE(branch);
-        // Q spans all 1025 rows in this mechanism test. Every selected KV
-        // block has at least one visible element; ValueBounds proves the
-        // outer visibility guard true. Only full-vs-boundary remains.
-        EXPECT_FALSE(mlir::isa<mlir::scf::IfOp>(branch->getParentOp()));
-        if (op.getCausal()) {
-          ++guardedTiles;
-          EXPECT_EQ(op.getPositions().size(), 3u);
-          EXPECT_EQ(op.getPositions()[2], end.getResult());
-          EXPECT_EQ(op.getAccumulator().getType().getElementType(),
-                    builder.getF32Type());
+        // This fixture starts with query row zero and spans all 1025 rows.
+        // Every KV block is visible, but none is visible to the entire query
+        // block. Both facts must remove the corresponding scalar branches.
+        EXPECT_FALSE(op->getParentOfType<mlir::scf::IfOp>());
+        EXPECT_TRUE(op.getCausal());
+        EXPECT_EQ(op.getPositions().size(), 3u);
+        EXPECT_EQ(op.getPositions()[2], end.getResult());
+        if (auto loop = op->getParentOfType<mlir::scf::ForOp>()) {
+          ++mainTiles;
+          EXPECT_EQ(op.getPositions()[1], loop.getInductionVar());
         } else {
-          ++unmaskedTiles;
-          EXPECT_TRUE(op.getPositions().empty());
+          ++tailTiles;
+          EXPECT_EQ(mlir::getConstantIntValue(op.getPositions()[1]), 1024);
         }
       });
-      EXPECT_EQ(guardedTiles, 1u);
-      EXPECT_EQ(unmaskedTiles, guardedTiles);
-      EXPECT_EQ(constantBoundaryTiles, extent == 1024 ? 0u : 1u);
+      EXPECT_EQ(mainTiles, 1u);
+      EXPECT_EQ(tailTiles, extent == 1024 ? 0u : 1u);
       OnlineAttentionDecompositionFailure failure;
       auto decomposed = decomposeOnlineAttention(*module, relations, &failure);
       ASSERT_TRUE(mlir::succeeded(decomposed)) << failure.detail;
@@ -301,7 +419,7 @@ TEST(OnlineAttentionDecompositionTest,
         causalTests += cmp.getPredicate() == mlir::arith::CmpFPredicate::OGT;
       });
       EXPECT_EQ(validLengthTests, 0u);
-      EXPECT_GT(causalTests, 0u);
+      EXPECT_EQ(causalTests, 0u);
       auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       auto lowered = lowerStructuredComputeToTile(*module, relations);
@@ -309,7 +427,111 @@ TEST(OnlineAttentionDecompositionTest,
       auto movement = materializeTileBoundaryMovement(*module, relations);
       ASSERT_TRUE(movement.succeeded()) << movement.detail;
       ASSERT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+      unsigned biasReads = 0;
+      module->walk([&](InstrRDMAOp read) {
+        auto type = mlir::cast<mlir::MemRefType>(read.getSource().getType());
+        if (type.getElementType().isF32() && type.getRank() == 2) {
+          ++biasReads;
+          EXPECT_EQ(type.getDimSize(0), 1025);
+          EXPECT_LE(type.getDimSize(1), 128);
+          EXPECT_EQ(read.getByteCount(), type.getNumElements() * 4u);
+        }
+      });
+      EXPECT_GT(biasReads, 0u);
     }
+}
+
+TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t queryTile : {192, 256})
+      for (int64_t queryOffset : {0, 37}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << queryTile << "/" << queryOffset);
+        auto context = createContext();
+        auto module = parseOnlineModule(*context, extent, "bf16", false);
+        ASSERT_TRUE(module);
+        auto region = findRegion(*module);
+        LinalgExtOnlineAttentionOp source;
+        region.walk([&](LinalgExtOnlineAttentionOp op) { source = op; });
+        mlir::OpBuilder builder(source);
+        auto zero =
+            builder.create<mlir::arith::ConstantIndexOp>(source.getLoc(), 0);
+        auto queryStart = builder.create<mlir::arith::ConstantIndexOp>(
+            source.getLoc(), queryOffset);
+        auto end = builder.create<mlir::arith::ConstantIndexOp>(source.getLoc(),
+                                                                extent);
+        source.getPositionsMutable().append(
+            mlir::ValueRange{queryStart, zero, end});
+        source.setCausal(true);
+        source.setPositionMapAttr(mlir::AffineMapAttr::get(mlir::AffineMap::get(
+            6, 0, {builder.getAffineDimExpr(2), builder.getAffineDimExpr(4)},
+            context.get())));
+        auto domain = buildTemporalDomain(region);
+        ASSERT_TRUE(domain.succeeded());
+        auto choice = selectK2Tile(*domain.domain, 128, queryTile);
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        ASSERT_TRUE(mlir::succeeded(
+            applyTemporalTiling({{*domain.domain, choice}}, relations)));
+        llvm::DenseMap<mlir::Value, int64_t> values;
+        std::function<int64_t(mlir::Value)> evaluate =
+            [&](mlir::Value value) -> int64_t {
+          if (auto constant = mlir::getConstantIntValue(value))
+            return *constant;
+          if (auto found = values.find(value); found != values.end())
+            return found->second;
+          if (auto add = value.getDefiningOp<mlir::arith::AddIOp>())
+            return evaluate(add.getLhs()) + evaluate(add.getRhs());
+          if (auto sub = value.getDefiningOp<mlir::arith::SubIOp>())
+            return evaluate(sub.getLhs()) - evaluate(sub.getRhs());
+          if (auto minimum = value.getDefiningOp<mlir::arith::MinSIOp>())
+            return std::min(evaluate(minimum.getLhs()),
+                            evaluate(minimum.getRhs()));
+          ADD_FAILURE() << "unexpected scalar in the actual KV loop bound";
+          return -1;
+        };
+        unsigned boundedLoops = 0;
+        region.walk([&](mlir::scf::ForOp loop) {
+          if (mlir::getConstantIntValue(loop.getStep()) != 128)
+            return;
+          ++boundedLoops;
+          auto outer = loop->getParentOfType<mlir::scf::ForOp>();
+          if (!outer) {
+            EXPECT_EQ(evaluate(loop.getUpperBound()), (extent / 128) * 128);
+            return;
+          }
+          EXPECT_EQ(mlir::getConstantIntValue(outer.getStep()), queryTile);
+          auto first = evaluate(outer.getLowerBound());
+          auto last = evaluate(outer.getUpperBound());
+          for (int64_t q = first; q < last; q += queryTile) {
+            values[outer.getInductionVar()] = q;
+            int64_t upper = evaluate(loop.getUpperBound());
+            EXPECT_EQ(upper, std::min((extent / 128) * 128,
+                                      q + queryOffset + queryTile));
+            unsigned actual = 0, expected = 0;
+            for (int64_t k = 0; k < upper; k += 128) {
+              ++actual;
+              EXPECT_LT(k, q + queryOffset + queryTile);
+            }
+            for (int64_t k = 0; k < (extent / 128) * 128; k += 128)
+              expected += k < q + queryOffset + queryTile;
+            EXPECT_EQ(actual, expected);
+          }
+        });
+        EXPECT_GT(boundedLoops, 0u);
+        ASSERT_TRUE(
+            mlir::succeeded(decomposeOnlineAttention(*module, relations)));
+        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        auto movement = materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        auto placement = optimizePhysicalMovementPlacement(
+            *module, relations, LayoutMaterializationPlacement::LoopInvariant);
+        ASSERT_TRUE(mlir::succeeded(placement));
+        EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+      }
 }
 
 TEST(OnlineAttentionDecompositionTest,

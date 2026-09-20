@@ -451,6 +451,13 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     if (statistics)
       statistics->boundaryMovement = movement.statistics;
 
+    if (mlir::failed(optimizePhysicalMovementPlacement(
+            candidate->module->getOperation(), candidate->relations,
+            LayoutMaterializationPlacement::FirstUse)))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "baseline-physical-movement-placement",
+                  "physical movement placement produced invalid current IR");
+
     if (options.qualification && options.qualification->reusePeerInputs) {
       auto sharing = materializeAccessReuse(
           *candidate->module, candidate->relations,

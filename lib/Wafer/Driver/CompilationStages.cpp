@@ -3,6 +3,8 @@
 #include "Wafer/CodeGen/DeviceExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 
+#include "Wafer/Analysis/ControlFlow/IndexValueBounds.h"
+
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
@@ -411,6 +413,7 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
   mlir::affine::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
+  wafer::analysis::registerIndexValueBoundsModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
   mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);

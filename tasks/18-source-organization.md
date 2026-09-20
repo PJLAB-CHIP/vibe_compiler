@@ -60,7 +60,7 @@ Pipeline position:
 ### 2.2 第二层按作用IR或真实backend
 
 - `Analysis/{ControlFlow,Module,Linalg,Tile,Instr}`按被分析的current anchor/IR分类；`ControlFlow`只保留跨多层IR复用的
-  standard RegionBranch/CFG query，跨层事实放在能够完整解释它的最低共同输入层。
+  standard RegionBranch/CFG及循环index bounds query，跨层事实放在能够完整解释它的最低共同输入层。
 - `Transforms/{Module,StableHLO,Linalg,Tile,Instr}`按变换开始时的current IR分类；输出名不代替输入边界。
 - `Conversion/{StableHLOToLinalg,TileToInstr,InstrToLLVM}`只保留实际conversion。Tile formation仍保留Linalg/Tensor
   operation，因此是`Transforms/Linalg`中的materialization，不建立虚假的`LinalgToTile` full conversion。

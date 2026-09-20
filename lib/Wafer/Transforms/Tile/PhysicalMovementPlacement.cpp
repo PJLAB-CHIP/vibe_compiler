@@ -1,5 +1,6 @@
 //===- PhysicalMovementPlacement.cpp - Reuse actual physical copies -------===//
 
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "mlir/Analysis/AliasAnalysis.h"
@@ -7,6 +8,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -19,7 +21,9 @@
 namespace wafer::compiler::detail {
 namespace {
 
-bool hasPrivateReadOnlyUses(mlir::Value result, mlir::scf::ForOp loop) {
+bool hasPrivateReadOnlyUses(mlir::Value result, mlir::scf::ForOp loop,
+                            mlir::Operation *initialization) {
+  mlir::DominanceInfo dominance(loop);
   llvm::SmallVector<mlir::Value> pending{result};
   llvm::DenseSet<mlir::Value> visited;
   while (!pending.empty()) {
@@ -27,6 +31,8 @@ bool hasPrivateReadOnlyUses(mlir::Value result, mlir::scf::ForOp loop) {
     if (!visited.insert(value).second)
       continue;
     for (mlir::Operation *user : value.getUsers()) {
+      if (user == initialization)
+        continue;
       if (!loop->isAncestor(user))
         return false;
       if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
@@ -36,7 +42,7 @@ bool hasPrivateReadOnlyUses(mlir::Value result, mlir::scf::ForOp loop) {
         continue;
       }
       auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(user);
-      if (!interface)
+      if (!interface || !dominance.properlyDominates(initialization, user))
         return false;
       llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
       interface.getEffectsOnValue(value, effects);
@@ -55,11 +61,44 @@ struct HoistPlan {
 
 std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
                                    mlir::AliasAnalysis &aliases) {
-  auto lower = mlir::getConstantIntValue(loop.getLowerBound());
-  auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+  mlir::Value source, destination;
+  mlir::memref::AllocOp allocation;
+  if (auto load = mlir::dyn_cast<StorageLoadOp>(copy)) {
+    source = load.getSource();
+    destination = load.getDest();
+  } else if (auto movement = mlir::dyn_cast<mlir::memref::CopyOp>(copy)) {
+    source = movement.getSource();
+    destination = movement.getTarget();
+    if (!isWaferSPMMemRefType(destination.getType()))
+      return std::nullopt;
+  } else if (auto fill = mlir::dyn_cast<ComputeFillOp>(copy)) {
+    destination = fill.getDest();
+  } else {
+    source = copy->getOperand(0);
+    destination = copy->getResult(0);
+  }
+  if (copy->getNumResults() == 0) {
+    // A DPS initialization can move only together with its actual private
+    // allocation. A view or loop-external destination has observable writes.
+    allocation = destination.getDefiningOp<mlir::memref::AllocOp>();
+    if (!allocation || !loop->isAncestor(allocation))
+      return std::nullopt;
+  }
   auto step = mlir::getConstantIntValue(loop.getStep());
-  if (!lower || !upper || !step || *step <= 0 || *upper <= *lower ||
-      !hasPrivateReadOnlyUses(copy->getResult(0), loop))
+  using Bounds = mlir::ValueBoundsConstraintSet;
+  auto difference =
+      mlir::AffineMap::get(2, 0,
+                           mlir::getAffineDimExpr(0, loop.getContext()) -
+                               mlir::getAffineDimExpr(1, loop.getContext()));
+  auto distance = Bounds::computeConstantBound(
+      mlir::presburger::BoundType::LB,
+      Bounds::Variable(difference,
+                       llvm::ArrayRef<mlir::Value>{loop.getUpperBound(),
+                                                   loop.getLowerBound()}));
+  if (!step || *step <= 0 ||
+      ((mlir::failed(distance) || *distance <= 0) &&
+       !memory_planning::detail::proveNonEmptyLoop(loop)) ||
+      !hasPrivateReadOnlyUses(destination, loop, copy))
     return std::nullopt;
   // Views and scalar offset arithmetic can be nested in a visibility branch.
   // Move their actual SSA dependency slice with the copy, never reconstruct
@@ -111,9 +150,16 @@ std::optional<HoistPlan> planHoist(mlir::Operation *copy, mlir::scf::ForOp loop,
     plan.metadata.push_back(definition);
     return true;
   };
-  if (!llvm::all_of(copy->getOperands(), invariant))
-    return std::nullopt;
-  mlir::Value source = copy->getOperand(0);
+  for (mlir::Value operand : copy->getOperands())
+    if (operand != destination && !invariant(operand))
+      return std::nullopt;
+  if (allocation) {
+    if (!llvm::all_of(allocation->getOperands(), invariant))
+      return std::nullopt;
+    plan.metadata.push_back(allocation);
+  }
+  if (!source)
+    return plan;
   StorageRootMemo roots;
   auto walk = loop.walk([&](mlir::Operation *operation) {
     if (operation->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())
@@ -161,10 +207,10 @@ llvm::SmallVector<mlir::Operation *>
 collectPhysicalCopies(mlir::Operation *root) {
   llvm::SmallVector<mlir::Operation *> copies;
   root->walk([&](mlir::Operation *operation) {
-    // These operations allocate their result. A DPS load mutates an existing
-    // destination and needs a separate allocation/lifetime proof.
     if (mlir::isa<LayoutMaterializeOp, MoveReshapeOp, MoveTransposeOp,
-                  MoveBroadcastOp, MoveCopyOp, MoveExtractSliceOp>(operation))
+                  MoveBroadcastOp, MoveCopyOp, MoveExtractSliceOp,
+                  ComputeConvertOp, StorageLoadOp, ComputeFillOp,
+                  mlir::memref::CopyOp>(operation))
       copies.push_back(operation);
   });
   return copies;

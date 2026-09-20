@@ -1,4 +1,5 @@
 add_mlir_library(WaferAnalysis
+  ControlFlow/IndexValueBounds.cpp
   Module/DirectCallGraphAnalysis.cpp
   Module/ExecutableCallClosure.cpp
   Linalg/IndexRelation.cpp

@@ -29,7 +29,17 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 用户要求先收敛前述讨论的方案，空间切分与搜索预算问题暂缓。本节属于既有`board-testing`，
 算法和pipeline合同见[05号4.6](../05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)，
 其余attention计算的整改合同见[05号4.7](../05-local-compute-normalization.md#47-attention行级计算整改合同)。
-本轮只整理设计与实施合同；下面的优化尚未实施，不重启此前搜索、板测队列或TDMA故障boot。
+用户随后授权按下述顺序实施并验收。当前实施步骤1--3，步骤4--7仍待完成；当前TDMA故障boot未新增设备执行。
+已接入integer位置bias/Add、私有准备操作placement及KV可见上界，并补充非恒定上界的completion/lifetime证明。
+对齐与尾块的分解、实际模板读取范围、私有初始化正反例及NCC/lifetime定向回归已通过；
+真实4K诊断构包已收敛为一份实际`256×256`模板，该尺寸只描述本次winner；但winner仍为FirstUse，模板RDMA仍在边界内，
+同Tile/invocation准备复用的产品完成目标尚未达到，须继续结合剩余行级计算及实际SPM结果核对，不能以placement机制通过代签。
+该诊断构包尚未包含随后补齐的通用条件子集publication；当前尚未签本轮完整产品/no-card/board-ready资格。
+主机代码检查点：130项Analysis、487项Transforms、151项Driver实际执行通过；305项lit中304项初次通过，
+一项未知i64动态地址的错误分类随有界范围分析变为address overflow，更新预期后该项独立复测通过。
+canonical无target增量构建通过，随后Ninja no-op。新增integer模板值、1/4/2种模式、矩形块、偏移37及1024/1025/1031 tail、
+私有准备的alias/提前读取/零次循环反例、条件子集观察者/支配关系和无额外内部join检查均通过；设备未访问。
+步骤4已开始接入统一relation结果类型/ABI及局部predicate合成，其验证与步骤5--7仍未完成。
 已完成的CT fill替换继续有效，其整数CT实卡资格仍未闭合。
 按用户最新选择，本轮causal使用局部`0/-inf` bias＋整块`AddVV`，替代此前拟用的MaskMove方案。
 先完成这条主路径，再处理其它bool/select链的比较与复用；不增加有限性扫描、特殊值运行时分支或加法/覆盖选择开关。

@@ -80,7 +80,7 @@ wafer_add_component_unit_test(WaferAnalysisUnitTests
     Analysis/Linalg/TensorResultIndexingTest.cpp
     Analysis/Instr/ScheduleCostAnalysisTest.cpp
     Analysis/Instr/CostModelTest.cpp
-  LINK_LIBS WaferAnalysis WaferIR)
+  LINK_LIBS WaferAnalysis WaferIR MLIRArithValueBoundsOpInterfaceImpl)
 
 wafer_add_component_unit_test(WaferPlanningUnitTests
   SOURCES

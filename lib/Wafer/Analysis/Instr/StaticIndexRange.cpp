@@ -351,11 +351,10 @@ private:
         !stepRange.succeeded() || lowerRange.range.empty ||
         upperRange.range.empty || stepRange.range.empty ||
         lowerRange.range.min != lowerRange.range.max ||
-        upperRange.range.min != upperRange.range.max ||
         stepRange.range.min != stepRange.range.max)
       return failed(Failure::DynamicLoopBounds);
     int64_t lower = lowerRange.range.min;
-    int64_t upper = upperRange.range.min;
+    int64_t upper = upperRange.range.max;
     int64_t step = stepRange.range.min;
     if (lower < 0 || upper < 0 || step <= 0)
       return failed(Failure::InvalidLoopBounds);
@@ -454,15 +453,17 @@ private:
       return failed(failure);
     if (operands->first.empty || operands->second.empty)
       return Result{StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true}};
-    if (operands->first.min != operands->first.max ||
-        operands->second.min != operands->second.max ||
+    if (operands->second.min != operands->second.max ||
         operands->first.min < 0 || operands->second.min <= 0)
       return failed(Failure::InvalidUnsignedDivision);
 
-    const int64_t quotient =
+    const uint64_t divisor = operands->second.min;
+    return Result{StaticIndexRange{
         static_cast<int64_t>(static_cast<uint64_t>(operands->first.min) /
-                             static_cast<uint64_t>(operands->second.min));
-    return Result{StaticIndexRange{quotient, quotient, /*empty=*/false}};
+                             divisor),
+        static_cast<int64_t>(static_cast<uint64_t>(operands->first.max) /
+                             divisor),
+        /*empty=*/false}};
   }
 
   Result evaluateSignedExtremum(mlir::Value lhsValue, mlir::Value rhsValue,
@@ -648,6 +649,16 @@ evaluateNonNegativeStaticIndexRange(mlir::Value value, mlir::Operation *use) {
 std::optional<uint64_t> getKnownIndexRemainder(mlir::Value value,
                                                uint64_t modulus) {
   return IndexRemainderEvaluator().evaluate(value, modulus);
+}
+
+bool proveNonEmptyLoop(mlir::scf::ForOp loop) {
+  StaticIndexRangeEvaluator evaluator(loop);
+  auto lower = evaluator.evaluate(loop.getLowerBound());
+  auto upper = evaluator.evaluate(loop.getUpperBound());
+  auto step = evaluator.evaluate(loop.getStep());
+  return lower.succeeded() && upper.succeeded() && step.succeeded() &&
+         !lower.range.empty && !upper.range.empty && !step.range.empty &&
+         step.range.min > 0 && lower.range.max < upper.range.min;
 }
 
 mlir::LogicalResult proveByteAlignedPackedView(mlir::Value view) {

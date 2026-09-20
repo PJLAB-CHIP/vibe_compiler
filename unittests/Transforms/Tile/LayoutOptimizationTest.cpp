@@ -1020,6 +1020,74 @@ module { wafer.tile.module card_id = 0 tile_id = 0 {
   }
 }
 
+TEST_F(LayoutOptimizationTest,
+       ConditionalSubsetPublicationPreservesObserversAndDominance) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant : {0u, 1u, 2u}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << variant);
+      std::string full = "tensor<1x" + std::to_string(extent) + "x64xf16>";
+      std::string slice = "tensor<1x128x64xf16>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+          << "func.func @entry(%input: " << full << ", %condition: i1) {\n"
+          << "%result = wafer.tile.region(%input, %condition : " << full
+          << ", i1) -> (" << full << ") { ^bb0(%local: " << full
+          << ", %take: i1):\n%c0 = arith.constant 0 : index\n"
+          << "%old = tensor.extract_slice %local[0, 0, 0] [1, 128, 64] "
+          << "[1, 1, 1] : " << full << " to " << slice << "\n"
+          << "%conditional = scf.if %take -> " << slice << " {\n"
+          << "%empty = tensor.empty() : " << slice << "\n"
+          << "%sum = linalg.add ins(%old, %old : " << slice << ", " << slice
+          << ") outs(%empty : " << slice << ") -> " << slice << "\n"
+          << "scf.yield %sum : " << slice << "\n} else {\n"
+          << "scf.yield %old : " << slice << "\n}\n";
+      if (variant == 1)
+        out << "%observed = tensor.extract %conditional[%c0, %c0, %c0] : "
+            << slice << "\n";
+      if (variant == 2)
+        out << "%later = linalg.add ins(%local, %local : " << full << ", "
+            << full << ") outs(%local : " << full << ") -> " << full << "\n";
+      out << "%inserted = tensor.insert_slice %conditional into "
+          << (variant == 2 ? "%later" : "%local")
+          << "[0, 0, 0] [1, 128, 64] [1, 1, 1] : " << slice << " into " << full
+          << "\nwafer.tile.yield %inserted : " << full << "\n}\nreturn\n}}}\n";
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto relations = outputRelation(*module);
+      ASSERT_TRUE(
+          mlir::succeeded(normalizeLoopSubsetState(*module, relations)));
+      mlir::scf::IfOp branch;
+      module->walk([&](mlir::scf::IfOp op) { branch = op; });
+      ASSERT_TRUE(branch);
+      auto type =
+          mlir::cast<mlir::RankedTensorType>(branch.getResult(0).getType());
+      EXPECT_EQ(type.getDimSize(1), variant ? 128 : extent);
+      EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(branch),
+                variant ? 0u : 2u);
+      EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(*module),
+                variant ? 1u : 2u);
+      for (auto yield : {branch.thenYield(), branch.elseYield()}) {
+        if (variant)
+          continue;
+        auto edge =
+            yield.getOperand(0).getDefiningOp<mlir::tensor::InsertSliceOp>();
+        ASSERT_TRUE(edge);
+        EXPECT_EQ(edge.getStaticOffsets(), (llvm::ArrayRef<int64_t>{0, 0, 0}));
+        EXPECT_EQ(edge.getStaticSizes(), (llvm::ArrayRef<int64_t>{1, 128, 64}));
+        EXPECT_EQ(edge.getStaticStrides(), (llvm::ArrayRef<int64_t>{1, 1, 1}));
+        EXPECT_EQ(edge.getDest(),
+                  branch.elseYield()
+                      .getOperand(0)
+                      .getDefiningOp<mlir::tensor::InsertSliceOp>()
+                      .getDest());
+      }
+      EXPECT_EQ(countOps<mlir::tensor::ExtractOp>(*module),
+                variant == 1 ? 1u : 0u);
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    }
+}
+
 TEST_F(LayoutOptimizationTest, SubsetPromotionPreservesUnprovedLoopState) {
   for (llvm::StringRef boundary :
        {"empty", "dynamic", "variant", "observed", "fork", "nested"}) {

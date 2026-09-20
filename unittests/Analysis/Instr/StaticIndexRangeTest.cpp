@@ -1,12 +1,15 @@
 //===- StaticIndexRangeTest.cpp - Current SSA integer address bounds ------===//
 
 #include "Wafer/Analysis/Instr/StaticIndexRange.h"
+#include "Wafer/Analysis/ControlFlow/IndexValueBounds.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -23,6 +26,10 @@ using namespace wafer::memory_planning::detail;
 class StaticIndexRangeTest : public ::testing::Test {
 protected:
   StaticIndexRangeTest() {
+    mlir::DialectRegistry registry;
+    mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
+    wafer::analysis::registerIndexValueBoundsModels(registry);
+    context.appendDialectRegistry(registry);
     context.loadDialect<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                         mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
   }
@@ -42,6 +49,98 @@ protected:
 
   mlir::MLIRContext context;
 };
+
+// Scalar interface oracle. These bounds also feed the real attention loop
+// and physical preparation placement tests.
+TEST_F(StaticIndexRangeTest, SignedExtremaProvideOnlyProvenBounds) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(module {
+    func.func @entry(%unknown: index) -> (index, index) {
+      %negative = arith.constant -7 : index
+      %positive = arith.constant 13 : index
+      %minimum = arith.minsi %unknown, %negative : index
+      %maximum = arith.maxsi %unknown, %positive : index
+      return %minimum, %maximum : index, index
+    }
+  })mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto results = function.front().getTerminator()->getOperands();
+  using Bounds = mlir::ValueBoundsConstraintSet;
+  using BoundType = mlir::presburger::BoundType;
+  auto upper = Bounds::computeConstantBound(
+      BoundType::UB, Bounds::Variable(results[0]), nullptr, /*closedUB=*/true);
+  auto lower =
+      Bounds::computeConstantBound(BoundType::LB, Bounds::Variable(results[1]));
+  ASSERT_TRUE(mlir::succeeded(upper));
+  ASSERT_TRUE(mlir::succeeded(lower));
+  EXPECT_EQ(*upper, -7);
+  EXPECT_EQ(*lower, 13);
+  EXPECT_TRUE(mlir::failed(Bounds::computeConstantBound(
+      BoundType::LB, Bounds::Variable(results[0]))));
+  EXPECT_TRUE(mlir::failed(Bounds::computeConstantBound(
+      BoundType::UB, Bounds::Variable(results[1]))));
+}
+
+// Scalar range oracle; actual tensor loops are covered by attention and NCC
+// lifetime tests. Bounded upper limits must not imply a constant trip count.
+TEST_F(StaticIndexRangeTest, BoundedLoopUpperLimitsRetainExactReachableGrid) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module =
+        mlir::parseSourceString<mlir::ModuleOp>(llvm::formatv(R"mlir(module {{
+          func.func @entry(%unknown: index) {{
+            %zero = arith.constant 0 : index
+            %end = arith.constant {0} : index
+            %query_step = arith.constant 192 : index
+            %key_step = arith.constant 128 : index
+            scf.for %query = %zero to %end step %query_step {{
+              %query_end = arith.addi %query, %query_step : index
+              %upper = arith.minsi %end, %query_end : index
+              scf.for %key = %zero to %upper step %key_step {{
+                %pattern = arith.divui %key, %key_step : index
+              }
+              scf.for %maybe_empty = %zero to %query step %key_step {{ }
+              scf.for %unbounded = %zero to %unknown step %key_step {{ }
+            }
+            return
+          }
+        })mlir",
+                                                              extent)
+                                                    .str(),
+                                                &context);
+    ASSERT_TRUE(module);
+    unsigned inner = 0;
+    module->walk([&](mlir::scf::ForOp loop) {
+      if (!loop->getParentOfType<mlir::scf::ForOp>())
+        return;
+      auto position = inner++;
+      EXPECT_EQ(proveNonEmptyLoop(loop), position == 0);
+      auto range = evaluateNonNegativeStaticIndexRange(loop.getInductionVar());
+      if (position == 2) {
+        EXPECT_FALSE(range.succeeded());
+        return;
+      }
+      ASSERT_TRUE(range.succeeded());
+      EXPECT_FALSE(range.range.empty);
+      EXPECT_EQ(range.range.min, 0);
+      int64_t largest = -1;
+      for (int64_t q = 0; q < extent; q += 192)
+        for (int64_t k = 0; k < (position ? q : std::min(extent, q + 192));
+             k += 128) {
+          EXPECT_LE(k, range.range.max);
+          largest = std::max(largest, k);
+        }
+      EXPECT_EQ(range.range.max, largest);
+    });
+    EXPECT_EQ(inner, 3u);
+    module->walk([&](mlir::arith::DivUIOp divide) {
+      auto range = evaluateNonNegativeStaticIndexRange(divide.getResult());
+      ASSERT_TRUE(range.succeeded());
+      EXPECT_EQ(range.range.min, 0);
+      EXPECT_EQ(range.range.max, (extent - 1) / 128);
+    });
+  }
+}
 
 TEST_F(StaticIndexRangeTest, PackedAlignmentUsesEveryInductionValue) {
   for (int64_t step : {1, 8}) {

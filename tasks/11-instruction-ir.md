@@ -537,6 +537,9 @@ completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保�
 `busytable`只能作为target capability/legality/cost input，不能替代token、typed join、effects或terminal
 drain。不携带resident data的pending NCC completion set可按精确event/control relation跨内部traversal、loop nest和
 traversal separation；same-worker ordered reuse的SPM root可在同一region及已证明安全的loop backedge内延续。
+有界但非恒定的SCF上界沿共同StaticIndexRange读取当前SSA：常量lower/step与有界upper仍给出IV范围，
+非负index除以正常量给出商范围。NCC placement与SPM/DDR lifetime共同使用实际上下界的非空证明；
+不能因上界不是常量就增加join，也不能把“存在非空执行”当作“每次调用必定非空”。
 `wafer.tile.region`表示SPM residency domain，每个有assigned work的Tile module可有一个或多个non-nested regions；每条region exit path
 只证明仍访问其SPM roots的participant/DTE/generic async work已完成，entry terminal闭合all-and-only observable pending work。
 SPM buffer/root/alias不得跨region boundary，region operand/result也不得携带SPM data。region body内的selective spill与cross-region

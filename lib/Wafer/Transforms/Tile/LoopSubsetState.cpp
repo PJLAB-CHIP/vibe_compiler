@@ -7,8 +7,11 @@
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
@@ -18,6 +21,49 @@
 
 namespace wafer::compiler::detail {
 namespace {
+
+// Publish a conditional subset on its incoming edges. Joining a compact
+// updated slice with an unchanged strided slice before insertion loses the
+// exact copy geometry during bufferization. Tensor insertion is pure; this
+// rewrite is legal only when its other operands already dominate the branch
+// and the original conditional slice has no independent observer.
+void distributeConditionalInsertions(mlir::IRRewriter &rewriter,
+                                     mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::tensor::InsertSliceOp> pending;
+  module.walk([&](TileRegionOp region) {
+    region.walk([&](mlir::tensor::InsertSliceOp insertion) {
+      pending.push_back(insertion);
+    });
+  });
+  for (size_t index = 0; index < pending.size(); ++index) {
+    auto insertion = pending[index];
+    auto source = mlir::dyn_cast<mlir::OpResult>(insertion.getSource());
+    auto branch = source ? mlir::dyn_cast<mlir::scf::IfOp>(source.getOwner())
+                         : mlir::scf::IfOp{};
+    if (!branch || !source.hasOneUse() || branch.getElseRegion().empty())
+      continue;
+    mlir::DominanceInfo dominance(branch->getParentOp());
+    if (!llvm::all_of(insertion->getOperands().drop_front(),
+                      [&](mlir::Value operand) {
+                        return dominance.properlyDominates(operand, branch);
+                      }))
+      continue;
+    for (mlir::scf::YieldOp yield : {branch.thenYield(), branch.elseYield()}) {
+      rewriter.setInsertionPoint(yield);
+      mlir::IRMapping mapping;
+      mapping.map(source, yield.getOperand(source.getResultNumber()));
+      auto edge = mlir::cast<mlir::tensor::InsertSliceOp>(
+          rewriter.clone(*insertion, mapping));
+      rewriter.modifyOpInPlace(yield, [&] {
+        yield->setOperand(source.getResultNumber(), edge.getResult());
+      });
+      pending.push_back(edge);
+    }
+    rewriter.modifyOpInPlace(
+        branch, [&] { source.setType(insertion.getResult().getType()); });
+    rewriter.replaceOp(insertion, source);
+  }
+}
 
 // The pinned subset helper does not correctly handle collection through nested
 // loop state or forks (upstream llvm-project#188761). Prove a direct single
@@ -83,6 +129,10 @@ normalizeLoopSubsetState(mlir::ModuleOp module,
       "transform", "layout-and-bufferization", "loop-subset-state");
   StructuredBufferReplacementListener listener(relations);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
+  distributeConditionalInsertions(rewriter, module);
+  if (!listener.finalizeAfterRewrite() || mlir::failed(mlir::verify(module)) ||
+      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations)))
+    return mlir::failure();
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::scf::ForOp::getCanonicalizationPatterns(patterns, module.getContext());
   mlir::tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);

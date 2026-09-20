@@ -345,6 +345,59 @@ TEST(RequiredNCCJoinPlacementTest, EntryOnlyWaitsStayOutsideTheSteadyLoop) {
     }
 }
 
+TEST(RequiredNCCJoinPlacementTest, BoundedKVLoopPreservesSameWorkerOrdering) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  for (int64_t length : {1024, 1025, 1031}) {
+    SCOPED_TRACE(length);
+    std::string spm = "memref<2x" + std::to_string(length) +
+                      "x16xf16, #wafer.memory<spm, tensor>>";
+    std::string ddr = "memref<2x" + std::to_string(length) +
+                      "x16xf16, #wafer.memory<ddr, tensor>>";
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << "module { func.func @main() { wafer.tile.region() -> () {\n"
+        << "%zero = arith.constant 0 : index\n"
+        << "%block = arith.constant 128 : index\n"
+        << "%end = arith.constant " << length << " : index\n"
+        << "%input = memref.alloc() : " << ddr << "\n"
+        << "%output = memref.alloc() : " << ddr << "\n"
+        << "%buffer = memref.alloc() : " << spm << "\n"
+        << "scf.for %q = %zero to %end step %block {\n"
+        << "%qend = arith.addi %q, %block : index\n"
+        << "%kend = arith.minsi %qend, %end : index\n"
+        << "scf.for %k = %zero to %kend step %block {\n"
+        << "wafer.instr.rdma %input to %buffer {byte_count = " << length * 64
+        << " : i64, inner_bytes = " << length * 64
+        << " : i64, src_strides = array<i64: 0,0,0>, "
+           "src_iterations = array<i64: 1,1,1>} : "
+        << ddr << " to " << spm
+        << "\n}\nwafer.instr.wdma %buffer to %output {byte_count = "
+        << length * 64 << " : i64, inner_bytes = " << length * 64
+        << " : i64, dst_strides = array<i64: 0,0,0>, "
+           "dst_iterations = array<i64: 1,1,1>} : "
+        << spm << " to " << ddr << "\n}\nwafer.tile.yield } return } }";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(module) << text;
+    ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+    unsigned joins = 0;
+    module->walk([&](wafer::SyncNCCJoinOp join) {
+      ++joins;
+      EXPECT_FALSE(join->getParentOfType<mlir::scf::ForOp>());
+      EXPECT_EQ(join.getParticipants(), llvm::ArrayRef<int64_t>{0});
+    });
+    EXPECT_EQ(joins, 1u);
+    EXPECT_TRUE(mlir::succeeded(
+        wafer::planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+    EXPECT_TRUE(mlir::succeeded(wafer::planDDRMemoryModule(
+        *module, 256, 64 * 1024 * 1024, 64 * 1024 * 1024, 64 * 1024 * 1024)));
+  }
+}
+
 TEST(RequiredNCCJoinPlacementTest, KcoreStoresReleaseOnceBeforeTheirDMAConsumer) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);

@@ -1,5 +1,6 @@
 //===- wafer-opt.cpp - Wafer optimizer driver ----------------------------===//
 
+#include "Wafer/Analysis/ControlFlow/IndexValueBounds.h"
 #include "Wafer/Conversion/Passes.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/Passes.h"
@@ -62,6 +63,7 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   mlir::affine::registerValueBoundsOpInterfaceExternalModels(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
+  wafer::analysis::registerIndexValueBoundsModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
   mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
