@@ -599,7 +599,12 @@ Pipeline position：
 
 #### 常量边界模板与一次调用内复用
 
-静态causal边界在编译期用整数计算`invalid[r,c] = (k0+c > q0+r) || (k0+c >= e)`。
+对每个实际局部块，定义`BQ = q1 - q0`、`BK = k1 - k0`；两者来自candidate已经物化的query/key区间，
+可以不相等，本节不预设块长。模板在query/key两轴上的逻辑形状为`BQ×BK`，tail使用实际剩余行列数。
+先由实际tiling确定局部块，再生成所需模板；模板不能反过来把候选限制为固定尺寸或正方形。
+选定layout所需的物理padding与逻辑形状分开表达，不扩大逻辑可见域。
+
+静态causal边界在编译期用整数计算`invalid[r,c] = (k0+c > q0+r) || (k0+c >= e)`，其中`0 <= r < BQ`、`0 <= c < BK`。
 常量折叠只生成当前局部shape的最终0/1模式，不生成F32 `k−q`表再在每个边界块比较。
 按实际shape、相对位置及有效域去重；只有模式与布局确实相同才能共享。对齐的等长causal各对角块复用一个模式；
 tail、错位和不等块长分别处理，不为每个head或query块复制等价常量。
@@ -616,8 +621,9 @@ tail、错位和不等块长分别处理，不为每个head或query块复制等�
 扩展共同PhysicalMovementPlacement处理实际load/fill/convert的destination mutation；在相关操作已物化后、completion/SPM前应用同一证明，
 不另写attention专用hoist。复用延长的lifetime仍交给唯一actual SPM路径，不用预估容量决定合法性。
 
-以F32的256×256边界为例，一份数值mask为256 KiB，一份`-inf`源也是256 KiB；合计512 KiB是这两项buffer的大小，
-不是整个attention的SPM峰值。模板内容可在package中去重；16个Tile的local副本不能据此算成只占一份SPM。
+一份数值mask和一份`-inf`源的逻辑数据量为`BQ × BK × (mask元素字节数 + 源元素字节数)`。
+实际allocation大小还由各自layout、padding和physical span决定；整个attention的SPM峰值须包含其它实际buffer及lifetime，
+上述逻辑数据量不能用于SPM准入。模板内容可在package中去重，各Tile仍持有自己的local副本。
 多个不同模式不要求全部同时常驻。准备位置、实际load次数和lifetime必须从最终IR核对。
 
 当score的DPS/last-use证明允许原地覆盖、两输入物理遍历匹配时，常规边界的steady-state目标为一条`MaskMove`。

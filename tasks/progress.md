@@ -57,6 +57,7 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 已整理[05号改进合同](05-local-compute-normalization.md#46-当前版本的mask改进合同待实现)及
 [本轮实施顺序与覆盖矩阵](plans/board-workload-matrix.md#当前版本attention与mask改进方案)：
 局部最终mask模板、数值比较、同调用准备复用、DPS原地覆盖及可见域循环；动态长度入口、paged KV和跨调用缓存延后。
+方案已明确模板尺寸随实际tiling及tail确定，资源量和准备次数按实际布局与复用域描述，移除固定尺寸的正文示例。
 本轮仅完成方案，新增优化尚未实施；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及

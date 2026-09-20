@@ -34,7 +34,8 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 #### 本轮范围与实际能力边界
 
 目标是减少mask和重复准备的动态指令、DDR/SPM搬运，保留现有attention输入语义与通用性。
-覆盖causal、bool/additive mask、MHA/GQA、单/多token decode、不等长及tail；不按28-head或256块硬编码。
+覆盖causal、bool/additive mask、MHA/GQA、单/多token decode、不等长及tail。
+局部模板随actual candidate的`BQ×BK`生成，两轴可不等，tail使用实际剩余行列数；物理padding由选定layout决定。
 本版不新增动态长度入口、paged KV、跨调用准备缓存或任意Python mask callback。
 不调整head/Q切分、搜索预算和评分，也不将mask优化当作TDMA根因已定位。
 
@@ -55,7 +56,7 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 | 顺序 | 修改边界 | 实际产物与下一消费者 | 本步完成条件 |
 | --- | --- | --- | --- |
 | 1 | 10/11/14号：实际predicate消费链、Instr、TargetCall/CRT | 常量predicate转换折叠为显式数值常量；非恒定compare→Bit2Fp合成厂商value结果比较；交给原completion/SPM与target | bool和值结果的dtype/span/packet/模型一致；无重复转换；多use与不适用tuple保留正确路径 |
-| 2 | 05号：已tiled online-attention decomposition | 用integer位置生成最终局部invalid模式，替换静态边界F32 `k−q`表；原score region与DPS交给08号 | 对齐、偏移、不等块长、tail的局部predicate exact；不生成全序列mask或逐元素Kcore循环 |
+| 2 | 05号：已tiled online-attention decomposition | 按实际`BQ×BK`和integer位置生成最终局部invalid模式，替换静态边界F32 `k−q`表；原score region与DPS交给08号 | 对齐、偏移、矩形块、tail的局部shape与predicate exact；不生成全序列mask或逐元素Kcore循环 |
 | 3 | 08/10号：DPS与实际准备操作的共同placement | 同调用内模板load/convert/fill复用；score原地MaskMove；actual alias/effect/owner交给fresh completion/SPM | 初始化位于合法共同复用域；无依赖名字的hoist、无猜测alias、无新增可避免join；实际SPM offset验证成功 |
 | 4 | 06号：actual SCF可见域 | 对已证明连续的可见域收紧KV loop；全可见与边界body保持原state SSA；直接消费步骤2/3结果 | 不可见块无读取/计算/更新；边界覆盖exact；不能证明的特殊mask保持原精确计算 |
 | 5 | 16号：完整主机产品与性能核对 | fresh source/reference→package/no-card、必要TargetModel与指令/字节统计；准备当前版本板测包 | 下表各分支及受影响共享算子通过；数字区分静态site、动态执行次数、模型估时和实测 |
@@ -66,7 +67,7 @@ fill site总数仍为176，scalar临时fill改成整块fill。static site数不�
 08号先证明score destination复用，lowering只消费已确定alias；constant/fill hoist增加的真实lifetime由唯一SPM gate判断。
 修改关系结果时同步11号当前“relation输出i1”和14号CRT发射合同，保留一种完整协议，不新增兼容reader或ABI旁路。
 
-本轮常规对齐causal的预期动态执行是：每Tile在合法作用域准备一次mask和一次`-inf`源；
+本轮常规对齐causal的预期动态执行是：每Tile按实际形状、模式及布局，在合法作用域内复用mask和`-inf`源的准备；
 每query块先读Q并初始化自己的`m/l/A`，遍历全可见KV块，边界块执行QK和原score计算后用MaskMove覆盖，接续原online更新和PV，最后归一化输出。
 Q的必要layout转换每query块只准备一次，供同一块内full/boundary路径共享；KV与输入mask仍按实际需求读取。
 纯causal的未来KV块不进入计算循环；任意输入mask不会因causal的full分类被丢弃。
@@ -79,7 +80,7 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 | 输入等价类/分支 | exact检查或typed失败 | 直接下游witness |
 | --- | --- | --- |
 | 无mask、全可见、全不可见、跨边界causal | 三类区间正确；skip不读K/V/mask且state原样接续；full无causal处理 | actual SCF→Instr→completion/SPM→原PyTorch reference |
-| query/key不同长度、不同block size、非零绝对偏移、upper-left/lower-right来源 | 保留来源位置对齐；多边界模式及tail exact，不能从局部shape差重建语义 | source capture→position tiling→最终结果 |
+| query/key不同长度、不同block size（含`BQ != BK`矩形块）、非零绝对偏移、upper-left/lower-right来源 | 模板shape随实际块及tail变化；保留来源位置对齐，多边界模式及有效域exact，不能从局部shape差重建语义 | source capture→position tiling→局部模板/layout→最终结果 |
 | bool常量/运行时输入、全true/全false、棋盘/窗口/分段/非矩形 | True=keep、broadcast map与head依赖正确；非恒定模式不被当作uniform fill | rank3/4、1024/1025/1031实际读取窗口及完整输出 |
 | additive标量/按行/按head/完整块、finite负值与`-inf` | 保持原Add/cast顺序；不偷换成bool覆盖或跳块 | source score region→Instr及原容差/特殊值位置 |
 | Q=1、Q>1 decode、实际KV两步接续、GQA | 只在已证明前缀全可见时省causal；旧KV prefix exact，FD merge及输出owner不变 | fresh两步payload、TargetModel及设备actual KV接续 |
@@ -92,8 +93,9 @@ FP16/BF16为普通纵向；F32用于实际score/state、relation和特殊值合�
 
 常规对齐causal的完成目标：boundary steady-state不再生成坐标表比较、Bit2Fp、模板RDMA、完整`-inf` fill或可避免score copy；
 在DPS和物理遍历证明成立时仅保留一次MaskMove。初始化的RDMA/转换及两条fill CT必须单列，不能记成零成本。
-以BQ=BK=256、S=4096为解释例，每head有16个边界块；模板不能重复准备16次，更不能为28个head各复制同一模式。
-任意tail/不同模式按真实模式和作用域计数，不把该例写成统一阈值。不得仅凭静态GS减少签发设备性能收益。
+边界块数按实际Q/K分块、位置和有效域计算；准备次数按实际shape、模式、布局及合法复用作用域统计。
+同一模式在同一合法复用域内只准备一次，不因head或query块重复而复制；tail与不同模式分别核对。
+不得把某个候选的块长、块数或buffer字节数作为统一阈值，也不得仅凭静态GS减少签发设备性能收益。
 
 主机完成前不进入设备批次；当前故障boot不试跑。恢复后先核实全系统占用、设备身份和健康基线，
 逐case单次launch、timeout、全输出/guard及正常厂商清理；异常即停，不自动retry/reset。
