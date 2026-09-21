@@ -2,7 +2,24 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
-### 当前检查点：单条GS触发已定位（2026-09-21）
+### 当前检查点：LSU门限因果与位宽已实测确认（2026-09-21）
+
+用户再次确认重启后，冻结依赖、当前SDK/firmware身份及逐case全系统占用检查通过。
+实际执行`width`、`quarter-default`、`quarter-lowered`三项；前两项健康，第三项触发TDMA fatal即停批。
+LSU_TIMEOUT的五种32-bit写入均读回`value & 0xffff`，低16位互补位型可写，高位不保留；该字段不能配置超过65,535。
+因此按既定分支没有执行两项高门限case，也不将它们计为通过。
+
+同一16,384次GS在门限65,535下健康，在门限16,383下于execution增量16,597首次观察fatal；
+两组actual SDK packet、输入、同步和采样相同，仅门限不同，完整执行增量均33,358。无CT且WDMA尚未发射，
+LSU timeout对该TDMA的因果已经实测成立，不再只是相关性。三项均完整回读2 MiB、检查10,240 guard bytes并正常厂商退出。
+原配置已恢复并由16 Tile host只读核对；现场stream最终读0不能覆盖窗口内已捕获的fatal。
+
+当前boot停止计算，不retry/reset。本复现的触发原因与门限字段上限已确认，生产修复尚未完成。
+接续为减少普通broadcast单条小颗粒GS持续时间，比较实际可合并搬运和语义等价分段，随后验证紧密发射、直接consumer和原attention。
+不尝试向这个字段写大值修复；不把16位timeout误写成iteration合法性上限；早期F32 fill状态和其它历史永久卡死仍分别处理。
+本轮不新增产品矩阵资格，详见[门限因果实测](../../docs/data/board-performance/tdma-timeout-width-causal-results-20260921.json)。
+
+### 前轮检查点：单条GS触发已定位（2026-09-21）
 
 用户确认重启后，冻结包、固件身份、全系统占用及16 Tile只读基线核对通过，按下节顺序实际执行7项。
 前6项健康；单条inner=4、iteration=`[64,256,2]`、32,768次GS触发stream TDMA bit 12，自动停批。
@@ -55,7 +72,7 @@
 原生反汇编确认32-bit `sw`，所有外部符号存在于当前固件导出表。上述主机模型不执行硬件watchdog。
 默认入口只验文件；96份依赖已冻结，实际CLI确认当前故障boot在设备访问前被拒绝。本轮没有访问设备或修改配置。
 初次准备中的no-card资源绑定参数及非canonical manifest格式均被strict入口拒绝，修正后五项重新通过。
-尚待重启实测，不把准备完成写成已确认位宽或根因闭合；详见
+此处只描述当时准备资格；后续三项实测见页首，不把准备本身写成位宽或根因证据。详见
 [门限实验准备](../../docs/data/board-performance/tdma-timeout-experiment-preparation-20260921.json)。
 
 ### 次日恢复前的完整诊断准备（2026-09-21）

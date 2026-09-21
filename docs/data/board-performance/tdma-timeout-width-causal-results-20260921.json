@@ -1,0 +1,618 @@
+{
+  "date": "2026-09-21",
+  "work_item": "board-testing",
+  "boot_id": "07dfaf5a-a61a-452a-9838-f56e8974264c",
+  "user_authorization": "用户确认重启后执行此前冻结的位宽与门限对照；未扩展计算批次。",
+  "prepared_commit": "f489b34d",
+  "firmware_sha256": "dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf",
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "driver_srcversion": "F64164C6460FEE30EBF66E2",
+  "kernel_launches": 3,
+  "healthy_cases": 2,
+  "fatal_cases": 1,
+  "batch_returncode": 90,
+  "stop_file": "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/STOP-DEVICE",
+  "no_launch_after_fatal": true,
+  "selected_branch": "register readback low16 -> quarter-default then quarter-lowered",
+  "unselected_cases": [
+    "half-raised",
+    "half-default"
+  ],
+  "unselected_are_not_counted_as_passed": true,
+  "cases": [
+    {
+      "case": "width",
+      "device_healthy": true,
+      "returncode": 0,
+      "utc": [
+        "2026-09-21T06:34:09.822234+00:00",
+        "2026-09-21T06:34:15.909783+00:00"
+      ],
+      "active_tile": 4,
+      "input_dtype": "f32",
+      "full_output_exact": true,
+      "capture_bytes": 2097152,
+      "guard_bytes": 10240,
+      "completed_tiles": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "configuration_probe": {
+        "magic": 5499833390444922191,
+        "mode": 1,
+        "original": 65535,
+        "requested": 0,
+        "readback": 0,
+        "restored": 65535,
+        "entered": true,
+        "restore_executed": true,
+        "error_bits": 0,
+        "count": 5,
+        "status_before_restore": 256,
+        "controls_before": [
+          4294967295,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "controls_after": [
+          4294967295,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "vectors": [
+          {
+            "written": 4294967295,
+            "readback": 65535,
+            "restored": 65535
+          },
+          {
+            "written": 2863311530,
+            "readback": 43690,
+            "restored": 65535
+          },
+          {
+            "written": 1431655765,
+            "readback": 21845,
+            "restored": 65535
+          },
+          {
+            "written": 131071,
+            "readback": 65535,
+            "restored": 65535
+          },
+          {
+            "written": 2147549183,
+            "readback": 65535,
+            "restored": 65535
+          }
+        ],
+        "valid": true
+      },
+      "all_16_tile_controls_restored": true,
+      "post_fatal_words": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ]
+      ],
+      "ct_count": 0,
+      "single_gs_packet": null,
+      "tdma_execution_initial": 0,
+      "tdma_execution_at_restored_window": 0,
+      "tdma_execution_total_delta": 0,
+      "first_fatal": null,
+      "first_fatal_execution_delta": null,
+      "first_fatal_wdma_count_delta": null,
+      "snapshot_after_restore": {
+        "csr_task_done": true,
+        "csr_exception": 0,
+        "stream_before": 0,
+        "stream_after": 0,
+        "pmu_exception_raw": 0,
+        "lsu_timeout": 65535
+      },
+      "host_kernel_log": "-- No entries --",
+      "device_fault_markers": [],
+      "runtime_and_vendor_cleanup_completed": true,
+      "qualification": true
+    },
+    {
+      "case": "quarter-default",
+      "device_healthy": true,
+      "returncode": 0,
+      "utc": [
+        "2026-09-21T06:34:16.698165+00:00",
+        "2026-09-21T06:34:22.771303+00:00"
+      ],
+      "active_tile": 4,
+      "input_dtype": "f32",
+      "full_output_exact": true,
+      "capture_bytes": 2097152,
+      "guard_bytes": 10240,
+      "completed_tiles": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "configuration_probe": {
+        "magic": 5499833390444922191,
+        "mode": 2,
+        "original": 65535,
+        "requested": 65535,
+        "readback": 65535,
+        "restored": 65535,
+        "entered": true,
+        "restore_executed": true,
+        "error_bits": 0,
+        "count": 0,
+        "status_before_restore": 256,
+        "controls_before": [
+          4294967295,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "controls_after": [
+          4294967295,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "vectors": [],
+        "valid": true
+      },
+      "all_16_tile_controls_restored": true,
+      "post_fatal_words": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ]
+      ],
+      "ct_count": 0,
+      "single_gs_packet": {
+        "inter_type": 4,
+        "ctrl.opcode": 135,
+        "ctrl.src0_format": 0,
+        "param.src0": 661504,
+        "param.src1": 0,
+        "param.dst": 662528,
+        "param.elem_count": 4,
+        "param.src0_end": 662527,
+        "param.src1_end": 0,
+        "param.dst_end": 728063,
+        "param.src_stride0": 0,
+        "param.src_iteration0": 64,
+        "param.src_stride1": 4,
+        "param.src_iteration1": 256,
+        "param.src_stride2": 0,
+        "param.src_iteration2": 1,
+        "param.dst_stride0": 4,
+        "param.dst_iteration0": 64,
+        "param.dst_stride1": 256,
+        "param.dst_iteration1": 256,
+        "param.dst_stride2": 65536,
+        "param.dst_iteration2": 1
+      },
+      "tdma_execution_initial": 0,
+      "tdma_execution_at_restored_window": 33358,
+      "tdma_execution_total_delta": 33358,
+      "first_fatal": null,
+      "first_fatal_execution_delta": null,
+      "first_fatal_wdma_count_delta": null,
+      "snapshot_after_restore": {
+        "csr_task_done": true,
+        "csr_exception": 0,
+        "stream_before": 0,
+        "stream_after": 0,
+        "pmu_exception_raw": 0,
+        "lsu_timeout": 65535
+      },
+      "host_kernel_log": "-- No entries --",
+      "device_fault_markers": [],
+      "runtime_and_vendor_cleanup_completed": true,
+      "qualification": true
+    },
+    {
+      "case": "quarter-lowered",
+      "device_healthy": false,
+      "returncode": 0,
+      "utc": [
+        "2026-09-21T06:34:23.557154+00:00",
+        "2026-09-21T06:34:29.618887+00:00"
+      ],
+      "active_tile": 4,
+      "input_dtype": "f32",
+      "full_output_exact": true,
+      "capture_bytes": 2097152,
+      "guard_bytes": 10240,
+      "completed_tiles": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "configuration_probe": {
+        "magic": 5499833390444922191,
+        "mode": 2,
+        "original": 65535,
+        "requested": 16383,
+        "readback": 16383,
+        "restored": 65535,
+        "entered": true,
+        "restore_executed": true,
+        "error_bits": 0,
+        "count": 0,
+        "status_before_restore": 256,
+        "controls_before": [
+          4294967295,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "controls_after": [
+          4294967295,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "vectors": [],
+        "valid": true
+      },
+      "all_16_tile_controls_restored": true,
+      "post_fatal_words": [
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ],
+        [
+          0
+        ]
+      ],
+      "ct_count": 0,
+      "single_gs_packet": {
+        "inter_type": 4,
+        "ctrl.opcode": 135,
+        "ctrl.src0_format": 0,
+        "param.src0": 661504,
+        "param.src1": 0,
+        "param.dst": 662528,
+        "param.elem_count": 4,
+        "param.src0_end": 662527,
+        "param.src1_end": 0,
+        "param.dst_end": 728063,
+        "param.src_stride0": 0,
+        "param.src_iteration0": 64,
+        "param.src_stride1": 4,
+        "param.src_iteration1": 256,
+        "param.src_stride2": 0,
+        "param.src_iteration2": 1,
+        "param.dst_stride0": 4,
+        "param.dst_iteration0": 64,
+        "param.dst_stride1": 256,
+        "param.dst_iteration1": 256,
+        "param.dst_stride2": 65536,
+        "param.dst_iteration2": 1
+      },
+      "tdma_execution_initial": 33358,
+      "tdma_execution_at_restored_window": 66716,
+      "tdma_execution_total_delta": 33358,
+      "first_fatal": {
+        "cycle_begin": 536929109637,
+        "cycle_end": 536929110324,
+        "worker": 0,
+        "csr_ib_status": 0,
+        "csr_task_done": false,
+        "csr_ib_counter": 0,
+        "csr_exception": 0,
+        "stream_before": 0,
+        "stream_after": 4096,
+        "pmu_ct_count": 0,
+        "pmu_ne_count": 0,
+        "pmu_rdma_count": 3,
+        "pmu_wdma_count": 2,
+        "pmu_tdma_count": 2,
+        "pmu_tdma_blocking": 0,
+        "pmu_exception_raw": 0,
+        "pmu_exception_cmd_id": 278163489816576,
+        "tdma_last_cmd": 169607420,
+        "tdma_execution_raw": 49955,
+        "lsu_timeout": 16383,
+        "caught_exception_stop": 0,
+        "tdma_exception_enable": 1,
+        "first_catch": 1
+      },
+      "first_fatal_execution_delta": 16597,
+      "first_fatal_wdma_count_delta": 0,
+      "snapshot_after_restore": {
+        "csr_task_done": true,
+        "csr_exception": 0,
+        "stream_before": 0,
+        "stream_after": 0,
+        "pmu_exception_raw": 0,
+        "lsu_timeout": 65535
+      },
+      "host_kernel_log": "-- No entries --",
+      "device_fault_markers": [
+        {
+          "tile": 4,
+          "issue_sequence": 2,
+          "site": 40003,
+          "phase": 6,
+          "reason_bits": 1,
+          "observed_done": 1
+        }
+      ],
+      "runtime_and_vendor_cleanup_completed": true,
+      "qualification": false
+    }
+  ],
+  "confirmed": [
+    {
+      "classification": "board-observed",
+      "fact": "当前板卡LSU_TIMEOUT的32-bit写入/读回只保留低16位；全1、两种互补位型及bit16/bit31探针均符合value & 0xffff。该寄存器访问路径不能配置大于65535的值。"
+    },
+    {
+      "classification": "board-observed: controlled causal comparison",
+      "fact": "相同单条GS实际SDK packet和输入，只有门限65535→16383改变；前者健康，后者在执行增量16597观测到TDMA stream bit12。故障前无CT且WDMA尚未发射；两者完整执行量均33358。LSU timeout配置确实控制本次TDMA超时触发。"
+    },
+    {
+      "classification": "conclusion for isolated reproducer",
+      "fact": "原长4-byte GS的单条执行超过当前LSU watchdog门限，是已定位复现的触发原因；不是65535次iteration溢出或跨调用PMU累计达到阈值。"
+    },
+    {
+      "classification": "board-observed",
+      "fact": "本轮三项均正常厂商join/退出，完整2 MiB exact输出及10240 guard bytes通过；诊断恢复原值并由16 Tile host只读核对。fatal case仍不签健康。"
+    }
+  ],
+  "report_interpretation": [
+    "first_status通用文案提及CT/CSR/PMU，但本次实际CT count、CSR exception、PMU exception raw为0，仅stream TDMA bit12。",
+    "终端poll因fatal提前停止，而厂商join随后返回；这不是本轮永久completion卡死。",
+    "故障时ring冻结，后续WDMA没有记录造成packet inventory不全；完整回读、completion及恢复header证明后续执行，不把冻结后缺记录误判成缺发WDMA。",
+    "host kernel journal和post-invocation stream均未保留告警；设备DDR与EP marker已捕获，事后读0不能否认窗口内fatal。没有写清异常或reset寄存器。"
+  ],
+  "limits": [
+    "16-bit结论绑定本机该LSU_TIMEOUT寄存器及当前映像，不外推其它硬件或全部内部counter宽度。",
+    "16597是顺序采样首次看见fatal时的计数，不是精确硬件触发拍；不声称已经确定所有clock/stall/rearm定义。",
+    "两组新增相同GS后completion用于隔离WDMA，不能直接代签生产同步或tight issue qualification。",
+    "未复现永久卡死，未将其它历史清理失败和早期F32 fill状态归为同因。"
+  ],
+  "next": "生产修复降低单条小颗粒GS持续时间；比较实际可合并搬运和语义等价分段，再验证紧密发射、直接consumer和完整attention。不能靠向此寄存器写大值扩大门限。",
+  "production_fix_complete": false,
+  "product_qualification_unchanged": true,
+  "evidence_sha256": {
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/STOP-DEVICE": "f3327b649a37a80326eb7893dbf164dc5dfb0f47a98f7502958e10ac66210220",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/LAUNCH-CLAIM": "69594cc40173474a6b39706f7a37df030ed79cca5690a28cdcf22564598f61f6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/capture.f32.raw": "7b23db629a66e67ac01b7f5f9b33d7afda87edec7df9584bfd49774da6451163",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/decoded.json": "e6fe0cb22ae12f888d46fa2b845b242e0725de10aacbebd9238da0e60ce9f46b",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/firmware.log": "323fc3d0553cc948562d9c728bb9f32d10ae067b93c72c459716c09ff63972af",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/fuser.log": "355c4b9e3cfd94c9ef40270edfefda76e12e19a9e032e621c95ed5801acfa960",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/occupancy.json": "f7ccf390cc11dbe7d59f8a5c078efde585542ab48cda8686e70a41de443297f6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/probe.json": "11c4b3e199d2edd35a241f64e638e9afbcf92d4e03d329261f689cd43a9fd35c",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/record.json": "1832dd97b40c2239de5f2c67855fc8ffb375c401bea935eef2aa1c9fc62767a1",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/result.json": "298359a763a9352fd53b9f369f75ff2989a185b7146fe22126ec7c526a96a308",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/runner.log": "90f4b8a6d9b90ddd11ed8fa3d285c9c05919a2970dce3b3a7976cd2a08c6c639",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default/trace.i8.raw": "8955e6a21dd4cebd76fc9b9e85907f41c6f49379e232204412afbda3c5a31e8d",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default-post.json": "7e9f92a62e85012a072a4ae746b54c411aa06c7fa97ef86b299805a69a1a1b2b",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-default-pre.json": "f1e5f33875fd08d08f4cc84d6534d9ab7146f1c1ba8a29c2c72c4dc7bc115717",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/LAUNCH-CLAIM": "69594cc40173474a6b39706f7a37df030ed79cca5690a28cdcf22564598f61f6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/capture.f32.raw": "7b23db629a66e67ac01b7f5f9b33d7afda87edec7df9584bfd49774da6451163",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/decoded.json": "cd6ed38d23446aafdf96ce11915a96b62b06630af2762dbf52573bdc661224d8",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/firmware.log": "092d10fa9102f78940f37596a3e219ccfb6b390889a0a378135e982a329017ca",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/fuser.log": "355c4b9e3cfd94c9ef40270edfefda76e12e19a9e032e621c95ed5801acfa960",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/occupancy.json": "f7ccf390cc11dbe7d59f8a5c078efde585542ab48cda8686e70a41de443297f6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/probe.json": "81397b6bb6e4df60b8d0796b4a1d58a2e1178562becf21bb341b2303e10c2dbf",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/record.json": "11fe44ffa1afd71541e37274688b417a056218876ebe8593c7c63a63377e10e6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/result.json": "f3327b649a37a80326eb7893dbf164dc5dfb0f47a98f7502958e10ac66210220",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/runner.log": "711c247c2b84b857c609f41516ade288605bfad32d16f67c2d6baea0d5db3b82",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered/trace.i8.raw": "557c7b58ddfa244cccb1028d0633b2c7206f1f84ce3e27f51cb34408d9ee7a53",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered-post.json": "a8e25a05504f7c559a62b78dad92b794aed512aeb683be297ed26a28a1fa0c3b",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/quarter-lowered-pre.json": "6c467b9bec873073733106fdccc59eacc70353ec11670cc1d795d17bc39642d5",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/selected-branch.json": "58b209be0e54412aa63a70d11b3a03150420d10e4b04cce4e2e55ea64d95a537",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/summary.json": "343a31c23d131f4fa6a1c9be1a416af177e5621aa3d94ec86e275115a6eff647",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/LAUNCH-CLAIM": "69594cc40173474a6b39706f7a37df030ed79cca5690a28cdcf22564598f61f6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/capture.f32.raw": "02b0954f253e767c96f7e66c3271c8c086fb93639b2371a292a9cb8bb469d4a5",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/decoded.json": "499c2770703d70361f9226198bb56b8d519d008ad6baf9273cef5f9d2c3a500c",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/firmware.log": "a46000c7d3c25a6de1c372af3c5c6d71df333d7f9821293850e61b199ed40e1c",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/fuser.log": "355c4b9e3cfd94c9ef40270edfefda76e12e19a9e032e621c95ed5801acfa960",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/occupancy.json": "f7ccf390cc11dbe7d59f8a5c078efde585542ab48cda8686e70a41de443297f6",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/probe.json": "1818601256f233242094cfc890589ede22382262eab317483472d59bf69ae77a",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/record.json": "b8f8800cdb50aec4a118d9adcc07a9c7602a84375e03e4b57fb5dff8ca6b34ec",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/result.json": "6c0f3a0dc6fa6b68be5c0169f54b19b999d011ca5bb114e208c0271bd035d37b",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/runner.log": "fcfa739999391c22cfb7829bf587e86240ad9ccf0175de6b25c84b40cdf59ea3",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width/trace.i8.raw": "876ccc99efcdd727681e3232a88b6190d2421cd30adfbad548ab2514d1e8f3ba",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width-post.json": "d32b47cc4e8d6ddcd90dd65225de84a37ba3117b4d2370da35080344f3062965",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/runs/07dfaf5a-a61a-452a-9838-f56e8974264c/width-pre.json": "90ac8d0be31f371553cbbf36ea0b26d9c2873e4ccc0abe16a20eed5290a5f734",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/ready.json": "424068fb4e9e842979e8ff47e17f7e83dea3da19a1fa429e9796a1330f26bcc8",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/probe.c.inc": "56e3059b3c07b190cd8eb092aedcc10bfb3d863fc65c8b463d60555636ea84d0",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/run.py": "a4e9d8900b7dc9fe9d62827359e75c531d96f52d56ad8276455c9089fb102c67",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/read-config.py": "ef925b5debe430776d0ef0ec03b8d7680564629d97df20d9fee01f6c79a935f2",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/cases/quarter-default/probe.ll": "cf841100308a1b0cff8b4d6c63ee1a8729aeadbe848289f065e3092d5015d8e0",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/cases/quarter-lowered/probe.ll": "1e58cdf59b6cd3194cca63813cc11eb25a736f1b454d60dccf9401a3eaafd69d",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/cases/width/module.asm": "9353d144eb26035328c748e746be9296aa0396a08efad606042892cd9afcbcbc"
+  }
+}

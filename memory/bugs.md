@@ -2172,6 +2172,14 @@
   完整模型必须另做数值和匹配性能保护，静态slice shape不能代替复用验证。
 
 
+## GS的iteration范围与LSU watchdog门限必须分开判断
+
+- 已验证的触发原因：单条长小颗粒GS可因持续执行超过LSU timeout而报告TDMA fatal，即使字段/地址合法且最终输出正确。
+  当前板卡该timeout寄存器的32-bit写入只保留低16位；同一GS仅降低门限就从健康变为fatal，因果证据见硬件故障定位文档。
+- 不把timeout值当iteration次数上限，也不把跨调用保留的PMU统计当资源泄漏；实际iteration字段和execution累计计数另有位宽。
+- 修复应降低单条指令的持续工作量，再验证紧密发射及直接consumer；不能假定写更大timeout有效或用完整回读抵消fatal。
+- 故障后寄存器读0和host日志无告警不能否定窗口内设备快照；保留首次事件与正常清理分别判定，异常后停止批次。
+
 ## SDK标量字段的整数载体不改变运算dtype
 
 - 已确认的软件错误：fill的F32 ABI调用在CRT中被按存储宽度换成INT32；SDK实际packet也因此成为INT32。

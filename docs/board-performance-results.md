@@ -2941,3 +2941,13 @@ runner返回0且10,752 guard bytes通过，health wrapper仍拒绝资格。事�
 不支持以早期CT、迭代数必须达到65,536、累计搬运总量或厂商退出清理解释本次初始异常。
 失败case仍完成2 MiB exact回读、10,240 guard bytes和正常清理，不能据此签健康。
 插桩使成功拆分的相邻GS之间自然完成，紧密发射及生产attention尚未重验；没有生产性能收益结论。
+
+## 2026-09-21：LSU位宽及门限因果对照
+
+新boot按已备计划执行三项。位宽case的五种32-bit写入全部读回低16位，高位不能保留；
+相同16,384次GS在65,535门限下健康，在16,383门限下于execution增量16,597首次观测TDMA fatal。
+两个GS的完整execution增量均33,358，实际packet和输入相同，故障时无CT且WDMA尚未发射。
+这确认LSU timeout为该单GS复现的触发原因，并排除通过此寄存器写更大值扩大门限的路径。
+三项均完成2 MiB exact输出、10,240 guard bytes及厂商正常退出；配置已恢复，第三项仍按设备故障停批。
+本轮为因果诊断，不新增产品资格或性能收益；原attention和生产修复仍待验收。
+原始结果、寄存器写入/恢复及字段限制见[本轮证据](data/board-performance/tdma-timeout-width-causal-results-20260921.json)。
