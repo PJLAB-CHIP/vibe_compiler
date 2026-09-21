@@ -1658,4 +1658,127 @@ TEST_F(RedundantTransferEliminationTest,
       }
 }
 
+TEST_F(RedundantTransferEliminationTest,
+       CoalescesContiguousSegmentsBeforeLinearInstructionConsumers) {
+  enum class Case {
+    SameEncoding,
+    CrossEncoding,
+    Permutation,
+    Broadcast,
+    LateWrite,
+    OldSourceRead
+  };
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t length : {1024, 1025, 1031})
+      for (Case test :
+           {Case::SameEncoding, Case::CrossEncoding, Case::Permutation,
+            Case::Broadcast, Case::LateWrite, Case::OldSourceRead}) {
+        SCOPED_TRACE(::testing::Message() << dtype.str() << '/' << length << '/'
+                                          << static_cast<int>(test));
+        // C=64 and two rows per major index make the NCx outer slice
+        // bank-aligned for every dtype, including odd row extents.
+        std::string prefix = "memref<1x2x" + std::to_string(length) + "x64x" +
+                             dtype.str() + ", #wafer.memory<spm, ";
+        std::string sourceType = prefix + "ncx>>";
+        std::string destType =
+            prefix + (test == Case::SameEncoding ? "ncx>>" : "tensor>>");
+        int64_t inner = 64 * (dtype == "f32" ? 4 : 2);
+        int64_t bytes = 2 * length * inner;
+        int64_t firstStride = test == Case::Permutation ? 2 * inner : inner;
+        if (test == Case::Broadcast)
+          firstStride = 0;
+        int64_t secondStride =
+            test == Case::Permutation ? inner : length * inner;
+        bool folded = test == Case::SameEncoding || test == Case::CrossEncoding;
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module { func.func @entry(%limit: index, %condition: i1) {\n"
+              "wafer.tile.region(%limit, %condition : index, i1) -> () {\n"
+              "^bb0(%upper: index, %take: i1):\n"
+              "%c0 = arith.constant 0 : index\n"
+              "%c1 = arith.constant 1 : index\n"
+              "%c2 = arith.constant 2 : index\n"
+              "%value = arith.constant 1.0 : "
+           << dtype
+           << "\n"
+              "scf.for %outer = %c0 to %c2 step %c1 {\n"
+              "scf.for %inner = %c0 to %upper step %c1 {\n"
+              "scf.if %take {\n"
+              "%source = memref.alloc() : "
+           << sourceType
+           << "\n"
+              "%dest = memref.alloc() : "
+           << destType
+           << "\n"
+              "%output = memref.alloc() : "
+           << destType
+           << "\n"
+              "wafer.instr.fill %source, %value {fill_domain = "
+              "#wafer.fill_domain<physical_footprint>} : "
+           << sourceType << ", " << dtype
+           << "\n"
+              "wafer.instr.gather_scatter %source to %dest {byte_count = "
+           << bytes << " : i64, inner_bytes = " << inner
+           << " : i64, src_strides = array<i64: " << firstStride << ", "
+           << secondStride << ", 0>, src_iterations = array<i64: " << length
+           << ", 2, 1>, dst_strides = array<i64: " << inner
+           << ", 0, 0>, dst_iterations = array<i64: " << 2 * length
+           << ", 1, 1>} : " << sourceType << " to " << destType
+           << "\n"
+              "wafer.instr.elementwise <add> %dest, %value into %dest : "
+           << destType << ", " << dtype << " into " << destType << "\n";
+        // A partial GS is a byte-addressed reader and must remain after
+        // coalescing. It witnesses the second permitted instruction consumer.
+        ir << "wafer.instr.gather_scatter %dest to %output {byte_count = "
+           << inner << " : i64, inner_bytes = " << inner
+           << " : i64, src_strides = array<i64: 0,0,0>, "
+              "dst_strides = array<i64: 0,0,0>, "
+              "src_iterations = array<i64: 1,1,1>, "
+              "dst_iterations = array<i64: 1,1,1>} : "
+           << destType << " to " << destType << "\n";
+        if (test == Case::LateWrite)
+          ir << "wafer.instr.fill %source, %value {fill_domain = "
+                "#wafer.fill_domain<physical_footprint>} : "
+             << sourceType << ", " << dtype << "\n";
+        if (test == Case::OldSourceRead)
+          ir << "%old = memref.load %source[%c0,%c0,%c0,%c0] : " << sourceType
+             << "\n";
+        ir << "%read = memref.load %output[%c0,%c0,%c0,%c0] : " << destType
+           << "\n} } } wafer.tile.yield } return } }";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        auto original = parse(text);
+        ASSERT_TRUE(original);
+        ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*original)));
+        unsigned originalJoins = countOps<wafer::SyncNCCJoinOp>(*original);
+        mlir::Value source;
+        module->walk([&](wafer::InstrFillOp fill) { source = fill.getDest(); });
+        EXPECT_EQ(
+            wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+                *module),
+            folded ? 1u : 0u);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module),
+                  folded ? 1u : 2u);
+        EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), folded ? 2u : 3u);
+        if (folded) {
+          module->walk([&](wafer::InstrElementwiseOp op) {
+            EXPECT_EQ(op.getInputs().front(), source);
+            EXPECT_EQ(op.getDest(), source);
+          });
+          module->walk([&](wafer::InstrGatherScatterOp op) {
+            EXPECT_EQ(op.getSource(), source);
+            EXPECT_EQ(op.getByteCount(), inner);
+          });
+        }
+        ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+        // The host load needs completion; coalescing must add no join.
+        EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(*module), originalJoins);
+        ASSERT_TRUE(mlir::succeeded(
+            wafer::planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
 } // namespace

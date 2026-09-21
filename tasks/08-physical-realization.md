@@ -630,6 +630,34 @@ storage合并，直接下游仍为fresh completion和唯一SPM规划。根因是
 完整copy及dead destination删除并通过下游completion/SPM。负例覆盖source晚写、旧source观察、destination早读、
 buffer逃逸和block外allocation；原跨迭代/DTE拒绝仍保持。生产attention记录实际删除条数与新包性能，不能仅签局部FileCheck。
 
+### 连续分段descriptor与等字节序consumer
+
+- 输入：同一canonical Instr cleanup中的GS、actual allocation/alias/effect及完整物理编码。生产入口与named pipeline
+  共用现有`elideRedundantFullBufferTransfers`，位置仍在placement和fresh completion之前。
+- 根因：layout materialization将同物理字节序的Tensor/NCx行向量写成多个连续段；原完整copy判定只接受
+  `inner_bytes == byte_count`且iteration全1，漏掉等价的连续分段。即使识别完整copy，原consumer检查也把
+  所有Instr的encoding变化一概拒绝，未区分按线性物理元素/显式字节地址访问的指令与依赖NCx坐标的指令。
+- 职责：从inner bytes出发，按descriptor实际的内到外轴序逐级证明stride等于已覆盖长度，checked multiply累积
+  到完整footprint；source/dest分别证明，允许不同iteration分解。忽略iteration为1的轴，不交换轴，不把广播或置换当copy。
+  原零offset、完整footprint、物理映射相等及snapshot/alias/lifetime条件全部保留。
+- 输出：只有原物理映射与replacement物理映射均已证明相等时，沿用source或现有reinterpret view替换destination。
+  encoding改变时仅额外允许`instr.elementwise`及`instr.gather_scatter`：前者lowering消费dtype、物理元素数及线性地址，
+  后者消费显式byte descriptor；shape、dtype、footprint和地址序不变即保持其合同。Reduce/GEMM及其它未证明consumer
+  继续保留copy，standard view/region/call的类型约束也不放松。无需新增op、cast形式或IR旁路。
+- 直接下游：fresh completion、唯一SPM规划和原InstrToLLVM。无需新增join；只删除已证明无独立存储观察的allocation/copy。
+- 非目标：本补齐不合并旧值仍活跃的m/l/alpha，不处理loop-carried storage的跨迭代推测，也不更改算术、dtype、控制流或layout选择。
+  方法沿用同一完整snapshot coalescing；与LLVM MemCpyOpt的完整覆盖和无干扰读取条件一致，descriptor只补充实际地址流证明。
+- 完成条件：下面矩阵与fresh生产source→package/no-card、实际指令差异、全量实卡及独立计时通过；不按复制字节数承诺收益。
+
+| 覆盖 | exact结果和下游witness |
+| --- | --- |
+| rank≥3、1024/1025/1031，F16/BF16/F32；相同编码及等字节序Tensor/NCx | 分段和不同因子分解完整copy消除，elementwise/GS确实接回source；fresh completion/SPM |
+| 动态loop中的条件局部allocation | 每次进入重新定义storage，局部snapshot证明仍成立；不新增steady-state join |
+| 广播、真实置换、partial/gapped覆盖、padding映射不等 | 保留descriptor和独立destination；不能只凭总byte count消除 |
+| source晚写、destination写后仍观察旧source、escape、DTE | 原hazard与完成域证明继续拒绝 |
+| Reduce/GEMM等布局敏感consumer、view/region边界 | 不改变所需operand编码；原合法路径保持 |
+| BF16 attention产品 | 当前行状态copy逐条计数；多Tile/block执行、全量数值/guard/退出通过，原生转置仍排除 |
+
 ## 9. Failure 与 Verification
 
 失败至少区分invalid IR、unsupported representation、unsupported target、infeasible physical realization和

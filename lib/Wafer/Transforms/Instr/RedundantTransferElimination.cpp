@@ -64,11 +64,20 @@ struct TransferElisionWork {
   uint64_t aliasSummaries = 0;
 };
 
-static bool isUnitDescriptor(llvm::ArrayRef<int64_t> strides,
-                             llvm::ArrayRef<int64_t> iterations) {
-  return strides.size() == 3 && iterations.size() == 3 &&
-         llvm::all_of(strides, [](int64_t value) { return value == 0; }) &&
-         llvm::all_of(iterations, [](int64_t value) { return value == 1; });
+static bool isContiguousDescriptor(llvm::ArrayRef<int64_t> strides,
+                                   llvm::ArrayRef<int64_t> iterations,
+                                   int64_t innerBytes, int64_t totalBytes) {
+  if (strides.size() != 3 || iterations.size() != 3 || innerBytes <= 0)
+    return false;
+  int64_t covered = innerBytes;
+  for (auto [stride, count] : llvm::zip(strides, iterations)) {
+    if (count == 1)
+      continue;
+    if (count <= 0 || stride != covered ||
+        llvm::MulOverflow(covered, count, covered))
+      return false;
+  }
+  return covered == totalBytes;
 }
 
 static std::optional<int64_t> getPhysicalBytes(mlir::MemRefType type) {
@@ -122,9 +131,12 @@ static bool isCompleteContiguousCopy(InstrGatherScatterOp gather,
           gather.getDstOffsetAttr().getInt() == 0) &&
          !gather.getSrcOffsetValue() && !gather.getDstOffsetValue() &&
          gather.getByteCountAttr().getInt() == *sourceBytes &&
-         gather.getInnerBytesAttr().getInt() == *sourceBytes &&
-         isUnitDescriptor(gather.getSrcStrides(), gather.getSrcIterations()) &&
-         isUnitDescriptor(gather.getDstStrides(), gather.getDstIterations());
+         isContiguousDescriptor(gather.getSrcStrides(),
+                                gather.getSrcIterations(),
+                                gather.getInnerBytes(), *sourceBytes) &&
+         isContiguousDescriptor(gather.getDstStrides(),
+                                gather.getDstIterations(),
+                                gather.getInnerBytes(), *destBytes);
 }
 
 static bool isFullBufferTransfer(InstrGatherScatterOp gather) {
@@ -680,7 +692,12 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
     for (mlir::OpOperand &use : destRoot.getUses())
       if (use.getOwner() != gather.getOperation() &&
           !mlir::isa<mlir::memref::DeallocOp>(use.getOwner()) &&
-          mlir::isa<WaferInstructionOpInterface>(use.getOwner()))
+          mlir::isa<WaferInstructionOpInterface>(use.getOwner()) &&
+          // These instructions consume linear physical elements or explicit
+          // byte descriptors. Both physical maps and footprints were proven
+          // equal above; shape and dtype are unchanged. Other instructions
+          // can require a particular encoding (notably Reduce and GEMM).
+          !mlir::isa<InstrElementwiseOp, InstrGatherScatterOp>(use.getOwner()))
         return false;
 
   std::optional<int64_t> sourceAlignment =

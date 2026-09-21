@@ -111,6 +111,18 @@ canonical完整增量及随后Ninja no-op通过；最终fresh prepare为235.04s�
 统计移至统一`discover`新建分支处后，原1024/1025/1031/4096输入全部通过；未改变选择、排序或预算。
 本轮证据汇总见[接续记录](../../docs/data/board-performance/attention-copy-chain-20260922.json)。
 
+**第3项连续行复制检查点（2026-09-22）**：按08号补齐完整copy的连续分段证明，以及等物理映射下的
+线性elementwise/GS consumer资格；不改变Reduce/GEMM的编码合同。当前新包每Tile静态GS由23降为19，
+同一忙Tile的72次KV更新各少两次1KiB复制，即144次、144KiB有效payload；这是由未变控制流推导的动态次数，非新Trace读数。
+fresh no-card及三次普通实卡通过，耗时4.494/4.454/4.410ms，中位数4.454ms；全量输出指标与上一版一致，
+10752字节guard、16 Tile完成、厂商正常退出和日志健康检查通过。中位数比上一版少0.081ms，样本较少且范围重叠，
+只记录本次改善，不据此宣称稳定加速比。本小步未追加profile，不把上一版PMU数值当成本包实测。
+42项直接回归（新增54种dtype/extent/结构组合）、68项相关lit、canonical完整增量及随后Ninja no-op通过；
+fresh prepare为227.98s，峰值RSS 1,017,308KiB。初次夹具与环境错误及修正保留于[证据](../../docs/data/board-performance/attention-row-copy-20260922.json)。
+剩余行state的输入快照和循环state发布copy未删除：旧m还要参与alpha计算，不能把新旧状态直接合并；
+可进一步检查完整覆盖的逐元素计算能否直接读取copy源并写独立目标，目前只是待证明方向。VuVLoop主块/尾组仍未闭合。
+完成这部分后继续第4项输出恢复/整链方向，再推进第5项K/V重叠；没有重新打开tile/head搜索或原生转置。
+
 #### Attention展开方向与VuVLoop实施方案
 
 本方案归同一`board-testing`，接续完整profile得到的广播/布局热点；用户已授权实现及实卡验收，性能目标尚未闭合。

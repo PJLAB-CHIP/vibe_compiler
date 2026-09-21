@@ -1,0 +1,256 @@
+{
+  "work_item": "board-testing",
+  "plan_item": "3: contiguous row-layout copy elimination; remaining state copies and grouped tails pending",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bf16",
+  "shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "compiler_sha256": "57de7eb1093d2b1a3d4f9ad607bfbd65501fd36f79f72d29eccddcbffe416b0e",
+  "status": "fresh no-card and three ordinary board runs passed",
+  "root_cause": [
+    "Full-copy eligibility only recognized a one-segment descriptor; physically contiguous multi-segment layout copies were excluded.",
+    "Cross-encoding replacements excluded all Instr consumers, including elementwise and explicit byte-addressed GatherScatter whose contracts remain unchanged after exact physical-map equality proof."
+  ],
+  "change": "Recognize contiguous address streams independently at both endpoints; retain snapshot, alias, effect, alignment and exact physical-map proofs; permit only demonstrated linear consumers across encodings.",
+  "static_gather_scatter_per_tile": {
+    "before": 23,
+    "after": 19,
+    "tiles": 16
+  },
+  "busy_tile_removed_1kib_copies": 144,
+  "busy_tile_removed_payload_bytes": 147456,
+  "dynamic_count_basis": "Unchanged 72 KV updates on a busy Tile, two eliminated row copies per update; derived from actual control flow, not a new trace measurement.",
+  "device_elapsed_ms": [
+    4.494,
+    4.454,
+    4.41
+  ],
+  "median_device_elapsed_ms": 4.454,
+  "host_register_capture": false,
+  "device_profile": false,
+  "board_samples": [
+    {
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "c7076811b5f1e92a5798df5c021b514d0034e4d2fbab287b989147c5ad6d96cd",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4494000"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      }
+    },
+    {
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "c7076811b5f1e92a5798df5c021b514d0034e4d2fbab287b989147c5ad6d96cd",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4454000"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      }
+    },
+    {
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "c7076811b5f1e92a5798df5c021b514d0034e4d2fbab287b989147c5ad6d96cd",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4410000"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      }
+    }
+  ],
+  "host_checks": {
+    "direct_suite": "42/42 passed; new rank-four test covers 54 dtype/extent/structure combinations and completion/SPM",
+    "lit": "68/68 passed, no skips or unsupported",
+    "canonical_build": "full incremental passed; subsequent Ninja no-op",
+    "prepare_wall_seconds": 227.98,
+    "prepare_max_rss_kib": 1017308
+  },
+  "verification_corrections": [
+    "Initial no-card invocations lacked TX8_DEPS_ROOT then clang++ PATH and stopped before package/board execution; corrected environment produced the final fresh package.",
+    "Test fixture fill was changed to its required physical_footprint domain; a host read provides the explicit completion witness.",
+    "F16/BF16 NCx outer-slice padding made the first odd-row fixture non-identical; the positive fixture now uses a bank-aligned outer slice with the same 1024/1025/1031 major extents. Production physical-map checks were not relaxed."
+  ],
+  "remaining": [
+    "Input-to-private-state snapshots and final loop-state publication copies remain; no proof of safe in-place replacement is claimed.",
+    "Grouped VuVLoop tails, output restoration/orientation and K/V overlap remain pending per the same plan."
+  ],
+  "profile": "No additional profile in this substep; the previous copy-chain profile is retained as the measured hotspot reference, not attributed to this package.",
+  "host_work_evidence": {
+    "before": {
+      "scope": "aggregate compiler invocation including candidate attempts, not just winner",
+      "counters": {
+        "alias-summaries": 9904,
+        "collected": 13854,
+        "eliminated": 2512,
+        "inspected": 14482,
+        "proofs": 5862,
+        "timelines": 2687
+      },
+      "timing_rows": [
+        "wafer-compile: | optimization | full-buffer-transfer-elision | elideRedundantFullBufferTransfers | 512 | 9417.587 | 9399.766 | 18.394 | 114.881 | 0 |",
+        "wafer-compile: | optimization-phase | tryElide | total | 5862 | 7857.457 | 7853.797 | 1.340 | 8.205 | 0 |",
+        "wafer-compile: | analysis-phase | tryElide | proveStaticReshapeMetadataView | 2592 | 7580.320 | 7577.249 | 2.925 | 8.045 | 0 |",
+        "wafer-compile: | transformation-phase | tryElide | createReplacementView | 2544 | 63.509 | 63.581 | 0.025 | 0.103 | 0 |",
+        "wafer-compile: | analysis-phase | tryElide | collectAliases | 4952 | 52.549 | 52.591 | 0.011 | 0.149 | 0 |",
+        "wafer-compile: | analysis-phase | tryElide | eligibility | 5862 | 29.268 | 29.299 | 0.005 | 0.029 | 0 |"
+      ]
+    },
+    "after": {
+      "scope": "aggregate compiler invocation including candidate attempts, not just winner",
+      "counters": {
+        "alias-summaries": 10984,
+        "collected": 13854,
+        "eliminated": 2960,
+        "inspected": 14934,
+        "proofs": 7158,
+        "timelines": 3135
+      },
+      "timing_rows": [
+        "wafer-compile: | optimization | full-buffer-transfer-elision | elideRedundantFullBufferTransfers | 512 | 11338.797 | 11316.374 | 22.146 | 117.847 | 0 |",
+        "wafer-compile: | optimization-phase | tryElide | total | 7158 | 9612.909 | 9605.996 | 1.343 | 8.168 | 0 |",
+        "wafer-compile: | analysis-phase | tryElide | proveStaticReshapeMetadataView | 3040 | 9266.039 | 9259.845 | 3.048 | 8.001 | 0 |",
+        "wafer-compile: | transformation-phase | tryElide | createReplacementView | 2992 | 80.239 | 80.519 | 0.027 | 0.120 | 0 |",
+        "wafer-compile: | analysis-phase | tryElide | collectAliases | 5492 | 62.810 | 63.053 | 0.011 | 0.092 | 0 |",
+        "wafer-compile: | analysis-phase | tryElide | eligibility | 7158 | 38.953 | 39.089 | 0.005 | 0.029 | 0 |"
+      ]
+    }
+  }
+}
