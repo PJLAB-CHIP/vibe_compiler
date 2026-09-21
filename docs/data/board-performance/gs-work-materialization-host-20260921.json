@@ -1,0 +1,544 @@
+{
+  "date": "2026-09-21",
+  "work_item": "board-testing",
+  "scope": "所有来源GS在current Instr统一合并连续inner和有序分段；本轮没有设备访问、寄存器写入或kernel launch。",
+  "status": "host-passed; three diagnostic cases and two attention packages board-ready; real-board qualification pending",
+  "production_fix_qualified": false,
+  "parent_commit": "99dbb3e1dd0a50c6a8f7ae0c43ac454653bceb18",
+  "source_sha256": {
+    "include/Wafer/Transforms/Instr/Passes.td": "b33661837540a843954e46046437a7a5b27ae81a9d29137942bd05a25e1ff00c",
+    "lib/Wafer/Conversion/InstrToLLVM/TargetLoweringVerification.cpp": "09e0cce2278b7b590f266171b0245475ec8ef8fb44263a5572fe3fd5a39b62e6",
+    "lib/Wafer/Conversion/TileToInstr/Pipelines.cpp": "8c67124965be0c1df8b63d09805a0210feb09735c490036a9f1673392b5333a6",
+    "lib/Wafer/Driver/CurrentIRExecutablePipeline.cpp": "9104a810e792e6d0e3b6ab9a8bf9a11181d65a8141ee858dc144c5c623aa4082",
+    "lib/Wafer/Transforms/CMakeLists.txt": "b2811a2c3f6be7d79f9d8b2808ba4bd589ece53fb063f17785127e086376d8f1",
+    "test/Conversion/TileToInstr/convert-instr-tdma-transform-to-gather-scatter.mlir": "409f49d10f7f96fa98dfe4cdab28658dc9a08e44fec70718bcce479086c284de",
+    "test/Conversion/TileToInstr/convert-tile-region-to-instr-splat-mask.mlir": "90d0aeb9b0461ac228670626fe1ad56d11e434699ba19ddb4b9ca3611302bfd1",
+    "test/Pipelines/pipeline-structure.mlir": "6c34cbd8fa4042ccaa8161dd2544700bb84a92a08307504f58f957530d7ecfb8",
+    "unittests/CMakeLists.txt": "b1dd325b9358dd2aad16571ed250731dbd057e8d725fdae49d5ff3a976fb1a60",
+    "unittests/Pipelines/PipelinesTest.cpp": "1833e580289bdab32754574c54fa3bfddc4ad44f6bef6a8266233f14571d6c2a",
+    "include/Wafer/Target/GatherScatter.h": "9cb0ba20dc3a53b29b86eeb87de830cb21e444ecaab9a0bce0fbefdc1afebada",
+    "lib/Wafer/Transforms/Instr/GatherScatterWork.h": "3ff0d86acf206b15ed5454964156e2873538067f185ffb3dc3bcbcafdc361df8",
+    "lib/Wafer/Transforms/Instr/GatherScatterWork.cpp": "8868b1919d2ade1a1e5fd6ecec5516dc944ae8a1ab5f672dd12f1ec627622714",
+    "unittests/Transforms/Instr/GatherScatterWorkTest.cpp": "00a73959a8a5ba4312879948165a543041ab1f0912979fd60f64297be29c87f7",
+    "test/Transforms/Instr/materialize-gather-scatter-work.mlir": "2ecde48d6009da29c86fb840920b5e3d738864f870c77ed24b18163c8d3369a2"
+  },
+  "compiler_sha256": "f5930d4f6f912179c6c406756add29258f281d540717f5c68032d0925e51f5dc",
+  "issue_policy": {
+    "max_inner_transfers": 16384,
+    "max_payload_bytes": 1048576,
+    "hardware_iteration_limit": false,
+    "universal_watchdog_guarantee": false,
+    "qualification": "16,384来自已健康单条小颗粒实验；紧密发射、consumer与完整attention仍须实测。"
+  },
+  "host_checks": {
+    "new_exact_stream_tests": {
+      "passed": 7,
+      "coverage": "ordered byte pairs, distinct radices/holes, F16/BF16/F32, 1024/1025/1031, offsets, tails, alias rejection, worker/resource, idempotence, completion"
+    },
+    "component_tests": {
+      "WaferPipelineUnitTests": "passed",
+      "WaferAnalysisUnitTests": "passed",
+      "WaferConversionUnitTests": "passed",
+      "WaferTransformsUnitTests": "passed",
+      "WaferDriverUnitTests": "passed"
+    },
+    "wafer_lit": "final rerun passed",
+    "earlier_failures": "初轮lit三个旧结构断言失败，随分段结果同步后最终wafer-lit通过；初轮CTest汇总含该旧失败，不写成初轮全通过。",
+    "canonical_build": "passed; subsequent ninja no work to do",
+    "source_and_ir_organization": "passed",
+    "logs": "/data/vibe_compiler-validation/gs-work-materialization-20260921/host-logs"
+  },
+  "attention_packages": [
+    {
+      "name": "prefill-bf16",
+      "directory": "/data/vibe_compiler-validation/gs-work-materialization-20260921/prefill-bf16",
+      "manifest_sha256": "08c52a17031967673e355c1ca7568588f73621c80eb0a82752804678f3a4a10b",
+      "modules": [
+        {
+          "id": 0,
+          "path": "modules/module_00000.so",
+          "digest": "sha256:85e3346d045d31d122754706f2afdadbe6a1ac2f229ee575723f1fc236e86314",
+          "format": "elf-riscv64",
+          "exports": [
+            {
+              "role": "main",
+              "symbol": "entry"
+            }
+          ]
+        }
+      ],
+      "fresh_seed": 20260922,
+      "shape": [
+        1,
+        28,
+        4096,
+        128
+      ],
+      "source_files": {
+        "source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "source-program/constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "d36bd80083357f1b478cb2f350fac618933abfb3693db81bdc2263180626a815",
+        "source-program/functions/forward.stablehlo.bc": "aa35d8ed2c86f4afbadd9d612f0448c75d60b4dc5b3f0b302773a3efa99abce1"
+      },
+      "raw_files": {
+        "raw/card_00_output_0.expected.bf16.raw": "096b994d5ee5f4b709711535a406ae2a6b8f726349765b3a9041aae22ac34605",
+        "raw/card_00_user_input_0.bf16.raw": "b4aa1ae1617a792f5a73b7299af2e359f1c065f2a6dd1b865ae723c9a7aa05d9",
+        "raw/card_00_user_input_1.bf16.raw": "abe1f577fee76ef389413880feebdc051b69be068fad84578c6c504b49dd7810",
+        "raw/card_00_user_input_2.bf16.raw": "df0d1e267cd4d797034c764ed3212c121c39600b962687a24e5565027ebe272a"
+      },
+      "no_card": "passed",
+      "planned_guard_bytes": 10752,
+      "board_execution": false,
+      "arithmetic_execution": false,
+      "current_instruction_audit": [
+        {
+          "file": "ir/instruction/tile_00000.mlir",
+          "sha256": "8db78a977f83e10fe79614ed8d8c8beae9a205ae9ec3465438d825c76e81a589",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00001.mlir",
+          "sha256": "7c7e8f990df03f84963b243964ae9f2d533296e10c3d85df5d15e88f5227b2e4",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00002.mlir",
+          "sha256": "bced4ffaa2487453a0c95ad202a24d0cfdfc3433433304db97677ce322501855",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00003.mlir",
+          "sha256": "29a4d487d511a2d3be0124f4a43a2650bd4dacd7b5356690f62d421debd5188e",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00004.mlir",
+          "sha256": "2ac2aa9b5b70432c9cab9a80c26b681a80d000f9d1a73b712864ddb0d94b447a",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00005.mlir",
+          "sha256": "3ec05c503460bda40aae5d1065da7bb1aa1455100d32ba2fb48bd1bc433d45f1",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00006.mlir",
+          "sha256": "7b28f2d5bfa8c54fcf9dcdf6ec680791018395f624c551d93174db0f86fa2edb",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00007.mlir",
+          "sha256": "f7a7d72b957d6aa218fe48bdc42bbffa1d0847b02d0d7207677a3ea2cad1320c",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00008.mlir",
+          "sha256": "4e02ed75c0f782d69fd09193254c4c9166200bb6babfda21b7507cf562243d68",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00009.mlir",
+          "sha256": "72eff8bc39098ad2bb6074a99ca597522aed02165bb256b3a774d525c80d02c4",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00010.mlir",
+          "sha256": "2df1ad2fa162a0320de491c0c33664efb091ff539adc5936f3075261095a5fd0",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00011.mlir",
+          "sha256": "3dd7e50e9096ca67d73afa53af440dd0a30d86f25f715dd41e2d9ba81286d608",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00012.mlir",
+          "sha256": "1b4e732a692a929398f1024ba3be1099443c81cbc421cd87a7572c49066ac8e3",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00013.mlir",
+          "sha256": "aba97e0f5920d2e71e608409b1904bca792d234bd58abc3e010bce7341782e4f",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00014.mlir",
+          "sha256": "238656329a5e2241b52f2e23ff23fb67219ee9dc2d3e2d7b8458f743b0580041",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00015.mlir",
+          "sha256": "acbab217d037f707e4fedbb2d8e93f19b59ea5168732972cbf05fd2ef70213c7",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "prefill-fp16",
+      "directory": "/data/vibe_compiler-validation/gs-work-materialization-20260921/prefill-fp16",
+      "manifest_sha256": "7464f26f1a9c61f484849c48d066646c685a40df1961cd580cf419456da4014a",
+      "modules": [
+        {
+          "id": 0,
+          "path": "modules/module_00000.so",
+          "digest": "sha256:37fb9b624fae5b572d86e37c0a044a324b11b83b88667fdeb9f8c702af6c2b0c",
+          "format": "elf-riscv64",
+          "exports": [
+            {
+              "role": "main",
+              "symbol": "entry"
+            }
+          ]
+        }
+      ],
+      "fresh_seed": 20260922,
+      "shape": [
+        1,
+        28,
+        4096,
+        128
+      ],
+      "source_files": {
+        "source-program/constants/0": "e3bca5f361fcfb3b355ee0834057c4304c915162b4d8ec0d84ca7a0bc4f7e2fe",
+        "source-program/constants/1": "2ebc4e8b8a501e03bf0cc5a726edc610a78ebea12575fb1be5bb6458781fe654",
+        "source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "source-program/functions/forward.meta": "1cb451d282429f0d9a28381116181904d87bd90dfbc48a6dc3503985a83aec98",
+        "source-program/functions/forward.stablehlo.bc": "67d20a95886290b8810d1e46bc4e28e458f6d8c742c4e31d2e80e5dfea259af1"
+      },
+      "raw_files": {
+        "raw/card_00_output_0.expected.f16.raw": "75d2f90dcce44fb5120b905228afa70b758d6e0fe914b6b69129aea325b199cd",
+        "raw/card_00_user_input_0.f16.raw": "79225cecd89e127249c418733eeb9bf63c9f82d2e1a2f0e670d4a83c65b79191",
+        "raw/card_00_user_input_1.f16.raw": "43bd9bd864441714a90c2082bc1714b41b7c968591cd319ad9bd1e977405d1cc",
+        "raw/card_00_user_input_2.f16.raw": "94cdcffd7aa9896b92e2ac67bac73b4c3a475a6582a31794f37b49a2b118bd89"
+      },
+      "no_card": "passed",
+      "planned_guard_bytes": 10752,
+      "board_execution": false,
+      "arithmetic_execution": false,
+      "current_instruction_audit": [
+        {
+          "file": "ir/instruction/tile_00000.mlir",
+          "sha256": "738ebe5ad9e2146a60727b6d68f712aae1a9fe6036c9860612fdf10426dea13b",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00001.mlir",
+          "sha256": "fccbcd520ab30daa5ea41f1606fcdd3288c875c0e7b7ece8fe9d3509df05bb8b",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00002.mlir",
+          "sha256": "d63da9c024bb77a60d34c2ff421b7f00486becc6db22f51b5d1ca4b6d27f491f",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00003.mlir",
+          "sha256": "07d56e7fa27891890c78851d575014d9bf586e9dd217b584de6018bd79a26d81",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00004.mlir",
+          "sha256": "58b914fa5a434a08dfdbbe963657496dd4a70c6267de9c98f748fef5236e1b2f",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00005.mlir",
+          "sha256": "e61764492be94bd3f988a9c243eef1a5843e5f42e8efa7effa7af0740c4e7093",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00006.mlir",
+          "sha256": "7fc6aad54053db35b11f4f418faf6b38ee63466022567f964f69ca90dd44a887",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00007.mlir",
+          "sha256": "4d4c6cb1284d7e9b8170e5983bc0b2dfabee96daa59848a62fb167c87ddd1821",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00008.mlir",
+          "sha256": "e1c2512852f0a16477ea6c8251516a63f22c3f561f077663b5b180d467639bf5",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00009.mlir",
+          "sha256": "79e0bdaf736f42a3bfebec8c788037816df2a8e315c5707b7c1d8d7bffbb9c2f",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00010.mlir",
+          "sha256": "01f24b261a853981ae8e73e09ac7c08b419f10d92e34b0715e11672c74555cd8",
+          "static_gs_sites": 45,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00011.mlir",
+          "sha256": "2c5d2dc3e2caed64d7fda44bbce10a47496c3af55cce8df6e3af85a841d74a32",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00012.mlir",
+          "sha256": "58108c7b11eb3027b2eb0eb36a1135651973bc33e2079fb4fb7829a9256d3916",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00013.mlir",
+          "sha256": "634337faf8c26d1764a54bdaee7f3608f5cd0bfc8c15a9034bd286c8c649d8b7",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00014.mlir",
+          "sha256": "aeebbe292765310072e96f15956380fc28fbd81de88cd7486a00f86a80194c71",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        },
+        {
+          "file": "ir/instruction/tile_00015.mlir",
+          "sha256": "daeb63f313a1d0e08d925b31b4e662c0d0f1c198d365b4849380d343c2dab617",
+          "static_gs_sites": 49,
+          "max_payload_bytes": 262144,
+          "max_inner_transfers": 16384,
+          "ncc_joins": [
+            "wafer.instr.ncc_join [0]"
+          ]
+        }
+      ]
+    }
+  ],
+  "probes": {
+    "runner": "/data/vibe_compiler-validation/gs-work-materialization-20260921/probes/run.py",
+    "ready": "/data/vibe_compiler-validation/gs-work-materialization-20260921/probes/ready.json",
+    "ready_sha256": "58f1654a526e6aa88b67c2d86e5430aefc4547c24e076daee793fa25e87a962e",
+    "frozen_files": 126,
+    "blocked_boot_ids": [
+      "07dfaf5a-a61a-452a-9838-f56e8974264c"
+    ],
+    "host_default_and_fault_boot_cli": "passed; before device access",
+    "cases": [
+      {
+        "case": "tight-tile4",
+        "elf_sha256": "fd64cb6be20e4484d7152d74be53fee4434e93027720cd65eaa8b81875b8fcbc",
+        "manifest_sha256": "a0a41fefba6967a5aefb733108a59b9b71504e1c6b21e683515e77412a118991",
+        "input_sha256": "a49331835aa02d76fdd499e54d1aef59603c130c4b8f485faff26f04df78f632",
+        "expected_sha256": "be36523b894b19d1e03eeee58347110ee85236c81edee069b216e01c2ef37d25",
+        "compiler_gs_calls": 4,
+        "undefined_symbols": [
+          "__get_pid",
+          "rcs_ep_log",
+          "rt_free",
+          "rt_malloc"
+        ],
+        "actual_elf_16_entries": "passed",
+        "no_card": "passed",
+        "diagnostic_report_positive_and_negative": "passed"
+      },
+      {
+        "case": "tight-tile12",
+        "elf_sha256": "ea5eefff294ebb56805df99ddcb736822d40f497a72d55004dbb8c1934b5fcc0",
+        "manifest_sha256": "78e3a3f889fa2368f79b731c3ab66c89f4ce26f12ed188339c180bee896c6d74",
+        "input_sha256": "2daf89ec4678d5824f6018669d5aff4b53655ccb44a0c979e1aa001a49d4ac92",
+        "expected_sha256": "38e1052d004111807f61dac21c65eed61848bd41c28caa24ee779aee38d2a884",
+        "compiler_gs_calls": 4,
+        "undefined_symbols": [
+          "__get_pid",
+          "rcs_ep_log",
+          "rt_free",
+          "rt_malloc"
+        ],
+        "actual_elf_16_entries": "passed",
+        "no_card": "passed",
+        "diagnostic_report_positive_and_negative": "passed"
+      },
+      {
+        "case": "tight-consumer",
+        "elf_sha256": "3c34d0fcbecced1e3e16383c9b117c1e46d592cfc348568b3ffe755b427a25e0",
+        "manifest_sha256": "8141db8766a1f280bcff7e7b1abf7e143c5604982acf5f04e4b3feb342f28df4",
+        "input_sha256": "a49331835aa02d76fdd499e54d1aef59603c130c4b8f485faff26f04df78f632",
+        "expected_sha256": "6f2edfa915624dc5716120803eaaaa55b49b0b88a74824c8b3337a691b8c0611",
+        "compiler_gs_calls": 5,
+        "undefined_symbols": [
+          "__get_pid",
+          "rcs_ep_log",
+          "rt_free",
+          "rt_malloc"
+        ],
+        "actual_elf_16_entries": "passed",
+        "no_card": "passed",
+        "diagnostic_report_positive_and_negative": "passed"
+      }
+    ],
+    "host_execution": "同一生成LLVM在host ABI模型中执行，按独立oracle完整比较2 MiB输出；最终RISC-V ELF的16入口在Unicorn中拦截TargetCall并逐项对照具体参数；不模拟硬件watchdog，未把拦截称为SDK执行。",
+    "tight_issue": "无逐GS日志、PMU采样或join；只在窗口外观测和既有terminal completion；生产CRT源逐byte一致。",
+    "collector_checks": "healthy、alarm、timeout code、fatal flag、byte corruption及故障boot拒绝均通过",
+    "dtype_reason": "F32来自已定位的4-byte实际故障descriptor；输入为新生成合法有限值。"
+  },
+  "next_execution_order": [
+    "new boot and system occupancy checks",
+    "tight-tile4",
+    "tight-tile12",
+    "tight-consumer",
+    "fresh FP16/BF16 attention packages after all three diagnostics pass"
+  ],
+  "stop_rule": "任一timeout、fatal或其它设备异常立即停批；厂商正常退出；不retry/reset/power cycle。",
+  "limitations": [
+    "工作量策略不能替代硬件计时合同；本轮未证明任意stride健康。",
+    "未知或交叠alias无法证明分段保持source快照时typed unsupported。",
+    "no-card只验证package/ABI/guard计划，不代表attention数值或板端运行通过。",
+    "早期F32 fill独立状态问题和完整产品矩阵不由本修复代签。"
+  ]
+}

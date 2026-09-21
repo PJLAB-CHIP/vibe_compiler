@@ -44,11 +44,12 @@ func.func @instr_tdma_large_transpose_uses_loop_stride() {
 
 // CHECK-LABEL: func.func @instr_tdma_large_transpose_uses_loop_stride
 // CHECK-COUNT-1: wafer.instr.gather_scatter
-// CHECK-SAME: byte_count = 33554432 : i64
-// CHECK-SAME: dst_iterations = array<i64: 4096, 4096, 1>
-// CHECK-SAME: dst_strides = array<i64: 2, 8192, 0>
+// The original stream is strip-mined into 1024 issues, without element loops.
+// CHECK-SAME: byte_count = 32768 : i64
+// CHECK-SAME: dst_iterations = array<i64: 16384, 1, 1>
+// CHECK-SAME: dst_strides = array<i64: 2, 0, 0>
 // CHECK-SAME: inner_bytes = 2 : i64
-// CHECK-SAME: src_iterations = array<i64: 4096, 4096, 1>
+// CHECK-SAME: src_iterations = array<i64: 4096, 4, 1>
 // CHECK-SAME: src_strides = array<i64: 8192, 2, 0>
 
 func.func @instr_tdma_nchw2nhwc_materializes() {

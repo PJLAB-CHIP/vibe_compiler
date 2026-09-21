@@ -2,6 +2,27 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### GS通用修复实施（2026-09-21）
+
+用户要求处理所有GS使用入口。本轮归入同一board-testing，合同与覆盖矩阵在11号7.3节。
+已实现current Instr共同连续合并及有序分段，正式driver/named pipeline使用同一实现，target拒绝遗漏处理的超长GS。
+原故障65,536次搬运变为4条紧密GS，保持dtype、worker、两端独立stride/iteration及逐byte地址顺序；
+变换不插join，completion和SPM从实际结果重新规划。未知/交叠alias不能证明分段正确时返回typed unsupported。
+16,384 inner搬运/1 MiB是本轮待板端验证的发射策略，不把它登记成硬件iteration上限或已修复资格。
+
+本轮7项专项地址oracle、五个受影响unit component、最终完整lit、source/IR组织检查和canonical增量/Ninja no-op通过。
+初轮lit三个旧结构断言已随实际分段结果更新，最终重新通过；不隐去初轮失败。
+原4K、28-head FP16/BF16均重新生成source、合法输入和独立reference，完成生产search→package→guarded no-card。
+两种dtype各16 Tile、740个静态GS site全部满足策略，每Tile仍只有一个terminal join；no-card没有执行attention数值。
+
+三个专项`tight-tile4`、`tight-tile12`、`tight-consumer`已达到diagnostic board-ready：使用当前编译器从原descriptor生成窗口，
+没有逐issue日志/采样/等待；完整2 MiB新输入与独立expected、实际LLVM主机执行、最终ELF的16入口ABI调用核对、
+strict no-card、厂商导出符号检查及采集器正负例通过。126份依赖冻结，默认入口只验摘要，实际CLI在任何设备访问前拒绝故障boot。
+ELF核对拦截TargetCall，不将它称为硬件或SDK执行。当前boot未运行设备，具体包、摘要和证据见
+[GS主机验收与实卡准备](../../docs/data/board-performance/gs-work-materialization-host-20260921.json)。
+下一次重启后依次执行这三项，健康后接原FP16/BF16 attention；每项重新检查全系统占用，任何异常停批，不retry/reset。
+本修复仍待实卡验收，早期F32 fill状态和其它产品资格不由上述主机结果代签。
+
 ### 当前检查点：LSU门限因果与位宽已实测确认（2026-09-21）
 
 用户再次确认重启后，冻结依赖、当前SDK/firmware身份及逐case全系统占用检查通过。

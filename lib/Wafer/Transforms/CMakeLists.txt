@@ -9,6 +9,7 @@ add_mlir_library(WaferTransforms
   Instr/DirectDTETransport.cpp
   Instr/CommunicationScheduling.cpp
   Instr/CommunicationConstruction.cpp
+  Instr/GatherScatterWork.cpp
   Instr/LifetimeAnalysis.cpp
   Instr/MiniMallocPacking.cpp
   Instr/NativeDirectDTEMultiSend.cpp
@@ -32,6 +33,7 @@ add_mlir_library(WaferTransforms
   WaferStableHLOTransforms
   WaferTileTransforms
   WaferTarget
+  MLIRAnalysis
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect

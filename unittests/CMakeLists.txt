@@ -148,6 +148,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Instr/MiniMallocPackingTest.cpp
     Transforms/Instr/StaticMemoryPackingTest.cpp
     Transforms/Instr/RedundantTransferEliminationTest.cpp
+    Transforms/Instr/GatherScatterWorkTest.cpp
   LINK_LIBS
     WaferCompiler
     WaferCompilerTestSupport

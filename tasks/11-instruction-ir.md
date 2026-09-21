@@ -656,6 +656,32 @@ wafer.instr.gather_scatter source to dest attr-dict
 是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是
 `wafer.spm.offset` / `wafer.ddr.offset` 这类 accepted base offset fact。
 
+#### GS单条工作量物化
+
+输入为已验证的current `wafer.instr.gather_scatter`，包括两端独立的三层stride/iteration、静态或SSA offset、
+worker和resource。Instr变换统一处理所有来源的GS：broadcast、copy、layout、slice、concat和计算组合不另设旁路。
+输出仍为现有GS及必要的常界`scf.for`/index算术；直接下游是communication/completion、actual SPM、cost和target lowering。
+production driver与named Tile→Instr pipeline调用同一实现，放在完整movement物化之后、最终completion之前。
+
+当前TX81发射策略将单条GS限制为最多16,384个inner搬运、最多1 MiB payload，先合并两端共同连续的inner，
+再按原线性搬运顺序切出双方均可表达的矩形段。前者取已健康实测的小颗粒粒度，后者保留既有1 MiB搬运范围；
+这是待紧密发射实卡验收的编译器工作量策略，不是iteration字段位宽、时间单位换算或任意stride下的健康保证。
+硬件事实仍见[TDMA定位](../docs/tx81-tdma-fault-localization.md)。不同iteration分解也按相同线性序号配对，不能假定两端数组相等。
+连续等结构段用常界loop表达，避免按元素展开host指令；main/tail均精确保持字节地址序列、payload总量、dtype和worker。
+
+变换不创建buffer、不改layout或tiling、不改timeout、不插join。分段前须从current alias关系证明写入不会破坏后续source快照；
+不能证明时返回typed unsupported，不静默发射超策略GS。target lowering只验证策略已物化，不在CRT偷偷拆分。
+既有小GS及高效连续搬运不因算子名称被替换，同值fill仍使用现有CT实现。
+
+完成矩阵：rank3/4、1024/1025/1031、F16/BF16/F32及byte payload；连续可合并、小颗粒广播、holes、两端不同iteration、
+inner/payload边界、非零/动态offset、main/tail、相同buffer不相交及未知/交叠alias；逐byte顺序与覆盖oracle、策略边界、
+worker/resource保持、幂等、actual completion零新增steady-state join、SPM与TargetCall消费。生产source/package/no-card完成后，
+还须紧密分段、直接consumer及原attention实卡验收；host结果不代签watchdog健康。
+
+算法采用MLIR成熟的[strip-mining](https://mlir.llvm.org/doxygen/LoopUtils_8cpp.html)原则，保留执行顺序并独立处理尾段；
+与直接调门限、CRT隐式拆分和逐元素展开相比，本层显式分段使后续analysis看到实际指令与effects。
+具体API以pinned SCF Utils、IRRewriter和AliasAnalysis源码为准。
+
 ### 7.4 Fill / Elementwise / Reduce / Convert
 
 ```text

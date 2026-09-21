@@ -9,6 +9,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/GatherScatter.h"
 #include "Wafer/Target/TargetMemory.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -1130,7 +1131,10 @@ static mlir::LogicalResult verifyDynamicGatherScatterOffset(
 }
 
 static mlir::LogicalResult
-verifyDynamicGatherScatterOffsets(InstrGatherScatterOp op) {
+verifyTargetGatherScatter(InstrGatherScatterOp op) {
+  if (!target::isGatherScatterIssueBounded(op.getByteCount(), op.getInnerBytes()))
+    return op.emitError("unmaterialized_gather_scatter_work: materialize GS "
+                        "work before completion and target lowering");
   auto sourceType = mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
   auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getDest().getType());
   if (!sourceType || !destType)
@@ -1153,7 +1157,7 @@ mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp) {
     if (!isWaferInstruction(op))
       return mlir::WalkResult::advance();
     if ((mlir::isa<InstrGatherScatterOp>(op) &&
-         mlir::failed(verifyDynamicGatherScatterOffsets(
+         mlir::failed(verifyTargetGatherScatter(
              mlir::cast<InstrGatherScatterOp>(op)))) ||
         mlir::failed(verifyNoSchemaFreeSemanticAttributes(op)) ||
         mlir::failed(verifyTargetInstructionFormat(op))) {

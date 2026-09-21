@@ -27,8 +27,10 @@ LSU_TIMEOUT的32-bit写入只保留低16位；相同GS仅降低门限即从健�
 本复现的触发原因和该字段上限已确认，不再只是持续时间相关性。异常后立即停批，原配置恢复并读回核对通过。
 排查经历已整理为[复盘文档](../docs/tx81-tdma-timeout-investigation-retrospective.md)，保留关键实验、弯路和证据边界。
 当前boot不再计算；接续工作是降低普通broadcast单条小颗粒GS的持续时间，完成紧密发射、直接consumer和原attention验收。
+所有GS入口已按11号7.3节接入Instr连续合并与有序分段，主机验证通过；三项紧密发射/consumer专项及原attention双dtype包已准备。
+下一次新boot先验专项，再验原attention；当前故障boot没有新增设备执行，生产修复尚待实卡资格。
 不以调大该字段修复，也不将timeout值当iteration合法性上限。生产修复、早期F32 fill状态及产品资格仍未闭合。
-具体覆盖和证据以[计划顶部](plans/board-workload-matrix.md#当前检查点lsu门限因果与位宽已实测确认2026-09-21)为准；
+具体覆盖和证据以[计划顶部](plans/board-workload-matrix.md#gs通用修复实施2026-09-21)为准；
 下列较早检查点的临时接续顺序已被此项取代。整项仍为`doing`，不以微用例代签完整attention。
 
 2026-09-20用户修正板测方式：禁止为性能比较重新运行历史包，直接使用已有健康耗时记录并注明版本、配置及环境差异。

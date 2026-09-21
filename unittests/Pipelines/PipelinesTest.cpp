@@ -44,6 +44,8 @@ TEST(PipelinesTest, TileLoweringBuilderUsesTheProductionNestedStructure) {
             std::string::npos);
   EXPECT_NE(pipeline.find("wafer-rebuild-required-ncc-joins"),
             std::string::npos);
+  EXPECT_LT(pipeline.find("wafer-materialize-gather-scatter-work"),
+            pipeline.find("wafer-rebuild-required-ncc-joins"));
 }
 
 TEST(PipelinesTest, CurrentLayoutBufferizationExposesOneAtomicPass) {

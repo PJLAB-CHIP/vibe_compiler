@@ -3,6 +3,13 @@
 #ifndef WAFER_TRANSFORMS_INSTR_PASSES_TD
 #define WAFER_TRANSFORMS_INSTR_PASSES_TD
 
+def MaterializeGatherScatterWorkPass
+    : Pass<"wafer-materialize-gather-scatter-work", "mlir::func::FuncOp"> {
+  let summary = "Coalesce and split GS work into ordered bounded instructions";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
+                           "wafer::WaferDialect"];
+}
+
 def PlanSPMMemoryPass
     : Pass<"wafer-plan-spm-memory", "mlir::ModuleOp"> {
   let summary =

@@ -9,6 +9,7 @@
 #include "Wafer/Support/BoundedTilePipelines.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Instr/DirectDTETransport.h"
+#include "Wafer/Transforms/Instr/GatherScatterWork.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
@@ -349,6 +350,16 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
               "physical movement placement produced invalid current IR");
         support::addCompileCounter("movement", "invariant-instruction-copies",
                                    *moved);
+        for (auto function : tile.module->getOps<mlir::func::FuncOp>()) {
+          auto bounded = materializeGatherScatterWork(function);
+          if (!bounded.succeeded())
+            return fail(
+                bounded.failure == GatherScatterWorkFailure::UnsupportedAliasing
+                    ? ExecutableCompilationStatus::UnsupportedFailure
+                    : ExecutableCompilationStatus::CompilerFailure,
+                "gather-scatter-work",
+                "could not materialize bounded GS instructions");
+        }
         return std::nullopt;
       });
   if (cleanupFailure)

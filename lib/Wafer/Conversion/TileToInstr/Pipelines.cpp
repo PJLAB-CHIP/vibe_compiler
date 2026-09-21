@@ -16,6 +16,7 @@ void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
   pm.nest<mlir::func::FuncOp>().nest<TileRegionOp>().addPass(
       createConvertTileRegionToInstrPass());
   pm.addPass(createConvertBufferizationCopiesToInstrPass());
+  pm.nest<mlir::func::FuncOp>().addPass(createMaterializeGatherScatterWorkPass());
   pm.nest<mlir::func::FuncOp>().addPass(createRebuildRequiredNCCJoinsPass());
 }
 

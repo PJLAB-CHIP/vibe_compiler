@@ -102,7 +102,8 @@ func.func @escaped_value() {
 
 // CHECK-LABEL: func.func @escaped_value
 // CHECK: call @escape
-// CHECK: wafer.instr.gather_scatter {{.*}}src_iterations = array<i64: 65536, 1, 1>
+// CHECK: scf.for
+// CHECK: wafer.instr.gather_scatter {{.*}}src_iterations = array<i64: 16384, 1, 1>
 // CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.mask_move
 
