@@ -742,3 +742,27 @@ pinned `DeadStoreElimination.cpp`明确按这三项检查；MLIR `MemRefUtils.cp
 | 子view部分覆盖、conditional/loop内才覆盖、pipeline对象 | 不合并；实际合法路径及必要输入内容保持 |
 | 私有root仅剩fill/纯view；有其它reader/escape | 前者整条死初始化删除；后者保留，shared source不删除 |
 | 目标attention及非attention生产输入 | fresh source→package/no-card，actual Instr工作量、fresh completion/SPM及数值见证 |
+
+私有初始化的首次逐元素读取转交：
+
+- 输入仍是上述actual Tile IR：layout copy产生独立目标，首个内容consumer是完整写该目标的
+  `tile.elementwise_into`，同时将该目标作为输入。根因是布局物化先复制旧内容，后续逐元素原地复用
+  新allocation；旧源仍有reader，因而不能把两块storage合并，但首次计算可以直接读取旧源。
+- 同一StorageInitialization实现证明源/目标shape、dtype、完整physical mapping及footprint相等；
+  首次consumer直接读取目标，不能通过未证明的alias读取。复制与consumer之间的typed effects必须证明
+  没有修改或释放源及其alias；未知effect、跨block首次consumer、已选pipeline对象均不转交。
+  Wafer引擎/空间资源effect不等于具体地址写入，地址变化按valued effect及默认memory resource判断。
+- 输出为同type独立allocation；仅首次consumer对应输入替换为原source，destination及后续reader保留独立目标。
+  旧source后续仍可读取或更新；不修改算术、dtype、indexing map及控制流，不把新旧行状态合并。
+  直接下游仍是TileToInstr及fresh completion/SPM，入口与非目标同上。
+- 方法对应[LLVM MemCpyOpt](https://llvm.org/docs/Passes.html#memcpyopt-memcpy-optimization)的读取转交：
+  pinned `MemCpyOptimizer.cpp`在转交前检查source区间内未写；本实现使用实际SSA alias及typed effects，
+  保留独立destination，不借用其它buffer的生命周期。
+- 完成条件：以下矩阵、目标fresh no-card及全量实卡验收；记录实际删除的copy和计时，不用指令减少代签加速。
+
+| 首次读取转交覆盖 | exact输出与直接下游witness |
+| --- | --- |
+| F16/BF16/F32、rank4、1024/1025/1031、Add/Max | 首次输入变为旧source，dest仍是独立allocation；Instr/SPM及无新增循环join |
+| 旧source后续读取/更新；同block中间独立写入；动态loop/conditional内部 | 删除初始化copy，保留旧source与新dest各自后续值 |
+| 源或其alias在区间内更新/释放；未知effect；目标提前被读取或逃逸 | 保留原copy，不延迟读取旧内容 |
+| 真正布局置换或padding/footprint不同；首次consumer在子region；pipeline对象 | 不转交，保留现有合法路径 |

@@ -123,6 +123,16 @@ fresh prepare为227.98s，峰值RSS 1,017,308KiB。初次夹具与环境错误�
 可进一步检查完整覆盖的逐元素计算能否直接读取copy源并写独立目标，目前只是待证明方向。VuVLoop主块/尾组仍未闭合。
 完成这部分后继续第4项输出恢复/整链方向，再推进第5项K/V重叠；没有重新打开tile/head搜索或原生转置。
 
+**第3项初始化读取转交检查点（2026-09-22）**：上述待证明方向已按10号合同落实到同一StorageInitialization。
+物理映射/footprint相同、首个完整逐元素写入且区间内源未改写时，Max/Add直接读取旧source，保留独立的新destination；
+不合并新旧m/l。每Tile静态GS由19降为15；按相同72次KV更新推导，又减少144次1KiB初始化复制。
+fresh no-card及三次普通BF16实卡通过，耗时4.425/4.461/4.486ms，中位数4.461ms，与上一版4.454ms基本持平，
+没有可确认的总耗时收益。7,340,032个输出指标与上一版相同；10752字节guard、16 Tile完成、厂商正常退出和日志健康均通过。
+20项直接回归含新增198种dtype/extent/Add-Max/结构组合，30项相关lit及完整513项Transforms回归全部通过。
+canonical增量及随后Ninja no-op通过，fresh prepare为230.78s、峰值RSS 1,027,692KiB。
+输入复制删除不代表行state的所有发布copy都可合并；分组tail、输出恢复/整链方向和K/V重叠继续按上方合同推进。
+本包未追加profile，指令减少不代签瓶颈收益；[本轮证据](../../docs/data/board-performance/attention-initial-read-20260922.json)。
+
 #### Attention展开方向与VuVLoop实施方案
 
 本方案归同一`board-testing`，接续完整profile得到的广播/布局热点；用户已授权实现及实卡验收，性能目标尚未闭合。

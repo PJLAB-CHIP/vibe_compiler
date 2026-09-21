@@ -6,6 +6,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
+#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -98,6 +99,60 @@ bool completelyOverwrites(mlir::Operation *writer, mlir::Value storage,
   return true;
 }
 
+// Keep the new allocation independent: the source may still be needed after
+// this computation. Only defer its initial read from the copy to the first
+// complete pointwise write, after proving the intervening memory is unchanged.
+mlir::FailureOr<llvm::SmallVector<unsigned>> planInitialReadForwarding(
+    LayoutMaterializeOp layout, ComputeElementwiseIntoOp consumer,
+    llvm::ArrayRef<mlir::Value> storageAliases, mlir::Operation *root,
+    const llvm::DenseSet<mlir::Operation *> &excluded, uint64_t &effectCount) {
+  if (!consumer || consumer.getDest() != layout.getResult())
+    return mlir::failure();
+  auto sourceType = mlir::cast<mlir::MemRefType>(layout.getSource().getType());
+  auto destType = mlir::cast<mlir::MemRefType>(layout.getResult().getType());
+  if (sourceType.getShape() != destType.getShape() ||
+      sourceType.getElementType() != destType.getElementType() ||
+      mlir::failed(
+          analysis::TransferRealizability::proveStaticReshapeMetadataView(
+              sourceType, destType, /*destinationMayWrite=*/false)))
+    return mlir::failure();
+  llvm::SmallVector<unsigned> inputs;
+  for (auto [index, input] : llvm::enumerate(consumer.getInputs())) {
+    if (input == layout.getResult())
+      inputs.push_back(index);
+    else if (llvm::is_contained(storageAliases, input))
+      return mlir::failure();
+  }
+  if (inputs.empty())
+    return mlir::failure();
+
+  mlir::AliasAnalysis aliases(root);
+  for (auto *operation = layout->getNextNode(); operation != consumer;
+       operation = operation->getNextNode()) {
+    if (isExcluded(operation, excluded))
+      return mlir::failure();
+    auto effects = mlir::getEffectsRecursively(operation);
+    if (!effects)
+      return mlir::failure();
+    for (const auto &effect : *effects) {
+      ++effectCount;
+      if (!mlir::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
+              effect.getEffect()))
+        continue;
+      if (mlir::Value value = effect.getValue()) {
+        if (!aliases.alias(value, layout.getSource()).isNo())
+          return mlir::failure();
+      } else if (effect.getResource() ==
+                 mlir::SideEffects::DefaultResource::get()) {
+        return mlir::failure();
+      }
+      // Unvalued target resources describe engine/space activity. The actual
+      // buffer accesses of these operations are their separate valued effects.
+    }
+  }
+  return inputs;
+}
+
 // Keep this narrower than generic DCE: only private storage, fills and pure
 // aliases are removed. In particular a GEMM/elementwise input is a live read.
 bool collectDeadInitialization(
@@ -133,7 +188,8 @@ void eliminateUnusedStorageInitialization(
     const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
   support::ScopedCompileTimingSpan timing("transformation", "tile-storage",
                                           "eliminate-unused-initialization");
-  uint64_t useCount = 0, removedCopies = 0, removedFills = 0;
+  uint64_t useCount = 0, effectCount = 0, removedCopies = 0, removedFills = 0;
+  uint64_t forwardedReads = 0;
   llvm::SmallVector<LayoutMaterializeOp> layouts;
   root->walk([&](LayoutMaterializeOp op) { layouts.push_back(op); });
   for (auto layout : layouts) {
@@ -146,9 +202,20 @@ void eliminateUnusedStorageInitialization(
     llvm::SmallVector<mlir::Value> aliases;
     mlir::Operation *first = findFirstStorageUse(layout.getResult(), aliases,
                                                  pipelineOperations, useCount);
-    if (!first || isExcluded(first, pipelineOperations) ||
-        !completelyOverwrites(first, layout.getResult(), aliases))
+    if (!first || isExcluded(first, pipelineOperations))
       continue;
+    if (!completelyOverwrites(first, layout.getResult(), aliases)) {
+      auto consumer = mlir::dyn_cast<ComputeElementwiseIntoOp>(first);
+      auto inputs = planInitialReadForwarding(layout, consumer, aliases, root,
+                                              pipelineOperations, effectCount);
+      if (mlir::failed(inputs))
+        continue;
+      rewriter.modifyOpInPlace(consumer, [&] {
+        for (unsigned index : *inputs)
+          consumer->setOperand(index, layout.getSource());
+      });
+      ++forwardedReads;
+    }
     rewriter.setInsertionPoint(layout);
     auto allocation =
         rewriter.create<mlir::memref::AllocOp>(layout.getLoc(), type);
@@ -184,6 +251,10 @@ void eliminateUnusedStorageInitialization(
   }
   support::addCompileCounter("storage-initialization", "examined-uses",
                              useCount);
+  support::addCompileCounter("storage-initialization", "examined-effects",
+                             effectCount);
+  support::addCompileCounter("storage-initialization", "forwarded-initial-reads",
+                             forwardedReads);
   support::addCompileCounter("storage-initialization", "removed-copies",
                              removedCopies);
   support::addCompileCounter("storage-initialization", "removed-fills",

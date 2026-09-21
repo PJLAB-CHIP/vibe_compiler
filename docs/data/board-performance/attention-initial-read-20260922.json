@@ -1,0 +1,235 @@
+{
+  "work_item": "board-testing",
+  "plan_item": "第3项：私有初始化读取转交；分组尾部与state发布仍待处理",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bf16",
+  "shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "compiler_sha256": "b03e51bf74f479b4f17116c01e91b637d0f54afed8edc2398b0cfd051a779f49",
+  "status": "fresh no-card、三次普通实卡及完整主机回归通过；整体优化尚未完成",
+  "root_cause": "布局物化先将旧内容复制到新allocation，后续原地逐元素计算读取该快照。旧source仍存活，不能合并storage，但可以在源未改写时将首次读取转交给source。",
+  "change": "同一Tile StorageInitialization证明物理映射/footprint相等、首次完整逐元素写入、源及alias在区间内没有改写或释放；转交对应输入，保留独立destination。",
+  "static_gather_scatter_per_tile": {
+    "before": 19,
+    "after": 15,
+    "tiles": 16
+  },
+  "busy_tile_removed_1kib_copies": 144,
+  "busy_tile_removed_payload_bytes": 147456,
+  "dynamic_count_basis": "actual控制流保持72次KV更新，每次少两条初始化copy；由IR推导，非新profile计数。",
+  "device_elapsed_ms": [
+    4.425,
+    4.461,
+    4.486
+  ],
+  "median_device_elapsed_ms": 4.461,
+  "performance_conclusion": "本轮中位数4.461ms，上一版4.454ms；三样本区间重叠，尚无可确认的端到端加速。",
+  "host_register_capture": false,
+  "device_profile": false,
+  "board_samples": [
+    {
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "530f929d1f802db3661d5b47c094556b803761e4e43a1690e6dd31f34ff66482",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4425000"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      }
+    },
+    {
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "530f929d1f802db3661d5b47c094556b803761e4e43a1690e6dd31f34ff66482",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4461000"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      }
+    },
+    {
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "530f929d1f802db3661d5b47c094556b803761e4e43a1690e6dd31f34ff66482",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4486000"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      }
+    }
+  ],
+  "host_validation": {
+    "execution_structure_tests": 20,
+    "new_dtype_extent_kind_branch_combinations": 198,
+    "related_lit_passed": 30,
+    "canonical_incremental_build": "passed",
+    "second_build": "Ninja no-op",
+    "fresh_prepare_wall_seconds": 230.78,
+    "fresh_prepare_max_rss_kib": 1027692,
+    "initial_test_fixture_errors": "首次测试修正API/accessor及宏括号、NCx physical-fill domain、Tile隔离region的显式参数；最终验证没有放松生产合法性。",
+    "full_transforms_passed": 513,
+    "full_transforms_elapsed_seconds": 535.2
+  },
+  "host_work_evidence": {
+    "before": {
+      "scope": "整轮编译包含candidate尝试，不仅是winner",
+      "counters": {
+        "examined-uses": 27283,
+        "removed-copies": 1563,
+        "removed-fills": 524
+      },
+      "timing_rows": [
+        "wafer-compile: | transformation | tile-storage | eliminate-unused-initialization | 32 | 680.693 | 680.617 | 21.272 | 113.069 | 0 |"
+      ]
+    },
+    "after": {
+      "scope": "整轮编译包含candidate尝试，不仅是winner",
+      "counters": {
+        "examined-effects": 6888,
+        "examined-uses": 27247,
+        "forwarded-initial-reads": 432,
+        "removed-copies": 1995,
+        "removed-fills": 524
+      },
+      "timing_rows": [
+        "wafer-compile: | transformation | tile-storage | eliminate-unused-initialization | 32 | 1239.012 | 1238.949 | 38.719 | 183.679 | 0 |"
+      ]
+    }
+  }
+}

@@ -823,6 +823,166 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     ForwardInitialReadWithoutMergingLiveStorage) {
+  enum class Case {
+    Direct,
+    IndependentWrite,
+    OldSourceWriteAfter,
+    SourceWrite,
+    SourceAliasWrite,
+    EarlyRead,
+    Escape,
+    Nested,
+    ConditionalConsumer,
+    PermutedLayout,
+    Pipeline
+  };
+  for (auto dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (auto kind : {"add", "max"})
+        for (auto test :
+             {Case::Direct, Case::IndependentWrite, Case::OldSourceWriteAfter,
+              Case::SourceWrite, Case::SourceAliasWrite, Case::EarlyRead,
+              Case::Escape, Case::Nested, Case::ConditionalConsumer,
+              Case::PermutedLayout, Case::Pipeline}) {
+          SCOPED_TRACE(::testing::Message()
+                       << dtype << '/' << extent << '/' << kind << '/'
+                       << static_cast<int>(test));
+          auto context = createContext();
+          // The leading unit axis keeps NCx bank padding equal for odd lengths.
+          // The last-axis-65 variant instead requires an actual permutation.
+          std::string shape = "1x2x" + std::to_string(extent) +
+                              (test == Case::PermutedLayout ? "x65x" : "x64x") +
+                              dtype;
+          std::string source =
+              "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+          std::string dest = "memref<" + shape + ", #wafer.memory<spm, ncx>>";
+          std::string text;
+          llvm::raw_string_ostream out(text);
+          out << "#id = affine_map<(a,b,c,d)->(a,b,c,d)>\nmodule { ";
+          if (test == Case::Escape)
+            out << "func.func private @observe(" << source << ")\n";
+          out << "func.func @main(%end: index, %cond: i1) { "
+                 "wafer.tile.region(%end, %cond : index, i1) -> () "
+                 "{\n^bb0(%bound: index, %condition: i1):\n"
+                 "%a = memref.alloc() : "
+              << source << "\n%b = memref.alloc() : " << dest
+              << "\n%one = arith.constant 1.0 : " << dtype
+              << "\n%c0 = arith.constant 0 : index\n"
+                 "%c1 = arith.constant 1 : index\n"
+                 "wafer.tile.fill %a, %one : "
+              << source << ", " << dtype
+              << "\nwafer.tile.fill %b, %one {fill_domain = "
+                 "#wafer.fill_domain<physical_footprint>} : "
+              << dest << ", " << dtype << '\n';
+          if (test == Case::Nested)
+            out << "scf.for %i = %c0 to %bound step %c1 { scf.if %condition "
+                   "{\n";
+          out << "%d = wafer.tile.materialize_layout %a : " << source << " -> "
+              << dest << '\n';
+          if (test == Case::SourceAliasWrite)
+            out << "%alias = wafer.tile.reshape %a : " << source << " -> "
+                << source << '\n';
+          if (test == Case::SourceWrite || test == Case::SourceAliasWrite)
+            out << "wafer.tile.fill %"
+                << (test == Case::SourceWrite ? "a" : "alias")
+                << ", %one : " << source << ", " << dtype << '\n';
+          if (test == Case::IndependentWrite)
+            out << "wafer.tile.fill %b, %one {fill_domain = "
+                   "#wafer.fill_domain<physical_footprint>} : "
+                << dest << ", " << dtype << '\n';
+          if (test == Case::EarlyRead)
+            out << "%early = wafer.tile.copy %d : " << dest << " -> " << dest
+                << '\n';
+          if (test == Case::Escape)
+            out << "func.call @observe(%a) : (" << source << ") -> ()\n";
+          if (test == Case::ConditionalConsumer)
+            out << "scf.if %condition {\n";
+          out << "wafer.tile.elementwise_into <" << kind
+              << "> %d, %b into %d {indexing_maps = [#id, #id, #id]} : " << dest
+              << ", " << dest << " into " << dest << '\n';
+          if (test == Case::ConditionalConsumer)
+            out << "}\n";
+          // Both values are observed after the writer. Storage coalescing here
+          // would destroy the old source; forwarding only its read is legal.
+          out << "%old = wafer.tile.copy %a : " << source << " -> " << source
+              << "\n%new = wafer.tile.copy %d : " << dest << " -> " << dest
+              << '\n';
+          if (test == Case::OldSourceWriteAfter)
+            out << "wafer.tile.fill %a, %one : " << source << ", " << dtype
+                << '\n';
+          if (test == Case::Nested)
+            out << "} }\n";
+          out << "wafer.tile.yield } return } }";
+          auto module =
+              mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+          ASSERT_TRUE(module) << text;
+          LayoutMaterializeOp layout;
+          ComputeElementwiseIntoOp compute;
+          module->walk([&](LayoutMaterializeOp op) { layout = op; });
+          module->walk([&](ComputeElementwiseIntoOp op) { compute = op; });
+          mlir::Value original = layout.getSource();
+          bool forwarded =
+              test == Case::Direct || test == Case::IndependentWrite ||
+              test == Case::OldSourceWriteAfter || test == Case::Nested;
+          if (test == Case::Pipeline) {
+            mlir::IRRewriter rewriter(context.get());
+            llvm::DenseSet<mlir::Operation *> excluded{compute};
+            eliminateUnusedStorageInitialization(module->getOperation(),
+                                                 rewriter, excluded);
+          } else {
+            auto prepared = prepareTileExecutionStructure(*module, {});
+            ASSERT_TRUE(prepared.succeeded());
+            auto result = materializeExecutionStructure(
+                std::move(module), std::move(*prepared.prepared));
+            ASSERT_TRUE(result.succeeded())
+                << (result.failure ? result.failure->detail : "");
+            module = std::move(result.materialized->module);
+          }
+          unsigned layouts = 0;
+          module->walk([&](LayoutMaterializeOp) { ++layouts; });
+          EXPECT_EQ(layouts, forwarded ? 0u : 1u);
+          EXPECT_NE(compute.getDest(), original);
+          EXPECT_EQ(compute.getInputs()[0],
+                    forwarded ? original : compute.getDest());
+          if (forwarded) {
+            EXPECT_TRUE(
+                compute.getDest().getDefiningOp<mlir::memref::AllocOp>());
+          }
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          // Unknown external effects are a preservation boundary, not a target
+          // call.
+          if (test == Case::Escape)
+            continue;
+          TileRegionOp region;
+          module->walk([&](TileRegionOp op) { region = op; });
+          TileRegionToInstrLoweringSession session(*context);
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+          unsigned computes = 0;
+          module->walk([&](InstrElementwiseOp op) {
+            if (op.getKind() != (llvm::StringRef(kind) == "add"
+                                     ? InstrElementwiseKind::Add
+                                     : InstrElementwiseKind::Max))
+              return;
+            ++computes;
+            EXPECT_NE(op.getDest(), original);
+            if (forwarded) {
+              EXPECT_EQ(op.getInputs()[0], original);
+            }
+          });
+          EXPECT_EQ(computes, 1u);
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+          module->walk([&](SyncNCCJoinOp op) {
+            EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+            EXPECT_FALSE(op->getParentOfType<mlir::scf::IfOp>());
+          });
+          EXPECT_TRUE(mlir::succeeded(
+              planSPMMemoryModule(*module, 0, 8 * 1024 * 1024, 16)));
+        }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      EliminateGemmInitializationThroughCompleteViews) {
   for (auto dtype : {"f16", "bf16"})
     for (int64_t extent : {1024, 1025, 1031})
