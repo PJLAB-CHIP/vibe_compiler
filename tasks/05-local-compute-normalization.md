@@ -760,7 +760,9 @@ scale/普通mask/causal bias的map与score轴排列一起组合；可见性仍�
 采用时必须连同整个KV循环的state init/iter_args/yield及finalize一起保持该方向；不能在每个online step来回转换。
 其它observable state consumer、FD transfer/merge和output map必须共同闭合后才接入，不能只替换局部PV。
 厂商存在Transpose入口不等于当前生产链已接入；输出恢复按实际可发射路径计费。
-原生`Nchw2nhwc`已按用户确认的不可用约束排除，输出恢复不能依赖该入口；本轮也不继续其资格实验。
+按用户提供的不可用约束，本轮排除原生搬运转置族，包括`Transpose`、`Nchw2nhwc`、`Nhwc2nchw`，
+输出恢复不能依赖这些入口，也不继续其资格实验。逻辑转置、metadata view及GEMM操作数方向分别遵守各自现有合同；
+需要实际搬运的转置通过已验证的GS路径实现，并计算其真实粒度、次数和成本。
 
 当前完整组主块的进一步实现选择为：在decomposition入口，对已经物化的私有accumulator SSA闭包统一重排为
 batch/value/query。闭包沿online DPS state、SCF init/iter_arg/yield/result、保rank的Tensor slice及parallel Linalg merge/finalize传播，

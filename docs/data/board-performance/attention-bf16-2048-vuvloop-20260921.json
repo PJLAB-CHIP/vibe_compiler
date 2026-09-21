@@ -3977,9 +3977,15 @@
   ],
   "native_transpose_availability": {
     "status": "excluded",
-    "basis": "用户明确该指令不能使用。",
+    "basis": "用户明确 Nchw2nhwc 及其它原生 transpose 指令不能使用；本轮统一排除原生搬运转置路线。",
     "further_qualification_authorized": false,
     "production_use_allowed": false,
-    "failure_mechanism": "unknown"
+    "failure_mechanism": "unknown",
+    "excluded_native_sdk_entries": [
+      "Transpose",
+      "Nchw2nhwc",
+      "Nhwc2nchw"
+    ],
+    "scope": "原生TDMA搬运转置；逻辑转置、metadata view、GEMM操作数方向仍遵守各自现有合同。"
   }
 }

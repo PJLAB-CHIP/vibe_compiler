@@ -354,7 +354,9 @@ layout 相关信息分成两层，二者不能混用：
 **board-observed failure**：2026-09-21独立BF16包包含`[1,1024,64]`和`[1,128,256]`两条该入口，出现Tile-0 TDMA timeout。
 尚无单条归因，不能从SDK字段宽度或这次失败推出原生element计数上限；故障机制仍为**unknown**。
 **excluded（用户明确约束）**：用户随后确认原生`Nchw2nhwc`不能使用；生产方案及后续资格实验均排除该入口。
-这是采用用户提供的可用性约束，不将本次双指令失败冒充全部几何的实验结论。
+用户进一步指出其它原生transpose指令也不可用；本轮采用范围统一排除原生搬运转置族，
+包括SDK `Transpose`、`Nchw2nhwc`、`Nhwc2nchw`，不换入口继续试验。
+这是采用用户提供的可用性约束，不将本次双指令失败冒充各入口或全部几何的实验结论。
 Wafer当前生产转置仍由已验证GS路径实现。具体包、参数和失败边界见
 [实测证据](data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
 
