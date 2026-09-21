@@ -2951,3 +2951,26 @@ runner返回0且10,752 guard bytes通过，health wrapper仍拒绝资格。事�
 三项均完成2 MiB exact输出、10,240 guard bytes及厂商正常退出；配置已恢复，第三项仍按设备故障停批。
 本轮为因果诊断，不新增产品资格或性能收益；原attention和生产修复仍待验收。
 原始结果、寄存器写入/恢复及字段限制见[本轮证据](data/board-performance/tdma-timeout-width-causal-results-20260921.json)。
+
+## 2026-09-21：GS通用分段与原attention实卡验收
+
+生产实现`9141a045`在Instr共同入口合并连续inner并有序分段，保持地址、dtype、worker及既有completion。
+同一新boot依次执行三个诊断窗口及原4K、28-head attention双dtype，每项一次launch、逐项全系统占用检查，厂商正常退出。
+两种原故障布局的65,536次搬运均由4条紧密GS完成，无逐issue插桩或join，完整2 MiB exact、guard和设备状态通过。
+consumer链也全量exact；其CSR `0x5000`经厂商位定义复核为CT subnormal-result/rounding状态，单独记录，未出现TDMA fatal。
+
+| 原attention，Q/K/V均为`[1,28,4096,128]` | FP16 | BF16 |
+| --- | ---: | ---: |
+| 本轮单次device elapsed | 79.056999 ms | 78.945 ms |
+| 完整输出元素数 | 14,680,064 | 14,680,064 |
+| 原容差内elementwise mismatch | 0 | 0 |
+| Relative L2 | 0.00024202078 | 0.00194821194 |
+| Cosine | 0.99999997071 | 0.99999810223 |
+| 实查guard bytes | 10,752 | 10,752 |
+
+两包使用本轮新source/reference，seed为20260922，`search`默认配置；执行前source及输入bytes与已备包核对一致。
+保持`rtol=0.006, atol=0.008, cosine>=0.9999, relative L2<=0.01`，全量输出、16 Tile completion和正常清理通过。
+独立host只读采集覆盖完整runtime窗口，驱动/固件日志无TDMA timeout或其它设备故障；硬件mask和门限未修改。
+以上是带只读观测条件的单次结果，没有重复测量或matched A/B，不据此声称稳定性能提升。
+本轮闭合GS修复的指定实卡范围，整体板测/性能矩阵仍由progress管理。完整身份、原始报告及采集器误判修正见
+[GS实卡验收记录](data/board-performance/gs-work-materialization-board-20260921.json)。

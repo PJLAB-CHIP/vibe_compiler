@@ -9,6 +9,24 @@
 本次证据见 [2026-09-20 审计记录](data/board-performance/tdma-firmware-localization-20260920.json)。
 首次 TDMA 告警、后续执行和最终清理错误分别归档。历史 raw 仅用于离线审计，不作为新测试输入。
 
+## GS通用分段修复实卡结果（2026-09-21）
+
+**board-observed：统一Instr分段已通过紧密发射、直接consumer和原4K 28-head attention的FP16/BF16实卡验收。**
+实现先合并两端共同连续inner，再按原地址顺序分段；原65,536次小搬运变成4条GS，没有逐issue日志、采样或join。
+两种原故障布局分别完整搬运2 MiB oracle中的目标区域，其余区域也逐byte不变；TDMA execution增量分别为133,428和131,752，
+stream fatal为0。累计execution大于65,535仍健康，再次说明限制不能解释为跨指令累计计数上限。
+
+直接consumer链的5条GS、Sub/Exp两条CT同样完整2 MiB exact，10,240 guard bytes、16 Tile completion和厂商清理正常。
+CSR/PMU出现`0x5000`；SDK `Ncc_CSR_GR_EXCEPTION_RO`将CSR的bit 12定义为CT subnormal-result状态、bit 14定义为rounding/inexact状态。
+这与TDMA stream fatal、非法opcode/地址或输入NaN位不同。原采集器将任意非零状态都拒绝，复核后保留浮点状态观察并按完整数值验收，
+没有清状态或修改硬件mask；PMU保留原始同值，不以该样本定义所有PMU raw位义。具体哪条CT产生状态及内部subnormal路径未隔离。
+
+原生产attention两种dtype各一次launch，各14,680,064输出元素全部满足原门槛，elementwise mismatch为0，guard均为10,752 bytes。
+host只读连续采集覆盖完整runtime窗口，驱动/固件日志无新增异常；FP16/BF16设备事件耗时分别79.056999/78.945 ms，
+均正常退出。该数值/健康证据闭合本轮GS修复，不外推任意布局watchdog保证或其它历史卡死。
+证据、前置工具错误及复核过程见[GS实卡记录](data/board-performance/gs-work-materialization-board-20260921.json)。
+以下各节保留当轮排查与资格边界，后续完成状态以上述实测为准。
+
 ## LSU门限因果与位宽实测确认（2026-09-21）
 
 用户再次重启后，按已冻结计划实际执行位宽、原门限GS、低门限GS三项，第三项出现TDMA fatal后立即停批。

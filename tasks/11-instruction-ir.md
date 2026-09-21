@@ -665,7 +665,9 @@ production driver与named Tile→Instr pipeline调用同一实现，放在完整
 
 当前TX81发射策略将单条GS限制为最多16,384个inner搬运、最多1 MiB payload，先合并两端共同连续的inner，
 再按原线性搬运顺序切出双方均可表达的矩形段。前者取已健康实测的小颗粒粒度，后者保留既有1 MiB搬运范围；
-这是待紧密发射实卡验收的编译器工作量策略，不是iteration字段位宽、时间单位换算或任意stride下的健康保证。
+这是编译器工作量策略，已通过两种原故障布局的紧密发射、直接consumer及原attention双dtype实卡验收；
+具体覆盖见[GS实测记录](../docs/data/board-performance/gs-work-materialization-board-20260921.json)。
+它不是iteration字段位宽、时间单位换算或任意stride下的健康保证。
 硬件事实仍见[TDMA定位](../docs/tx81-tdma-fault-localization.md)。不同iteration分解也按相同线性序号配对，不能假定两端数组相等。
 连续等结构段用常界loop表达，避免按元素展开host指令；main/tail均精确保持字节地址序列、payload总量、dtype和worker。
 

@@ -2,13 +2,32 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### GS修复实卡验收（2026-09-21）
+
+新boot按准备顺序实际执行三项紧密GS诊断及原4K、28-head FP16/BF16 attention，共五次launch。
+两种原故障布局均由4条GS完成65,536次有序搬运，完整2 MiB exact；无逐issue采样/日志/join，TDMA fatal为0。
+直接consumer链的5条GS、2条CT也完成2 MiB exact、10,240 guard bytes及16 Tile正常退出。
+consumer首次采集到CSR/PMU `0x5000`，旧报告器因任意非零状态而停批；按SDK定义，CSR是CT subnormal-result及rounding/inexact位，
+不含非法opcode/地址、输入NaN或TDMA fatal。保留原始失败报告并追加复核记录，未清状态、改mask/门限或重跑专项；
+完整数值结果仍按原exact门槛验收，不将该状态位解释为一般subnormal行为已验证。
+
+原attention两种dtype均使用本轮已备生产包，重新导出source并核对相同，新输入/reference与准备字节一致；
+各14,680,064输出元素通过原有全量比较，elementwise mismatch为0，10,752 guard bytes及16 Tile completion通过。
+FP16 relative L2为0.00024202078，BF16为0.00194821194；只读连续采集及完整日志窗口无TDMA fatal/timeout。
+单次device elapsed分别79.056999 ms、78.945 ms；未做重复或matched A/B，不签稳定性能收益。
+
+本轮还修正诊断工具的旧helper相对路径、采集时长超过既有上限，以及把健康累计count/last-command非零当故障的接续检查。
+这些拒绝均发生在attention发射前；保留原始日志。只读采集器的非零统计接受/fatal拒绝通过regular-file模型，未写硬件配置。
+本GS修复的指定实卡验收完成，证据见[实测记录](../../docs/data/board-performance/gs-work-materialization-board-20260921.json)。
+当前会话没有设备故障，不要求再次重启；后续接同一矩阵尚未验收项，早期fill独立状态及整体性能目标不由本次代签。
+
 ### GS通用修复实施（2026-09-21）
 
 用户要求处理所有GS使用入口。本轮归入同一board-testing，合同与覆盖矩阵在11号7.3节。
 已实现current Instr共同连续合并及有序分段，正式driver/named pipeline使用同一实现，target拒绝遗漏处理的超长GS。
 原故障65,536次搬运变为4条紧密GS，保持dtype、worker、两端独立stride/iteration及逐byte地址顺序；
 变换不插join，completion和SPM从实际结果重新规划。未知/交叠alias不能证明分段正确时返回typed unsupported。
-16,384 inner搬运/1 MiB是本轮待板端验证的发射策略，不把它登记成硬件iteration上限或已修复资格。
+16,384 inner搬运/1 MiB是编译器发射策略，不把它登记成硬件iteration上限；本轮实际覆盖的实卡资格见上节。
 
 本轮7项专项地址oracle、五个受影响unit component、最终完整lit、source/IR组织检查和canonical增量/Ninja no-op通过。
 初轮lit三个旧结构断言已随实际分段结果更新，最终重新通过；不隐去初轮失败。
@@ -18,10 +37,10 @@
 三个专项`tight-tile4`、`tight-tile12`、`tight-consumer`已达到diagnostic board-ready：使用当前编译器从原descriptor生成窗口，
 没有逐issue日志/采样/等待；完整2 MiB新输入与独立expected、实际LLVM主机执行、最终ELF的16入口ABI调用核对、
 strict no-card、厂商导出符号检查及采集器正负例通过。126份依赖冻结，默认入口只验摘要，实际CLI在任何设备访问前拒绝故障boot。
-ELF核对拦截TargetCall，不将它称为硬件或SDK执行。当前boot未运行设备，具体包、摘要和证据见
+ELF核对拦截TargetCall，不将它称为硬件或SDK执行。准备阶段没有运行设备，具体包、摘要和证据见
 [GS主机验收与实卡准备](../../docs/data/board-performance/gs-work-materialization-host-20260921.json)。
-下一次重启后依次执行这三项，健康后接原FP16/BF16 attention；每项重新检查全系统占用，任何异常停批，不retry/reset。
-本修复仍待实卡验收，早期F32 fill状态和其它产品资格不由上述主机结果代签。
+准备阶段计划在下一次重启后依次执行三项，再接原FP16/BF16 attention；实际执行及报告器修正已在上节闭合。
+早期F32 fill状态和其它产品资格不由上述主机结果代签。
 
 ### 当前检查点：LSU门限因果与位宽已实测确认（2026-09-21）
 

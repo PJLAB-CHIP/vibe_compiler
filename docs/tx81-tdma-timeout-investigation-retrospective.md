@@ -267,6 +267,11 @@ CT count、CSR exception和PMU exception raw也都为0。
 或改为等价的多条指令。具体方案必须验证连续发射、直接消费者和原attention，
 不能直接把本次通过的4,096或16,384次写成通用硬件合法性上限，也不能把诊断用join推广到生产。
 
+后续修复现已完成本轮实卡验收：统一Instr连续合并与有序分段后，原65,536次搬运变成4条紧密GS；
+两种原布局、直接Sub/Exp消费者以及原4K、28-head attention的FP16/BF16都通过完整数值、guard与正常退出，未出现TDMA fatal。
+consumer中的`0x5000`按SDK位定义单列为CT浮点状态，纠正了采集器“任意非零状态即失败”的误判，没有改硬件异常配置。
+这闭合了本次GS问题的“定位→因果→通用修复→原程序验收”，完整产品矩阵和未知硬件细节仍保持各自边界。
+
 这次积累的价值，是在缺少完整硬件资料时，仍能用实际二进制、主动采集和可区分假设的实验，
 把“某个Tile超时”变成一条可复现、可解释、能指导修复的硬件约束。
 
@@ -286,3 +291,4 @@ CT count、CSR exception和PMU exception raw也都为0。
 | [门限静态审计](data/board-performance/tdma-timeout-register-audit-20260921.json) | 厂商怎样设置超时，为什么当时还不能判断有效位宽 |
 | [位宽与门限实验准备](data/board-performance/tdma-timeout-experiment-preparation-20260921.json) | 重启前准备了哪些分支、恢复及检查 |
 | [最终实卡因果对照](data/board-performance/tdma-timeout-width-causal-results-20260921.json) | 低16位限制与timeout触发机制如何被实测确认 |
+| [GS通用修复实卡验收](data/board-performance/gs-work-materialization-board-20260921.json) | 紧密分段、直接消费者与原attention双dtype是否真实通过 |

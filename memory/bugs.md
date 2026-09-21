@@ -2179,6 +2179,11 @@
 - 不把timeout值当iteration次数上限，也不把跨调用保留的PMU统计当资源泄漏；实际iteration字段和execution累计计数另有位宽。
 - 修复应降低单条指令的持续工作量，再验证紧密发射及直接consumer；不能假定写更大timeout有效或用完整回读抵消fatal。
 - 故障后寄存器读0和host日志无告警不能否定窗口内设备快照；保留首次事件与正常清理分别判定，异常后停止批次。
+- 健康调用之间PMU count和last-command可以保留；接续采集只读保存基线并比较窗口增量，不能要求统计寄存器每次归零。
+  本轮紧密分段和原attention双dtype实卡均已验证，详见硬件故障定位文档。
+- 不能把任意非零CSR/PMU状态都叫设备fatal。按厂商字段区分浮点状态与非法指令、地址及timeout：本轮consumer的CSR `0x5000`
+  是CT subnormal-result/rounding状态，完整2 MiB输出仍exact且无TDMA fatal。保留原始状态并执行实际数值合同，不能改mask或清状态制造通过；
+  也不把它扩展为任意subnormal语义或PMU raw位义的证明。
 
 ## SDK标量字段的整数载体不改变运算dtype
 
