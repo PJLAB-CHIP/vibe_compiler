@@ -94,11 +94,40 @@ TargetCall以typed结果种类保存该字段；decoder拒绝其它编码。CRT�
 验收覆盖全部六种比较、F16/BF16/F32、VV/VS/VuV、packed和值输出、1024/1025/1031及特殊值机制，
 同时核对最终SDK wrapper/packet、模型0/1位型、typed拒绝和原BOOL consumer；设备资格仍按16号单独签发。
 
+### SDK函数表的模块生命周期
+
+输入为verified TargetCall及已编译的program/CRT object；device link保留厂商`module_init`、`module_cleanup`，
+输出同时导出program公共定义及这两个SDK生命周期符号的ELF。直接消费者是当前Kcore module loader。
+loader在模块加载后、entry执行前调用SDK初始化，在模块销毁时调用SDK清理；CRT通过`g_intrinsic()`借用
+对应family的函数表。每次调用仍新建并清零自己的instruction packet，setter、dtype、worker及issue顺序保持。
+函数表仅保存SDK函数指针；不保存跨指令packet、地址、completion或编译决策。不能逐指令释放借来的表，
+也不增加Wafer缓存、lazy init、entry尾部清理或join时清理。正常和失败退出继续交由厂商模块/进程生命周期。
+
+根因是原CRT对每条调用执行`TsmNew*`/`TsmDelete*`；当前SDK构造器实际调用`rt_malloc`并填写函数表，
+析构器实际调用`rt_free`。复用厂商模块表消除这项重复工作；具体收益必须由无插桩设备计时确认。
+当前固件的hook调用及SDK初始化/释放证据见
+[硬件事实](../docs/wafer-hardware-instruction-set-and-programming-model.md#sdk指令函数表生命周期)。
+
+链接导出列表由actual program/extra object公共定义生成，额外保留两个固定SDK hook；其余依赖符号局部化。
+输入不得重定义SDK hook。最终ELF必须实际定义且动态导出两个hook，并通过既有全部undefined-symbol检查；
+任一失败均不发布部分产物。不得仅加`--export-dynamic-symbol`却保留会隐藏SDK hook的`--exclude-libs,ALL`。
+不改变TargetCall ABI、runtime loader协议、Host析构或硬件同步，也不把SDK host模拟器声明当作可执行实现。
+
+| 覆盖 | exact输出 / failure边界 | 直接下游 |
+| --- | --- | --- |
+| 所有CRT instruction family；原DMA/GEMM/fill/relation矩阵 | packet参数保持，每条调用借用厂商函数表，CRT object无`TsmNew*`/`TsmDelete*`导入 | SDK拦截、RISC-V编译、生产required-symbol检查 |
+| 普通、Count、Trace模块，program与extra object导出 | 两个SDK hook实际动态导出；entry保持；依赖内部函数不导出 | 真实device link/readback、fresh source/package/no-card |
+| hook冲突、缺失、非法undefined、编译或链接失败 | 明确失败，原输出和中间产物原子性保持 | device-link拒绝及publication测试 |
+| 当前BF16真实规模attention | 全量数值、guard、16 Tile completion、正常厂商清理及普通事件计时 | 新包实卡；主机hook检查不代签设备资格 |
+
 ### VuVLoop目标调用接入
 
 输入为11号已验证的分组elementwise、actual SPM binding和worker；输出为同一closed TargetCall registry中的typed arithmetic
 调用及SDK Loop packet，直接消费者为CRT、required-symbol/device link、TargetCall decoder及17号模型。
-该形式当前尚未进入production；接入不建立V2 wrapper或兼容reader，不让runtime补选广播方式。
+该形式使用现有五个算术symbol；不建立V2 wrapper或兼容reader，不让runtime补选广播方式。
+算术ABI参数顺序为`lhs, rhs, dst, full_elem_count, format, rhs_unit_elements, rhs_is_scalar, rhs_group_elements, worker`。
+group为0时沿普通路径；正数时以E=group、U=unit、F=full_elem_count、V=(F/E)×U调用当前SDK Loop setter。
+V与actual RHS view的相等关系在Instr verifier闭合；运行时不另行推断shape或layout。
 
 10号的E/U/F/V按元素数传递，format来自实际operand/destination；宽化乘积、count narrowing与SPM byte range先在target gate闭合。
 SDK wrapper拥有当前revision的end字段编码，不能把历史源码的exclusive end手写到当前packet，也不把count改成bytes或count-1。

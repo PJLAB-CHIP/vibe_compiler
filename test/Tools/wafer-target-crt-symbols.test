@@ -24,6 +24,7 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm \
 # RUN:   -g --defined-only %t.crt.o | %python %wafer_src_root/utils/checks/check_target_crt_symbols.py \
 # RUN:   --repo-root %wafer_src_root --defined-symbols-stdin
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm -u %t.crt.o | FileCheck %s --check-prefix=TABLE --implicit-check-not=TsmNew --implicit-check-not=TsmDelete
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
 # RUN:   -dr %t.crt.o | FileCheck --check-prefix=LIFECYCLE %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objdump \
@@ -48,7 +49,7 @@
 # ARGMAX: fence iorw,iorw
 # ARGMAX-NEXT: sync
 # ARGMAX-NOT: dcache.
-# ARGMAX: R_RISCV_CALL_PLT TsmDeletePeripheral
+# ARGMAX: c.jr ra
 # ARGMIN-LABEL: <wafer_tx81_peripheral_argmin>:
 # ARGMIN: R_RISCV_CALL_PLT TsmWaitfinish_bywork
 # ARGMIN: R_RISCV_CALL_PLT get_spm_memory_mapping
@@ -57,7 +58,7 @@
 # ARGMIN: fence iorw,iorw
 # ARGMIN-NEXT: sync
 # ARGMIN-NOT: dcache.
-# ARGMIN: R_RISCV_CALL_PLT TsmDeletePeripheral
+# ARGMIN: c.jr ra
 # NCC-JOIN-LABEL: <wafer_tx81_ncc_join>:
 # NCC-JOIN: fence iorw,iorw
 # NCC-JOIN: R_RISCV_CALL_PLT TsmWaitfinish_bywork
@@ -107,3 +108,5 @@
 # LIFECYCLE: dcache.civa
 # LIFECYCLE: dcache.cipa
 # LIFECYCLE: dcache.cipa
+
+# TABLE: U g_intrinsic

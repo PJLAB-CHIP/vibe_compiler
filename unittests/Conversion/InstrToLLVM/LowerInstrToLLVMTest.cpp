@@ -2141,6 +2141,194 @@ TEST(LowerInstrToTargetLLVMTest, MappedUnitBroadcastKeepsOnlyActualRHSStorage) {
         }
 }
 
+TEST(LowerInstrToTargetLLVMTest,
+     PermutedTensorToBlockedCopiesExactSourceBytes) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031}) {
+      mlir::DialectRegistry registry;
+      registerTargetConversionDialects(registry);
+      mlir::MLIRContext context(registry);
+      context.loadAllAvailableDialects();
+      auto sourceType =
+          llvm::formatv("memref<2x128x{0}x{1}, #wafer.memory<spm, tensor>>",
+                        extent, dtype)
+              .str();
+      auto destType =
+          llvm::formatv("memref<2x{0}x128x{1}, #wafer.memory<spm, ncx>>",
+                        extent, dtype)
+              .str();
+      auto text = llvm::formatv(R"mlir(
+module {{ func.func @entry() {{
+  wafer.tile.region() -> () {{
+    %lhs = memref.alloc() : {0}
+    %rhs = memref.alloc() : {1}
+    %dest = memref.alloc() : {0}
+    wafer.tile.elementwise_into <add> %lhs, %rhs into %dest
+      {{indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,n,m)>, affine_map<(b,m,n)->(b,m,n)>]}
+      : {0}, {1} into {0}
+    wafer.tile.yield
+  }
+  return
+}})mlir",
+                                destType, sourceType)
+                      .str();
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module) << text;
+      wafer::TileRegionOp region;
+      module->walk([&](wafer::TileRegionOp op) { region = op; });
+      mlir::Value rhs;
+      module->walk(
+          [&](wafer::ComputeElementwiseIntoOp op) { rhs = op.getInputs()[1]; });
+      wafer::TileRegionToInstrLoweringSession session(context);
+      ASSERT_TRUE(
+          mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      mlir::Value copied;
+      module->walk(
+          [&](wafer::InstrElementwiseOp op) { copied = op.getInputs()[1]; });
+      ASSERT_TRUE(copied && copied != rhs);
+      auto target = mlir::cast<mlir::MemRefType>(copied.getType());
+      int64_t width = dtype == "f32" ? 4 : 2;
+      std::vector<int64_t> actual(2 * extent * 128 * width, -1);
+      llvm::DenseMap<mlir::Value, int64_t> values;
+      std::function<void(mlir::Operation *)> run =
+          [&](mlir::Operation *operation) {
+            if (auto c =
+                    mlir::dyn_cast<mlir::arith::ConstantIndexOp>(operation))
+              values[c] = c.value();
+            else if (auto add = mlir::dyn_cast<mlir::arith::AddIOp>(operation))
+              values[add] = values.at(add.getLhs()) + values.at(add.getRhs());
+            else if (auto mul = mlir::dyn_cast<mlir::arith::MulIOp>(operation))
+              values[mul] = values.at(mul.getLhs()) * values.at(mul.getRhs());
+            else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+              for (int64_t i = values.at(loop.getLowerBound());
+                   i < values.at(loop.getUpperBound());
+                   i += values.at(loop.getStep())) {
+                values[loop.getInductionVar()] = i;
+                for (auto &nested : *loop.getBody())
+                  run(&nested);
+              }
+            } else if (auto move = mlir::dyn_cast<wafer::InstrGatherScatterOp>(
+                           operation)) {
+              EXPECT_EQ(move.getSource(), rhs);
+              EXPECT_EQ(move.getDest(), copied);
+              auto address = [&](bool source, int64_t ordinal) {
+                auto fixed =
+                    source ? move.getSrcOffsetAttr() : move.getDstOffsetAttr();
+                auto dynamic = source ? move.getSrcOffsetValue()
+                                      : move.getDstOffsetValue();
+                auto counts =
+                    source ? move.getSrcIterations() : move.getDstIterations();
+                auto strides =
+                    source ? move.getSrcStrides() : move.getDstStrides();
+                int64_t offset =
+                    dynamic ? values.at(dynamic) : (fixed ? fixed.getInt() : 0);
+                for (unsigned i = 0; i < 3; ++i) {
+                  offset += ordinal % counts[i] * strides[i];
+                  ordinal /= counts[i];
+                }
+                return offset;
+              };
+              for (uint64_t n = 0;
+                   n < move.getByteCount() / move.getInnerBytes(); ++n)
+                for (uint64_t byte = 0; byte < move.getInnerBytes(); ++byte) {
+                  int64_t dst = address(false, n) + byte;
+                  ASSERT_GE(dst, 0);
+                  ASSERT_LT(dst, int64_t(actual.size()));
+                  ASSERT_EQ(actual[dst], -1);
+                  actual[dst] = address(true, n) + byte;
+                }
+            } else
+              for (auto &r : operation->getRegions())
+                for (auto &block : r)
+                  for (auto &nested : block)
+                    run(&nested);
+          };
+      run(module->getOperation());
+      for (int64_t b = 0; b < 2; ++b)
+        for (int64_t m = 0; m < extent; ++m)
+          for (int64_t n = 0; n < 128; ++n) {
+            auto dst =
+                wafer::computeWaferPhysicalElementByteOffset(target, {b, m, n});
+            ASSERT_TRUE(dst);
+            int64_t src = ((b * 128 + n) * extent + m) * width;
+            for (int64_t byte = 0; byte < width; ++byte)
+              ASSERT_EQ(actual[*dst + byte], src + byte)
+                  << b << "/" << m << "/" << n;
+          }
+      EXPECT_EQ(std::count(actual.begin(), actual.end(), -1), 0);
+    }
+}
+
+TEST(LowerInstrToTargetLLVMTest, GroupedBroadcastHasExplicitTargetGeometry) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (llvm::StringRef kind : {"add", "sub", "mul", "max", "min"}) {
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        std::string full =
+            llvm::formatv("memref<2x{0}x64x{1}, #wafer.memory<spm, tensor>>",
+                          extent, dtype)
+                .str();
+        std::string rhs =
+            llvm::formatv("memref<2x64x{0}, #wafer.memory<spm, tensor>>", dtype)
+                .str();
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @entry() {\n"
+            << "%lhs = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<65536>} : "
+            << full << "\n"
+            << "%rhs = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<655360>} : "
+            << rhs << "\n"
+            << "wafer.instr.elementwise <" << kind << "> %lhs, %rhs into %lhs "
+            << "{rhs_unit_elements = 64 : i64, rhs_group_elements = "
+            << extent * 64 << " : i64} : " << full << ", " << rhs << " into "
+            << full << "\nreturn\n}}\n";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module) << text;
+        wafer::InstrElementwiseOp elementwise;
+        module->walk([&](wafer::InstrElementwiseOp op) { elementwise = op; });
+        {
+          mlir::ScopedDiagnosticHandler handler(&context,
+                                                [](mlir::Diagnostic &) {});
+          for (int64_t invalid : {-1, 63, 65, 2147483647}) {
+            elementwise.setRhsGroupElements(invalid);
+            EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
+          }
+          elementwise.setRhsGroupElements(extent * 64);
+          elementwise.setRhsUnitElements(32);
+          EXPECT_TRUE(mlir::failed(mlir::verify(*module)));
+          elementwise.setRhsUnitElements(64);
+        }
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        mlir::PassManager manager(&context);
+        manager.addPass(wafer::createLowerInstrToTargetLLVMPass({}));
+        ASSERT_TRUE(mlir::succeeded(manager.run(*module)));
+        unsigned calls = 0;
+        module->walk([&](mlir::LLVM::CallOp call) {
+          if (call.getCallee() != ("wafer_tx81_elementwise_" + kind).str())
+            return;
+          ++calls;
+          ASSERT_EQ(call.getNumOperands(), 9u);
+          const std::pair<unsigned, int64_t> fields[] = {
+              {3, 2 * extent * 64}, {5, 64}, {6, 0}, {7, extent * 64}, {8, 0}};
+          for (auto [index, expected] : fields) {
+            auto constant =
+                call.getOperand(index).getDefiningOp<mlir::LLVM::ConstantOp>();
+            ASSERT_TRUE(constant);
+            EXPECT_EQ(
+                mlir::cast<mlir::IntegerAttr>(constant.getValue()).getInt(),
+                expected);
+          }
+        });
+        EXPECT_EQ(calls, 1u);
+      }
+}
+
 TEST(LowerInstrToTargetLLVMTest, UnitBroadcastVerifierRejectsInvalidContracts) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);

@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
 #include "Wafer/Transforms/Linalg/AttentionVisibility.h"
+#include "Wafer/Transforms/Linalg/OnlineAttentionStateOrientation.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
@@ -519,6 +520,17 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
           }
         });
         EXPECT_GT(boundedLoops, 0u);
+        mlir::IRRewriter orientationRewriter(context.get());
+        ASSERT_TRUE(mlir::succeeded(orientOnlineAttentionAccumulators(
+            *module, relations, orientationRewriter)));
+        EXPECT_GT(countOps<mlir::linalg::TransposeOp>(*module), 0u);
+        region.walk([&](LinalgExtOnlineAttentionOp online) {
+          EXPECT_EQ(online.getAccumulatorMap().getResult(3),
+                    builder.getAffineDimExpr(2));
+          EXPECT_EQ(online.getAccumulator().getType().getDimSize(2), 128);
+          EXPECT_EQ(online.getAccumulator().getType().getDimSize(3),
+                    online.getQuery().getType().getDimSize(2));
+        });
         ASSERT_TRUE(
             mlir::succeeded(decomposeOnlineAttention(*module, relations)));
         auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
@@ -558,6 +570,24 @@ TEST(OnlineAttentionDecompositionTest,
       const unsigned loopsBefore =
           countOps<mlir::scf::ForOp>(module->getOperation());
       ASSERT_EQ(onlineBefore, extent == 1024 ? 1u : 2u);
+
+      mlir::IRRewriter orientationRewriter(context.get());
+      ASSERT_TRUE(mlir::succeeded(orientOnlineAttentionAccumulators(
+          *module, relations, orientationRewriter)));
+      module->walk([&](LinalgExtOnlineAttentionOp online) {
+        EXPECT_EQ(online.getAccumulator().getType().getShape(),
+                  llvm::ArrayRef<int64_t>({2, 4, 128, 1025}));
+        EXPECT_EQ(online.getAccumulatorMap().getResult(3),
+                  mlir::getAffineDimExpr(2, context.get()));
+      });
+      EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(*module), 1u);
+      module->walk([&](mlir::linalg::TransposeOp transpose) {
+        EXPECT_FALSE(transpose->getParentOfType<mlir::scf::ForOp>());
+        EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(
+                      transpose->getResult(0).getType())
+                      .getShape(),
+                  llvm::ArrayRef<int64_t>({2, 4, 1025, 128}));
+      });
 
       OnlineAttentionDecompositionFailure failure;
       auto decomposed = decomposeOnlineAttention(*module, relations, &failure);
@@ -609,7 +639,7 @@ TEST(OnlineAttentionDecompositionTest,
       module->walk([&](mlir::linalg::GenericOp generic) {
         if (generic.getNumDpsInputs() != 2 || generic->getNumResults() != 1)
           return;
-        mlir::Value query = generic.getDpsInputs()[0];
+        mlir::Value query = generic.getDpsInputs()[1];
         while (auto slice = query.getDefiningOp<mlir::tensor::ExtractSliceOp>())
           query = slice.getSource();
         if (query != region.getBody().front().getArgument(0))
@@ -620,8 +650,8 @@ TEST(OnlineAttentionDecompositionTest,
         EXPECT_TRUE(type.getElementType().isF32());
         EXPECT_EQ(type.getShape()[0], 2);
         EXPECT_EQ(type.getShape()[1], 4);
-        EXPECT_EQ(type.getShape()[2], 1025);
-        EXPECT_LE(type.getShape()[3], 128);
+        EXPECT_LE(type.getShape()[2], 128);
+        EXPECT_EQ(type.getShape()[3], 1025);
       });
       EXPECT_EQ(scoreScratch, onlineBefore);
       EXPECT_TRUE(
@@ -673,6 +703,129 @@ TEST(OnlineAttentionDecompositionTest,
       EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
       EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
       EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
+    }
+}
+
+TEST(OnlineAttentionDecompositionTest,
+     StatePublicationRestoresNarrowBlockBeforeLargerInsertDestination) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    auto module = parseOnlineModule(*context, extent, "bf16", false);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = selectK2Tile(*domain.domain, 128);
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    ASSERT_TRUE(mlir::succeeded(
+        applyTemporalTiling({{*domain.domain, choice}}, relations)));
+    auto *yield = region.getBody().front().getTerminator();
+    mlir::IRRewriter rewriter(context.get());
+    rewriter.setInsertionPoint(yield);
+    auto location = yield->getLoc();
+    auto state = yield->getOperand(0);
+    auto narrowType = mlir::cast<mlir::RankedTensorType>(state.getType())
+                          .clone(rewriter.getBF16Type());
+    auto fullType = narrowType.clone(llvm::ArrayRef<int64_t>{4, 4, 1025, 128});
+    auto fullEmpty = rewriter.create<mlir::tensor::EmptyOp>(
+        location, fullType.getShape(), fullType.getElementType());
+    auto zero = rewriter.create<mlir::arith::ConstantOp>(
+        location, rewriter.getFloatAttr(rewriter.getBF16Type(), 0));
+    auto full = rewriter.create<mlir::linalg::FillOp>(
+        location, mlir::ValueRange{zero}, mlir::ValueRange{fullEmpty});
+    llvm::SmallVector<mlir::OpFoldResult> offsets(4, rewriter.getIndexAttr(0));
+    llvm::SmallVector<mlir::OpFoldResult> strides(4, rewriter.getIndexAttr(1));
+    llvm::SmallVector<mlir::OpFoldResult> sizes;
+    for (int64_t size : narrowType.getShape())
+      sizes.push_back(rewriter.getIndexAttr(size));
+    auto outputSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
+        location, narrowType, full.getResult(0), offsets, sizes, strides);
+    auto identity = rewriter.getMultiDimIdentityMap(4);
+    auto narrow = rewriter.create<mlir::linalg::GenericOp>(
+        location, mlir::TypeRange{narrowType}, mlir::ValueRange{state},
+        mlir::ValueRange{outputSlice},
+        llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+        llvm::SmallVector<mlir::utils::IteratorType>(
+            4, mlir::utils::IteratorType::parallel),
+        [&](mlir::OpBuilder &nested, mlir::Location loc,
+            mlir::ValueRange args) {
+          auto value = nested.create<mlir::arith::TruncFOp>(
+              loc, rewriter.getBF16Type(), args[0]);
+          nested.create<mlir::linalg::YieldOp>(loc, value.getResult());
+        });
+    auto insert = rewriter.create<mlir::tensor::InsertSliceOp>(
+        location, narrow.getResult(0), full.getResult(0), offsets, sizes,
+        strides);
+    yield->setOperand(0, insert.getResult());
+    region.getResult(0).setType(fullType);
+    auto function = region->getParentOfType<mlir::func::FuncOp>();
+    function.setType(rewriter.getFunctionType(function.getArgumentTypes(),
+                                              mlir::TypeRange{fullType}));
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    ASSERT_TRUE(mlir::succeeded(
+        orientOnlineAttentionAccumulators(*module, relations, rewriter)));
+    EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(*module), 1u);
+    auto restore =
+        insert.getSource().getDefiningOp<mlir::linalg::TransposeOp>();
+    ASSERT_TRUE(restore);
+    EXPECT_EQ(restore.getInput(), narrow.getResult(0));
+    EXPECT_EQ(insert.getSource().getType(), narrowType);
+    EXPECT_EQ(insert.getDest().getType(), fullType);
+    EXPECT_EQ(outputSlice.getSource(), full.getResult(0));
+    EXPECT_EQ(outputSlice.getType(), narrowType);
+    EXPECT_TRUE(narrow.getDpsInits()[0].getDefiningOp<mlir::tensor::EmptyOp>());
+    EXPECT_EQ(fullEmpty.getType(), fullType);
+    EXPECT_EQ(region.getResult(0).getType(), fullType);
+    EXPECT_FALSE(restore->getParentOfType<mlir::scf::ForOp>());
+    EXPECT_EQ(countOps<mlir::arith::TruncFOp>(narrow), 1u);
+  }
+}
+
+TEST(OnlineAttentionDecompositionTest,
+     StateOrientationLeavesUnclosedOrObservedRecurrencesUnchanged) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool innerObserver : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << innerObserver);
+      auto context = createContext();
+      auto module = parseOnlineModule(*context, extent, "bf16", false);
+      ASSERT_TRUE(module);
+      auto region = findRegion(*module);
+      auto domain = buildTemporalDomain(region);
+      ASSERT_TRUE(domain.succeeded());
+      auto choice = selectK2Tile(*domain.domain, 128);
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      ASSERT_TRUE(mlir::succeeded(
+          applyTemporalTiling({{*domain.domain, choice}}, relations)));
+      mlir::scf::ForOp loop;
+      region.walk([&](mlir::scf::ForOp current) { loop = current; });
+      ASSERT_TRUE(loop);
+      mlir::IRRewriter rewriter(context.get());
+      if (innerObserver) {
+        rewriter.setInsertionPointToStart(loop.getBody());
+        rewriter.create<mlir::tensor::DimOp>(loop.getLoc(),
+                                             loop.getRegionIterArgs()[0], 2);
+      } else {
+        // A rank-preserving cast has no admitted producer rule. The entire
+        // choice must decline, including any already discovered tail state.
+        rewriter.setInsertionPoint(loop);
+        auto init = loop.getInitArgs()[0];
+        auto cast = rewriter.create<mlir::tensor::CastOp>(loop.getLoc(),
+                                                          init.getType(), init);
+        loop.getInitArgsMutable().slice(0, 1).assign(cast.getResult());
+      }
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      std::string before;
+      llvm::raw_string_ostream beforeStream(before);
+      module->print(beforeStream);
+      ASSERT_TRUE(mlir::succeeded(
+          orientOnlineAttentionAccumulators(*module, relations, rewriter)));
+      std::string after;
+      llvm::raw_string_ostream afterStream(after);
+      module->print(afterStream);
+      EXPECT_EQ(before, after);
+      EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(*module), 0u);
     }
 }
 

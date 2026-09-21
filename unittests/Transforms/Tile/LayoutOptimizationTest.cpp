@@ -2979,93 +2979,101 @@ TEST_F(LayoutOptimizationTest, PointwiseChainsRetainEveryLegalLayoutChoice) {
 TEST_F(LayoutOptimizationTest, PayloadDestinationsPreserveOldValueObservers) {
   for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
     for (int64_t extent : {1024, 1025, 1031})
-      for (bool observeOld : {false, true}) {
-        SCOPED_TRACE(::testing::Message()
-                     << dtype.str() << "/" << extent << "/" << observeOld);
-        auto type =
-            "tensor<2x" + std::to_string(extent) + "x32x" + dtype.str() + ">";
-        std::string text;
-        llvm::raw_string_ostream ir(text);
-        ir << "#id = affine_map<(b,m,n)->(b,m,n)>\n"
-           << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
-           << "func.func @entry(%input: " << type << ") {\n"
-           << "%r = wafer.tile.region(%input : " << type << ") -> (" << type
-           << ") { ^bb0(%a: " << type << "):\n"
-           << "%factor = arith.constant 2.0 : " << dtype << "\n"
-           << "%empty = tensor.empty() : " << type << "\n"
-           << "%score = linalg.generic {indexing_maps = [#id, #id], "
-              "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
-              "ins(%a : "
-           << type << ") outs(%empty : " << type << ") { ^bb1(%x: " << dtype
-           << ", %old: " << dtype << "): %neg = arith.negf %x : " << dtype
-           << " linalg.yield %neg : " << dtype << " } -> " << type << "\n"
-           << "%result = linalg.generic {indexing_maps = [#id, #id], "
-              "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
-              "ins(%score : "
-           << type << ") outs(%score : " << type << ") { ^bb1(%x: " << dtype
-           << ", %old: " << dtype
-           << "): %scaled = arith.mulf %x, %factor : " << dtype
-           << " %sum = arith.addf %scaled, " << (observeOld ? "%x" : "%factor")
-           << " : " << dtype << " linalg.yield %sum : " << dtype << " } -> "
-           << type << "\nwafer.tile.yield %result : " << type
-           << "\n}\nreturn\n}}}\n";
-        auto module = parse(text);
-        ASSERT_TRUE(module) << text;
-        auto relations = outputRelation(*module);
-        auto prepared = prepareCurrentLayoutInput(*module, relations);
-        ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
-        unsigned multiplications = 0;
-        module->walk([&](mlir::linalg::GenericOp op) {
-          if (!mlir::isa<mlir::arith::MulFOp>(op.getBody()->front()))
-            return;
-          ++multiplications;
-          EXPECT_EQ(op.getDpsInits().front(), op.getDpsInputs().front());
-        });
-        EXPECT_EQ(multiplications, 1u);
-        auto query = queryCurrentLayoutAssignment(*module);
-        ASSERT_TRUE(query.query) << query.outcome.detail;
-        auto assignment = query.query->solve(1048576);
-        auto layout = query.query->apply(*module, relations, assignment);
-        ASSERT_TRUE(layout.succeeded()) << layout.detail;
-        mlir::linalg::GenericOp multiply, add;
-        module->walk([&](mlir::linalg::GenericOp op) {
-          if (mlir::isa<mlir::arith::MulFOp>(op.getBody()->front()))
-            multiply = op;
-          if (mlir::isa<mlir::arith::AddFOp>(op.getBody()->front()))
-            add = op;
-        });
-        ASSERT_TRUE(multiply && add);
-        mlir::AliasAnalysis aliases(module->getOperation());
-        auto result = multiply.getDpsInits().front();
-        if (observeOld) {
-          EXPECT_TRUE(aliases.alias(result, add.getDpsInputs()[1]).isNo());
-        } else {
-          EXPECT_TRUE(
-              aliases.alias(result, add.getDpsInits().front()).isMust());
+      for (bool permuted : {false, true})
+        for (bool observeOld : {false, true}) {
+          SCOPED_TRACE(::testing::Message()
+                       << dtype.str() << "/" << extent << "/" << observeOld
+                       << "/" << permuted);
+          auto type =
+              "tensor<2x" + std::to_string(extent) + "x32x" + dtype.str() + ">";
+          std::string text;
+          llvm::raw_string_ostream ir(text);
+          ir << "#id = affine_map<(b,m,n)->"
+             << (permuted ? "(b,n,m)>\n" : "(b,m,n)>\n")
+             << "module { wafer.tile.module card_id = 0 tile_id = 0 {\n"
+             << "func.func @entry(%input: " << type << ") {\n"
+             << "%r = wafer.tile.region(%input : " << type << ") -> (" << type
+             << ") { ^bb0(%a: " << type << "):\n"
+             << "%factor = arith.constant 2.0 : " << dtype << "\n"
+             << "%empty = tensor.empty() : " << type << "\n"
+             << "%score = linalg.generic {indexing_maps = [#id, #id], "
+                "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+                "ins(%a : "
+             << type << ") outs(%empty : " << type << ") { ^bb1(%x: " << dtype
+             << ", %old: " << dtype << "): %neg = arith.negf %x : " << dtype
+             << " linalg.yield %neg : " << dtype << " } -> " << type << "\n"
+             << "%result = linalg.generic {indexing_maps = [#id, #id], "
+                "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+                "ins(%score : "
+             << type << ") outs(%score : " << type << ") { ^bb1(%x: " << dtype
+             << ", %old: " << dtype
+             << "): %scaled = arith.mulf %x, %factor : " << dtype
+             << " %sum = arith.addf %scaled, "
+             << (observeOld ? "%x" : "%factor") << " : " << dtype
+             << " linalg.yield %sum : " << dtype << " } -> " << type
+             << "\nwafer.tile.yield %result : " << type << "\n}\nreturn\n}}}\n";
+          auto module = parse(text);
+          ASSERT_TRUE(module) << text;
+          auto relations = outputRelation(*module);
+          auto prepared = prepareCurrentLayoutInput(*module, relations);
+          ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
+          unsigned multiplications = 0;
+          module->walk([&](mlir::linalg::GenericOp op) {
+            if (!mlir::isa<mlir::arith::MulFOp>(op.getBody()->front()))
+              return;
+            ++multiplications;
+            EXPECT_EQ(op.getDpsInits().front(), op.getDpsInputs().front());
+            EXPECT_TRUE(op.getIndexingMapsArray().front().isIdentity());
+            EXPECT_TRUE(op.getIndexingMapsArray().back().isIdentity());
+            EXPECT_EQ(mlir::cast<mlir::ShapedType>(op.getResult(0).getType())
+                          .getShape(),
+                      llvm::ArrayRef<int64_t>({2, extent, 32}));
+          });
+          EXPECT_EQ(multiplications, 1u);
+          auto query = queryCurrentLayoutAssignment(*module);
+          ASSERT_TRUE(query.query) << query.outcome.detail;
+          auto assignment = query.query->solve(1048576);
+          auto layout = query.query->apply(*module, relations, assignment);
+          ASSERT_TRUE(layout.succeeded()) << layout.detail;
+          mlir::linalg::GenericOp multiply, add;
+          module->walk([&](mlir::linalg::GenericOp op) {
+            if (mlir::isa<mlir::arith::MulFOp>(op.getBody()->front()))
+              multiply = op;
+            if (mlir::isa<mlir::arith::AddFOp>(op.getBody()->front()))
+              add = op;
+          });
+          ASSERT_TRUE(multiply && add);
+          mlir::AliasAnalysis aliases(module->getOperation());
+          auto result = multiply.getDpsInits().front();
+          if (observeOld) {
+            EXPECT_TRUE(aliases.alias(result, add.getDpsInputs()[1]).isNo());
+          } else {
+            EXPECT_TRUE(
+                aliases.alias(result, add.getDpsInits().front()).isMust());
+          }
+          auto lowered = lowerStructuredComputeToTile(*module, relations);
+          ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+          auto movement = materializeTileBoundaryMovement(*module, relations);
+          ASSERT_TRUE(movement.succeeded()) << movement.detail;
+          std::string detail;
+          auto standalone = createStandaloneTileModules(std::move(module),
+                                                        &detail, &relations);
+          ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+          ASSERT_EQ(standalone->size(), 1u);
+          auto &tile = standalone->front();
+          TileRegionToInstrLoweringSession session(*context);
+          llvm::SmallVector<TileRegionOp> regions;
+          tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+          for (auto region : regions)
+            ASSERT_TRUE(
+                mlir::succeeded(convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(
+              convertBufferizationCopiesToInstr(*tile.module, session)));
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          TileMemoryPlanningFailure failure;
+          auto planned = planTileMemory(std::move(tile.module), &failure);
+          ASSERT_TRUE(mlir::succeeded(planned));
         }
-        auto lowered = lowerStructuredComputeToTile(*module, relations);
-        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
-        auto movement = materializeTileBoundaryMovement(*module, relations);
-        ASSERT_TRUE(movement.succeeded()) << movement.detail;
-        std::string detail;
-        auto standalone =
-            createStandaloneTileModules(std::move(module), &detail, &relations);
-        ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
-        ASSERT_EQ(standalone->size(), 1u);
-        auto &tile = standalone->front();
-        TileRegionToInstrLoweringSession session(*context);
-        llvm::SmallVector<TileRegionOp> regions;
-        tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
-        for (auto region : regions)
-          ASSERT_TRUE(
-              mlir::succeeded(convertTileRegionToInstr(region, session)));
-        ASSERT_TRUE(mlir::succeeded(
-            convertBufferizationCopiesToInstr(*tile.module, session)));
-        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
-        TileMemoryPlanningFailure failure;
-        auto planned = planTileMemory(std::move(tile.module), &failure);
-        ASSERT_TRUE(mlir::succeeded(planned));
-      }
 }
 
 TEST_F(LayoutOptimizationTest, PayloadSSAExposesCompactPredicatesAndCasts) {

@@ -16,6 +16,68 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-21：累加器整链转置的性能回退
+
+同一BF16 `[1,28,2048,128]` causal attention，将私有累加器连同KV循环state、slice和finalize改为`[D,BQ]`后，
+普通设备时间为**6.579ms**，上一检查点为5.983ms；每版单样本，不能签稳定收益。
+新版本完整7,340,032元素、10,752 guard bytes、16 Tile completion、正常厂商退出及日志检查通过。
+静态GS从52处降到27处，score与accumulator分别实际使用SubVuVLoop、MulVuVLoop。
+
+完整profile Primary为**6.388ms**，66,512条事件，三阶段输出一致且guard、日志健康。
+双head Tile 4的TDMA活动为1.698794ms，SDK表版本约1.395ms；CT为2.792017ms，原约2.824ms。
+GS动态次数下降不能代表搬运成本下降：实际输出恢复仍用2字节粒度搬运每个query块的32,768个元素，
+这是待替换的具体路径。PMU只能支撑该方向的成本调查，不能将活动量与Primary相加或相减求“可节省时间”。
+
+后续独立原生`Nchw2nhwc`实验出现新的Tile-0 TDMA timeout；这不是上述attention运行的故障。
+该包包含两个几何，尚不能归到其中唯一一条，原生形状/时间边界仍为unknown；原生入口未接入生产。
+已停止设备执行并保留厂商清理、日志及只读现场，准备更小的单指令包继续定位。
+原始输入、包身份、全量数值、profile、失败边界及后续准备见
+[机器可读证据](data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
+
+## 2026-09-21：厂商模块函数表与局部复制
+
+同一BF16 `[1,28,2048,128]` causal attention，CRT借用厂商模块函数表后普通设备时间为**6.278ms**；
+随后消除动态循环及条件内的局部完整复制后为**5.983ms**。两版各一个健康样本，均通过完整7,340,032元素、
+10,752 guard bytes、16 Tile completion、厂商正常退出和运行窗口日志；性能目标尚未达标。
+
+前一根因是每条CRT指令重复调用`TsmNew*`/`TsmDelete*`创建和释放只含函数指针的表。
+现从SDK的`g_intrinsic()`借用各族表，由厂商`module_init`/`module_cleanup`管理生命周期；
+device linker仅导出actual输入object的公开入口及这两个厂商hook。当前安装固件确实调用这两个hook，
+不根据不同构建的安装包ELF代签。packet仍为每次调用独立对象，未缓存指令或绕过厂商清理。
+
+后一根因是复制消除对动态循环或条件一律拒绝，即使source/destination都在同一body内创建和使用。
+现以实际allocation、alias和全部use所在block证明局部生命周期，再执行原有完整快照证明；
+source后写、source在destination写后再读、destination提前读取、escape及非完整复制仍不能合并。
+Tile 4静态GS从58处降至52处，41项回归包含真实规模的嵌套动态循环、条件及hazard反例，并经过实际SPM规划。
+
+SDK表版本另有一次新profile：Primary **6.222ms**，完整95,136条事件，Count/Trace输出一致并实际检查guard。
+双head Tile的TDMA累计活动约1.395ms，原来较慢Tile的额外搬运已消失；CT约2.824ms。
+这些活动量可重叠，不与Primary相加，也不把此profile当作后续局部复制版本的测量。
+各版包身份、全量数值和profile摘要见[机器记录](data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
+
+## 2026-09-21：KQ score、分组广播及重复布局求解
+
+BF16 `[1,28,2048,128]` causal attention接入完整组VuVLoop及KQ score后，普通设备时间为**7.825ms**；
+进一步复用同一求解调用内完全相同PBQP连通分量的已证最优解后，为**7.172ms**。
+两版各一个健康样本，不称为稳定中位数；与前一步8.442ms中位数相比，后者降低约15%。
+两版完整7,340,032输出均为0个超阈值元素，cosine 0.999998133、relative L2 0.00193234；
+10,752 guard bytes、16 Tile completion、厂商正常退出和运行窗口日志通过。
+
+KQ展开暴露并修复两个通用缺陷：逐元素中间payload按loop顺序建shape，使转置score被反复转换；
+Tensor→blocked GS快路径没有检查source channel stride为1，导致置换map按连续source读取。
+前者改为actual output map顺序，后者仅在连续条件成立时使用快路径，其余走已有exact relation搬运。
+首次错误版本的7.829ms数值未通过，不计入性能结果；CPU重放及独立逐字节GS oracle确认了搬运缺陷。
+
+带guard的新profile Primary为**7.793ms**，完整96,864条事件，Count/Trace与Primary输出逐bit一致。
+Tile 4的GS调用从旧profile的2,521降为1,876；Tile 11仍有2,164次，actual layout不同。
+定位到布局PBQP对重复分量重复求解，4,399个分量中935个开始时已无预算。
+现在按全部unary/binary cost、状态数、连边、tie边界及incumbent内容复用本次查询内已证最优解，
+4,307个重复分量复用，全部4,399个分量得到最优解；未更改预算、空间切分或SPM合法性。
+实际16 Tile均获得相同score布局和分组Sub路径。7.172ms属于此后普通包，不能把此前profile充当其PMU测量。
+
+Profile仍显示CT与搬运/发射链需要优化。完整分组tail及低于3ms目标尚未完成。
+原始包身份、失败边界、计时和数值证据见[本轮记录](data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
+
 ## 2026-09-21：2048 BF16完整profile热点
 
 当前版本完成一次Primary/Count/Trace，Primary ELF与前一步普通包逐byte相同，设备事件时间为**8.479ms**。

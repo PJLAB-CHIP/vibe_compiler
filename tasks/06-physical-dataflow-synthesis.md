@@ -891,6 +891,9 @@ contribution或merge owner，不接收future inventory，也不clone整个candid
 Decomposition使用一个module-level preflight/apply kernel：score map只包含current B/M/K2 coordinates，QK reduction K1，row max/sum和PV
 reduction K2；scale、mask、`math.exp`与三个DPS state按05号固定dataflow形成actual Linalg/Tensor/arith/math。它不新增loop或finalize，
 FA/FD共享同一实现；既有SCF loop、FD endpoint和selected merge只由current parent/SSA保留。Named pipeline与controller adapter复用该kernel。
+05号的累加器方向改写同属该入口：先检查已物化私有state的完整SSA闭包，再一致改写init、SCF类型及merge/finalize maps，
+不新增循环或改变算术body。只在KV循环外恢复输出方向；cross-Tile endpoint及无法闭合的state保留原方向。
+分解descriptor在方向改写后从current IR重建，不能继续消费改写前的shape/map分析。
 
 ## 6. Current IR 上的 physical realization
 

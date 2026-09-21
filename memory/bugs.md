@@ -2207,3 +2207,27 @@
 - SDK头文件中的日志函数不一定存在于当前固件RTMSymTab；将声明直接加入allowlist会让主机链接成功、设备加载失败。
 - 按匹配身份的固件导出表核对allowlist和最终ELF全部undefined symbols；实际链接负例应在原子发布前失败并保留旧输出。
   日志函数存在与系统日志能采集到其输出是两个检查，不能互相代签。
+
+## 分解后的中间值必须保持实际输出map的坐标顺序
+
+- 根因：逐元素payload分解按loop编号排序依赖轴，使已选定的转置score链在每个中间值恢复旧方向，最后再转回。
+- 修复：按current output indexing map投影使用到的轴，保留该实际坐标顺序；不以attention名称或方形shape识别。
+- 配套检查：Tensor到blocked的GS连续inner路径必须证明source相应轴stride为1。Projected permutation只证明逻辑一一对应，
+  不证明连续字节；缺失该条件会在shape/范围完全合法时静默搬错值。逐地址oracle须覆盖非方形、置换和非整除规模。
+
+## 私有state重排不能沿未读取的DPS init扩大到完整输出
+
+- 根因：finalize的init是完整输出的一个slice，但scalar body没有读取它。把所有DPS operand都当作state输入闭合，
+  会将完整产品输出也转置为SPM临时值，掩盖块级实现并触发不必要的容量拒绝/retile。
+- 修复：从scalar block argument的实际use区分输入state和纯目的地；后者使用实际块shape的empty init。
+  `insert_slice` source作为发布边界，仅当destination或loop yield也属于state闭包时才扩展到它们。
+- 防复发：检查loop main/tail类型、narrow cast位置、块级恢复及完整目的地保持，再经过实际Instr/SPM和产品包；
+  单测只比较最终shape或盲目扩大SPM都不能证明正确。
+
+## 厂商SDK函数表由模块生命周期持有
+
+- 当前SDK的`TsmNew*`会分配函数表，逐指令创建/释放引入重复Kcore工作。CRT可通过`g_intrinsic()`借用厂商模块表，
+  packet仍保持调用局部，不能缓存地址或改变completion。
+- 接入前核对实际安装固件对`module_init`/`module_cleanup`的调用；device linker必须动态导出这两个真实hook。
+  `--exclude-libs,ALL`可能将hook隐藏，仅在链接命令里写export选项不够；检查最终ELF的dynamic definitions。
+- 输入重定义hook、缺失hook或未导出loader符号都必须在原子发布前失败；普通、Count、Trace和extra object入口共同覆盖。

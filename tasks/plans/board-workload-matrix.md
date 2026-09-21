@@ -38,7 +38,7 @@
 
 #### Attention展开方向与VuVLoop实施方案
 
-本方案归同一`board-testing`，接续完整profile得到的广播/布局热点；以下为待实施合同，不表示已有生产Loop指令或新性能结果。
+本方案归同一`board-testing`，接续完整profile得到的广播/布局热点；用户已授权实现及实卡验收，性能目标尚未闭合。
 目标与上方完成条件不变。稳定合同分别由[05号展开方向](../05-local-compute-normalization.md#48-attention展开方向与分组广播)、
 [08号布局](../08-physical-realization.md#attention链路暴露的布局覆盖补齐)、
 [10号分组广播](../10-compute-movement.md#分组广播与vuvloop接入合同)、
@@ -46,6 +46,49 @@
 [14号目标调用](../14-target-code-generation.md#vuvloop目标调用接入)拥有；本节只保存本轮问题证据、顺序、示例和覆盖。
 
 **当前证据与根因边界**
+
+最新检查点：同一调用内重复PBQP分量的精确最优解复用已完成，未调整搜索预算或head切分。
+4,399个分量全部最优，其中4,307个复用，原935个零预算起步分量消失；16 Tile实际score布局一致。
+新包普通实卡7.172ms，完整数值、guard、completion及厂商退出通过；证据见
+[性能记录](../../docs/data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
+随后将CRT每条调用的SDK函数表分配/释放改为借用厂商模块表，普通新包为6.278ms；
+厂商module_init/module_cleanup负责初始化和释放，实际固件加载/销毁调用链与最终ELF导出均已核对。
+新profile Primary为6.222ms、95,136条完整事件，Count/Trace输出一致、guard和日志检查通过；
+双head Tile的TDMA活动量已统一到约1.395ms，原布局差异消失。
+继续按同block私有allocation与实际use/alias证明消除动态循环/条件内的冗余完整快照复制，
+新包普通实卡5.983ms，完整数值、guard、completion和厂商退出通过；41项直接变换回归通过。
+累加器整条SSA链转置已通过主机及普通实卡，静态GS从52降至27，但设备6.579ms，较5.983ms回退；
+新profile Primary为6.388ms，66,512条完整事件，三阶段日志健康且全量输出、guard通过。
+当前输出恢复仍以2字节GS复制整个窄矩阵。接续先分析真实PMU，再按厂商OpLib的矩阵转置调用核对原生
+`Nchw2nhwc`的shape/NCx关系；先准备目标块及1024矩形块的BF16全物理位型/guard资格，未通过前不宣称原生路径可用。
+本项仍未取得整体转置的净收益。以上均为各版单样本，3ms门禁未闭合。
+
+随后独立原生资格在2026-09-21 23:04:38报告Tile-0 TDMA timeout，stream fatal为`0x1000`。
+该诊断包包含BF16 `[1,1024,64]`与`[1,128,256]`两条`Nchw2nhwc`；厂商SDK参数和OpLib调用形式已核对，
+但现有记录不能区分触发形状，不得据此声称65536元素是原生上限。生产lowering没有接入该原生入口。
+已停止设备批次，未retry/reset、未杀厂商清理；完整日志和只读现场已归档。
+后续BF16 `[1,64,64]`、`[1,64,256]`分别为单独fresh包，每次只有一条原生TDMA，
+已准备全物理位型reference、整resource边界校验及no-card。它们仅用于硬件几何资格，不能替代真实规模编译器覆盖。
+已通知用户重启；新boot恢复与系统占用核实后先执行第一包，健康、位型和guard全部通过才执行第二包。
+仍禁止重跑失败包或历史性能包；原生tuple通过前只分析接入，不扩大支持集合。
+当前代码为开发分支检查点；完整组Loop已接入，主块/尾块分段实现及整体转置净收益仍待完成。
+
+本轮主机检查：受影响155项lit通过；Analysis/Planning/Conversion/Simulator/Target/RunBoardIO全部通过。
+完整Transforms中的输出发布SPM失败已定位为未读DPS init追溯到完整产品输出，修复后原失败case及11项decomposition回归通过；
+canonical完整增量构建及随后Ninja no-op通过。错误和修复后的记录均保留，不把旧失败删除或缩小输入规避。
+
+本轮实施检查点：完整组VuVLoop已贯通proof/layout/Instr/TargetCall/CRT/model，KQ score及PV的lhs转置已物化。
+profile remap的guard、设备计时及观测策略已同步转交。发现并修复两个通用缺陷：
+payload分解按loop编号重排算术中间值（08号），以及Tensor→blocked GS快路径漏查source channel stride（10号）。
+第一次KQ包的设备完成、guard与日志健康，但数值失败，耗时不作为性能资格；错误mask descriptor的CPU重放
+复现前22个head首块输出（相对L2约0.00161），query 1恰好变为V[255]。修复后的逐地址host回归及新包no-card通过。
+普通实卡7.825ms，全部7,340,032输出无超阈值元素，cosine 0.999998133、relative L2 0.00193234；
+10,752 guard bytes、16 Tile completion与厂商正常退出通过。新profile Primary为7.793ms，
+Count/Trace与Primary输出一致，guard实际检查，三个阶段均无日志告警；完整采集96,864条事件。
+Tile 4的GS从2,521次降至1,876次，Tile 11仍为2,164次；两者CT活动均约2.824ms，TDMA分别1.395/2.414ms。
+这些活动量允许重叠，不与Primary相加。继续定位剩余布局往返及累加器广播，3ms门禁未闭合。
+没有设备fatal/timeout，不要求重启，也不重跑旧包。profile首次主机GDB读到自身`/proc/self/fd/3` pipe，
+在runtime库加载阶段、设备打开前停止；设置独立sysroot后完成本轮采集，不把该主机失败记为设备故障。
 
 | 已确认的问题 | 当前producer / 缺口 | 本轮处理及边界 |
 | --- | --- | --- |

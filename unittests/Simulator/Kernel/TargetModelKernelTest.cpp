@@ -11,6 +11,7 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/bit.h"
 #include "llvm/Support/Error.h"
@@ -970,6 +971,94 @@ TEST(TargetModelKernelTest,
             expectError(executeTargetModelCommand(command, memory, budget))
                 .find("1..64"),
             std::string::npos);
+      }
+}
+
+TEST(TargetModelKernelTest, GroupedBroadcastAdvancesRHSAndKeepsExactSpans) {
+  for (auto format :
+       {LogicalFormat::F16, LogicalFormat::BF16, LogicalFormat::F32})
+    for (uint32_t extent : {1024, 1025, 1031})
+      for (auto operation :
+           {TargetElementwiseOperation::Add, TargetElementwiseOperation::Sub,
+            TargetElementwiseOperation::Mul, TargetElementwiseOperation::Max,
+            TargetElementwiseOperation::Min}) {
+        SCOPED_TRACE(::testing::Message() << unsigned(format) << "/" << extent
+                                          << "/" << unsigned(operation));
+        auto bits = [&](int value) {
+          llvm::APFloat number(static_cast<float>(value));
+          bool losesInfo;
+          if (format != LogicalFormat::F32)
+            number.convert(format == LogicalFormat::F16
+                               ? llvm::APFloat::IEEEhalf()
+                               : llvm::APFloat::BFloat(),
+                           llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+          return number.bitcastToAPInt().getZExtValue();
+        };
+        uint32_t count = 2 * extent * 64;
+        auto full =
+            makeTensor(format, PhysicalTensorLayout::Tensor, {2, extent, 64});
+        auto compact =
+            makeTensor(format, PhysicalTensorLayout::Tensor, {2, 64});
+        InvocationMemoryRegistry memory = makeRegistry();
+        FormalNumericExecutionContext context;
+        uint64_t lhsAddress = memory.getAddressPlan().getSPMBase();
+        uint64_t rhsAddress = lhsAddress + 0x90000;
+        // Exact in-place lhs is legal; the repeated RHS remains independent.
+        uint64_t output = lhsAddress;
+        int lhsValue = operation == TargetElementwiseOperation::Mul   ? 1
+                       : operation == TargetElementwiseOperation::Min ? 256
+                                                                      : 0;
+        writeTensor(
+            memory, 0, lhsAddress, full,
+            std::vector<RawLogicalValue>(count, {format, bits(lhsValue)}));
+        std::vector<RawLogicalValue> rhs;
+        for (unsigned i = 0; i < 128; ++i)
+          rhs.push_back({format, bits(i + 1)});
+        writeTensor(memory, 0, rhsAddress, compact, rhs);
+        uint64_t bytes = llvm::cantFail(getPhysicalTensorStorageBytes(full));
+        std::vector<uint8_t> guard(16, 0xa5);
+        llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
+            0, TargetModelAddressSpace::TileSPM, output + bytes, 1, guard}}));
+        TargetElementwiseCommand payload{
+            operation, lhsAddress, rhsAddress, output, count, format, 64};
+        payload.rhsGroupElements = extent * 64;
+        TargetCommand command{CardId(0), TileId(0), LaunchSlotId(0), 0,
+                              payload};
+        auto budget = TargetModelKernelBudget::create(
+            FormalNumericWorkBudget::create(count, 0), count * 8, 256);
+        auto effect = executeTargetModelCommand(command, memory, budget);
+        ASSERT_TRUE(bool(effect)) << llvm::toString(effect.takeError());
+        ASSERT_EQ(effect->pendingReads.size(), 2u);
+        EXPECT_EQ(effect->pendingReads[1].byteCount,
+                  128u * (format == LogicalFormat::F32 ? 4 : 2));
+        ASSERT_EQ(effect->pendingWrites.size(), 1u);
+        EXPECT_EQ(effect->pendingWrites[0].bytes.size(), bytes);
+        llvm::cantFail(
+            applyTargetModelCommandEffect(memory, context, std::move(*effect)));
+        auto result = readTensor(memory, 0, output, full);
+        ASSERT_EQ(result.size(), count);
+        for (unsigned group = 0; group < 2; ++group)
+          for (unsigned row = 0; row < extent; ++row)
+            for (unsigned lane = 0; lane < 64; ++lane) {
+              int expected = group * 64 + lane + 1;
+              if (operation == TargetElementwiseOperation::Sub)
+                expected = -expected;
+              ASSERT_EQ(result[(group * extent + row) * 64 + lane].bits,
+                        bits(expected))
+                  << group << "/" << row << "/" << lane;
+            }
+        EXPECT_EQ(
+            llvm::cantFail(memory.readSnapshot(
+                0, TargetModelAddressSpace::TileSPM, output + bytes, 16, 1)),
+            guard);
+        for (uint32_t invalid : {63u, 65u, extent * 64 + 64}) {
+          std::get<TargetElementwiseCommand>(command.payload).rhsGroupElements =
+              invalid;
+          auto rejected = executeTargetModelCommand(command, memory, budget);
+          EXPECT_FALSE(bool(rejected));
+          if (!rejected)
+            llvm::consumeError(rejected.takeError());
+        }
       }
 }
 

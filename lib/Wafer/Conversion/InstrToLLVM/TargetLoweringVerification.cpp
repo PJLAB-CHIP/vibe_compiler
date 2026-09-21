@@ -941,7 +941,7 @@ verifyTargetCTPhysicalTraversal(mlir::Operation *op) {
           if (mlir::isa<mlir::FloatType>(input.getType()))
             continue; // A typed VS immediate is not a memory traversal.
           if (index == 1 && typedOp.getRhsUnitElements())
-            continue; // The verifier checks this typed physical unit.
+            continue; // The verifier checks the typed unit/group geometry.
           if (mlir::failed(verifyTargetPhysicalTraversal(
                   op, input, typedOp.getDest(), "elementwise")))
             return mlir::failure();

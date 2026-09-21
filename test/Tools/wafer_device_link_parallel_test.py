@@ -24,7 +24,7 @@ def check_case(failures):
         output.write_bytes(b"previous-output")
         args = argparse.Namespace(
             output=str(output), object_output=str(llvm_object),
-            crt_object_output=str(crt_object), loader_abi="tx8-kcore-loader",
+            crt_object_output=str(crt_object), extra_object=[], loader_abi="tx8-kcore-loader",
         )
         started = threading.Barrier(2, timeout=5)
         lock = threading.Lock()
@@ -70,6 +70,8 @@ def check_case(failures):
         with mock.patch.object(device_link, "build_commands", side_effect=commands), \
              mock.patch.object(device_link.subprocess, "run", side_effect=run), \
              mock.patch.object(device_link, "run_required_symbol_scan"), \
+             mock.patch.object(device_link, "write_module_exports"), \
+             mock.patch.object(device_link, "verify_module_hooks"), \
              mock.patch.object(device_link.os, "cpu_count", return_value=2):
             try:
                 device_link.execute_staged_link(args)

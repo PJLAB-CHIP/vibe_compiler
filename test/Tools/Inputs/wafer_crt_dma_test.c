@@ -1,10 +1,11 @@
 // SDK call interception: verify exact byte geometry at the hardware boundary.
 #include "instr_adapter.h"
+#include "instr_operator.h"
 #include <assert.h>
 
 static uint64_t expected_src, expected_dst;
 static uint32_t expected_inner, expected_stride[3], expected_iteration[3];
-static uint32_t packet_bits, calls, live_objects;
+static uint32_t packet_bits, calls;
 
 static void capture_addresses(DMA_Param *instr, uint64_t src, uint64_t dst,
                               Data_Format format) {
@@ -35,10 +36,6 @@ static TsmRdma rdma = {.AddSrcDst = capture_addresses,
                       .ConfigStrideIteration = capture_geometry};
 static TsmWdma wdma = {.AddSrcDst = capture_addresses,
                       .ConfigStrideIteration = capture_geometry};
-TsmRdma *TsmNewRdma(void) { ++live_objects; return &rdma; }
-TsmWdma *TsmNewWdma(void) { ++live_objects; return &wdma; }
-void TsmDeleteRdma(TsmRdma *p) { assert(p == &rdma); --live_objects; }
-void TsmDeleteWdma(TsmWdma *p) { assert(p == &wdma); --live_objects; }
 static void wafer_execute_rdma(TsmRdmaInstr *instr, uint32_t worker) {
   (void)instr;
   assert(worker == 2);
@@ -49,6 +46,12 @@ static void wafer_execute_wdma(TsmWdmaInstr *instr, uint32_t worker) {
   assert(worker == 2);
   ++calls;
 }
+
+static TsmOperatorPointer operators = {
+    .rdma_pointer = &rdma,
+    .wdma_pointer = &wdma,
+};
+TsmOperatorPointer *g_intrinsic(void) { return &operators; }
 
 /* PRODUCTION_FUNCTIONS */
 
@@ -78,7 +81,7 @@ int main(void) {
               expected_inner, expected_stride[0], expected_stride[1],
               expected_stride[2], expected_iteration[0], expected_iteration[1],
               expected_iteration[2], format, 2);
-          assert(calls == before + 1 && live_objects == 0);
+          assert(calls == before + 1);
         }
   assert(calls == 156);
   puts("DMA packet byte geometry: 156 configurations passed");

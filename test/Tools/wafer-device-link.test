@@ -69,6 +69,12 @@
 # RUN:   --llvm-ir %S/Inputs/minimal-profile-target-kernel.ll \
 # RUN:   --output %t.profile-trace.so --profile-capture trace
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm --defined-only %t.profile-trace.so | FileCheck %s --check-prefix=PROFILE-TRACE-SYMBOLS
+# RUN: %python -c 'import subprocess; nm="%wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm"; cases=[("%t.success.so", "kernel_entry"), ("%t.profile-count.so", "main"), ("%t.profile-trace.so", "main")]; actual=[{line.split()[-1] for line in subprocess.check_output([nm, "-D", "--defined-only", path], text=True).splitlines()} for path, entry in cases]; assert actual == [{entry, "module_init", "module_cleanup"} for path, entry in cases], actual'
+# RUN: %python -c 'from pathlib import Path; Path("%t.hook-conflict.so").write_bytes(b"sentinel-final")'
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/redefined-module-hook.ll --output %t.hook-conflict.so \
+# RUN:   2>&1 | FileCheck %s --check-prefix=HOOK-CONFLICT
+# RUN: %python -c 'from pathlib import Path; output=Path("%t.hook-conflict.so"); assert output.read_bytes() == b"sentinel-final"; assert not Path("%t.hook-conflict.o").exists(); assert not list(output.parent.glob(f".{output.name}.staging-*"))'
 
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/minimal-target-heap-entry.ll \
@@ -163,7 +169,9 @@
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/lib/rv64imafdc/lp64d
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imafdc/lp64d
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/lib
-# CHECK-SAME: -Wl,--exclude-libs,ALL
+# CHECK-SAME: -Wl,--version-script={{[^ ]*}}kernel.exports
+# CHECK-SAME: -Wl,--undefined=module_init
+# CHECK-SAME: -Wl,--undefined=module_cleanup
 # CHECK-SAME: -Wl,--start-group
 # CHECK-SAME: -lcommon_util
 # CHECK-SAME: -linstr_tx81
@@ -183,6 +191,7 @@
 # CHECK-SAME: kernel.so
 
 # ERR: error: LLVM IR input does not exist
+# HOOK-CONFLICT: error: input redefines SDK module hooks: module_init
 
 # UNDEF: error: undefined Wafer target CRT symbols remain after link: wafer_tx81_missing
 

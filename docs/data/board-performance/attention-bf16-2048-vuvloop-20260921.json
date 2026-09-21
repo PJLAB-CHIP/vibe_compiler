@@ -1,0 +1,3974 @@
+{
+  "date": "2026-09-21",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bfloat16",
+  "qkv_shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "seed": 20260922,
+  "policy": "search",
+  "target_ms": 3,
+  "target_achieved": false,
+  "previous_record": "attention-bf16-2048-dead-initialization-20260921.json",
+  "previous_device_ms": [
+    8.461,
+    8.442,
+    8.401
+  ],
+  "samples": [
+    {
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride",
+      "name": "vuvloop-source-stride",
+      "fresh_no_card": true,
+      "device_ms": [
+        7.825
+      ],
+      "comparison": "attention-prefill-28-heads-2048 card_00_output_0.capture.bf16.raw: comparison=similarity cosine=0.99999813306471563 minimum_cosine=0.9999 relative_l2=0.0019323424734563098 maximum_relative_l2=0.01 elementwise_mismatches=0/7340032 atol=0.008 rtol=0.006 mean_abs=3.9655537083723279e-05 max_abs=0.015625",
+      "guard_checked_bytes": 10752,
+      "completed_tiles": 16,
+      "device_diagnostics": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 224350,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "prepare_identity": {
+        "compiler_sha256": "42c11daeae2aa7a702e23eb8220fc848681155eb2492a72477ea6d091ebcad22",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "b858bf5e96bcc2b5e00717ba20718123bb298853479a8aa020b285ad66e541d0",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/prepared",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--no-card"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "prepare",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "board_identity": {
+        "compiler_sha256": "42c11daeae2aa7a702e23eb8220fc848681155eb2492a72477ea6d091ebcad22",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "7bfd6dd48c29dccfeeda61354d1bd8d3eef06c710fec820e4a64e57d573cd724",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/board",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--prepared-work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride/prepared",
+          "--repeat",
+          "1"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "board",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "elf_sha256": {
+        "prepared/package/modules/module_00000.so": "a929b741e5c3928456e6ed3d185d3ab0fe7c7a5bffd0a1c5514a23c4b539a8f8"
+      }
+    },
+    {
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo",
+      "name": "vuvloop-layout-memo",
+      "fresh_no_card": true,
+      "device_ms": [
+        7.172
+      ],
+      "comparison": "attention-prefill-28-heads-2048 card_00_output_0.capture.bf16.raw: comparison=similarity cosine=0.99999813306471563 minimum_cosine=0.9999 relative_l2=0.0019323424734563098 maximum_relative_l2=0.01 elementwise_mismatches=0/7340032 atol=0.008 rtol=0.006 mean_abs=3.9655537083723279e-05 max_abs=0.015625",
+      "guard_checked_bytes": 10752,
+      "completed_tiles": 16,
+      "device_diagnostics": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 238705,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "prepare_identity": {
+        "compiler_sha256": "0d938616d4ab87391aee920e16c1f6f411e3a8761121aad3d44af063e9dbcba0",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "92f7f4b2dc146dcb0d9dfe5d939e3cc73d2cac064add3bc82bf8df64b0b2d5d0",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/prepared",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--no-card"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "prepare",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "board_identity": {
+        "compiler_sha256": "0d938616d4ab87391aee920e16c1f6f411e3a8761121aad3d44af063e9dbcba0",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "92f7f4b2dc146dcb0d9dfe5d939e3cc73d2cac064add3bc82bf8df64b0b2d5d0",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/board",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--prepared-work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-layout-memo/prepared",
+          "--repeat",
+          "1"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "board",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "elf_sha256": {
+        "prepared/package/modules/module_00000.so": "03216fe31f2074e5e3c512a221917cbc8bb02c039a5e0c5b5ebf990cb4c4d10a"
+      }
+    },
+    {
+      "name": "sdk-module-tables",
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables",
+      "fresh_no_card": true,
+      "device_ms": [
+        6.278
+      ],
+      "numeric_audit": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "8c1531ff1e4c85b37130f461393bca3b26c12b3915f7f39380ce99153644295b",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330647156,
+            "relative_l2_error": 0.0019323424734563098,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965553708372328e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=6278000"
+        ]
+      },
+      "guard_checked_bytes": 10752,
+      "device_diagnostics": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 248601,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "prepare_identity": {
+        "compiler_sha256": "0d938616d4ab87391aee920e16c1f6f411e3a8761121aad3d44af063e9dbcba0",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "6f883308744c22b87730bb0c2f3f9116c584b9ca3d83f2391db2c0fc704ea141",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/prepared",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--no-card"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "prepare",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "board_identity": {
+        "compiler_sha256": "0d938616d4ab87391aee920e16c1f6f411e3a8761121aad3d44af063e9dbcba0",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "633f103908a7e3f90c82303ec49a71542ecb01e8e105bfee8cbfab29dd273771",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/board",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--prepared-work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables/prepared",
+          "--repeat",
+          "1"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "board",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "elf_sha256": {
+        "prepared/package/modules/module_00000.so": "78b285fb5f05805dd4a9df5abc2b83903e7818f73f6bda0d1414cc0c0a9e98c1"
+      }
+    },
+    {
+      "name": "block-local-copies",
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies",
+      "fresh_no_card": true,
+      "device_ms": [
+        5.983
+      ],
+      "numeric_audit": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "63a3f45962937289d9c5e033db310fe3b7a18a3c08f4e8d9fd315bff31e991c9",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330647156,
+            "relative_l2_error": 0.0019323424734563098,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965553708372328e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=5983000"
+        ]
+      },
+      "guard_checked_bytes": 10752,
+      "device_diagnostics": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 255637,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "prepare_identity": {
+        "compiler_sha256": "b01e1141792e121710a86dc3f300d91ad1845f3b4b168aae8c42dd3722594fe4",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "ea1e34c3401a11e9e529461a0b89555ad48c59ee33ae3436e9f50639832118ba",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/prepared",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--no-card"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "prepare",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "board_identity": {
+        "compiler_sha256": "b01e1141792e121710a86dc3f300d91ad1845f3b4b168aae8c42dd3722594fe4",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "ea1e34c3401a11e9e529461a0b89555ad48c59ee33ae3436e9f50639832118ba",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/board",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--prepared-work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/block-local-copies/prepared",
+          "--repeat",
+          "1"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "board",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "elf_sha256": {
+        "prepared/package/modules/module_00000.so": "6e8af38f327faa3a018ae4a8a579eb5afe8dbb67d6436a16f9196f0e964f8526"
+      }
+    },
+    {
+      "name": "transposed-block-state",
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state",
+      "fresh_no_card": true,
+      "device_ms": [
+        6.579
+      ],
+      "numeric_audit": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "2108be8da831c1bfab9fc88c8887c7ed8f284ace683b9416c72200741f16e4aa",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330647156,
+            "relative_l2_error": 0.0019323424734563098,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965553708372328e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=6579000"
+        ]
+      },
+      "guards_and_health": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 282833,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "prepare_identity": {
+        "compiler_sha256": "12ea346ec216b7a7f6a41f0b716a34f987f8978cd676fab084a6fa53158f4e0f",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "53f2294ca717d53cecb5e1fc4b8ab310558eb54cbe956fe3aad1fd61da3b6fde",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/prepared",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--no-card"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "prepare",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "board_identity": {
+        "compiler_sha256": "12ea346ec216b7a7f6a41f0b716a34f987f8978cd676fab084a6fa53158f4e0f",
+        "git_head": "aeb2db3d16322ef3c5295069ec4351a90fe15cc7",
+        "source_diff_sha256": "53f2294ca717d53cecb5e1fc4b8ab310558eb54cbe956fe3aad1fd61da3b6fde",
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+          "-B",
+          "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+          "--case",
+          "attention-prefill-28-heads-2048",
+          "--dtype",
+          "bfloat16",
+          "--seed",
+          "20260922",
+          "--wafer-compile",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+          "--wafer-run",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/board",
+          "--dump-compiler-ir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/ir",
+          "--optimization-policy",
+          "search",
+          "--memory-guards",
+          "--device-timing",
+          "--compile-timing",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--board-diagnose-tool",
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+          "--prepared-work-dir",
+          "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state/prepared",
+          "--repeat",
+          "1"
+        ],
+        "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+        "stage": "board",
+        "register_capture": false,
+        "device_profile": false
+      },
+      "structural_evidence": {
+        "tile4_static_gs": 27,
+        "previous_tile4_static_gs": 52,
+        "accumulator_shape": [
+          1,
+          1,
+          128,
+          256
+        ],
+        "score_vuvloop_group_elements": 16384,
+        "accumulator_vuvloop_group_elements": 8192,
+        "output_restore_inner_bytes": 2,
+        "output_restore_elements_per_query_block": 32768
+      },
+      "performance_accepted": false,
+      "reason": "Whole-state transpose passed full numeric/guard/healthy execution but regressed versus 5.983 ms block-local-copies.",
+      "module_sha256": {
+        "prepared/package/modules/module_00000.so": "b2b210ef070254a8ce6ad67e4a589b50c73f4f4c84fdd3d758b7ee024c927ecb"
+      }
+    }
+  ],
+  "profile": {
+    "valid": true,
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": true,
+      "host_completion_resolution": false,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "duration": {
+      "completion_observation_fraction": 0.005379811473198354,
+      "completion_observation_resolution_ns": 44486,
+      "device_elapsed_ns": 7793000,
+      "device_elapsed_quantized_zero": false,
+      "device_timer_kind": "tx-stream-events",
+      "host_completion_high_resolution": false,
+      "host_envelope_available": true,
+      "host_launch_to_completion_ns": 8269063,
+      "host_non_submit_envelope_ns": 7911105,
+      "host_submit_ns": 357958,
+      "host_submit_quantized_zero": false,
+      "includes_device_control_wait_and_scheduling": true,
+      "includes_host_completion_polling": false,
+      "includes_host_submit": false,
+      "includes_trace_instrumentation": false,
+      "is_engine_only": false,
+      "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+      "qualified": true,
+      "sample_id": "primary",
+      "sample_index": 0,
+      "scope": "primary-launch-to-stream-completion",
+      "status": "Measured"
+    },
+    "trace": {
+      "captured_events": 96864,
+      "full_execution": true,
+      "scope": "full-execution",
+      "total_events": 96864
+    },
+    "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/vuvloop-source-stride-profile",
+    "tiles": [
+      {
+        "tile": 4,
+        "cycles": 11393055,
+        "engine": {
+          "CT": 2823913,
+          "NE": 363568,
+          "RDMA": 338156,
+          "WDMA": 25945,
+          "TDMA": 1395086,
+          "DIRECT_DTE": null
+        },
+        "calls": {
+          "wafer_tx81_rdma": 161,
+          "wafer_tx81_memset": 52,
+          "wafer_tx81_gather_scatter": 1876,
+          "wafer_tx81_gemm_oriented": 144,
+          "wafer_tx81_elementwise_mul": 248,
+          "wafer_tx81_elementwise_add": 88,
+          "wafer_tx81_reduce_max": 72,
+          "wafer_tx81_elementwise_max": 72,
+          "wafer_tx81_elementwise_eq": 88,
+          "wafer_tx81_mask_move": 88,
+          "wafer_tx81_elementwise_sub": 144,
+          "wafer_tx81_elementwise_exp": 144,
+          "wafer_tx81_reduce_sum": 72,
+          "wafer_tx81_convert_fp32_bf16": 88,
+          "wafer_tx81_elementwise_recip": 16,
+          "wafer_tx81_wdma": 16,
+          "wafer_tx81_ncc_join": 1
+        },
+        "overhead": 4780459
+      },
+      {
+        "tile": 11,
+        "cycles": 12367891,
+        "engine": {
+          "CT": 2823980,
+          "NE": 363400,
+          "RDMA": 314321,
+          "WDMA": 23885,
+          "TDMA": 2414038,
+          "DIRECT_DTE": null
+        },
+        "calls": {
+          "wafer_tx81_rdma": 161,
+          "wafer_tx81_memset": 52,
+          "wafer_tx81_gather_scatter": 2164,
+          "wafer_tx81_gemm_oriented": 144,
+          "wafer_tx81_elementwise_mul": 248,
+          "wafer_tx81_elementwise_add": 88,
+          "wafer_tx81_reduce_max": 72,
+          "wafer_tx81_elementwise_max": 72,
+          "wafer_tx81_elementwise_eq": 88,
+          "wafer_tx81_mask_move": 88,
+          "wafer_tx81_elementwise_sub": 144,
+          "wafer_tx81_elementwise_exp": 144,
+          "wafer_tx81_reduce_sum": 72,
+          "wafer_tx81_convert_fp32_bf16": 88,
+          "wafer_tx81_elementwise_recip": 16,
+          "wafer_tx81_wdma": 16,
+          "wafer_tx81_ncc_join": 1
+        },
+        "overhead": 5186682
+      }
+    ]
+  },
+  "root_causes": [
+    "Elementwise payload temporary indexing order used loop order instead of actual output map order.",
+    "Tensor-to-blocked GS fast path ignored a non-unit source channel stride.",
+    "Identical disconnected layout PBQP components repeated optimal search and exhausted the shared work budget before later Tiles."
+  ],
+  "pbqp_components": {
+    "before": {
+      "components": 4399,
+      "optimal": 3445,
+      "feasible": 954,
+      "started_without_budget": 935
+    },
+    "after": {
+      "components": 4399,
+      "optimal": 4399,
+      "reused_optimal": 4307,
+      "feasible": 0,
+      "started_without_budget": 0
+    }
+  },
+  "limits": [
+    "Each ordinary version has one timing sample, not a stable median.",
+    "Profile is for source-stride version, not later PBQP reuse.",
+    "Grouped tail and sub-3ms target remain incomplete.",
+    "Trace clocks are not aligned and per-site PMU attribution is ambiguous."
+  ],
+  "sdk_module_tables_profile": {
+    "valid": true,
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": true,
+      "host_completion_resolution": true,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "trace_capture": {
+      "captured_events": 95136,
+      "full_execution": true,
+      "scope": "full-execution",
+      "total_events": 95136
+    },
+    "duration": {
+      "completion_observation_fraction": 0.0013970188293187123,
+      "completion_observation_resolution_ns": 9272,
+      "device_elapsed_ns": 6222000,
+      "device_elapsed_quantized_zero": false,
+      "device_timer_kind": "tx-stream-events",
+      "host_completion_high_resolution": true,
+      "host_envelope_available": true,
+      "host_launch_to_completion_ns": 6636990,
+      "host_non_submit_envelope_ns": 6328299,
+      "host_submit_ns": 308691,
+      "host_submit_quantized_zero": false,
+      "includes_device_control_wait_and_scheduling": true,
+      "includes_host_completion_polling": false,
+      "includes_host_submit": false,
+      "includes_trace_instrumentation": false,
+      "is_engine_only": false,
+      "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+      "qualified": true,
+      "sample_id": "primary",
+      "sample_index": 0,
+      "scope": "primary-launch-to-stream-completion",
+      "status": "Measured"
+    },
+    "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/sdk-module-tables-profile",
+    "tiles": [
+      {
+        "tile": 0,
+        "cycles": 8701248,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2824230,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363567,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 300030,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 26140,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395146,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 1,
+        "cycles": 8778922,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823895,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 374851,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 32783,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395062,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 2,
+        "cycles": 8695154,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823908,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 288543,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 26034,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395066,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 3,
+        "cycles": 8801009,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823912,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 348902,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 25494,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395097,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 4,
+        "cycles": 8799414,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823899,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 365259,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 28885,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395067,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 5,
+        "cycles": 8798481,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823905,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 382569,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 31027,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395064,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 6,
+        "cycles": 8766366,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823893,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 338516,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 25582,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395065,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 7,
+        "cycles": 8802820,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823893,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 360132,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 25845,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1393902,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 8,
+        "cycles": 8829741,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823916,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 348005,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 27566,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395070,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 9,
+        "cycles": 8741251,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823934,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 341587,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 28441,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395068,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 10,
+        "cycles": 8770023,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823921,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 342420,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 26127,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1395091,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 11,
+        "cycles": 8753925,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1224,
+            "engine": "CT",
+            "engine_execution_time_ns": 2823921,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363568,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 361070,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 27561,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1393920,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 12,
+        "cycles": 4546546,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 616,
+            "engine": "CT",
+            "engine_execution_time_ns": 1412166,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181784,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 197723,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 16378,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 940,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 765172,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 13,
+        "cycles": 4504653,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 616,
+            "engine": "CT",
+            "engine_execution_time_ns": 1412173,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181784,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 201405,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 15919,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 940,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 765172,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 14,
+        "cycles": 4520708,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 616,
+            "engine": "CT",
+            "engine_execution_time_ns": 1412158,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181784,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 186767,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 15339,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 940,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 765162,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 15,
+        "cycles": 4523381,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 616,
+            "engine": "CT",
+            "engine_execution_time_ns": 1412155,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181784,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 181748,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 15641,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 940,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 765160,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      }
+    ]
+  },
+  "state_orientation_no_card_findings": [
+    {
+      "package": "transposed-state",
+      "board_executed": false,
+      "finding": "私有闭包沿输出 insert_slice 的 source 错误扩展到整个目的地，actual SPM 出现 14,680,064 字节的转置输出临时量；最终选择 Q/K 块32，未取得所需累加器广播见证。",
+      "resolution": "输出 insertion 的 source 作为发布边界；只有已存在于 state 闭包内的 destination/result 才传播。"
+    },
+    {
+      "package": "transposed-private-state",
+      "board_executed": false,
+      "finding": "finalize 未读取的 DPS init 仍经 slice 连回完整输出，actual SPM 保留整段转置输出；赢家改为 value 维切分且未生成累加器 MulVuVLoop。",
+      "resolution": "区分读入 state 与仅输出目的地：未读取且未作为同 map data input 的 init 显式改为当前块的新方向 tensor.empty。完整输出保持原 shape；恢复操作消费最终窄结果。"
+    }
+  ],
+  "transposed_state_profile": {
+    "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state-profile",
+    "primary_ms": 6.388,
+    "valid": true,
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": true,
+      "host_completion_resolution": false,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "trace_capture": {
+      "captured_events": 66512,
+      "full_execution": true,
+      "scope": "full-execution",
+      "total_events": 66512
+    },
+    "engine_activity": {
+      "additive_to_kernel_launch_envelope": false,
+      "by_engine": [
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 2443350.875,
+          "engine": "CT",
+          "maximum_per_tile_ns": 2792075,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 1397282,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 39093614
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 318024.0,
+          "engine": "NE",
+          "maximum_per_tile_ns": 363456,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 181728,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 5088384
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 325381.4375,
+          "engine": "RDMA",
+          "maximum_per_tile_ns": 433825,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 176177,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 5206103
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 27982.625,
+          "engine": "WDMA",
+          "maximum_per_tile_ns": 39139,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 14411,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 447722
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 1503417.0625,
+          "engine": "TDMA",
+          "maximum_per_tile_ns": 1698920,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 917557,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 24054673
+        }
+      ],
+      "card_wide_engine_elapsed_ns": null,
+      "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+      "card_wide_engine_elapsed_status": "Unavailable",
+      "cross_tile_sum_role": "work-volume-not-wall-time",
+      "measurement_kind": "trace-pmu-engine-active-time",
+      "measurement_run": "trace-diagnostic",
+      "per_tile_work_volume": {
+        "available_tile_count": 16,
+        "average_per_tile_total_work_ns": 4618156.0,
+        "maximum_per_tile_total_work_ns": 5326906,
+        "minimum_per_tile_total_work_ns": 2687675,
+        "status": "Measured",
+        "sum_across_tiles_work_ns": 73890496
+      },
+      "relation_to_primary": "separate-run-proxy",
+      "scope": "per-tile-per-ncc-engine",
+      "source_capture": "trace",
+      "unit": "ns"
+    },
+    "numeric_audit": {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "2108be8da831c1bfab9fc88c8887c7ed8f284ace683b9416c72200741f16e4aa",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330647156,
+          "relative_l2_error": 0.0019323424734563098,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965553708372328e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=6388000",
+        "profile_run: /data/vibe_compiler-validation/attention-bf16-2048-20260921/transposed-block-state-profile/prepared/package/package.profile/runs/current"
+      ]
+    },
+    "phase_health": [
+      {
+        "passed": true,
+        "alarms": []
+      },
+      {
+        "passed": true,
+        "alarms": []
+      },
+      {
+        "passed": true,
+        "alarms": []
+      }
+    ],
+    "per_tile_engine_activity": [
+      {
+        "tile": 0,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792020,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 399215,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 33647,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698587,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 1,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792046,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 347024,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 34368,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698866,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 2,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792060,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 362524,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 26902,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698560,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 3,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792046,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 401816,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 36875,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698529,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 4,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792017,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 358946,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 29107,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698794,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 5,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792050,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 345675,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 29308,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698920,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 6,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792051,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 359150,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 25715,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698681,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 7,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792019,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 433825,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 39139,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698467,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 8,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792004,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 362005,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 33636,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698743,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 9,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792075,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 328712,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 28363,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698918,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 10,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792019,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 376411,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 36917,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698730,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 11,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 1194,
+            "engine": "CT",
+            "engine_execution_time_ns": 2792057,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 144,
+            "engine": "NE",
+            "engine_execution_time_ns": 363456,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 161,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 388014,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 16,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 32335,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 876,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 1698436,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 12,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 602,
+            "engine": "CT",
+            "engine_execution_time_ns": 1397290,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181728,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 181283,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 14411,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 440,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 917661,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 13,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 602,
+            "engine": "CT",
+            "engine_execution_time_ns": 1397294,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181728,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 176177,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 14835,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 440,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 917641,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 14,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 602,
+            "engine": "CT",
+            "engine_execution_time_ns": 1397284,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181728,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 179723,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 15540,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 440,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 917583,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      },
+      {
+        "tile": 15,
+        "engines": [
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 602,
+            "engine": "CT",
+            "engine_execution_time_ns": 1397282,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 72,
+            "engine": "NE",
+            "engine_execution_time_ns": 181728,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 81,
+            "engine": "RDMA",
+            "engine_execution_time_ns": 205603,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 8,
+            "engine": "WDMA",
+            "engine_execution_time_ns": 16624,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "activity_window_status": "Ambiguous",
+            "ambiguous_attribution_count": 440,
+            "engine": "TDMA",
+            "engine_execution_time_ns": 917557,
+            "engine_execution_time_status": "Measured",
+            "engine_execution_time_valid": true,
+            "measurement_kind": "ncc-engine-execution-time-ns",
+            "zero_delta_marker_count": 0
+          },
+          {
+            "activity_window_count": 0,
+            "engine": "DIRECT_DTE",
+            "issue_window_count": 0,
+            "issue_window_cpu_cycles": 0,
+            "issue_window_status": "Measured",
+            "issue_windows_valid": true,
+            "measurement_kind": "direct-dte-issue-and-wait-windows",
+            "raw_pmu_activity": null,
+            "raw_pmu_activity_status": "Unavailable",
+            "raw_pmu_activity_valid": false,
+            "wait_window_count": 0,
+            "wait_window_cpu_cycles": 0,
+            "wait_window_status": "Measured",
+            "wait_windows_valid": true
+          }
+        ]
+      }
+    ]
+  },
+  "native_transpose_qualification_failure": {
+    "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current",
+    "qualification": {
+      "rows": [
+        {
+          "dtype": "bf16",
+          "source_shape": [
+            1,
+            1024,
+            64
+          ],
+          "destination_shape": [
+            1,
+            64,
+            1024
+          ],
+          "layout": "ncx",
+          "offset": 256,
+          "bytes": 131072,
+          "sdk_shape_nhwc": [
+            1,
+            1,
+            64,
+            1024
+          ]
+        },
+        {
+          "dtype": "bf16",
+          "source_shape": [
+            1,
+            128,
+            256
+          ],
+          "destination_shape": [
+            1,
+            256,
+            128
+          ],
+          "layout": "ncx",
+          "offset": 131584,
+          "bytes": 65536,
+          "sdk_shape_nhwc": [
+            1,
+            1,
+            256,
+            128
+          ]
+        }
+      ],
+      "resource_ids": [
+        0,
+        1,
+        0
+      ],
+      "board_executed": false,
+      "module_sha256": "2e4c0baf06ce8a66a44aaa5cd963dfc26b8b74fdde03c85e1b53ef9d430ccab6"
+    },
+    "health": {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current/package",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current/raw/request.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current/raw/payload.bf16.raw",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current/raw/output.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [
+        "runner deadline; preserving vendor cleanup, no signal or reset",
+        "driver/firmware alarm"
+      ],
+      "pid": 294532,
+      "runner_still_alive": true,
+      "launched": true,
+      "alarms": [
+        "[24421.571441]\u00013npu_drv: stream_irq_handler, stream_err = 0, fatal_err = 4096 in counts =0!!!",
+        "[24421.579968]\u00013[RAS-FE]lsu tdma timeout from Tile-0, need to reset chip!!!"
+      ],
+      "passed": false
+    },
+    "observed_fatal": "Tile-0 NPU LSU TDMA Timeout; stream fatal 0x1000",
+    "run_time_local": "2026-09-21T23:04:38+08:00",
+    "production_path_changed": false,
+    "instruction_root_cause": "unknown: two native Nchw2nhwc calls in this invocation; no unique failing shape attribution",
+    "conclusions": [
+      "Does not establish a native instruction element-count limit.",
+      "Prior ordinary attention/profile launches passed; this fresh isolated native experiment failed.",
+      "Stopped device batch; no retry, reset, power cycle, or signal to vendor cleanup."
+    ],
+    "read_only_snapshot": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current/failure-registers.json"
+  },
+  "next_native_transpose_qualifications": [
+    {
+      "rows": [
+        {
+          "dtype": "bf16",
+          "source_shape": [
+            1,
+            64,
+            64
+          ],
+          "destination_shape": [
+            1,
+            64,
+            64
+          ],
+          "layout": "ncx",
+          "offset": 256,
+          "bytes": 8192,
+          "sdk_shape_nhwc": [
+            1,
+            1,
+            64,
+            64
+          ]
+        }
+      ],
+      "resource_ids": [
+        0,
+        1,
+        0
+      ],
+      "board_executed": false,
+      "module_sha256": "f59b8c61d9aa9f353574c2fa24d4d8bc67189d87426d07345fafeda89b90f71d",
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-64x64",
+      "fresh_no_card": true,
+      "requires_new_healthy_boot": true,
+      "native_instructions_per_invocation": 1,
+      "reason_for_small_shape": "Bounded hardware geometry qualification before production use; not a compiler shape coverage substitute."
+    },
+    {
+      "rows": [
+        {
+          "dtype": "bf16",
+          "source_shape": [
+            1,
+            64,
+            256
+          ],
+          "destination_shape": [
+            1,
+            256,
+            64
+          ],
+          "layout": "ncx",
+          "offset": 256,
+          "bytes": 32768,
+          "sdk_shape_nhwc": [
+            1,
+            1,
+            256,
+            64
+          ]
+        }
+      ],
+      "resource_ids": [
+        0,
+        1,
+        0
+      ],
+      "board_executed": false,
+      "module_sha256": "40d49b414d9f8010fa0746d1aed8db8da6755a360818d2913751cc9fbf7f1c19",
+      "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-64x256",
+      "fresh_no_card": true,
+      "requires_new_healthy_boot": true,
+      "native_instructions_per_invocation": 1,
+      "reason_for_small_shape": "Bounded hardware geometry qualification before production use; not a compiler shape coverage substitute."
+    }
+  ],
+  "host_validation_checkpoint": {
+    "canonical_build": "vuvloop/build-checkpoint.log",
+    "canonical_noop": "vuvloop/build-checkpoint-noop.log",
+    "affected_lit": {
+      "executed": 155,
+      "passed": 155,
+      "log": "vuvloop/affected-lit-final2.log"
+    },
+    "unit_suites": {
+      "analysis": "passed",
+      "planning": "passed",
+      "conversion": "passed",
+      "simulator": "passed",
+      "target": "passed",
+      "runtime_board_io": "passed",
+      "transforms": "Original full 509 tests: one state-publication SPM failure; private DPS init fixed, failed test and all 11 decomposition tests rerun passed."
+    },
+    "completion": "Incomplete: grouped-tail segmented realization, transpose net performance benefit and final three runs below 3 ms remain open.",
+    "latest_direct_regression": {
+      "executed": 12,
+      "passed": 12,
+      "log": "vuvloop/state-checkpoint-tests.log"
+    }
+  }
+}

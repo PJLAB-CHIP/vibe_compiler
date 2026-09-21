@@ -425,6 +425,7 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
     if (arity == 2 && !wafer::isTargetElementwiseLogic(*operation)) {
       arguments[5] = 32;
       arguments[6] = 0;
+      arguments[7] = 0;
     }
     if (wafer::isTargetElementwiseRelation(*operation))
       arguments[7] = 0;
@@ -794,6 +795,11 @@ void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
     EXPECT_EQ(value.elementCount, u32(unary ? 2 : 3));
     EXPECT_EQ(value.rhsUnitElements,
               !unary && !wafer::isTargetElementwiseLogic(*kind) ? u32(5) : 0);
+    EXPECT_EQ(value.rhsGroupElements,
+              !unary && !wafer::isTargetElementwiseLogic(*kind) &&
+                      !wafer::isTargetElementwiseRelation(*kind)
+                  ? u32(7)
+                  : 0);
     expectFormat(value.format);
     return;
   }
@@ -1069,7 +1075,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetElementwiseOperation::Add)
           .arguments.size(),
-      8u);
+      9u);
   EXPECT_EQ(wafer::getTargetCallDescriptor(
                 wafer::TargetConvolutionOperation::Convolution)
                 .arguments.size(),
@@ -1121,6 +1127,27 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
     ++decoded;
   }
   EXPECT_EQ(decoded, 117u);
+}
+
+TEST(TargetCallRegistryTest, ArithmeticGroupedBroadcastPreservesFullGeometry) {
+  using namespace wafer;
+  for (auto operation :
+       {TargetElementwiseOperation::Add, TargetElementwiseOperation::Sub,
+        TargetElementwiseOperation::Mul, TargetElementwiseOperation::Max,
+        TargetElementwiseOperation::Min}) {
+    const auto &descriptor = getTargetCallDescriptor(operation);
+    auto arguments = makeDecodableArguments(descriptor);
+    ASSERT_EQ(arguments.size(), 9u);
+    arguments[3] = 2 * 1025 * 64;
+    arguments[5] = 64;
+    arguments[7] = 1025 * 64;
+    auto payload = decodeTargetCallPayload(descriptor, {16}, arguments);
+    ASSERT_TRUE(bool(payload)) << llvm::toString(payload.takeError());
+    expectPayloadFields(descriptor, arguments, *payload);
+    const auto &command = std::get<target::TargetElementwiseCommand>(*payload);
+    EXPECT_FALSE(command.rhsScalar.has_value());
+    EXPECT_EQ(command.relationOutput, target::TargetRelationOutput::PackedBool);
+  }
 }
 
 TEST(TargetCallRegistryTest, RelationOutputHasOneExplicitABIField) {

@@ -49,6 +49,14 @@ public:
                            mlir::MemRefType destType,
                            const IndexRelation &destinationToSource);
 
+  /// Prove complete, consecutive CT VuVLoop groups with a 64-element RHS
+  /// unit. Returns the destination group length E. Full source/destination
+  /// counts come from the actual physical views; unknown mappings fail.
+  static mlir::FailureOr<int64_t>
+  proveGroupedUnitVectorBroadcast(mlir::MemRefType sourceType,
+                                  mlir::MemRefType destType,
+                                  const IndexRelation &destinationToSource);
+
   static mlir::LogicalResult proveMetadataView(mlir::MemRefType sourceType,
                                                mlir::MemRefType destType,
                                                const IndexRelation &relation,

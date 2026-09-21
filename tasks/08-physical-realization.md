@@ -170,6 +170,13 @@ Baseline与search使用同一完整合法label域。合法域只由明确的targ
 
 #### 布局求解前的逐元素目标分解
 
+非identity的result permutation是当前generic的显式逻辑轴顺序。分解复合payload时，各个算术中间值按
+result map中的顺序投影其实际依赖轴，不能按原loop编号排序后再把结果转回。根因是旧materializer对
+`used` bitset按编号遍历，把`[batch,key,query]`中间值重新变为`[batch,query,key]`；layout proof随后看到的
+已是被改序的SSA，不能消除这项多余转置。cast仍保持自身输入坐标；无依赖轴的scalar规则不变。
+覆盖非attention多步算术、非方形1024/1025/1031、permutation与投影组合，检查中间shape/maps、DPS destination
+及直接Tile/Instr无多余transpose；合法性由当前maps证明，不按attention名称判断。
+
 - Upstream IR / input：selected TileRegion中的tensor Linalg elementwise payload及其actual scalar SSA、indexing maps和DPS。
 - Current stage responsibility：将实际需独立执行的payload步骤确定性物化为现有Linalg/Tensor SSA，让谓词、cast及投影中间值参与同一布局求解。
 - Output IR / files：原dtype、算术依赖和数值语义不变的verified Linalg/Tensor/SCF；scalar捕获保持紧凑，投影结果只保留实际依赖维。
@@ -187,6 +194,16 @@ materialized operand与result遍历兼容；mapped select还须证明原predicat
 同一次只读query内，相同source/destination完整type与normalized indexing map复用同一pure traversal证明；
 physical traversal与unit broadcast分别缓存，key包含shape、dtype、encoding及map。缓存不保存SSA、owner、SPM结论或assignment，
 query结束即销毁，不跨candidate或IR mutation复用；预算、factor成本和可接受组合保持不变。
+
+有限预算下，多个断开的同构Tile分量曾逐一重复求解；当前BF16 profile中同工作量Tile仍出现不同score布局，
+对应正式编译的只读计数确认935个分量进入求解时预算已经为零，只能保留完整初始解。
+此处优化属于同一layout query的重复数学计算消除，不扩大空间/head搜索或layout工作预算。
+输入仍为current IR生成的完整PBQP：在一次`solveComponentsAndTies`调用内，对局部编号、unary costs、
+binary factors及其全部字段、semantic tie范围和initial assignment逐项完全相同的分量，复用已证明Optimal的解。
+Key比较与构造计入工作预算；Feasible/Indeterminate不缓存，不做图同构猜测或按Tile编号匹配。
+输出仍是原问题完整assignment，逐factor与成本复核后由唯一apply物化；没有跨query、跨candidate或IR mutation的cache。
+覆盖重复/非重复分量、仅一个cost/端点/state数不同、tie范围及初始解差异、零/耗尽预算与穷举oracle；
+产品检查相同预算下actual score布局/Instr是否收敛，fresh SPM/no-card及设备收益另验。
 本次分解保留原有scalar常量/cast及rank-0计算的执行路径，不建立“标量统一由CT执行”的规则。
 执行单元选择须比较actual计算次数、数据位置、复用，以及RISC-V计算和CT发射/搬运/同步成本；
 广播后的元素数不等于scalar自身的计算次数。独立CPU候选的物化和比较边界见下文；payload分解自身不选择执行单元。
@@ -595,6 +612,23 @@ buffer relation，随后删除dead emission并验证current IR。Replacement typ
 覆盖多函数、大量partial/strided拒绝与full-copy链、共享/独立root、intervening write、DTE、alignment、loop和placement拒绝。
 1024/1025/1031真实规模正例检查精确consumer替换与必须保留的GS；依赖另一copy消除后才可处理的反例必须重新访问。
 计时开/关的最终IR一致，规模对照记录GS检查数、proof/timeline数和wall/RSS；直接下游仍是fresh completion与唯一SPM规划。
+
+### 嵌套控制流中的局部完整复制
+
+输入是canonical Instr、尚未placement的完整copy及其actual allocation/view/effect；输出为同一cleanup中已证明的
+storage合并，直接下游仍为fresh completion和唯一SPM规划。根因是现有loop分支统一要求静态正trip及最外层loop，
+导致attention条件分支内新建的两个私有buffer，即便完整alias/access均局限同一block，也不能消除完整等价复制。
+
+补充条件：source与destination allocation都在copy所在block，全部alias访问及forwarding也只在这个block，
+没有escape/dealloc或未闭合异步访问。每次进入该block都重新定义这些allocation，因此可直接复用同一block内的
+有序snapshot证明：destination在copy前无访问；source在copy后无写；若destination后续写，source在copy后也无读。
+嵌套loop、动态/零trip及if不改变这个局部证明；不把block外allocation、yield/loop-carried或嵌套region访问混入它。
+非局部情形继续走原证明。必须在修改前闭合alias、DTE completion、physical map、alignment及consumer类型条件；
+不增加join、推测跨迭代exclusive或改变循环执行次数。这里是已有copy coalescing证明的scope补齐，不新增算法选择。
+
+覆盖rank3的1024/1025/1031、两层loop+条件、动态trip、可写destination；正例检查consumer实际重接source、
+完整copy及dead destination删除并通过下游completion/SPM。负例覆盖source晚写、旧source观察、destination早读、
+buffer逃逸和block外allocation；原跨迭代/DTE拒绝仍保持。生产attention记录实际删除条数与新包性能，不能仅签局部FileCheck。
 
 ## 9. Failure 与 Verification
 

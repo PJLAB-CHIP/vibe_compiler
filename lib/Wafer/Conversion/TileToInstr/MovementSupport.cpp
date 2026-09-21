@@ -118,7 +118,10 @@ getExactTensorToBlockedDescriptors(mlir::MemRefType sourceType,
   const int64_t channelDimension = destType.getRank() - 1;
   const int64_t sourceChannelDimension =
       sourceDimensionForDest[channelDimension];
-  if (sourceChannelDimension < 0)
+  // The shared inner span is contiguous at both endpoints. A projected
+  // permutation may map the destination channel to a strided source axis.
+  if (sourceChannelDimension < 0 ||
+      sourceElementStrides[sourceChannelDimension] != 1)
     return std::nullopt;
   const int64_t firstOuterDimension =
       destMemory.getLayout() == MemLayout::NCx ? 1 : 0;

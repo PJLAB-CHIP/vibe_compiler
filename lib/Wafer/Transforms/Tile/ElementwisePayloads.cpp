@@ -133,7 +133,13 @@ void materialize(mlir::linalg::GenericOp op, mlir::IRRewriter &rewriter,
     llvm::SmallVector<int64_t> shape;
     llvm::SmallVector<mlir::AffineExpr> coordinates,
         inverse(rank, rewriter.getAffineConstantExpr(0));
-    for (int axis : used.set_bits()) {
+    // Preserve the generic's explicit result coordinate order. Sorting the
+    // dependency axes by loop number would transpose each intermediate of
+    // a permuted pointwise chain and restore it only at publication.
+    for (auto expression : outputMap.getResults()) {
+      unsigned axis = mlir::cast<mlir::AffineDimExpr>(expression).getPosition();
+      if (!used.test(axis))
+        continue;
       inverse[axis] = rewriter.getAffineDimExpr(shape.size());
       coordinates.push_back(rewriter.getAffineDimExpr(axis));
       shape.push_back(extents[axis]);

@@ -1,6 +1,7 @@
 //===- ExactPBQPSolver.cpp - Exact finite PBQP ------------------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/ExactPBQPSolver.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <set>
 #include <tuple>
 
@@ -552,6 +554,11 @@ solveComponentsAndTies(const ExactPBQPProblem &problem, uint64_t workLimit,
     combined.cost = 0;
     combined.lowerBound = 0;
     uint64_t used = structuralWork;
+    // Only identical immutable component problems share a proven optimum.
+    // This cache is local to this solve; it contains no IR identities or
+    // materialization facts. Include the full incumbent and semantic tie
+    // boundary so the memoized call has exactly the same inputs.
+    std::map<std::vector<uint64_t>, ExactPBQPResult> optimalComponents;
     for (const std::vector<uint32_t> &component : *components) {
       ExactPBQPProblem local;
       local.variables.reserve(component.size());
@@ -582,8 +589,42 @@ solveComponentsAndTies(const ExactPBQPProblem &problem, uint64_t workLimit,
         remapped.rhs = rhs->second;
         local.factors.push_back(std::move(remapped));
       }
-      ExactPBQPResult solved = solveExactPBQPImpl(
-          local, workLimit - used, localSemanticVariables, localIncumbent);
+      std::vector<uint64_t> key{localSemanticVariables, local.variables.size(),
+                                local.factors.size(), localIncumbent.size()};
+      key.insert(key.end(), localIncumbent.begin(), localIncumbent.end());
+      for (const auto &variable : local.variables) {
+        key.push_back(variable.unaryCosts.size());
+        key.insert(key.end(), variable.unaryCosts.begin(),
+                   variable.unaryCosts.end());
+      }
+      for (const auto &factor : local.factors) {
+        key.insert(key.end(), {factor.lhs, factor.rhs, factor.lhsStates,
+                               factor.rhsStates, factor.costs.size()});
+        key.insert(key.end(), factor.costs.begin(), factor.costs.end());
+      }
+      const bool canCompare = key.size() <= workLimit - used;
+      used += std::min<uint64_t>(key.size(), workLimit - used);
+      auto found =
+          canCompare ? optimalComponents.find(key) : optimalComponents.end();
+      ExactPBQPResult solved;
+      if (found != optimalComponents.end()) {
+        solved = found->second;
+        solved.work = 0;
+        support::addCompileCounter("layout-pbqp", "reused-optimal-components",
+                                   1);
+      } else {
+        solved = solveExactPBQPImpl(local, workLimit - used,
+                                    localSemanticVariables, localIncumbent);
+        if (canCompare && solved.status == ExactPBQPStatus::Optimal)
+          optimalComponents.emplace(std::move(key), solved);
+      }
+      support::addCompileCounter("layout-pbqp", "components", 1);
+      support::addCompileCounter("layout-pbqp", "components-with-zero-budget",
+                                 workLimit == used);
+      support::addCompileCounter("layout-pbqp", "optimal-components",
+                                 solved.status == ExactPBQPStatus::Optimal);
+      support::addCompileCounter("layout-pbqp", "feasible-components",
+                                 solved.status == ExactPBQPStatus::Feasible);
       used += solved.work;
       if ((solved.status != ExactPBQPStatus::Optimal &&
            solved.status != ExactPBQPStatus::Feasible) ||

@@ -1476,6 +1476,49 @@ TEST(IndexRelationTest, ProvesCurrentViewDmaGatherScatterAndStagedRoutes) {
       /*destinationMayWrite=*/true)));
 }
 
+TEST(PhysicalAccessRelationTest, GroupedBroadcastUsesActualBlockedTraversal) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::NCx);
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto q = mlir::getAffineDimExpr(2, &context);
+  for (mlir::Type dtype : {mlir::Type(mlir::Float16Type::get(&context)),
+                           mlir::Type(mlir::BFloat16Type::get(&context)),
+                           mlir::Type(mlir::Float32Type::get(&context))})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (int64_t query : {64, 128, 256, 257}) {
+        auto source = mlir::MemRefType::get(
+            {2, query}, dtype, mlir::MemRefLayoutAttrInterface{}, memory);
+        auto dest =
+            mlir::MemRefType::get({2, extent, query}, dtype,
+                                  mlir::MemRefLayoutAttrInterface{}, memory);
+        auto relation = IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(3, 0, {b, q}, &context), {2, extent, query},
+            {2, query});
+        ASSERT_TRUE(relation.isExact());
+        auto group = TransferRealizability::proveGroupedUnitVectorBroadcast(
+            source, dest, *relation.get());
+        // Half-precision NCx batches with only 64 lanes have a bank gap;
+        // 257 lanes use a shortened physical tail, not another 64-lane unit.
+        if (query == 257 || (query == 64 && !dtype.isF32())) {
+          EXPECT_TRUE(mlir::failed(group));
+          continue;
+        }
+        ASSERT_TRUE(mlir::succeeded(group)) << extent << "/" << query;
+        EXPECT_EQ(*group, extent * 64);
+        auto reversed = IndexRelation::fromAffineMap(
+            mlir::AffineMap::get(3, 0, {b, query - 1 - q}, &context),
+            {2, extent, query}, {2, query});
+        ASSERT_TRUE(reversed.isExact());
+        EXPECT_TRUE(
+            mlir::failed(TransferRealizability::proveGroupedUnitVectorBroadcast(
+                source, dest, *reversed.get())));
+      }
+}
+
 TEST(PhysicalAccessRelationTest,
      ProvesBlockedReshapeEquivalenceWithoutElementEnumeration) {
   mlir::DialectRegistry registry;

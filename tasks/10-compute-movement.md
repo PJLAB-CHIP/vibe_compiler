@@ -305,6 +305,12 @@ low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的can
 
 ### Elementwise 与 convert
 
+Tensor→blocked的连续channel GS快路径必须检查映射到destination channel的source stride为1。
+Projected permutation只证明逻辑坐标对应，不证明source上的64-lane物理连续性；转置映射可能使其stride等于整行长度。
+不满足时由既有精确relation descriptor路径表达实际stride，不能把destination cBlock直接作为双方inner span。
+该问题由KQ展开后的mask转置暴露，适用于任何permutation或strided Tensor输入；覆盖rank≥3的
+1024/1025/1031、多batch、不同dtype、identity与transpose，逐地址检查完整覆盖和直接Instr输出。
+
 05号4.5节及08号布局覆盖补齐后，mapped elementwise的scalar/row broadcast继续由本stage/TileToInstr拥有。
 对硬件已有的广播形式，补齐typed Instr、CRT与numeric model的直接调用链后才能减少当前GS物化；
 wrapper存在本身不代表production支持。关系、shape、dtype、布局和destination全部从current IR取得，

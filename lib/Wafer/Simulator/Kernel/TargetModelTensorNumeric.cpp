@@ -293,13 +293,15 @@ executeElementwise(const compiler::TargetCommand &command,
                    TargetModelKernelBudget budget,
                    TargetModelExecutionPolicy policy) {
   const LogicalFormat destinationFormat = value.getResultFormat();
+  uint32_t rhsElements = value.rhsGroupElements
+                             ? value.elementCount / value.rhsGroupElements * 64
+                             : value.rhsUnitElements;
   llvm::Expected<PhysicalTensorDescriptor> inputKey =
       makeTensor(value.format, {value.elementCount});
   llvm::Expected<PhysicalTensorDescriptor> rhsKey =
       value.rhsUnitElements
-          ? PhysicalTensorDescriptor::create(value.format,
-                                             PhysicalTensorLayout::Tensor,
-                                             {value.rhsUnitElements})
+          ? PhysicalTensorDescriptor::create(
+                value.format, PhysicalTensorLayout::Tensor, {rhsElements})
           : makeTensor(value.format, {value.elementCount});
   llvm::Expected<PhysicalTensorDescriptor> destinationKey =
       makeTensor(destinationFormat, {value.elementCount});
@@ -353,7 +355,14 @@ executeElementwise(const compiler::TargetCommand &command,
         memory, command.launchSlotId.getValue(), *value.rhs, *rhsKey);
     if (!rhs)
       return rhs.takeError();
-    if (value.rhsUnitElements) {
+    if (value.rhsGroupElements) {
+      std::vector<RawLogicalValue> expanded;
+      expanded.reserve(value.elementCount);
+      for (uint32_t index = 0; index < value.elementCount; ++index)
+        expanded.push_back(
+            (*rhs)[index / value.rhsGroupElements * 64 + index % 64]);
+      *rhs = std::move(expanded);
+    } else if (value.rhsUnitElements) {
       rhs->reserve(value.elementCount);
       for (uint32_t index = rhs->size(); index < value.elementCount; ++index)
         rhs->push_back((*rhs)[index % value.rhsUnitElements]);

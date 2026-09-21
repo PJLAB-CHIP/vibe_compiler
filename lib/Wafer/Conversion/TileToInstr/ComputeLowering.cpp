@@ -398,11 +398,10 @@ getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
 
 // Division has one target implementation: hardware reciprocal then multiply.
 // Keep the reciprocal separate from dest so into forms may alias either input.
-static mlir::LogicalResult
-emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
-                      mlir::Value dest, mlir::PatternRewriter &rewriter,
-                      TileRegionToInstrBufferRecorder *recorder,
-                      int64_t rhsUnitElements = 0) {
+static mlir::LogicalResult emitReciprocalProduct(
+    mlir::Operation *owner, mlir::ValueRange inputs, mlir::Value dest,
+    mlir::PatternRewriter &rewriter, TileRegionToInstrBufferRecorder *recorder,
+    int64_t rhsUnitElements = 0, int64_t rhsGroupElements = 0) {
   auto type = mlir::cast<mlir::MemRefType>(inputs[1].getType());
   auto scratchType = mlir::MemRefType::get(
       type.getShape(), type.getElementType(), mlir::MemRefLayoutAttrInterface{},
@@ -425,6 +424,8 @@ emitReciprocalProduct(mlir::Operation *owner, mlir::ValueRange inputs,
       getDefaultNCCWorkerAttr(rewriter));
   if (rhsUnitElements)
     multiply.setRhsUnitElements(rhsUnitElements);
+  if (rhsGroupElements)
+    multiply.setRhsGroupElements(rhsGroupElements);
   if (recorder) {
     recorder->recordLoweredOperation(owner, recip);
     recorder->recordLoweredOperation(owner, multiply);
@@ -564,6 +565,7 @@ public:
     mlir::ArrayAttr indexingMaps = op.getIndexingMapsAttr();
     std::optional<unsigned> unitInput;
     int64_t rhsUnitElements = 0;
+    int64_t rhsGroupElements = 0;
     if (indexingMaps) {
       if (indexingMaps.size() != op.getInputs().size() + 1)
         return failPattern(
@@ -670,6 +672,24 @@ public:
           rhsUnitElements = *unit;
           inputRewrites.push_back(std::move(inputRewrite));
           continue;
+        }
+        bool arithmetic = op.getKind() == ComputeElementwiseKind::Add ||
+                          op.getKind() == ComputeElementwiseKind::Sub ||
+                          op.getKind() == ComputeElementwiseKind::Mul ||
+                          op.getKind() == ComputeElementwiseKind::Div ||
+                          op.getKind() == ComputeElementwiseKind::Max ||
+                          op.getKind() == ComputeElementwiseKind::Min;
+        if (arithmetic && relation.isExact() && reciprocalCompatible) {
+          auto group =
+              analysis::TransferRealizability::proveGroupedUnitVectorBroadcast(
+                  sourceType, resultType, *relation.get());
+          if (mlir::succeeded(group)) {
+            unitInput = index;
+            rhsUnitElements = 64;
+            rhsGroupElements = *group;
+            inputRewrites.push_back(std::move(inputRewrite));
+            continue;
+          }
         }
       }
 
@@ -880,7 +900,8 @@ public:
 
     if (op.getKind() == ComputeElementwiseKind::Div) {
       if (mlir::failed(emitReciprocalProduct(op, inputs, *dest, rewriter,
-                                             bufferRecorder, rhsUnitElements)))
+                                             bufferRecorder, rhsUnitElements,
+                                             rhsGroupElements)))
         return mlir::failure();
       retireSource(op, *dest, rewriter);
       return mlir::success();
@@ -890,6 +911,8 @@ public:
         getDefaultNCCWorkerAttr(rewriter));
     if (rhsUnitElements)
       instr.setRhsUnitElements(rhsUnitElements);
+    if (rhsGroupElements)
+      instr.setRhsGroupElements(rhsGroupElements);
     if (bufferRecorder)
       bufferRecorder->recordLoweredOperation(op, instr);
     retireSource(op, *dest, rewriter);

@@ -354,3 +354,108 @@ func.func @invariant_scalar_fill_select() {
 // CHECK: scf.for
 // CHECK: wafer.instr.fill %[[FULL:[^,]+]], %[[ZERO]] {fill_domain = #wafer.fill_domain<physical_footprint>} : memref<2x1031x33xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.mask_move %[[FULL]],
+
+func.func @grouped_add_1024() {
+  wafer.tile.region() -> () {
+    %lhs = memref.alloc() : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() : memref<2x64xf16, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<add> %lhs, %rhs into %dst
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1024x64xf16, #wafer.memory<spm, tensor>>, memref<2x64xf16, #wafer.memory<spm, tensor>> into memref<2x1024x64xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @grouped_add_1024
+// CHECK: %[[L0:[^ ]+]] = memref.alloc()
+// CHECK: %[[R0:[^ ]+]] = memref.alloc()
+// CHECK: %[[D0:[^ ]+]] = memref.alloc()
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <add> %[[L0]], %[[R0]] into %[[D0]] {rhs_group_elements = 65536 : i64, rhs_unit_elements = 64 : i64}
+// CHECK-NOT: wafer.instr.gather_scatter
+
+func.func @grouped_sub_1025() {
+  wafer.tile.region() -> () {
+    %lhs = memref.alloc() : memref<2x1025x64xbf16, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() : memref<2x64xbf16, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() : memref<2x1025x64xbf16, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<sub> %lhs, %rhs into %dst
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1025x64xbf16, #wafer.memory<spm, tensor>>, memref<2x64xbf16, #wafer.memory<spm, tensor>> into memref<2x1025x64xbf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @grouped_sub_1025
+// CHECK: %[[L1:[^ ]+]] = memref.alloc()
+// CHECK: %[[R1:[^ ]+]] = memref.alloc()
+// CHECK: %[[D1:[^ ]+]] = memref.alloc()
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <sub> %[[L1]], %[[R1]] into %[[D1]] {rhs_group_elements = 65600 : i64, rhs_unit_elements = 64 : i64}
+// CHECK-NOT: wafer.instr.gather_scatter
+
+func.func @grouped_mul_1031() {
+  wafer.tile.region() -> () {
+    %lhs = memref.alloc() : memref<2x1031x64xf32, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() : memref<2x64xf32, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() : memref<2x1031x64xf32, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<mul> %lhs, %rhs into %dst
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1031x64xf32, #wafer.memory<spm, tensor>>, memref<2x64xf32, #wafer.memory<spm, tensor>> into memref<2x1031x64xf32, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @grouped_mul_1031
+// CHECK: %[[L2:[^ ]+]] = memref.alloc()
+// CHECK: %[[R2:[^ ]+]] = memref.alloc()
+// CHECK: %[[D2:[^ ]+]] = memref.alloc()
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <mul> %[[L2]], %[[R2]] into %[[D2]] {rhs_group_elements = 65984 : i64, rhs_unit_elements = 64 : i64}
+// CHECK-NOT: wafer.instr.gather_scatter
+
+func.func @grouped_max_1025() {
+  wafer.tile.region() -> () {
+    %lhs = memref.alloc() : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() : memref<2x64xf32, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<max> %lhs, %rhs into %dst
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1025x64xf32, #wafer.memory<spm, tensor>>, memref<2x64xf32, #wafer.memory<spm, tensor>> into memref<2x1025x64xf32, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @grouped_max_1025
+// CHECK: %[[L3:[^ ]+]] = memref.alloc()
+// CHECK: %[[R3:[^ ]+]] = memref.alloc()
+// CHECK: %[[D3:[^ ]+]] = memref.alloc()
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <max> %[[L3]], %[[R3]] into %[[D3]] {rhs_group_elements = 65600 : i64, rhs_unit_elements = 64 : i64}
+// CHECK-NOT: wafer.instr.gather_scatter
+
+func.func @grouped_min_1031() {
+  wafer.tile.region() -> () {
+    %lhs = memref.alloc() : memref<2x1031x64xbf16, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() : memref<2x64xbf16, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() : memref<2x1031x64xbf16, #wafer.memory<spm, tensor>>
+    wafer.tile.elementwise_into #wafer.elementwise_kind<min> %lhs, %rhs into %dst
+        {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>, affine_map<(d0,d1,d2)->(d0,d2)>, affine_map<(d0,d1,d2)->(d0,d1,d2)>]}
+        : memref<2x1031x64xbf16, #wafer.memory<spm, tensor>>, memref<2x64xbf16, #wafer.memory<spm, tensor>> into memref<2x1031x64xbf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield
+  }
+  return
+}
+// CHECK-LABEL: func.func @grouped_min_1031
+// CHECK: %[[L4:[^ ]+]] = memref.alloc()
+// CHECK: %[[R4:[^ ]+]] = memref.alloc()
+// CHECK: %[[D4:[^ ]+]] = memref.alloc()
+// CHECK-NOT: memref.alloc
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <min> %[[L4]], %[[R4]] into %[[D4]] {rhs_group_elements = 65984 : i64, rhs_unit_elements = 64 : i64}
+// CHECK-NOT: wafer.instr.gather_scatter

@@ -4,6 +4,8 @@
 
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Transforms/Instr/MemoryPlanning.h"
+#include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -1578,6 +1580,82 @@ TEST_F(RedundantTransferEliminationTest,
       EXPECT_NE(load.getMemref(), snapshot.getSource());
     });
   }
+}
+
+TEST_F(RedundantTransferEliminationTest,
+       CoalescesBlockLocalSnapshotsInsideConditionalDynamicLoops) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t length : {1024, 1025, 1031})
+      for (unsigned hazard = 0; hazard != 4; ++hazard) {
+        SCOPED_TRACE(dtype.str() + "/" + std::to_string(length) + "/" +
+                     std::to_string(hazard));
+        std::string type = "memref<2x" + std::to_string(length) + "x4x" +
+                           dtype.str() + ", #wafer.memory<spm, tensor>>";
+        int64_t bytes = 8 * length * (dtype == "f32" ? 4 : 2);
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module { func.func @entry(%upper: index, %take: i1) {\n"
+           << "wafer.tile.region(%upper, %take : index, i1) -> () {\n"
+           << "^bb0(%limit: index, %condition: i1):\n"
+           << "%c0 = arith.constant 0 : index\n"
+           << "%c1 = arith.constant 1 : index\n"
+           << "%c2 = arith.constant 2 : index\n"
+           << "%value = arith.constant 1.0 : " << dtype << "\n"
+           << "scf.for %outer = %c0 to %c2 step %c1 {\n"
+           << "scf.for %inner = %c0 to %limit step %c1 {\n"
+           << "scf.if %condition {\n"
+           << "%source = memref.alloc() : " << type << "\n"
+           << "%dest = memref.alloc() : " << type << "\n"
+           << "wafer.instr.fill %source, %value : " << type << ", " << dtype
+           << "\n";
+        if (hazard == 3)
+          ir << "%early = memref.load %dest[%c0, %c0, %c0] : " << type << "\n";
+        ir << "wafer.instr.gather_scatter %source to %dest {byte_count = "
+           << bytes << " : i64, inner_bytes = " << bytes
+           << " : i64, src_strides = array<i64: 0,0,0>, "
+              "dst_strides = array<i64: 0,0,0>, "
+              "src_iterations = array<i64: 1,1,1>, "
+              "dst_iterations = array<i64: 1,1,1>} : "
+           << type << " to " << type << "\n";
+        // Mutation of the destination is legal only when the old source has
+        // no subsequent observer. The source is redefined on each entry.
+        ir << "wafer.instr.fill %dest, %value : " << type << ", " << dtype
+           << "\n";
+        if (hazard == 1)
+          ir << "wafer.instr.fill %source, %value : " << type << ", " << dtype
+             << "\n";
+        if (hazard == 2)
+          ir << "%old = memref.load %source[%c0, %c0, %c0] : " << type << "\n";
+        ir << "%read = memref.load %dest[%c0, %c0, %c0] : " << type
+           << "\n} } } wafer.tile.yield } return } }";
+        auto module = parse(text);
+        ASSERT_TRUE(module);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(
+            wafer::tensor_program_scheduling::elideRedundantFullBufferTransfers(
+                *module),
+            hazard == 0 ? 1u : 0u);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module),
+                  hazard ? 1u : 0u);
+        EXPECT_EQ(countOps<mlir::memref::AllocOp>(*module), hazard ? 2u : 1u);
+        if (hazard)
+          continue;
+        mlir::Value source;
+        module->walk([&](mlir::memref::AllocOp allocation) {
+          source = allocation.getResult();
+        });
+        module->walk([&](mlir::memref::LoadOp load) {
+          EXPECT_EQ(load.getMemref(), source);
+        });
+        module->walk([&](wafer::InstrFillOp fill) {
+          EXPECT_EQ(fill.getDest(), source);
+        });
+        ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(*module)));
+        ASSERT_TRUE(mlir::succeeded(
+            wafer::planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
 }
 
 } // namespace

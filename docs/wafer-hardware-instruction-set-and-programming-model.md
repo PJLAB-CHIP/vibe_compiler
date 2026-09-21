@@ -147,7 +147,7 @@ kernel/module launch、tile topology、profiling和power hook的兼容host证据
 
 | 层次 | 已观察事实 | 当前缺口与证据边界 |
 | --- | --- | --- |
-| instruction/packet级 | `instr_operator.h`声明`init/freeTsmOpPointer_cmodel`；`instr_adapter.h`的host分支声明`instr_tick_cc`和cycle-mode接口 | checkout中没有这些host定义；`op_fw_sim_if` host CMake仅创建include-only INTERFACE target；附带`libinstr_tx81.a`、`libcommon_util.a`和`libkcorert.a`均为RISC-V object。当前repo CRT直接调用per-op `TsmNew*`/`TsmExecute`，只取得operator-table initializer仍不足以host执行 |
+| instruction/packet级 | `instr_operator.h`声明`init/freeTsmOpPointer_cmodel`；`instr_adapter.h`的host分支声明`instr_tick_cc`和cycle-mode接口 | checkout中没有这些host定义；`op_fw_sim_if` host CMake仅创建include-only INTERFACE target；附带`libinstr_tx81.a`、`libcommon_util.a`和`libkcorert.a`均为RISC-V object。设备SDK函数表和issuer不能直接在host执行 |
 | host runtime级 | x86 `libtx8_runtime.so`会尝试`dlopen("libcmodel_runtime_api.so")`并解析`CModel_SetDevice`、`Compile`、`Launch`、`Run`、`Memcpy*`、`Get/SetTileInfo`等15个入口 | `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、匹配的vendor `host_runtime.h`/`runtime_api.h`/TsmML headers和model resources均不在checkout；当前binary只证明`dlsym`结果会被存储且library handle会被`dlclose`，不证明普通launch路径读取/调用这些function pointers |
 
 高层seam使用`TsmDevice`/`TsmModel`/`CompileOption`风格C++ ABI，低层seam围绕Tsm instruction/packet；二者不能因都叫
@@ -348,6 +348,13 @@ layout 相关信息分成两层，二者不能混用：
 | BPA | weight 本质上要求 `HWIO`；forward weight 是 `HWOI` |
 | Pool/UnPool | 输入输出 feature semantic layout 为 `NHWC` |
 | Transpose观察 | 历史实现重点出现`[0,2,1,3]`、`[0,2,3,1]`、`[0,3,1,2]`；这不构成Wafer支持集合或fallback规则 |
+
+当前SDK的`Data_Shape`成员顺序为`n,h,w,c`、各16位。厂商OpLib `op_transpose.c`将rank-3 `[N,M,K]`
+按NCx输入处理，并以`Data_Shape{N,1,K,M}`调用`Nchw2nhwc`实现末两轴交换；这是源码调用观察。
+**board-observed failure**：2026-09-21独立BF16包包含`[1,1024,64]`和`[1,128,256]`两条该入口，出现Tile-0 TDMA timeout。
+尚无单条归因，不能从SDK字段宽度或这次失败推出原生element计数上限；有效几何和性能资格仍为**unknown**。
+Wafer当前生产转置仍由已验证GS路径实现。具体包、参数和失败边界见
+[实测证据](data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
 
 历史helper对NHWC feature的batch起点使用256B bank-line对齐；HWOI/HWIO weight样例使用另一组
 aligned physical layout规则。该差异只证明semantic layout不能直接等同于SPM physical layout，
@@ -705,3 +712,19 @@ SCALAR/CSR ordinary execution等只作为能力类别和证据缺口保留；是
 只看编号设计与`tasks/progress.md`。SPM1的8-bank/16-port/LSB-interleaving事实与SPM0/RAM_ACC的
 1024-bit内部路径必须分开解释：前者可给allocator提供offset-phase软偏好，后者说明部分NCC ready/stall
 现象；两者都不足以单独推导单条指令legality或固定性能penalty。
+
+### SDK指令函数表生命周期
+
+`supported`：当前`instr_operator.h`定义18个family的`TsmOperatorPointer`及`g_intrinsic()`；
+`libinstr_tx81.a:intrinsic_riscv.c.o`中`module_init`调用`initTsmOpPointer`，后者分配总表并调用各`TsmNew*`。
+`module_cleanup`调用`freeTsmOpPointer`，逐表`TsmDelete*`、释放总表并清空全局指针。
+`g_intrinsic`只读取该模块内指针。函数表成员是函数指针；setter写调用者提供的packet。
+例如`TsmNewDataMove`分配96字节并填写12个函数指针，`TsmDeleteDataMove`释放该内存。
+
+当前已安装Kcore firmware摘要`dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf`
+的raw反汇编确认：偏移`0x1f814–0x1f844`查找`module_init`、`module_cleanup`，保存到module的176/184字节，
+并调用初始化；销毁路径`0x1f050–0x1f078`检查并调用184字节的cleanup。字符串位于`0x2f210`和`0x2f220`。
+这与SDK `libkcorert.a:dlmodule.c.o`一致；不以其它runtime样例ELF代替当前固件身份。
+
+`unknown`：仅以上静态证据不能量化逐指令分配开销，也不能代签任意固件revision、异常中断时的完整清理或实卡性能。
+Wafer导出/借用合同由14号拥有，设备资格另按16号记录。Host SDK全局析构与此设备module生命周期是两个层次。

@@ -4,6 +4,7 @@
 
 #include "AttentionMath.h"
 #include "AttentionVisibility.h"
+#include "OnlineAttentionStateOrientation.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Linalg/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
@@ -52,6 +53,8 @@ struct DecompositionDescriptor {
   mlir::AffineMap scoreMap;
   llvm::SmallVector<int64_t, 5> scoreShape;
   uint64_t scoreElements = 0;
+  bool transposeScore = false;
+  bool transposeAccumulator = false;
   struct PositionBias {
     int64_t queryExtent;
     int64_t keyExtent;
@@ -133,9 +136,23 @@ buildDescriptor(LinalgExtOnlineAttentionOp operation) {
   llvm::SmallVector<mlir::AffineExpr, 5> scoreExpressions;
   llvm::SmallVector<int64_t, 5> scoreShape;
   uint64_t scoreElements = 1;
-  for (unsigned dimension = 0; dimension < rank; ++dimension) {
-    if (!scoreDimensions.test(dimension))
-      continue;
+  // A complete query unit makes row state reusable along the KV axis. Keep
+  // short-query/decode contractions in their existing orientation: there is
+  // no full query unit to amortize the transposed score padding there.
+  bool transposeScore = llvm::any_of(roles->query, [&](unsigned dimension) {
+    return extents[dimension] >= 64;
+  });
+  llvm::SmallVector<unsigned> scoreOrder;
+  if (transposeScore) {
+    llvm::append_range(scoreOrder, roles->batch);
+    llvm::append_range(scoreOrder, roles->keyValueReduction);
+    llvm::append_range(scoreOrder, roles->query);
+  } else {
+    for (unsigned dimension = 0; dimension < rank; ++dimension)
+      if (scoreDimensions.test(dimension))
+        scoreOrder.push_back(dimension);
+  }
+  for (unsigned dimension : scoreOrder) {
     scoreExpressions.push_back(
         mlir::getAffineDimExpr(dimension, operation.getContext()));
     scoreShape.push_back(extents[dimension]);
@@ -153,8 +170,17 @@ buildDescriptor(LinalgExtOnlineAttentionOp operation) {
     expectedQueryKey.reset(dimension);
   if (scoreShape.empty() || expectedQueryKey != scoreDimensions)
     return mlir::failure();
-  DecompositionDescriptor descriptor{operation, scoreMap, std::move(scoreShape),
-                                     scoreElements, std::nullopt};
+  DecompositionDescriptor descriptor{
+      operation,      scoreMap, std::move(scoreShape), scoreElements,
+      transposeScore, false,    std::nullopt};
+  auto accumulatorDimensions = operation.getAccumulatorMap().getResults();
+  auto firstQuery = llvm::find(
+      accumulatorDimensions,
+      mlir::getAffineDimExpr(roles->query.front(), operation.getContext()));
+  auto firstValue = llvm::find(
+      accumulatorDimensions, mlir::getAffineDimExpr(roles->valueOutput.front(),
+                                                    operation.getContext()));
+  descriptor.transposeAccumulator = firstValue < firstQuery;
   if (!operation.getPositions().empty()) {
     auto map = operation.getPositionMapAttr().getValue();
     int64_t queryExtent =
@@ -220,12 +246,18 @@ mlir::Value createQK(const DecompositionDescriptor &descriptor,
       descriptor.scoreShape,
       operation.getScoreRegion().front().getArgument(0).getType());
   mlir::Value score = createZeroTensor(location, scoreType, builder);
-  llvm::SmallVector<mlir::AffineMap, 3> maps = mlir::compressUnusedDims(
-      {operation.getQueryMap(), operation.getKeyMap(), descriptor.scoreMap});
+  llvm::SmallVector<mlir::Value, 2> inputs{operation.getQuery(),
+                                           operation.getKey()};
+  llvm::SmallVector<mlir::AffineMap, 3> maps{
+      operation.getQueryMap(), operation.getKeyMap(), descriptor.scoreMap};
+  if (descriptor.transposeScore) {
+    std::swap(inputs[0], inputs[1]);
+    std::swap(maps[0], maps[1]);
+  }
+  maps = mlir::compressUnusedDims(maps);
   auto contraction = builder.create<mlir::linalg::GenericOp>(
-      location, mlir::TypeRange{scoreType},
-      mlir::ValueRange{operation.getQuery(), operation.getKey()},
-      mlir::ValueRange{score}, maps, getReductionIteratorTypes(maps.back()),
+      location, mlir::TypeRange{scoreType}, inputs, mlir::ValueRange{score},
+      maps, getReductionIteratorTypes(maps.back()),
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLocation,
           mlir::ValueRange arguments) {
         mlir::Value lhs = compiler::detail::castAttentionFloatScalar(
@@ -473,21 +505,28 @@ mlir::Value createPV(const DecompositionDescriptor &descriptor,
                 })
             .getResult(0);
   }
-  llvm::SmallVector<mlir::AffineMap, 3> maps =
-      mlir::compressUnusedDims({descriptor.scoreMap, operation.getValueMap(),
-                                operation.getAccumulatorMap()});
+  llvm::SmallVector<mlir::Value, 2> inputs{probability, operation.getValue()};
+  llvm::SmallVector<mlir::AffineMap, 3> maps{descriptor.scoreMap,
+                                             operation.getValueMap(),
+                                             operation.getAccumulatorMap()};
+  if (descriptor.transposeAccumulator) {
+    std::swap(inputs[0], inputs[1]);
+    std::swap(maps[0], maps[1]);
+  }
+  maps = mlir::compressUnusedDims(maps);
   auto contraction = builder.create<mlir::linalg::GenericOp>(
-      operation.getLoc(), mlir::TypeRange{scaledAccumulator.getType()},
-      mlir::ValueRange{probability, operation.getValue()},
+      operation.getLoc(), mlir::TypeRange{scaledAccumulator.getType()}, inputs,
       mlir::ValueRange{scaledAccumulator}, maps,
       getReductionIteratorTypes(maps.back()),
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location location,
           mlir::ValueRange arguments) {
         mlir::Value probabilityValue =
             compiler::detail::castAttentionFloatScalar(
-                arguments[0], arguments[2].getType(), nestedBuilder, location);
+                arguments[descriptor.transposeAccumulator ? 1 : 0],
+                arguments[2].getType(), nestedBuilder, location);
         mlir::Value value = compiler::detail::castAttentionFloatScalar(
-            arguments[1], arguments[2].getType(), nestedBuilder, location);
+            arguments[descriptor.transposeAccumulator ? 0 : 1],
+            arguments[2].getType(), nestedBuilder, location);
         mlir::Value product = nestedBuilder.create<mlir::arith::MulFOp>(
             location, probabilityValue, value);
         mlir::Value result = nestedBuilder.create<mlir::arith::AddFOp>(
@@ -593,6 +632,21 @@ decomposeOnlineAttention(mlir::ModuleOp module,
 
   compiler::detail::StructuredBufferReplacementListener listener(relations);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
+  if (mlir::failed(compiler::detail::orientOnlineAttentionAccumulators(
+          module, relations, rewriter)))
+    return fail<OnlineAttentionDecompositionStatistics>(
+        failure, OnlineAttentionDecompositionFailureKind::CompilerFailure,
+        "online-attention state orientation produced invalid current IR");
+  // Direction changes types and maps. Descriptors must be derived from the
+  // resulting current IR, after the complete unsupported-input preflight.
+  for (auto &descriptor : descriptors) {
+    auto current = buildDescriptor(descriptor.operation);
+    if (mlir::failed(current))
+      return fail<OnlineAttentionDecompositionStatistics>(
+          failure, OnlineAttentionDecompositionFailureKind::CompilerFailure,
+          "online-attention orientation broke decomposition contract");
+    descriptor = std::move(*current);
+  }
   OnlineAttentionDecompositionStatistics statistics;
   for (const DecompositionDescriptor &descriptor : descriptors) {
     LinalgExtOnlineAttentionOp operation = descriptor.operation;

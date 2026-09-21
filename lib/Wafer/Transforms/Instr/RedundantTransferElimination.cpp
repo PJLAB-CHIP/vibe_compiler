@@ -575,7 +575,13 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
   int64_t copyEvent = copyPoint->event;
 
   mlir::scf::ForOp loop = gather->getParentOfType<mlir::scf::ForOp>();
-  bool loopBodyCandidate = static_cast<bool>(loop);
+  // Allocations and all their accesses confined to this block have no
+  // cross-iteration storage observation. Prove that closure below before
+  // applying the straight-line snapshot rules, even inside dynamic loops/if.
+  mlir::Block *copyBlock = gather->getBlock();
+  bool blockLocal = sourceAllocation->getBlock() == copyBlock &&
+                    destAllocation->getBlock() == copyBlock;
+  bool loopBodyCandidate = loop && !blockLocal;
   if (loopBodyCandidate) {
     if (gather->getParentOp() != loop.getOperation() ||
         !hasStaticPositiveTripCount(loop) ||
@@ -591,7 +597,7 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
         !dominance.dominates(destRoot, gather.getOperation()) ||
         !dominance.dominates(transferSource, gather.getOperation()))
       return false;
-  } else if (copyPoint->path != mp::PathCondition::root()) {
+  } else if (!blockLocal && copyPoint->path != mp::PathCondition::root()) {
     return false;
   }
 
@@ -609,6 +615,20 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
     return false;
 
   bool destinationMayWrite = false;
+  if (blockLocal) {
+    auto isBlockLocal = [&](const AliasSummary &summary) {
+      return llvm::all_of(summary.accesses,
+                          [&](const AccessRecord &access) {
+                            return access.operation->getBlock() == copyBlock;
+                          }) &&
+             llvm::all_of(
+                 summary.forwardings, [&](const ForwardingRecord &forwarding) {
+                   return forwarding.operation->getBlock() == copyBlock;
+                 });
+    };
+    if (!isBlockLocal(sourceAliases) || !isBlockLocal(destAliases))
+      return false;
+  }
   if (loopBodyCandidate) {
     if (!hasSupportedLoopSourceSnapshot(sourceAliases, gather, loop,
                                         copyPoint->path, copyEvent) ||
@@ -616,8 +636,8 @@ tryElide(InstrGatherScatterOp gather, const mp::StructuredTimeline &timeline,
                                              copyPoint->path, copyEvent))
       return false;
   } else {
-    if (!hasOnlyPath(sourceAliases, mp::PathCondition::root()) ||
-        !hasOnlyPath(destAliases, mp::PathCondition::root()))
+    if (!hasOnlyPath(sourceAliases, copyPoint->path) ||
+        !hasOnlyPath(destAliases, copyPoint->path))
       return false;
     for (const ForwardingRecord &forwarding : destAliases.forwardings)
       if (forwarding.point.event < copyEvent)

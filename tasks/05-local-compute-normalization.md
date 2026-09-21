@@ -761,6 +761,29 @@ scale/普通mask/causal bias的map与score轴排列一起组合；可见性仍�
 其它observable state consumer、FD transfer/merge和output map必须共同闭合后才接入，不能只替换局部PV。
 厂商存在Transpose入口不等于当前生产链已接入；输出恢复按实际可发射路径计费。
 
+当前完整组主块的进一步实现选择为：在decomposition入口，对已经物化的私有accumulator SSA闭包统一重排为
+batch/value/query。闭包沿online DPS state、SCF init/iter_arg/yield/result、保rank的Tensor slice及parallel Linalg merge/finalize传播，
+slice的offset/size/stride随相同轴置换；完整state和不同大小的main/tail分别使用各自的actual shape，不要求尺寸相同。
+输出`insert_slice`的source是私有state的发布边界，不能据此把整个destination也转置；只有destination或loop yield已在同一
+闭包中时才将该insert视为state更新。否则在该source前恢复方向，避免将完整产品输出物化为SPM临时矩阵。
+merge/finalize的DPS init若未被scalar region读取，只是输出目的地，不能作为输入state沿其slice追溯到完整产品输出；
+此时显式创建该块的新方向`tensor.empty`作为init，原输出仍由发布边界写回。scalar region实际读取的init则必须闭合。
+初始化仍用原fill值，全部scalar body和窄化位置保持。先检查完整def-use闭包，再一起改shape与indexing maps；
+仅在KV循环外的输出consumer前恢复方向。若state有无法闭合的producer、循环内额外观察或cross-Tile endpoint，
+保留原方向；不能在step内插入往返。Q=1及不含完整query unit的独立state保持原方向。
+这属于online state展开，不能扩展为ordinary pure graph入口旁的通用等价改写。
+
+代价依据：当前实际BQ256/D128的每个双head Tile有72次state更新、16次finalize；常规方向需576+128次GS广播。
+完整转置可将这两类广播改成实际NCx上的分组Mul，额外输出方向恢复至多16次；GEMM用`Vᵀ × Pᵀ`，
+V和P的storage不因交换逻辑乘法顺序而另建完整转置。实际layout可能仍产生其它转换，须以新Instr计数和SPM结果核实，
+不能预先把它们算作已删除。输出恢复复制的是最终窄dtype矩阵，不额外把F32全state写出再读回。
+SCF类型一致性依[官方合同](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)，
+map重排依[Linalg合同](https://mlir.llvm.org/docs/Dialects/Linalg/)；API以pinned源和原decomposition测试确认。
+
+覆盖私有初始化、main/tail、多KV更新、条件分支、merge/finalize、单次窄输出恢复及原Q=1；
+不能闭合的state须保持原IR方向。真实规模1024/1025/1031、不同query/feature维度和FP16/BF16检查完整state maps、
+循环yield类型、原算术body、直接layout/Instr/SPM及生产全量reference。下游如出现unsupported须修实际消费者，不能按shape绕开。
+
 算法仍沿用本章FlashAttention/IREE的online state组织。对照FlashInfer的
 [prefill](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/prefill.cuh)与
 [decode](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/decode.cuh)分开的实现，

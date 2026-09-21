@@ -12,8 +12,12 @@
 #endif
 
 #include "instr_adapter.h"
+#include "instr_operator.h"
 
 #include <stddef.h>
+
+/* The vendor module_init/module_cleanup own the SDK function tables. Each
+ * issuer borrows a table and keeps its instruction packet call-local. */
 
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 extern uint64_t get_tile_spm_addr_base(uint32_t tile_id_1d, int32_t tile_x,
@@ -970,13 +974,12 @@ void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
       !wafer_elem_count_from_bytes(stride2, format, &stride2_elements))
     return;
   TsmRdmaInstr instr = {0};
-  TsmRdma *rdma = TsmNewRdma();
+  TsmRdma *rdma = (TsmRdma *)g_intrinsic()->rdma_pointer;
   rdma->AddSrcDst(&instr, src, dst, wafer_format(format));
   rdma->ConfigStrideIteration(&instr, inner_elements, stride0_elements,
                               iteration0, stride1_elements, iteration1,
                               stride2_elements, iteration2);
   wafer_execute_rdma(&instr, worker);
-  TsmDeleteRdma(rdma);
 }
 
 void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
@@ -996,13 +999,12 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
       !wafer_elem_count_from_bytes(stride2, format, &stride2_elements))
     return;
   TsmWdmaInstr instr = {0};
-  TsmWdma *wdma = TsmNewWdma();
+  TsmWdma *wdma = (TsmWdma *)g_intrinsic()->wdma_pointer;
   wdma->AddSrcDst(&instr, src, dst, wafer_format(format));
   wdma->ConfigStrideIteration(&instr, inner_elements, stride0_elements,
                               iteration0, stride1_elements, iteration1,
                               stride2_elements, iteration2);
   wafer_execute_wdma(&instr, worker);
-  TsmDeleteWdma(wdma);
 }
 
 void wafer_tx81_gather_scatter(
@@ -1014,7 +1016,7 @@ void wafer_tx81_gather_scatter(
     uint32_t worker) {
   (void)byte_count;
   TsmDataMoveInstr instr = {0};
-  TsmDataMove *move = TsmNewDataMove();
+  TsmDataMove *move = (TsmDataMove *)g_intrinsic()->datamove_pointer;
   St_StrideIteration src_si =
       wafer_stride_iteration(src_stride0, src_stride1, src_stride2,
                              src_iteration0, src_iteration1, src_iteration2);
@@ -1023,7 +1025,6 @@ void wafer_tx81_gather_scatter(
                              dst_iteration0, dst_iteration1, dst_iteration2);
   move->GatherScatter(&instr, src, dst, inner_bytes, &src_si, &dst_si);
   wafer_execute_td(&instr, worker);
-  TsmDeleteDataMove(move);
 }
 
 void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count,
@@ -1045,57 +1046,60 @@ void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count,
    * Preserve that format for both whole-range CT instructions. */
   Data_Format fill_format = (Data_Format)packet_format;
   TsmLogicInstr clear = {0};
-  TsmLogic *logic = TsmNewLogic();
+  TsmLogic *logic = (TsmLogic *)g_intrinsic()->logic_pointer;
   logic->XorVV(&clear, dst, dst, dst, packet_elem_count, fill_format);
   wafer_execute_ct(&clear, worker);
-  TsmDeleteLogic(logic);
 
   TsmArithInstr fill = {0};
-  TsmArith *arith = TsmNewArith();
+  TsmArith *arith = (TsmArith *)g_intrinsic()->arith_pointer;
   arith->AddVS(&fill, dst, packet_value, dst, packet_elem_count,
                RND_NEAREST_EVEN, fill_format);
   wafer_execute_ct(&fill, worker);
-  TsmDeleteArith(arith);
 }
 
 void wafer_tx81_bit2fp(uint64_t src, uint64_t dst, uint32_t elem_count,
                           uint32_t format, uint32_t worker) {
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->Bit2Fp(&instr, src, dst, elem_count, wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
                              uint32_t elem_count, uint32_t format,
                              uint32_t worker) {
   TsmMaskDataMoveInstr instr = {0};
-  TsmMaskDataMove *move = TsmNewMaskDataMove();
+  TsmMaskDataMove *move =
+      (TsmMaskDataMove *)g_intrinsic()->maskdatamove_pointer;
   move->MaskMove(&instr, src, mask, dst, elem_count, wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeleteMaskDataMove(move);
 }
 
 #define WAFER_DEFINE_ARITH_UNARY(SYMBOL, METHOD)                               \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format, uint32_t worker) {                              \
     TsmArithInstr instr = {0};                                                 \
-    TsmArith *arith = TsmNewArith();                                           \
+    TsmArith *arith = (TsmArith *)g_intrinsic()->arith_pointer;                \
     arith->METHOD(&instr, src, dst, elem_count, wafer_format(format));         \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteArith(arith);                                                     \
   }
 
 #define WAFER_DEFINE_ARITH_BINARY(SYMBOL, METHOD, UNIT_METHOD, SCALAR_METHOD)  \
   void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
               uint32_t format, uint32_t rhs_unit_elements,                     \
-              uint32_t rhs_is_scalar, uint32_t worker) {                       \
+              uint32_t rhs_is_scalar, uint32_t rhs_group_elements,             \
+              uint32_t worker) {                                               \
     TsmArithInstr instr = {0};                                                 \
-    TsmArith *arith = TsmNewArith();                                           \
+    TsmArith *arith = (TsmArith *)g_intrinsic()->arith_pointer;                \
     if (rhs_is_scalar)                                                         \
       arith->SCALAR_METHOD(&instr, lhs, (uint32_t)rhs, dst, elem_count,        \
                            RND_NEAREST_EVEN, wafer_format(format));            \
+    else if (rhs_group_elements)                                               \
+      arith->UNIT_METHOD##Loop(                                                \
+          &instr, lhs, rhs, dst, rhs_group_elements, rhs_unit_elements,        \
+          elem_count, elem_count / rhs_group_elements * rhs_unit_elements,     \
+          RND_NEAREST_EVEN, wafer_format(format));                             \
     else if (rhs_unit_elements)                                                \
       arith->UNIT_METHOD(&instr, lhs, rhs, dst, elem_count, rhs_unit_elements, \
                          RND_NEAREST_EVEN, wafer_format(format));              \
@@ -1103,7 +1107,6 @@ void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
       arith->METHOD(&instr, lhs, rhs, dst, elem_count, RND_NEAREST_EVEN,       \
                     wafer_format(format));                                     \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteArith(arith);                                                     \
   }
 
 #define WAFER_DEFINE_RELATION(SYMBOL, METHOD)                                  \
@@ -1112,7 +1115,7 @@ void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
               uint32_t rhs_is_scalar, uint32_t numeric_result,                 \
               uint32_t worker) {                                               \
     TsmRelationInstr instr = {0};                                              \
-    TsmRelation *relation = TsmNewRelation();                                  \
+    TsmRelation *relation = (TsmRelation *)g_intrinsic()->relation_pointer;    \
     if (rhs_is_scalar) {                                                       \
       if (numeric_result)                                                      \
         relation->METHOD##VS(&instr, lhs, (uint32_t)rhs, dst, elem_count,      \
@@ -1136,53 +1139,50 @@ void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
                                    wafer_format(format));                      \
     }                                                                          \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteRelation(relation);                                               \
   }
 
 #define WAFER_DEFINE_LOGIC_UNARY(SYMBOL, METHOD, BOOL_METHOD)                  \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format, uint32_t worker) {                              \
     TsmLogicInstr instr = {0};                                                 \
-    TsmLogic *logic = TsmNewLogic();                                           \
+    TsmLogic *logic = (TsmLogic *)g_intrinsic()->logic_pointer;                \
     if (format == Fmt_BOOL)                                                    \
       logic->BOOL_METHOD(&instr, src, dst, elem_count);                        \
     else                                                                       \
       logic->METHOD(&instr, src, dst, elem_count, wafer_format(format));       \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteLogic(logic);                                                     \
   }
 
 #define WAFER_DEFINE_LOGIC_BINARY(SYMBOL, METHOD, BOOL_METHOD)                 \
   void SYMBOL(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t elem_count,   \
               uint32_t format, uint32_t worker) {                              \
     TsmLogicInstr instr = {0};                                                 \
-    TsmLogic *logic = TsmNewLogic();                                           \
+    TsmLogic *logic = (TsmLogic *)g_intrinsic()->logic_pointer;                \
     if (format == Fmt_BOOL)                                                    \
       logic->BOOL_METHOD(&instr, lhs, rhs, dst, elem_count);                   \
     else                                                                       \
       logic->METHOD(&instr, lhs, rhs, dst, elem_count, wafer_format(format));  \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteLogic(logic);                                                     \
   }
 
 #define WAFER_DEFINE_TRANS(SYMBOL, METHOD)                                     \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format, uint32_t worker) {                              \
     TsmTranscendentalInstr instr = {0};                                        \
-    TsmTranscendental *trans = TsmNewTranscendental();                         \
+    TsmTranscendental *trans =                                                 \
+        (TsmTranscendental *)g_intrinsic()->transcendental_pointer;            \
     trans->METHOD(&instr, src, dst, elem_count, wafer_format(format));         \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteTranscendental(trans);                                            \
   }
 
 #define WAFER_DEFINE_ACTIVATION(SYMBOL, METHOD)                                \
   void SYMBOL(uint64_t src, uint64_t dst, uint32_t elem_count,                 \
               uint32_t format, uint32_t worker) {                              \
     TsmActivationInstr instr = {0};                                            \
-    TsmActivation *activation = TsmNewActivation();                            \
+    TsmActivation *activation =                                                \
+        (TsmActivation *)g_intrinsic()->activation_pointer;                    \
     activation->METHOD(&instr, src, dst, elem_count, wafer_format(format));    \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteActivation(activation);                                           \
   }
 
 WAFER_DEFINE_ARITH_UNARY(wafer_tx81_elementwise_abs, AbsVV)
@@ -1225,11 +1225,10 @@ WAFER_DEFINE_ACTIVATION(wafer_tx81_elementwise_softplus, Softplus)
               uint32_t h, uint32_t w, uint32_t c, uint32_t format,             \
               uint32_t worker) {                                               \
     TsmReduceInstr instr = {0};                                                \
-    TsmReduce *reduce = TsmNewReduce();                                        \
+    TsmReduce *reduce = (TsmReduce *)g_intrinsic()->reduce_pointer;            \
     reduce->METHOD(&instr, src, dst, dim, wafer_shape4(n, h, w, c),            \
                    wafer_format(format));                                      \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteReduce(reduce);                                                   \
   }
 
 WAFER_DEFINE_REDUCE(wafer_tx81_reduce_sum, ReduceSum)
@@ -1242,10 +1241,9 @@ WAFER_DEFINE_REDUCE(wafer_tx81_reduce_avg, ReduceAvg)
               uint32_t zero_point, uint32_t rounding_mode, uint32_t worker) {  \
     (void)rounding_mode;                                                       \
     TsmConvertInstr instr = {0};                                               \
-    TsmConvert *convert = TsmNewConvert();                                     \
+    TsmConvert *convert = (TsmConvert *)g_intrinsic()->convert_pointer;        \
     convert->METHOD(&instr, src, zero_point, dst, elem_count);                 \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteConvert(convert);                                                 \
   }
 
 #define WAFER_DEFINE_CONVERT_ROUND(SYMBOL, METHOD)                             \
@@ -1253,11 +1251,10 @@ WAFER_DEFINE_REDUCE(wafer_tx81_reduce_avg, ReduceAvg)
               uint32_t zero_point, uint32_t rounding_mode, uint32_t worker) {  \
     (void)zero_point;                                                          \
     TsmConvertInstr instr = {0};                                               \
-    TsmConvert *convert = TsmNewConvert();                                     \
+    TsmConvert *convert = (TsmConvert *)g_intrinsic()->convert_pointer;        \
     convert->METHOD(&instr, src, dst, elem_count,                              \
                     wafer_rounding(rounding_mode));                            \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteConvert(convert);                                                 \
   }
 
 #define WAFER_DEFINE_CONVERT_PLAIN(SYMBOL, METHOD)                             \
@@ -1266,10 +1263,9 @@ WAFER_DEFINE_REDUCE(wafer_tx81_reduce_avg, ReduceAvg)
     (void)zero_point;                                                          \
     (void)rounding_mode;                                                       \
     TsmConvertInstr instr = {0};                                               \
-    TsmConvert *convert = TsmNewConvert();                                     \
+    TsmConvert *convert = (TsmConvert *)g_intrinsic()->convert_pointer;        \
     convert->METHOD(&instr, src, dst, elem_count);                             \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeleteConvert(convert);                                                 \
   }
 
 WAFER_DEFINE_CONVERT_ZP(wafer_tx81_convert_int8_fp16, INT8_FP16)
@@ -1314,7 +1310,7 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint64_t psum,
                      uint32_t input_format, uint32_t output_format,
                      uint32_t psum_format, uint32_t worker) {
   TsmNeInstr instr = {0};
-  TsmGemm *gemm = TsmNewGemm();
+  TsmGemm *gemm = (TsmGemm *)g_intrinsic()->gemm_pointer;
   gemm->AddInput(&instr, lhs, rhs, wafer_format(input_format));
   gemm->ConfigMKN(&instr, m, k, n);
   gemm->ConfigBatch(&instr, batch_count, batch_count);
@@ -1330,7 +1326,6 @@ void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint64_t psum,
   gemm->DisableLeakyRelu(&instr);
   gemm->AddOutput(&instr, dst, wafer_format(output_format));
   wafer_execute_gemm(&instr, worker);
-  TsmDeleteGemm(gemm);
 }
 
 void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
@@ -1340,7 +1335,7 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
                               uint32_t lhs_orientation,
                               uint32_t rhs_orientation, uint32_t worker) {
   TsmNeInstr instr = {0};
-  TsmGemm *gemm = TsmNewGemm();
+  TsmGemm *gemm = (TsmGemm *)g_intrinsic()->gemm_pointer;
   gemm->AddInput(&instr, lhs, rhs, wafer_format(input_format));
   gemm->ConfigMKN(&instr, m, k, n);
   gemm->ConfigBatch(&instr, batch_count, batch_count);
@@ -1356,7 +1351,6 @@ void wafer_tx81_gemm_oriented(uint64_t lhs, uint64_t rhs, uint64_t dst,
   gemm->DisableLeakyRelu(&instr);
   gemm->AddOutput(&instr, dst, wafer_format(output_format));
   wafer_execute_gemm(&instr, worker);
-  TsmDeleteGemm(gemm);
 }
 
 #define WAFER_CONFIGURE_CONV(OP, INSTR)                                        \
@@ -1398,10 +1392,9 @@ void wafer_tx81_conv(uint64_t input, uint64_t weight, uint64_t dst,
                      uint32_t dilation1, uint32_t input_format,
                      uint32_t output_format, uint32_t worker) {
   TsmNeInstr instr = {0};
-  TsmConv *conv = TsmNewConv();
+  TsmConv *conv = (TsmConv *)g_intrinsic()->conv_pointer;
   WAFER_CONFIGURE_CONV(conv, &instr);
   wafer_execute_ne(&instr, worker);
-  TsmDeleteConv(conv);
 }
 
 void wafer_tx81_depthwise_conv(
@@ -1416,10 +1409,10 @@ void wafer_tx81_depthwise_conv(
     uint32_t dilation1, uint32_t input_format, uint32_t output_format,
     uint32_t worker) {
   TsmNeInstr instr = {0};
-  TsmDepthwiseConv *conv = TsmNewDepthwiseConv();
+  TsmDepthwiseConv *conv =
+      (TsmDepthwiseConv *)g_intrinsic()->depthwiseConv_pointer;
   WAFER_CONFIGURE_CONV(conv, &instr);
   wafer_execute_ne(&instr, worker);
-  TsmDeleteDepthwiseConv(conv);
 }
 
 void wafer_tx81_backward_conv(
@@ -1434,10 +1427,9 @@ void wafer_tx81_backward_conv(
     uint32_t dilation1, uint32_t input_format, uint32_t output_format,
     uint32_t worker) {
   TsmNeInstr instr = {0};
-  TsmConv *conv = TsmNewConv();
+  TsmConv *conv = (TsmConv *)g_intrinsic()->conv_pointer;
   WAFER_CONFIGURE_CONV(conv, &instr);
   wafer_execute_ne(&instr, worker);
-  TsmDeleteConv(conv);
 }
 
 #define WAFER_DEFINE_POOL(SYMBOL, METHOD)                                      \
@@ -1454,13 +1446,12 @@ void wafer_tx81_backward_conv(
     (void)dst_w;                                                               \
     (void)dst_c;                                                               \
     TsmPoolInstr instr = {0};                                                  \
-    TsmPool *pool = TsmNewPool();                                              \
+    TsmPool *pool = (TsmPool *)g_intrinsic()->pool_pointer;                    \
     pool->METHOD(&instr, input, wafer_shape4(src_n, src_h, src_w, src_c), dst, \
                  wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),       \
                  wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),         \
                  wafer_format(format));                                        \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeletePool(pool);                                                       \
   }
 
 #define WAFER_DEFINE_POOL_INDEXED(SYMBOL, METHOD)                              \
@@ -1477,14 +1468,13 @@ void wafer_tx81_backward_conv(
     (void)dst_w;                                                               \
     (void)dst_c;                                                               \
     TsmPoolInstr instr = {0};                                                  \
-    TsmPool *pool = TsmNewPool();                                              \
+    TsmPool *pool = (TsmPool *)g_intrinsic()->pool_pointer;                    \
     pool->METHOD(&instr, input, wafer_shape4(src_n, src_h, src_w, src_c),      \
                  value_dst, index_dst,                                         \
                  wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),       \
                  wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),         \
                  wafer_format(format));                                        \
     wafer_execute_ct(&instr, worker);                                          \
-    TsmDeletePool(pool);                                                       \
   }
 
 WAFER_DEFINE_POOL(wafer_tx81_pool_avg, AvgPool)
@@ -1507,13 +1497,12 @@ void wafer_tx81_unpool_unpool(uint64_t input, uint64_t dst, uint32_t kind,
   (void)src_w;
   (void)src_c;
   TsmUnPoolInstr instr = {0};
-  TsmUnPool *unpool = TsmNewUnPool();
+  TsmUnPool *unpool = (TsmUnPool *)g_intrinsic()->unpool_pointer;
   unpool->Unpool(&instr, input, index, dst,
                  wafer_shape4(dst_n, dst_h, dst_w, dst_c),
                  wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),
                  wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeleteUnPool(unpool);
 }
 
 void wafer_tx81_unpool_avg(uint64_t input, uint64_t dst, uint32_t kind,
@@ -1530,13 +1519,12 @@ void wafer_tx81_unpool_avg(uint64_t input, uint64_t dst, uint32_t kind,
   (void)src_w;
   (void)src_c;
   TsmUnPoolInstr instr = {0};
-  TsmUnPool *unpool = TsmNewUnPool();
+  TsmUnPool *unpool = (TsmUnPool *)g_intrinsic()->unpool_pointer;
   unpool->UnpoolAvg(&instr, input, dst,
                     wafer_shape4(dst_n, dst_h, dst_w, dst_c),
                     wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),
                     wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeleteUnPool(unpool);
 }
 
 void wafer_tx81_unpool_mask(uint64_t input, uint64_t dst, uint32_t kind,
@@ -1552,13 +1540,12 @@ void wafer_tx81_unpool_mask(uint64_t input, uint64_t dst, uint32_t kind,
   (void)src_w;
   (void)src_c;
   TsmUnPoolInstr instr = {0};
-  TsmUnPool *unpool = TsmNewUnPool();
+  TsmUnPool *unpool = (TsmUnPool *)g_intrinsic()->unpool_pointer;
   unpool->UnpoolIdx(&instr, input, index, dst,
                     wafer_shape4(dst_n, dst_h, dst_w, dst_c),
                     wafer_shape4(kernel_x, kernel_y, stride_x, stride_y),
                     wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeleteUnPool(unpool);
 }
 
 void wafer_tx81_tdma_pad(uint64_t src, uint64_t dst, uint32_t src_n,
@@ -1569,13 +1556,12 @@ void wafer_tx81_tdma_pad(uint64_t src, uint64_t dst, uint32_t src_n,
                             uint32_t pad_right, uint32_t format,
                             uint32_t worker) {
   TsmDataMoveInstr instr = {0};
-  TsmDataMove *move = TsmNewDataMove();
+  TsmDataMove *move = (TsmDataMove *)g_intrinsic()->datamove_pointer;
   move->Pad(&instr, src, wafer_shape4(src_n, src_h, src_w, src_c), dst,
             wafer_shape4(dst_n, dst_h, dst_w, dst_c),
             wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),
             wafer_format(format));
   wafer_execute_td(&instr, worker);
-  TsmDeleteDataMove(move);
 }
 
 void wafer_tx81_tdma_img2col(
@@ -1587,7 +1573,7 @@ void wafer_tx81_tdma_img2col(
   Data_Shape src_shape = wafer_shape4(src_n, src_h, src_w, src_c);
   Data_Shape dst_shape = wafer_shape4(dst_n, dst_h, dst_w, dst_c);
   TsmDataMoveInstr instr = {0};
-  TsmDataMove *move = TsmNewDataMove();
+  TsmDataMove *move = (TsmDataMove *)g_intrinsic()->datamove_pointer;
   move->Img2col(&instr, src, src_shape, dst, dst_shape,
                 wafer_shape_elements(src_shape),
                 wafer_shape_elements(dst_shape),
@@ -1595,7 +1581,6 @@ void wafer_tx81_tdma_img2col(
                 wafer_shape4(pad_top, pad_bottom, pad_left, pad_right),
                 wafer_format(format));
   wafer_execute_td(&instr, worker);
-  TsmDeleteDataMove(move);
 }
 
 static void wafer_arg_writeback(uint64_t value_dst, uint64_t index_dst,
@@ -1627,11 +1612,11 @@ void wafer_tx81_peripheral_argmax(uint64_t src, uint64_t value_dst,
   (void)probability;
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->ArgMax(&instr, src, elem_count, wafer_format(format));
   wafer_execute_ct(&instr, worker);
   wafer_arg_writeback(value_dst, index_dst, format, worker, &instr);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_peripheral_argmin(uint64_t src, uint64_t value_dst,
@@ -1646,11 +1631,11 @@ void wafer_tx81_peripheral_argmin(uint64_t src, uint64_t value_dst,
   (void)probability;
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->ArgMin(&instr, src, elem_count, wafer_format(format));
   wafer_execute_ct(&instr, worker);
   wafer_arg_writeback(value_dst, index_dst, format, worker, &instr);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_peripheral_bilinear(
@@ -1666,14 +1651,14 @@ void wafer_tx81_peripheral_bilinear(
   (void)probability;
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->Bilinear(
       &instr, src, dst, wafer_shape4(src_n, src_h, src_w, src_c),
       wafer_shape4(dst_n, dst_h, dst_w, dst_c),
       wafer_bilinear_scale(src_w, dst_w), wafer_bilinear_scale(src_h, dst_h),
       wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_peripheral_lut16(uint64_t src, uint64_t lut, uint64_t dst,
@@ -1687,10 +1672,10 @@ void wafer_tx81_peripheral_lut16(uint64_t src, uint64_t lut, uint64_t dst,
   (void)probability;
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->Lut16(&instr, src, dst, lut, elem_count, lut_elem_count);
   wafer_execute_ct(&instr, worker);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_peripheral_lut32(uint64_t src, uint64_t lut, uint64_t dst,
@@ -1704,10 +1689,10 @@ void wafer_tx81_peripheral_lut32(uint64_t src, uint64_t lut, uint64_t dst,
   (void)probability;
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->Lut32(&instr, src, dst, lut, elem_count, lut_elem_count);
   wafer_execute_ct(&instr, worker);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_peripheral_rand_gen(
@@ -1721,11 +1706,11 @@ void wafer_tx81_peripheral_rand_gen(
   (void)probability;
   (void)rounding_mode;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->RandGen(&instr, src0, src1, dst0, dst1, dst2, elem_count,
                       wafer_format(format));
   wafer_execute_ct(&instr, worker);
-  TsmDeletePeripheral(peripheral);
 }
 
 void wafer_tx81_peripheral_elem_mask(
@@ -1735,12 +1720,12 @@ void wafer_tx81_peripheral_elem_mask(
   (void)kind;
   (void)lut_elem_count;
   TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
+  TsmPeripheral *peripheral =
+      (TsmPeripheral *)g_intrinsic()->peripheral_pointer;
   peripheral->ElemMask(&instr, src, scale, dst, elem_count,
                        wafer_format(format), probability,
                        wafer_rounding(rounding_mode));
   wafer_execute_ct(&instr, worker);
-  TsmDeletePeripheral(peripheral);
 }
 
 /*

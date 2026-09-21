@@ -1,10 +1,11 @@
 // SDK interception verifies the production ABI, not unqualified CT hardware
 // arithmetic/tail behavior. Those still require a fresh device qualification.
 #include "instr_adapter.h"
+#include "instr_operator.h"
 #include <assert.h>
 
 static uint64_t destination;
-static uint32_t scalar, count, worker, calls, constructed, live_objects;
+static uint32_t scalar, count, worker, calls, constructed;
 static Data_Format format;
 
 static void capture_xor(TsmLogicInstr *p, uint64_t a, uint64_t b, uint64_t dst,
@@ -28,15 +29,17 @@ static void capture_add(TsmArithInstr *p, uint64_t a, uint32_t value,
 
 static TsmLogic logic = {.XorVV = capture_xor};
 static TsmArith arith = {.AddVS = capture_add};
-TsmLogic *TsmNewLogic(void) { ++live_objects; return &logic; }
-TsmArith *TsmNewArith(void) { ++live_objects; return &arith; }
-void TsmDeleteLogic(TsmLogic *p) { assert(p == &logic); --live_objects; }
-void TsmDeleteArith(TsmArith *p) { assert(p == &arith); --live_objects; }
 static void wafer_execute_ct(CT_Param *p, uint32_t w) {
   assert(w == worker && calls < 2);
   assert(p->ctrl.opcode == (calls == 0 ? 81 : 15));
   ++calls;
 }
+
+static TsmOperatorPointer operators = {
+    .logic_pointer = &logic,
+    .arith_pointer = &arith,
+};
+TsmOperatorPointer *g_intrinsic(void) { return &operators; }
 
 /* PRODUCTION_FUNCTIONS */
 
@@ -79,13 +82,13 @@ int main(void) {
           // bits; its ABI count is consequently always a multiple of eight.
           uint32_t input_count = f == Fmt_BOOL ? count * 8 : elements[n];
           wafer_tx81_memset(destination, value, input_count, f, worker);
-          assert(calls == 2 && constructed == 2 && live_objects == 0);
+          assert(calls == 2 && constructed == 2);
           ++configurations;
         }
   calls = constructed = 0;
   wafer_tx81_memset(destination, 0, 0, Fmt_FP32, 0);
   wafer_tx81_memset(destination, 0, UINT32_MAX, Fmt_FP32, 0);
   wafer_tx81_memset(destination, 0, 1024, UINT32_MAX, 0);
-  assert(calls == 0 && constructed == 0 && live_objects == 0);
+  assert(calls == 0 && constructed == 0);
   printf("CT fill: %u configurations, two whole-range issues each\n", configurations);
 }

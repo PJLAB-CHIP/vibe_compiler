@@ -260,7 +260,11 @@ buildElementwiseCommand(const TargetCallDecodeConfig &config,
       arguments[destinationIndex], argument32(arguments, countIndex), *format,
       !unary && !isTargetElementwiseLogic(kind) ? argument32(arguments, 5) : 0,
       scalar ? std::optional<uint32_t>(argument32(arguments, 1)) : std::nullopt,
-      output}};
+      output,
+      !unary && !isTargetElementwiseLogic(kind) &&
+              !isTargetElementwiseRelation(kind)
+          ? argument32(arguments, 7)
+          : 0}};
 }
 
 static llvm::Expected<TargetCommandPayload>

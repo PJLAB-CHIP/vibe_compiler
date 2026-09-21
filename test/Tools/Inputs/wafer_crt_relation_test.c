@@ -2,11 +2,12 @@
 // entry, every argument, one CT issue, worker and factory lifetime. Hardware
 // output/tail behavior is qualified separately on a recovered device.
 #include "instr_adapter.h"
+#include "instr_operator.h"
 #include "wafer_tx81_crt.h"
 #include <assert.h>
 #include <stdio.h>
 
-static unsigned expected_method, expected_form, calls, live_objects;
+static unsigned expected_method, expected_form, calls;
 static uint32_t count, unit, scalar, worker;
 static Data_Format format;
 static const uint64_t lhs = 0x20000, rhs = 0x90000, destination = 0xa0000;
@@ -47,19 +48,16 @@ CAPTURE(Equal, 1) CAPTURE(BoolUnEqual, 2) CAPTURE(UnEqual, 3)
                         METHODS(Greater),      METHODS(BoolGreater),
                         METHODS(LessEqual),    METHODS(BoolLessEqual),
                         METHODS(LessThen),     METHODS(BoolLessThen)};
-TsmRelation *TsmNewRelation(void) {
-  ++live_objects;
-  return &relation;
-}
-void TsmDeleteRelation(TsmRelation *p) {
-  assert(p == &relation);
-  --live_objects;
-}
 static void wafer_execute_ct(CT_Param *p, uint32_t w) {
-  assert(live_objects == 1 && calls == 0 && p->ctrl.opcode == expected_method);
+  assert(calls == 0 && p->ctrl.opcode == expected_method);
   assert(w == worker);
   ++calls;
 }
+
+static TsmOperatorPointer operators = {
+    .relation_pointer = &relation,
+};
+TsmOperatorPointer *g_intrinsic(void) { return &operators; }
 
 /* PRODUCTION_FUNCTIONS */
 
@@ -86,10 +84,10 @@ int main(void) {
                                             : 0xff800000;
               expected_method = op * 2 + numeric;
               expected_form = form < 2 ? form : 2;
-              calls = live_objects = 0;
+              calls = 0;
               functions[op](lhs, form == 1 ? scalar : rhs, destination, count,
                             format, unit, form == 1, numeric, worker);
-              assert(calls == 1 && live_objects == 0);
+              assert(calls == 1);
               ++configurations;
             }
   printf("relation SDK dispatch: %u configurations passed\n", configurations);

@@ -103,6 +103,7 @@ struct TargetElementwiseCommand {
   uint32_t rhsUnitElements = 0;
   std::optional<uint32_t> rhsScalar;
   TargetRelationOutput relationOutput = TargetRelationOutput::PackedBool;
+  uint32_t rhsGroupElements = 0;
 
   LogicalFormat getResultFormat() const {
     return isTargetElementwiseRelation(operation) &&

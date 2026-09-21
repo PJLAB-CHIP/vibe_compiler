@@ -793,6 +793,10 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
     if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(), "input")))
       return mlir::failure();
   }
+  int64_t group = getRhsGroupElements();
+  if (group < 0 || (group && !getRhsUnitElements()))
+    return emitOpError(
+        "rhs_group_elements requires a positive group and RHS unit");
   if (int64_t unit = getRhsUnitElements()) {
     bool supportedKind = isInstrRelationKind(getKind()) ||
                          getKind() == InstrElementwiseKind::Add ||
@@ -809,9 +813,20 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
     auto elementType = rhs.getElementType();
     auto info = computeWaferPhysicalTensorInfo(rhs);
     if (!(elementType.isF16() || elementType.isBF16() || elementType.isF32()) ||
-        !info || info->physicalElements != unit)
+        !info || (!group && info->physicalElements != unit))
       return emitOpError("rhs unit must have exactly rhs_unit_elements "
-                         "physical F16/BF16/F32 elements");
+                         "physical F16/BF16/F32 elements unless grouped");
+    if (group) {
+      auto destInfo = computeWaferPhysicalTensorInfo(
+          mlir::cast<mlir::MemRefType>(getDest().getType()));
+      if (isInstrRelationKind(getKind()) || unit != 64 || group % unit ||
+          group > std::numeric_limits<uint32_t>::max() || !destInfo ||
+          destInfo->physicalElements % group || info->physicalElements % unit ||
+          destInfo->physicalElements / group != info->physicalElements / unit)
+        return emitOpError(
+            "grouped RHS requires arithmetic, unit 64, complete "
+            "groups and matching source/destination group counts");
+    }
     if (mlir::failed(verifySimpleInstrElementwiseContract(
             getOperation(), getKind(), getInputs(), getDest().getType(), unit)))
       return mlir::failure();

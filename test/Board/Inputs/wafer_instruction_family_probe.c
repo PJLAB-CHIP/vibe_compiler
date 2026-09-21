@@ -559,47 +559,47 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_CT_ADD_F16:
   case WAFER_IFP_CASE_CT_ADD_BF16:
     wafer_tx81_elementwise_add(input_a, input_b, output, elements, format, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_F16_TAIL130:
     wafer_tx81_elementwise_add(input_a, input_b, output, 130, Fmt_FP16, 0U, 0U,
-                               0U);
+                               0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_BF16_TAIL130:
     wafer_tx81_elementwise_add(input_a, input_b, output, 130, Fmt_BF16, 0U, 0U,
-                               0U);
+                               0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_F32:
     wafer_tx81_elementwise_add(input_a, input_b, output, elements, Fmt_FP32, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_SPECIAL_F16:
     wafer_tx81_elementwise_add(input_a, input_b, output, elements, Fmt_FP16, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_SPECIAL_BF16:
     wafer_tx81_elementwise_add(input_a, input_b, output, elements, Fmt_BF16, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_SUB_F16:
   case WAFER_IFP_CASE_CT_SUB_BF16:
     wafer_tx81_elementwise_sub(input_a, input_b, output, elements, format, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_MUL_F16:
   case WAFER_IFP_CASE_CT_MUL_BF16:
     wafer_tx81_elementwise_mul(input_a, input_b, output, elements, format, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_MAX_F16:
   case WAFER_IFP_CASE_CT_MAX_BF16:
     wafer_tx81_elementwise_max(input_a, input_b, output, elements, format, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_MIN_F16:
   case WAFER_IFP_CASE_CT_MIN_BF16:
     wafer_tx81_elementwise_min(input_a, input_b, output, elements, format, 0U,
-                               0U, 0U);
+                               0U, 0U, 0U);
     break;
   case WAFER_IFP_CASE_CT_POW2_F16:
   case WAFER_IFP_CASE_CT_POW2_BF16:

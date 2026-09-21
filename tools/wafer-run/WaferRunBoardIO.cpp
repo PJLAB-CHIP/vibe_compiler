@@ -435,6 +435,10 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
   targetPlan.request.deviceId = sourcePlan.request.deviceId;
   targetPlan.request.completionTimeoutMilliseconds =
       sourcePlan.request.completionTimeoutMilliseconds;
+  targetPlan.request.completionObservationPolicy =
+      sourcePlan.request.completionObservationPolicy;
+  targetPlan.request.deviceTimingPolicy = sourcePlan.request.deviceTimingPolicy;
+  targetPlan.request.memoryGuardPolicy = sourcePlan.request.memoryGuardPolicy;
   targetPlan.request.qualification = sourcePlan.request.qualification;
   targetPlan.request.bindings.reserve(sourcePlan.request.bindings.size());
   for (const BoardRuntimeBinding &binding : sourcePlan.request.bindings) {

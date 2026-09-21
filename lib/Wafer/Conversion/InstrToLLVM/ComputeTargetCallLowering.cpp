@@ -162,6 +162,8 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
     appendI32(op.getLoc(), args, op.getRhsUnitElements());
     appendI32(op.getLoc(), args,
               mlir::isa<mlir::FloatType>(op.getInputs()[1].getType()));
+    if (!isTargetRelationElementwiseKind(op.getKind()))
+      appendI32(op.getLoc(), args, op.getRhsGroupElements());
   }
   if (isTargetRelationElementwiseKind(op.getKind()))
     appendI32(op.getLoc(), args, !destType.getElementType().isInteger(1));

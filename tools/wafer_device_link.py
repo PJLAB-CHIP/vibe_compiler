@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ DEFAULT_CRT_MCPU = "c908"
 DEFAULT_MABI = "lp64d"
 DEFAULT_LOADER_ABI = "tx8-kcore-loader"
 PROFILE_CAPTURE_KINDS = ("none", "count", "trace")
+SDK_MODULE_HOOKS = frozenset({"module_init", "module_cleanup"})
 BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     {
         "get_log_level",
@@ -275,7 +277,9 @@ def build_commands(
     link_cmd.extend(f"-L{path}" for path in args.extra_library_dir)
     link_cmd.extend(
         [
-            "-Wl,--exclude-libs,ALL",
+            f"-Wl,--version-script={output.with_suffix('.exports')}",
+            "-Wl,--undefined=module_init",
+            "-Wl,--undefined=module_cleanup",
             "-Wl,--start-group",
             "-lcommon_util",
             "-linstr_tx81",
@@ -472,6 +476,45 @@ def install_intermediate(source: pathlib.Path, destination: pathlib.Path) -> Non
         temporary_path.unlink(missing_ok=True)
 
 
+def defined_symbols(nm: str, path: pathlib.Path, *, dynamic: bool = False) -> set[str]:
+    command = [nm, "--extern-only", "--defined-only", "--format=posix"]
+    if dynamic:
+        command.append("--dynamic")
+    command.append(str(path))
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    symbols = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 3 or len(fields[1]) != 1:
+            fail(f"invalid defined-symbol record from {path}: {line}")
+        # ELF/LLVM identifiers used by this driver have no whitespace or
+        # linker-script metacharacters. Never interpret input as script syntax.
+        if not re.fullmatch(r"[A-Za-z_$\.][A-Za-z0-9_$\.]*", fields[0]):
+            fail(f"unsupported exported symbol spelling: {fields[0]}")
+        symbols.add(fields[0])
+    return symbols
+
+
+def write_module_exports(args: argparse.Namespace, nm: str) -> None:
+    symbols = set()
+    for path in [args.object_output, *args.extra_object]:
+        symbols.update(defined_symbols(nm, pathlib.Path(path)))
+    conflicts = sorted(symbols & SDK_MODULE_HOOKS)
+    if conflicts:
+        fail("input redefines SDK module hooks: " + ", ".join(conflicts))
+    exports = sorted(symbols | SDK_MODULE_HOOKS)
+    pathlib.Path(args.output).with_suffix(".exports").write_text(
+        "{\n  global:\n" + "".join(f'    "{name}";\n' for name in exports)
+        + "  local: *;\n};\n"
+    )
+
+
+def verify_module_hooks(nm: str, output: pathlib.Path) -> None:
+    missing = SDK_MODULE_HOOKS - defined_symbols(nm, output, dynamic=True)
+    if missing:
+        fail("SDK module hooks are not dynamically defined: " + ", ".join(sorted(missing)))
+
+
 def execute_staged_link(args: argparse.Namespace) -> None:
     output = pathlib.Path(args.output)
     object_output = object_output_path(output, args.object_output)
@@ -506,8 +549,10 @@ def execute_staged_link(args: argparse.Namespace) -> None:
             [compile_cmd, *normalize_cmds],
             [compile_crt_cmd, *normalize_crt_cmds],
         ])
+        write_module_exports(staged_args, required_symbol_scan_cmd[0])
         run_command(link_cmd)
         run_required_symbol_scan(required_symbol_scan_cmd, args.loader_abi)
+        verify_module_hooks(required_symbol_scan_cmd[0], pathlib.Path(staged_args.output))
 
         install_intermediate(pathlib.Path(staged_args.object_output), object_output)
         install_intermediate(

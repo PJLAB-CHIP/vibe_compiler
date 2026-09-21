@@ -193,11 +193,22 @@ TEST_F(WaferRunBoardIOTest,
       << llvm::toString(sourcePlan.takeError());
 
   PackageManifest target = manifest({port(20, 0)}, {port(20, 0), port(21, 1)});
+  sourcePlan->request.completionObservationPolicy =
+      BoardCompletionObservationPolicy::ProfileHighResolution;
+  sourcePlan->request.deviceTimingPolicy =
+      BoardDeviceTimingPolicy::StreamEvents;
+  sourcePlan->request.memoryGuardPolicy = RuntimeMemoryGuardPolicy::Check;
   llvm::Expected<BoardInvocationFilePlan> targetPlan =
       remapBoardInvocationFilePlan(*sourcePlan, source, target);
   ASSERT_TRUE(static_cast<bool>(targetPlan))
       << llvm::toString(targetPlan.takeError());
   ASSERT_EQ(targetPlan->request.bindings.size(), 1u);
+  EXPECT_EQ(targetPlan->request.completionObservationPolicy,
+            BoardCompletionObservationPolicy::ProfileHighResolution);
+  EXPECT_EQ(targetPlan->request.deviceTimingPolicy,
+            BoardDeviceTimingPolicy::StreamEvents);
+  EXPECT_EQ(targetPlan->request.memoryGuardPolicy,
+            RuntimeMemoryGuardPolicy::Check);
   EXPECT_EQ(targetPlan->request.bindings.front().port, PortId(20));
   EXPECT_EQ(targetPlan->request.bindings.front().bytes, bytes(0x11));
   EXPECT_EQ(targetPlan->expectedBytes.lookup(21), bytes(0x22));

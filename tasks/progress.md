@@ -28,13 +28,19 @@
 随后补齐跨metadata reshape的GEMM写回消除，BF16三次实卡健康，仍未达到3ms；
 随后消除被完整覆盖的私有初始化/布局复制，三次BF16实卡健康，性能仍未达标；
 当前完整profile已将调查重点收敛到GS广播/布局搬运与CT计算链；同时发现profile请求漏传guard开关，
-后续上板前须先修正并回归。仍为board-testing doing，热点证据及资格边界见同一计划顶部。
+请求转交已修复并通过本轮带guard的profile。仍为board-testing doing，热点证据及资格边界见同一计划顶部。
 
 最新接续：用户已确认将KQ展开、VuVLoop与score布局优化方案落入文档。
 首轮prefill采用转置score、常规accumulator，Q=1保留QK；累加器整体转置先核算最终输出搬运。
 通用指令合同、实现边界、顺序及覆盖已记录于
 [实施方案](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)和对应编号设计。
-本次仅完成方案文档，尚未修改实现或新增主机/板端资格；3ms性能目标仍未达成，任务保持`doing`。
+用户已授权按方案实现并上板验证；完整组VuVLoop、KQ展开及profile策略转交已接入。
+同时修复payload轴顺序及Tensor→blocked搬运的source stride缺陷；新版本BF16完整数值、guard、completion和厂商退出通过。
+本轮profile已取得；重复布局求解、厂商SDK函数表生命周期及局部完整复制的通用修复已通过新包实卡。
+累加器整链转置通过完整数值，但输出小颗粒GS导致性能回退，尚无净收益；分组tail及3ms门禁未闭合。
+随后独立原生`Nchw2nhwc`资格出现新的Tile-0 TDMA timeout，设备批次已停，未retry/reset；
+生产路径未接入该原生入口。两个更小的单指令包已fresh no-card就绪，已通知用户恢复设备；
+接续严格逐包执行，先查明原生tuple，再决定输出恢复路径。任务保持`doing`，详见同一计划与性能证据。
 
 2026-09-21最新接续：Host寄存器诊断已迁入`wafer-board-diagnose`，普通入口默认关闭，显式开关才采集；
 当前4K 28-head attention在关闭采集/设备插桩条件下完成FP16/BF16各三次实卡，完整数值、guard及运行日志通过。

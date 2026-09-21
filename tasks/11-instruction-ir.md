@@ -52,9 +52,12 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   Predicate转换为blocked layout时，logical gather未覆盖的padding必须先由physical-domain零fill定义，
   再写入logical predicate；MaskMove的整个physical traversal均须具有canonical 0/1 mask。
   浮点binary arithmetic/relation可携带`rhs_unit_elements`：0表示VV，1..64表示右侧物理短向量VuV，
-  输入SPM地址保持SSA。Verifier要求左输入与destination完整shape一致，右输入physicalElements与unit相等，
+  输入SPM地址保持SSA。`rhs_group_elements`默认为0；正数E选择算术VuVLoop，此时unit必须为64，
+  destination physicalElements须整除E，RHS physicalElements须整除64，两者组数相等。
+  Verifier要求左输入与destination完整shape一致；普通VuV的右输入physicalElements与unit相等，
   两输入dtype一致且为F16/BF16/F32；relation输出可以是packed i1，或与输入同dtype的数值0/1。该属性不接受unary或logic。
-  对应CRT唯一binary arithmetic/relation签名在format后、worker前携带`i32 rhs_unit_elements`；
+  对应CRT唯一binary arithmetic签名在format后携带`i32 rhs_unit_elements, rhs_is_scalar, rhs_group_elements, worker`；
+  relation仍为`rhs_unit_elements, rhs_is_scalar, numeric_result, worker`，不接受group；
   numeric model按unit周期计算并只读取右侧unit实际存储，不能将短输入按destination长度读取。
   Tile映射到此硬件形式的证明由10号拥有；这里不保留上层indexing map，也不恢复attention或row语义。
   线性CT elementwise、bit2fp、mask_move及convert不以layout family名称相等作为硬件约束。
@@ -410,7 +413,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | current production target op；LLVM call emitted | pad/img2col分别证明source/dest shape、pad、kernel/stride关系；普通copy/layout segment仍优先使用`gather_scatter`；transform-like kind到target LLVM必须结构化失败 |
 | TDMA mirror / transpose / rotate / NCHW-NHWC / TensorNom | 无 production target op；enum 保留用于 imported/pre-lowering IR | composite lowering or future target extension | 当前实现 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。`transpose` 使用 `permutation`，`mirror` 使用一个或多个 `axes`，`rotate90/180/270` 使用有序二元 `axes` 表示旋转平面，NCHW/NHWC 使用固定 4D layout permutation，`tensor_nom` 使用 logical-linear 到 physical-layout materialization。package / target export 如果仍看到这些 kind，说明 pipeline 漏了 materialization，应拒绝 |
 | concat / maskgather variants | 无单独 op | composite；native `dims=HW`永久target-illegal | source-level任意轴concat在当前实现一律展开为typed `gather_scatter` movement；current production wrapper只证明last logical dim映射到native CT concat的C编码，W/H的bounded raw completion不构成production资格。header虽公开HW编码，但native Concat `dims=HW`是错误/非法指令组合：不得构造、序列化或提交板端packet，不保留board case，也没有复测或重新资格化入口。maskgather variants仍需bool/index operand policy；未定义前不能复用`tdma_data_move` |
-| VuVLoop与未覆盖的BOOL operand variants | VuVLoop尚未进入production；算术分组接入复用`elementwise`，见7.4 | planned extension；接入前target-illegal | ordinary VS/VuV按已有合同执行；Loop须显式表达分组geometry并闭合CRT/model，不能从kind、总shape或symbol猜测；未覆盖的BOOL/logic形式不由浮点Loop外推 |
+| VuVLoop与未覆盖的BOOL operand variants | 算术分组复用`elementwise`的`rhs_group_elements`，见7.4 | 浮点Add/Sub/Mul/Max/Min完整组已接入；BOOL/logic Loop未接入 | ordinary VS/VuV按已有合同执行；Loop显式表达分组geometry，CRT/model消费同一参数；未覆盖的BOOL/logic形式不由浮点Loop外推 |
 | Peripheral argmax/argmin/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | current production target op；LLVM call emitted | kind决定input/output arity；`elem_count`必须与primary input和所有kind-specific buffers/shape capacity一致，LUT table另与`lut_elem_count`一致。Count mechanical/numeric纵向属于Count writeback extension，current target保持拒绝；bitcount仍不纳入production |
 | Peripheral factorize | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind<factorize>` | IR kind保留；production target-illegal | 当前没有精确factorize semantic profile；target conversion以`unsupported_target_operation`拒绝，repo-local CRT header/source不得保留对应symbol |
 | raw DTE non-unicast / stream / mailbox | 无 | future communication ABI | 需要独立 communication ABI 和板端验证；current physical peer path只生成fixed-size unicast DTE packet |
@@ -801,7 +804,8 @@ instruction IR。
 其它map显式展开为movement，再生成无map的terminal `wafer.instr.elementwise`；identity map也strip，避免重复事实。ODS/verifier拒绝任何残留
 `indexing_maps` attr，target conversion只做defensive check，CModel不得读取该attr补做broadcast。
 
-VuVLoop接入合同：复用同一`instr.elementwise`，以typed ODS字段区分operand form并记录不能从operand view重算的单组geometry；
+VuVLoop接入合同：复用同一`instr.elementwise`，`rhs_group_elements=E`记录不能从operand view重算的单组geometry，
+与`rhs_unit_elements=64`共同区分Loop；默认group=0保持普通VV/VS/VuV。
 保留原kind/dtype，不能将多组RHS伪装成现有`rhs_unit_elements`要求的单个短向量。总元素数从actual连续operand/dest view
 唯一派生，目标四个count必须与它们一致；不保存attention语义、上层map或第二份buffer计划。
 op verifier检查arity、format、正count、unit64、整除及比例、lhs/dst与rhs实际跨度和ABI可表示性；

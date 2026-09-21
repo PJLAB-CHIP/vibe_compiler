@@ -2,10 +2,11 @@
 // and emits every register. Golden Cx extents are independent fixed values.
 #include "Wafer/ABI/Tx81NCCABI.h"
 #include "instr_adapter.h"
+#include "instr_operator.h"
 #include <assert.h>
 
 static uint64_t expected[31];
-static uint32_t seen, worker, writes, live_objects, cases;
+static uint32_t seen, worker, writes, cases;
 
 static void wafer_write_ne_register(uint64_t base, uint32_t offset,
                                     uint64_t value) {
@@ -72,14 +73,11 @@ static TsmGemm gemm = {
     .DisableRelu = disable_activation,
     .DisableLeakyRelu = disable_activation,
 };
-TsmGemm *TsmNewGemm(void) {
-  ++live_objects;
-  return &gemm;
-}
-void TsmDeleteGemm(TsmGemm *p) {
-  assert(p == &gemm);
-  --live_objects;
-}
+
+static TsmOperatorPointer operators = {
+    .gemm_pointer = &gemm,
+};
+TsmOperatorPointer *g_intrinsic(void) { return &operators; }
 
 /* PRODUCTION_FUNCTIONS */
 
@@ -130,7 +128,7 @@ static void check(Extent m, Extent k, Extent n, uint32_t batch, uint32_t input,
     wafer_tx81_gemm_oriented(expected[1], expected[2], expected[7], expected[3],
                              m.logical, k.logical, n.logical, batch, input,
                              output, psum, ta, tb, worker);
-  assert(seen == 0x7fffffffU && writes == 31 && live_objects == 0);
+  assert(seen == 0x7fffffffU && writes == 31);
   ++cases;
 }
 

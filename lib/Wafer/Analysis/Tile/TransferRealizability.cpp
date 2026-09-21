@@ -37,6 +37,36 @@ mlir::FailureOr<int64_t> TransferRealizability::proveUnitVectorBroadcast(
   return unit;
 }
 
+mlir::FailureOr<int64_t> TransferRealizability::proveGroupedUnitVectorBroadcast(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    const IndexRelation &destinationToSource) {
+  auto source = PhysicalLayoutRelation::create(sourceType);
+  auto dest = PhysicalLayoutRelation::create(destType);
+  if (mlir::failed(source) || mlir::failed(dest) ||
+      !mlir::isa<mlir::FloatType>(sourceType.getElementType()))
+    return mlir::failure();
+  int64_t fullUnit = source->getPhysicalElementCount();
+  int64_t full = dest->getPhysicalElementCount();
+  if (fullUnit <= 64 || fullUnit % 64 || full < fullUnit || full % fullUnit ||
+      full > std::numeric_limits<uint32_t>::max())
+    return mlir::failure();
+  int64_t group = (full / fullUnit) * 64;
+  auto ordinal = mlir::getAffineDimExpr(0, sourceType.getContext());
+  auto grouped = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, ordinal.floorDiv(group) * 64 + ordinal % 64),
+      {full}, {fullUnit});
+  auto actual =
+      destinationToSource.compose(source->getLogicalToPhysicalElementOrdinal());
+  if (!actual.isExact() || !grouped.isExact())
+    return mlir::failure();
+  auto expected =
+      dest->getLogicalToPhysicalElementOrdinal().compose(*grouped.get());
+  if (!expected.isExact() ||
+      !actual.get()->isEquivalentTo(*expected.get()).isProvenTrue())
+    return mlir::failure();
+  return group;
+}
+
 namespace {
 
 static mlir::LogicalResult

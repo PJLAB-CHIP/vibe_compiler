@@ -701,7 +701,7 @@ static void wafer_mdc_issue_engine(const WaferMDCRequest *request,
   case WAFER_MDC_ENGINE_CT:
     wafer_tx81_elementwise_add(addresses.read0, addresses.read1,
                                addresses.write, addresses.transfer_bytes / 2U,
-                               Fmt_FP16, 0U, 0U, 0U);
+                               Fmt_FP16, 0U, 0U, 0U, 0U);
     break;
   case WAFER_MDC_ENGINE_NE:
     wafer_tx81_gemm(addresses.read0, addresses.read1, addresses.write, 0, 1U,

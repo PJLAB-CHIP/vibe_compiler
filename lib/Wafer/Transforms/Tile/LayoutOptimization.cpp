@@ -1560,6 +1560,16 @@ public:
     });
   }
 
+  bool hasGroupedUnitBroadcast(mlir::MemRefType source, mlir::MemRefType dest,
+                               mlir::AffineMap map,
+                               const analysis::IndexRelation &sourceRelation) {
+    return lookup(groupedUnitBroadcasts, {source, dest, map}, [&] {
+      return mlir::succeeded(
+          analysis::TransferRealizability::proveGroupedUnitVectorBroadcast(
+              source, dest, sourceRelation));
+    });
+  }
+
 private:
   using Key = std::tuple<mlir::Type, mlir::Type, mlir::AffineMap>;
   template <typename Prove>
@@ -1574,7 +1584,8 @@ private:
     proofs.try_emplace(key, proven);
     return proven;
   }
-  llvm::DenseMap<Key, bool> physicalTraversals, unitBroadcasts;
+  llvm::DenseMap<Key, bool> physicalTraversals, unitBroadcasts,
+      groupedUnitBroadcasts;
 };
 
 // Polymorphic pointwise operations accept each layout, but acceptance does
@@ -1622,8 +1633,11 @@ getPointwiseTraversalCost(mlir::linalg::LinalgOp operation,
                                  mlir::arith::CmpFOp>(scalar);
     auto argument = operation.getBlock()->getArgument(input.getOperandNumber());
     if (binary && (commutative || scalar.getOperand(1) == argument) &&
-        proofs.hasUnitBroadcast(sourceType, outputType, map,
-                                *sourceRelation.get()))
+        (proofs.hasUnitBroadcast(sourceType, outputType, map,
+                                 *sourceRelation.get()) ||
+         (!mlir::isa<mlir::arith::CmpFOp>(scalar) &&
+          proofs.hasGroupedUnitBroadcast(sourceType, outputType, map,
+                                         *sourceRelation.get()))))
       return 0;
   }
   auto mappedElementType = source.getElementType();

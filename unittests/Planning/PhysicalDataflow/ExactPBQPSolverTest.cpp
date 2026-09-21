@@ -117,6 +117,62 @@ void expectOracle(const ExactPBQPProblem &problem) {
   EXPECT_EQ(actual.lowerBound, expected->first);
 }
 
+TEST(ExactPBQPSolverTest, RepeatedComponentsReuseAnExactOptimumWithinBudget) {
+  // A small exhaustive oracle checks the mathematical solver, independently
+  // of tensor sizes; the production witness supplies the real-scale IR.
+  auto component = makeProblem(5, 3);
+  for (uint32_t lhs = 0; lhs < 5; ++lhs)
+    for (uint32_t rhs = lhs + 1; rhs < 5; ++rhs)
+      component.factors.push_back(
+          factor(lhs, rhs, 3, [](auto a, auto b) { return a == b ? 4 : 0; }));
+  auto oracle = bruteForce(component);
+  ASSERT_TRUE(oracle);
+  std::vector<uint32_t> initial(5, 0);
+  auto single = solve(component, 1000000, 5, initial);
+  ASSERT_EQ(single.status, ExactPBQPStatus::Optimal);
+  ASSERT_EQ(single.assignment, oracle->second);
+  ExactPBQPProblem repeated;
+  constexpr unsigned copies = 16;
+  std::vector<uint32_t> expected;
+  for (unsigned i = 0; i < copies; ++i) {
+    auto offset = static_cast<uint32_t>(repeated.variables.size());
+    llvm::append_range(repeated.variables, component.variables);
+    for (auto edge : component.factors) {
+      edge.lhs += offset;
+      edge.rhs += offset;
+      repeated.factors.push_back(std::move(edge));
+    }
+    llvm::append_range(expected, oracle->second);
+  }
+  initial.resize(copies * 5, 0);
+  const uint64_t budget = single.work * 2 + copies * 200;
+  auto solved = solve(repeated, budget, copies * 5, initial);
+  ASSERT_EQ(solved.status, ExactPBQPStatus::Optimal);
+  EXPECT_EQ(solved.assignment, expected);
+  EXPECT_EQ(solved.cost, oracle->first * copies);
+  EXPECT_LE(solved.work, budget);
+  EXPECT_LT(solved.work, single.work * copies);
+  auto again = solve(repeated, budget, copies * 5, initial);
+  EXPECT_EQ(again.assignment, solved.assignment);
+  EXPECT_EQ(again.work, solved.work);
+
+  // A single changed cost must invalidate the identical-component lookup.
+  repeated.variables.back().unaryCosts[oracle->second.back()] += 17;
+  component.variables.back() = repeated.variables.back();
+  auto changedOracle = bruteForce(component);
+  ASSERT_TRUE(changedOracle);
+  auto changed = solve(repeated, 1000000, copies * 5, initial);
+  ASSERT_EQ(changed.status, ExactPBQPStatus::Optimal);
+  std::copy(changedOracle->second.begin(), changedOracle->second.end(),
+            expected.end() - 5);
+  EXPECT_EQ(changed.assignment, expected);
+  EXPECT_EQ(changed.cost, oracle->first * (copies - 1) + changedOracle->first);
+  auto zero = solve(repeated, 0, copies * 5, initial);
+  EXPECT_EQ(zero.status, ExactPBQPStatus::Feasible);
+  EXPECT_EQ(zero.assignment, initial);
+  EXPECT_EQ(zero.work, 0u);
+}
+
 TEST(ExactPBQPSolverTest, R0R1R2PathAndResidualCycleMatchFlatOracle) {
   ExactPBQPProblem path = makeProblem(/*nodes=*/6, /*states=*/3);
   for (uint32_t node = 0; node + 1 < path.variables.size(); ++node)
@@ -214,8 +270,10 @@ TEST(ExactPBQPSolverTest, ExhaustionRetainsSearchComponentsAndNumericOptima) {
   // independent oracle, and interrupt every solver work boundary.
   for (unsigned componentCount : {1u, 2u}) {
     ExactPBQPProblem problem;
+    // Distinct components force independent numeric and tie phases; identical
+    // components can now advance directly to a previously proved optimum.
     for (unsigned node = 0; node < 4 * componentCount; ++node)
-      problem.variables.push_back({{9, 0, 4}});
+      problem.variables.push_back({{9, node / 4, 4}});
     for (unsigned component = 0; component < componentCount; ++component)
       for (unsigned lhs = 0; lhs < 4; ++lhs)
         for (unsigned rhs = lhs + 1; rhs < 4; ++rhs)

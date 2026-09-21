@@ -187,6 +187,12 @@ llvm::Error validateElementwise(const target::TargetElementwiseCommand &value) {
         value.format != LogicalFormat::F32)))
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "elementwise RHS unit requires 1..64 floating elements");
+  if (value.rhsGroupElements &&
+      (relation || value.rhsUnitElements != 64 || value.rhsGroupElements % 64 ||
+       value.elementCount % value.rhsGroupElements))
+    return kernelError(
+        TargetModelKernelErrorCode::InvalidCommandField,
+        "grouped RHS requires arithmetic, unit 64 and complete groups");
   if (logic != (value.format == LogicalFormat::Bool) ||
       (relation && value.format == LogicalFormat::Bool))
     return kernelError(

@@ -11,6 +11,7 @@ add_mlir_library(WaferLinalgTransforms
   NormalizeTensorReads.cpp
   OnlineAttentionDecomposition.cpp
   OnlineAttentionMaterialization.cpp
+  OnlineAttentionStateOrientation.cpp
   SpatialRegionMaterialization.cpp
   StructuredGraphEGraph.cpp
   StructuredTiling.cpp
