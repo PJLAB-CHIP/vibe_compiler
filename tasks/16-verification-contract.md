@@ -55,6 +55,29 @@ package并fresh no-card；职责已由后继接管时直接从current queue移�
 
 ## 3. Freshness 与执行纪律
 
+### Host寄存器诊断工具边界
+
+- 输入：调用者选择的TX81设备、实际driver/ATU身份、现有单次board命令；离线入口消费原始采集文件。
+- 职责：`wafer-board-diagnose`在host检查系统占用、包围现有runner收集日志，显式请求时只读轮询16 Tile寄存器。
+- 输出：运行条件/返回状态、driver/firmware日志、可选原始ring与采样摘要；直接消费者为板测判定及离线排障。
+- 用户入口：`wafer-board-diagnose run`默认关闭寄存器采集，只有`--capture-registers`启用；`decode`仅处理文件。
+  PyTorch板测入口可显式指定该工具；普通运行不隐式开启诊断。工具不创建runtime context，计算仍由原runner执行。
+- 非目标：不改production ELF、设备profiler ABI、同步、timeout配置或异常mask；不reset/retry，不解释未知last-command为fault PC。
+- 完成条件：canonical构建、已注册host文件模型验证、离线解析和当前包关闭采集的真实计时。迁移后live采集资格单列，
+  不用历史实现的实测代替新工具验收。带采集计时必须标注，不作为关闭诊断的性能基线。
+
+| 覆盖项 | exact输出/拒绝及直接消费者 |
+| --- | --- |
+| ATU与身份 | 16 Tile映射exact；重复/重叠/缺失窗口、错误XY与截短aperture拒绝 |
+| 环形记录 | 普通文件模型实际调用C采集器；顺序、wrap、触发前后保留、正常停止与deadline由decoder验证 |
+| 状态与格式 | 健康累计计数允许；已有fatal、全1读值、截断/坏序号拒绝；不从count推断fault PC |
+| 默认入口 | 默认不启动采集子进程；显式开关才启动；报告保留开关、命令、身份、日志及退出状态 |
+| 实际计时 | 当前FP16/BF16 attention各三次，fresh输入/reference、全量结果/guard/日志，保留所有样本 |
+
+本项不变换IR或tensor shape，整除/tail矩阵不适用于采集器；文件模型的小尺寸用于有界协议验证。
+
+### 通用执行纪律
+
 所有板测由同一个总work item消费编译器实现和主机准备交付的产品产物，统一管理算子、通信、组合计算、模型和性能。
 正确性与性能是同一任务内的检查阶段，不再拆成多个板测任务。该任务拥有case、PyTorch reference、实际执行结果、
 性能记录及覆盖完成判定；通信实现work item拥有current IR变换、legality、completion、lowering及相应主机回归。

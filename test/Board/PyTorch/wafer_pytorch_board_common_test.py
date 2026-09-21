@@ -7,6 +7,7 @@ import pathlib
 import math
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import torch
 
@@ -16,6 +17,21 @@ import wafer_pytorch_board_cases as cases
 
 
 class CompilerIRDumpTest(unittest.TestCase):
+    def test_register_capture_is_explicit(self):
+        args = SimpleNamespace(board_diagnose_tool=None, capture_registers=False,
+            expected_device_name="/dev/accel/dev-0", expected_pci_bus_id="0000:3b:00.0",
+            completion_timeout_ms=60000)
+        command = ["wafer-run", "--board"]
+        self.assertIs(board_runner.diagnostic_command(args, command, pathlib.Path("out")), command)
+        args.board_diagnose_tool = pathlib.Path("wafer-board-diagnose")
+        wrapped = board_runner.diagnostic_command(args, command, pathlib.Path("out"))
+        self.assertNotIn("--capture-registers", wrapped)
+        self.assertEqual(wrapped[-2:], command)
+        args.capture_registers = True
+        wrapped = board_runner.diagnostic_command(args, command, pathlib.Path("out"))
+        self.assertIn("--capture-registers", wrapped)
+        self.assertEqual(wrapped[-2:], command)
+
     def test_inactive_function_symbol_and_ddr_result_do_not_imply_work(self) -> None:
         for symbol in ("entry", "other_symbol"):
             ir = f"""module {{

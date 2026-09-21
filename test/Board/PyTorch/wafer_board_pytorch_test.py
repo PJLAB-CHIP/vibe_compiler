@@ -47,6 +47,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-trace-event-limit", type=int)
     parser.add_argument("--device-timing", action="store_true")
+    parser.add_argument("--board-diagnose-tool", type=pathlib.Path,
+                        help="wrap each board invocation with wafer-board-diagnose")
+    parser.add_argument("--capture-registers", action="store_true", default=False,
+                        help="explicitly enable host register capture; requires --board-diagnose-tool")
     parser.add_argument("--memory-guards", action="store_true")
     parser.add_argument(
         "--qualify-communication",
@@ -115,6 +119,19 @@ def run(
             f"command failed with exit code {result.returncode}: {command}"
         )
     return result
+
+
+def diagnostic_command(args, command, directory):
+    if args.board_diagnose_tool is None:
+        return command
+    result = [sys.executable, "-B", str(args.board_diagnose_tool), "run",
+              "--output-dir", str(directory), "--device", args.expected_device_name,
+              "--pci-bus-id", args.expected_pci_bus_id,
+              "--timeout-seconds", str(args.completion_timeout_ms / 1000 +
+                                       PROCESS_TIMEOUT_MARGIN_SECONDS)]
+    if args.capture_registers:
+        result.append("--capture-registers")
+    return result + ["--", *command]
 
 
 def verify_widened_convolution(directory: pathlib.Path, dtype: torch.dtype) -> None:
@@ -1318,6 +1335,10 @@ def base_runtime_command(
 
 def main() -> int:
     args = parse_args()
+    if args.capture_registers and args.board_diagnose_tool is None:
+        raise RuntimeError("--capture-registers requires --board-diagnose-tool")
+    if args.board_diagnose_tool is not None and args.profile:
+        raise RuntimeError("board diagnostics currently wrap ordinary packages; profile has its own collector")
     if args.compile_timeout_seconds is not None and args.compile_timeout_seconds < 1:
         raise RuntimeError("compile timeout must be positive")
     if args.search_mode is not None and args.optimization_policy != "search":
@@ -1469,15 +1490,22 @@ def main() -> int:
             )
             for iteration in range(args.repeat):
                 iteration_start_ns = time.monotonic_ns()
-                (step_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n")
+                actual_command = diagnostic_command(
+                    args, command, step_dir / f"diagnostics-{iteration + 1:02d}")
+                (step_dir / "command.json").write_text(json.dumps(actual_command, indent=2) + "\n")
+                (step_dir / f"measurement-{iteration + 1:02d}.json").write_text(json.dumps({
+                    "host_register_capture": args.capture_registers,
+                    "device_profile": args.profile,
+                    "device_timing": args.device_timing,
+                }, indent=2) + "\n")
                 # Profile includes host report generation after device collection.
                 # Each launch still has --completion-timeout-ms; that device
                 # deadline must not also bound host report processing.
                 result = run(
-                    command,
+                    actual_command,
                     timeout_seconds=(
                         None
-                        if args.profile else
+                        if args.profile or args.board_diagnose_tool is not None else
                         args.completion_timeout_ms / 1000 + PROCESS_TIMEOUT_MARGIN_SECONDS
                     ),
                 )

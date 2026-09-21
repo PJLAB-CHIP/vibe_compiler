@@ -6,6 +6,9 @@
 
 完整排查经历、判断变化和方法教训见[TDMA Timeout排查复盘](tx81-tdma-timeout-investigation-retrospective.md)。
 
+Host只读采集现已迁入`tools/wafer-board-diagnose/`，默认关闭，构建、显式启用与离线解码见
+[板卡诊断使用说明](board-diagnostics.md)。下文历史准备目录是当时的证据，不是当前工具依赖。
+
 本次证据见 [2026-09-20 审计记录](data/board-performance/tdma-firmware-localization-20260920.json)。
 首次 TDMA 告警、后续执行和最终清理错误分别归档。历史 raw 仅用于离线审计，不作为新测试输入。
 

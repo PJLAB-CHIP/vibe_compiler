@@ -4,6 +4,16 @@ find_program(WAFER_BOARD_CLANGXX
   REQUIRED
 )
 
+if(TARGET wafer-board-register-reader)
+  add_test(NAME wafer-board-diagnose-contract
+    COMMAND ${WAFER_PYTHON_COMMAND}
+      ${CMAKE_CURRENT_SOURCE_DIR}/Cases/wafer_board_diagnose_test.py
+      --tool ${CMAKE_SOURCE_DIR}/tools/wafer-board-diagnose/wafer-board-diagnose.py
+      --library $<TARGET_FILE:wafer-board-register-reader>)
+  set_tests_properties(wafer-board-diagnose-contract PROPERTIES
+    LABELS "board;host;contract" TIMEOUT 30)
+endif()
+
 # Keep protocol-only contract tests configurable when importer/SPMD
 # dependencies are disabled. An unconditional TARGET_FILE generator
 # expression makes those minimal configurations fail during generation.

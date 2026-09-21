@@ -18,6 +18,11 @@
 
 ## 当前调度
 
+2026-09-21最新接续：Host寄存器诊断已迁入`wafer-board-diagnose`，普通入口默认关闭，显式开关才采集；
+当前4K 28-head attention在关闭采集/设备插桩条件下完成FP16/BF16各三次实卡，完整数值、guard及运行日志通过。
+中位数仍约79ms，高频采集不能解释主要耗时；整体性能工作和未验收矩阵仍未完成，board-testing保持doing。
+具体样本、工具覆盖与资格边界见[计划顶部](plans/board-workload-matrix.md#host诊断工具入仓与无采集计时)。
+
 所有板测统一由`board-testing`这一个总任务管理，包含Add/DTE、通信、GEMM、组合计算、模型和性能。
 具体case与验收顺序记录在同一份板测计划中，逐次已测性能与根因追加到
 [`docs/board-performance-results.md`](../docs/board-performance-results.md)；不再按算子、正确性或性能拆work item。编译器实现任务保留自身范围。

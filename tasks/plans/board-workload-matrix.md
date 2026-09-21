@@ -2,6 +2,23 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### Host诊断工具入仓与无采集计时
+
+用户授权将已验证的Host寄存器采集能力迁入仓库，默认关闭，并重新测当前attention耗时。
+归属同一board-testing，工具边界及覆盖见16号Host寄存器诊断小节。先收敛临时路径、构建和runner入口，
+执行文件模型及canonical构建，再逐case运行当前FP16/BF16包各三次；每次新检查占用、完整数值/guard及日志。
+不重跑历史包，不把迁移扩展成设备侧profiler改造；关闭采集的结果与前轮带采集单样本分别记录。
+
+已完成：`tools/wafer-board-diagnose/`独立入口、canonical C采集库、PyTorch runner显式接入及运行条件记录。
+10项采集器/控制器host测试与PyTorch runner回归通过，canonical完整增量和随后no-op、源码组织检查通过。
+16 Tile空闲只读采集20ms得到3,694条记录，无fatal且计数不变；新工具未故意制造真实fault，触发保留由文件模型验证。
+本轮fresh source/reference与双dtype no-card通过，六次实卡各完整14,680,064元素、10,752 guard bytes及16 Tile completion通过，
+无driver/firmware告警。FP16三次79.043999/78.925003/78.933998ms，BF16三次79.045998/78.834999/78.911003ms；
+中位数78.933998/78.911003ms。六次均关闭Host采集和设备插桩，无采集文件；当前ELF及数值门槛保持。
+结果不能把主要耗时归因于采集，但前轮带采集仅单样本，不据此断言零开销；后续仍需分析实际生成代码的执行成本。
+构建初次const映射pointer警告及host mock PID问题已修正，不隐藏初轮失败。覆盖映射及原始记录见
+[本轮报告](../../docs/data/board-performance/board-diagnose-timing-20260921.json)与[工具用法](../../docs/board-diagnostics.md)。
+
 ### GS修复实卡验收（2026-09-21）
 
 新boot按准备顺序实际执行三项紧密GS诊断及原4K、28-head FP16/BF16 attention，共五次launch。

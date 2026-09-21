@@ -2974,3 +2974,24 @@ consumer链也全量exact；其CSR `0x5000`经厂商位定义复核为CT subnorm
 以上是带只读观测条件的单次结果，没有重复测量或matched A/B，不据此声称稳定性能提升。
 本轮闭合GS修复的指定实卡范围，整体板测/性能矩阵仍由progress管理。完整身份、原始报告及采集器误判修正见
 [GS实卡验收记录](data/board-performance/gs-work-materialization-board-20260921.json)。
+
+## 2026-09-21：关闭Host寄存器采集后的当前attention计时
+
+同一健康boot、当前生产ELF、search配置和seed20260922，重新生成source、输入及独立reference，
+双dtype fresh no-card后各执行三次；没有重跑历史包。使用入仓的`wafer-board-diagnose run`默认路径，
+每次记录`host_register_capture=false`，无设备插桩或采集子进程，系统占用检查及完整运行日志保留。
+
+| Q/K/V `[1,28,4096,128]` | 三次device elapsed（ms） | 中位数（ms） | 前轮带采集单样本（ms） |
+| --- | --- | ---: | ---: |
+| FP16 | 79.043999 / 78.925003 / 78.933998 | 78.933998 | 79.056999 |
+| BF16 | 79.045998 / 78.834999 / 78.911003 | 78.911003 | 78.945000 |
+
+六次各14,680,064元素按原门槛通过，elementwise mismatch为0，10,752 guard bytes、16 Tile completion及
+厂商正常退出通过，driver/firmware窗口无新增告警。设备事件计时不包含Host reference或日志收尾等待。
+关闭采集后仍约79ms，说明高频采集不能解释主要慢；前轮只有单样本，不把小差值解释为精确采集成本或零开销证明。
+剩余普通广播和布局/中间搬运的时间占比尚未测定，本轮不签整体attention性能目标完成。
+
+入仓采集器另做20ms空闲设备只读验证，16 Tile共3,694条记录，无触发、计数不变；该采集与六次计时不重叠。
+真实fatal触发迁移路径由host文件模型验证，没有为验工具故意制造新设备故障。
+工具、完整数值及运行条件见[本轮证据](data/board-performance/board-diagnose-timing-20260921.json)，
+使用方式见[诊断工具说明](board-diagnostics.md)。
