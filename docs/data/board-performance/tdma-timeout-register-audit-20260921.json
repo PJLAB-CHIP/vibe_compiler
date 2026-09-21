@@ -1,0 +1,156 @@
+{
+  "date": "2026-09-21",
+  "work_item": "board-testing",
+  "scope": "用户询问计数上限后的静态审计及一次只读配置快照；未修改设备配置，未新增kernel launch。",
+  "boot_id": "95deb0d6-ba12-4e32-ac44-8a2d8ce2b5d7",
+  "new_kernel_launches": 0,
+  "register_writes": 0,
+  "confirmed": [
+    {
+      "classification": "supported",
+      "fact": "SDK GS每维iteration为uint32_t，实际SDK issuer打包到对应32-bit字段；没有找到65535次乘积上限的定义。",
+      "source": "/home/ubuntu/hxf_dev/vibe_compiler/third_party/tx8_deps/include/instr_def.h",
+      "line": 500
+    },
+    {
+      "classification": "supported",
+      "fact": "TDMA execution累计计数由31:0和63:32组成，为64-bit；它不是LSU watchdog门限字段。",
+      "source": "/home/ubuntu/hxf_dev/vibe_compiler/third_party/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/pmu/pmu_reg.h",
+      "lines": [
+        611,
+        612
+      ]
+    },
+    {
+      "classification": "supported",
+      "fact": "SDK命名NE_CT_TIMEOUT在PMU+0x288，LSU_TIMEOUT在+0x28c；TDMA异常enable在+0x2a0。",
+      "source": "/home/ubuntu/hxf_dev/vibe_compiler/third_party/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/pmu/pmu_reg.h",
+      "lines": [
+        652,
+        653,
+        658
+      ]
+    },
+    {
+      "classification": "board-observed",
+      "fact": "故障后只读16 Tile，NE/CT timeout均0xffffffff、LSU timeout均0x0000ffff；各engine exception enable均1。LSU值与发射窗口记录一致。",
+      "source": "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/watchdog-audit/current-timeout-config.json"
+    },
+    {
+      "classification": "supported: vendor test binary, not hardware execution",
+      "fact": "SLT RDMA/WDMA timeout测试写32-bit数值10到0x59028c，等待本次任务结束后写0xffffffff；软件通过门限制造timeout。"
+    },
+    {
+      "classification": "supported: vendor test binary",
+      "fact": "SLT TDMA timeout测试检查stream 0x6100c0的bit12，但它调用0x590288的setter；不能把这个旧测试的设置地址直接当现行TDMA寄存器合同。"
+    }
+  ],
+  "vendor_test": {
+    "artifact": "/home/ubuntu/workspace/tools/TX8100_SLT_Lux_DDR_64GB_V1.8.0/kuiper/tile/ncc_ras_test.bin",
+    "sha256": "07b5b5686c74140a57f4e9f818a3ba8e1ea6e107e508752897383c63ddff18a7",
+    "release": "SLT V1.8.0, independently compared with V1.6.0; not the running V5.7.0 firmware",
+    "file_offsets_are_not_hardware_fault_pcs": true,
+    "rdma_test": {
+      "entry_offset": "0x35b4",
+      "set_10_call": "0x3632",
+      "restore_all_ones_call": "0x379e",
+      "setter": "0x3cac"
+    },
+    "wdma_test": {
+      "entry_offset": "0x37b0",
+      "set_10_call": "0x382e",
+      "restore_all_ones_call": "0x399a",
+      "setter": "0x3cac"
+    },
+    "tdma_test": {
+      "entry_offset": "0x39ac",
+      "function_name_string_offset": "0xac08",
+      "set_10_call": "0x3a2a",
+      "restore_all_ones_call": "0x3c4e",
+      "setter": "0x3c82",
+      "expected_stream_fatal": 4096
+    },
+    "setters": [
+      {
+        "offset": "0x3c82",
+        "address": "0x590288",
+        "store": "sw at common helper offset 0x3c78",
+        "write_width_bits": 32
+      },
+      {
+        "offset": "0x3cac",
+        "address": "0x59028c",
+        "store": "sw at common helper offset 0x3c78",
+        "write_width_bits": 32
+      }
+    ],
+    "relevant_function_range_identical_across_slt16_slt18": true,
+    "range": [
+      "0x3222",
+      "0x3d56"
+    ],
+    "range_sha256": "c61b7323f8fb02475395e42ea1963eff8a609b2211226a907efd98206fae33f5",
+    "readback_proving_register_implemented_width": false,
+    "test_executed_on_board": false
+  },
+  "other_paths_checked": [
+    {
+      "path": "installed Kcore set_pmu_reg at 0x25640",
+      "result": "实际helper截取16位并halfword store；已确认直接调用写PMU clear/enable，不是LSU_TIMEOUT配置。此helper的访问宽度不能证明LSU寄存器有效位宽。"
+    },
+    {
+      "path": "installed tsmvs set_lsu_cfg at 0xa7063",
+      "result": "配置测试结构中的搬运参数并分配DDR，不写0x59028c，不是硬件watchdog门限设置函数。"
+    },
+    {
+      "path": "workspace SDK/header/source and installer files",
+      "result": "找到寄存器地址定义，未找到LSU watchdog位域、时间单位或progress/rearm说明。"
+    },
+    {
+      "path": "public exact-symbol/product search",
+      "result": "未找到SCT_NCC_LSU_TIMEOUT或TX8100 TDMA timeout的公开规格。"
+    }
+  ],
+  "execution_time_crosscheck": {
+    "source": "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/runs/95deb0d6-ba12-4e32-ac44-8a2d8ce2b5d7/broadcast-half/decoded.json",
+    "active_interval_counter_deltas": [
+      12246,
+      10903
+    ],
+    "corresponding_kcore_cycle_enclosures": [
+      [
+        11556,
+        12943
+      ],
+      [
+        10210,
+        11593
+      ]
+    ],
+    "inference": "窗口内PMU execution增量与每Kcore cycle约1次计数相容；不能由此推出所有频率下的比例或watchdog精确时间单位。"
+  },
+  "answer": {
+    "supported_limit": "现场确有0xffff的LSU timeout门限配置；实卡规模/拆分对照支持单命令持续时间条件。",
+    "not_established": "没有证据把它写成65535次iteration上限，也没有证明LSU有效位宽是16位。",
+    "physical_width_status": "unknown: 软件用32-bit store不证明全部32位可写；读到0xffff也不证明只有16位。",
+    "configuration_origin_status": "unknown: 尚未找到当前固件/driver中明确把LSU_TIMEOUT设置为0xffff的调用点；可能是硬件reset值或其它初始化路径，不能二选一猜。",
+    "remaining_evidence": [
+      "LSU_TIMEOUT寄存器的有效位掩码及reset值",
+      "watchdog时钟、启动/清零/进展条件",
+      "当前初始化时的具体写入者或硬件reset定义"
+    ],
+    "hardware_writing_experiment_performed": false
+  },
+  "evidence_sha256": {
+    "/home/ubuntu/workspace/tools/TX8100_SLT_Lux_DDR_64GB_V1.8.0/kuiper/tile/ncc_ras_test.bin": "07b5b5686c74140a57f4e9f818a3ba8e1ea6e107e508752897383c63ddff18a7",
+    "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/watchdog-audit/slt16-ncc_ras_test.bin": "9653809a404c15eb7bf8fc68ebe3db20992d4d44c58de700abd344414686027b",
+    "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/watchdog-audit/ncc-ras.asm": "bda779815be85a74bf18714241405fba7fea568d55c4b1ac63ecc859a18e5c7a",
+    "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/watchdog-audit/ncc-ras-slt16.asm": "4985353852583b18b9b5c09505d6bc9e3442737e7d7181f1a0723ff29c3b1266",
+    "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/watchdog-audit/ncc-ras-timeout-excerpt.asm": "a2ff77d1aca66394fbbaf6be4d1afa81b1e68d9cf69a4f6fa590a3ff27fc72bd",
+    "/data/vibe_compiler-validation/tdma-causal-matrix-20260921/watchdog-audit/current-timeout-config.json": "472c429cf13d882ab4fe2a60f82e83442301312dec1eaa56582828dca876f15d",
+    "/home/ubuntu/hxf_dev/vibe_compiler/third_party/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/pmu/pmu_reg.h": "9d98194d9e73762ff607e5ae0e534facfb5c4d56cf3bcd36678b344e74ea7580",
+    "/home/ubuntu/hxf_dev/vibe_compiler/third_party/tx8_deps/include/instr_def.h": "c6fc37f1f475ead1b9b03419c8d6c472c35a73c5b161d18fc788c4caf3eeea2f",
+    "/data/vibe_compiler-validation/tdma-localization-20260920/kcore-raw.asm": "d1335cf5e805d1c0828f6564ce1ac588bb7b010f0c7d4e471b0ab42f009329d3",
+    "/usr/local/kuiper/bin/tsmvs": "76ca0572df5cbc88da90b2f292fd976ce9196405c0caf4cf8ef32b42c15d434e"
+  }
+}

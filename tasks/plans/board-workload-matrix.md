@@ -2,6 +2,62 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### 当前检查点：单条GS触发已定位（2026-09-21）
+
+用户确认重启后，冻结包、固件身份、全系统占用及16 Tile只读基线核对通过，按下节顺序实际执行7项。
+前6项健康；单条inner=4、iteration=`[64,256,2]`、32,768次GS触发stream TDMA bit 12，自动停批。
+本case没有任何CT，初始化完成，唯一TDMA的actual packet已取得；这是单条触发指令定位，不再只有原程序四命令候选区间。
+同一会话的16条各4,096次、完整65,536次相同访问序列通过；单条16,384次通过。
+健康16段的TDMA累计execution为133,840；失败单条在增量65,863时捕获fatal，现场timeout为65,535。
+结论与限制见[本轮实卡证据](../../docs/data/board-performance/tdma-single-gs-isolation-20260921.json)。
+
+当前boot停止计算，不执行剩余15项、不retry/reset。完整回读及正常清理虽通过，不能抵消fatal。
+后续修复针对普通broadcast的长单命令，保持dtype、逐点地址语义和当前IR的依赖；优先比较可合并颗粒与等价分段，
+不改mask算法，不把普通broadcast换成同值fill，不调watchdog或插全局join。
+成功16段的插桩间隙使每条GS在下一条发射前完成，生产紧密发射和原consumer仍是直接验收缺口；
+不能将4,096或16,384写成未获厂商合同支持的通用硬件合法性上限。
+生产修复验收需覆盖紧密发射的等价拆分及原consumer；原路径F32 fill的独立状态问题另按已备分支验证。
+生产修复、完整attention和既有产品矩阵资格仍未完成；不为已能单独复现的问题重跑整包来重复定位。
+
+用户随后要求继续查计数/门限上限。已从厂商SLT恢复LSU timeout的32-bit写入路径，并只读确认当前
+16 Tile的LSU为`0xffff`、NE/CT为`0xffffffff`。GS iteration是32位，PMU execution是64位；
+没有找到65,535次iteration上限。LSU硬件有效位宽、reset值、初始化写入者及计时重载规则仍未确认，
+不能因软件访问宽度或现场值推定；旧SLT TDMA测试的寄存器地址差异已单列，未照搬执行。
+证据见[门限审计](../../docs/data/board-performance/tdma-timeout-register-audit-20260921.json)。
+当前已取得的审计没有修改配置或新增计算；不提前固化分段上限或宣称生产修复完成。
+
+### 门限位宽与单变量对照准备（2026-09-21）
+
+用户允许继续分析和实验，并明确要求先把case准备齐、检查完成后通知重启。当前故障boot不写寄存器、不launch。
+本实验属于16号诊断验证：输入为已独立复现的实际GS参数、SDK寄存器地址和新生成有限F32输入；
+职责仅为测可读写位及改变门限后的因果差异，输出独立ExecutablePackage、逐次读写记录、完整回读与异常快照；
+直接消费者为串行诊断runner及离线报告。入口是独立诊断脚本，复用当前CRT、SDK、loader和厂商正常join/cleanup。
+非目标为生产调大timeout、改异常mask/clear/reset、证明全部watchdog计时规则或签发attention修复。
+
+| 分支 | 控制变量与exact witness |
+| --- | --- |
+| 位宽 | 仅Tile 4的LSU_TIMEOUT，写全1及互补位型、逐项读回并恢复原值；记录相邻NE/CT timeout、exception enable与stream，16 Tile退出后只读核对 |
+| 高位可写 | 相同32,768次GS，先测0x1ffff再测原0xffff；两个case的搬运packet、输入、同步和采样一致，仅门限不同 |
+| 仅低16位可写 | 相同16,384次GS，先测原0xffff再测0x3fff；由故障发生计数是否随门限移动补充因果证据 |
+| 其它读回模式 | 保留实际结果并停止；不猜有效位或强行选择分支 |
+| 收尾与拒绝 | 保存原值，实验窗口结束后恢复并读回；故障boot、文件改变、预存异常或任何新异常停批，不自动重试；恢复失败单列，不能签健康 |
+
+所有配置写入只在诊断副本的初始化RDMA完成后执行。受测GS终端poll及厂商join后恢复原值，再发WDMA回读，
+避免调整LSU门限同时改变输入/输出DMA的条件；这处额外终端边界仅用于单指令隔离，两组保持相同，不进入生产同步。
+位宽case不发GS。每项仍逐byte检查2 MiB输出、guard和16 Tile completion；F32沿用实际故障的4-byte行向量。
+先完成LLVM/实际ELF、可达符号、寄存器访问与恢复分支检查、独立expected和fresh no-card，才通知用户重启。
+每boot最多位宽case及一组两项对照，预期会触发fatal的项放最后；任何提前异常同样立即停批。
+写入/读回证明的是寄存器可访问位，只有后续GS对照才能判断这些位是否影响实际watchdog。
+
+准备已完成：五份新ELF/package、重新生成有限F32输入与完整独立expected及五项strict no-card通过。
+实际ELF的16 Tile入口、CRT/SDK packet和门限拒绝分支通过主机执行核对；两组A/B的LLVM、输入和ABI参数
+仅timeout立即数不同。共享诊断helper的16/32-bit模型覆盖读回不符、fatal冻结后恢复、预存异常、相邻配置变化和恢复失败；
+原生反汇编确认32-bit `sw`，所有外部符号存在于当前固件导出表。上述主机模型不执行硬件watchdog。
+默认入口只验文件；96份依赖已冻结，实际CLI确认当前故障boot在设备访问前被拒绝。本轮没有访问设备或修改配置。
+初次准备中的no-card资源绑定参数及非canonical manifest格式均被strict入口拒绝，修正后五项重新通过。
+尚待重启实测，不把准备完成写成已确认位宽或根因闭合；详见
+[门限实验准备](../../docs/data/board-performance/tdma-timeout-experiment-preparation-20260921.json)。
+
 ### 次日恢复前的完整诊断准备（2026-09-21）
 
 用户要求今晚只分析现有日志、firmware和SDK，把可区分原因的case一次准备齐，次日由用户重启。

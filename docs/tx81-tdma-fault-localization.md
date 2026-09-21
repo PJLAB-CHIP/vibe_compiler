@@ -7,7 +7,85 @@
 本次证据见 [2026-09-20 审计记录](data/board-performance/tdma-firmware-localization-20260920.json)。
 首次 TDMA 告警、后续执行和最终清理错误分别归档。历史 raw 仅用于离线审计，不作为新测试输入。
 
-## 当前故障区间与因果分析（2026-09-21）
+## 单条GS独立复现（2026-09-21重启后）
+
+本次7个串行case中，前6项健康，第7项的**唯一TDMA指令**复现stream bit 12；立即停批，剩余15项未执行。
+触发指令是Tile 4、worker 0、site 40003的`wafer_tx81_gather_scatter`：inner=4 bytes，iteration=`[64,256,2]`，
+共32,768次、128 KiB。source为`[0xa1800,0xa1bff]`，destination为`[0xa1c00,0xc1bff]`，
+source stride=`[0,4,0]`、destination stride=`[4,256,65536]`。实际SDK packet与准备值一致。
+输入为256个不同的有限F32值，初始化RDMA已完成。该invocation没有CT、NE、Sub/Exp或第二条TDMA。
+逐case身份、packet、寄存器与原始文件摘要见[实卡证据](data/board-performance/tdma-single-gs-isolation-20260921.json)。
+
+| 实际执行 | TDMA execution增量（寄存器原值） | 设备结果 |
+| --- | ---: | --- |
+| 初始化/完整回读，无TDMA | 0 | 健康 |
+| inner=1024，同256 KiB、不同排列 | 3,445 | 健康，按独立oracle检查 |
+| 单条1,024次，inner=4 | 2,125 | 健康 |
+| 单条4,096次，inner=4 | 8,365 | 健康 |
+| 16条各4,096次，完整65,536次相同访问序列 | 133,840 | 健康 |
+| 单条16,384次，inner=4 | 33,358 | 健康 |
+| 单条32,768次，inner=4 | 首次fatal时65,863 | stream由0变为4096，现场timeout=65,535 |
+
+这些是 **board-observed**，支持 **inference：长小颗粒GS的单命令持续时间触发LSU watchdog**。
+它已经独立于原attention的多命令窗口复现；早期fill/CT状态及后继Sub/Exp不是本次触发的必要前置。
+32,768次已失败，不能再用“iteration乘积65,536发生16位溢出”解释；拆分累计133,840仍健康，
+也不符合“PMU累计总量超过65,535就报错”的解释。完整地址范围已由拆分和大颗粒搬运正确覆盖。
+单条16,384次和32,768次两项的WDMA都在GS未完成时发射，仅存在该重叠不足以解释两者差异。
+
+告警发生在终端只读poll，记录中的当前site为后发WDMA的40004；它是**观测位置**。
+该invocation实际只发过一条TDMA，因此可以确定触发TDMA命令为40003，不需把last-command猜成硬件fault PC。
+CT count、CSR exception和PMU exception raw全程为0。报告器`first_status`的通用文案提及CT/CSR/PMU，
+但本次实际首次异常仅来自stream bit 12，不能据此声称又出现CT异常。
+host kernel journal未取得新告警；设备DDR快照和EP fault marker已直接捕获该bit，不能因host未上报忽略设备异常。
+
+本次fatal后标准厂商join、16 Tile completion、2 MiB逐byte回读、10,240 guard bytes及正常清理仍完成；
+这是可完成但触发watchdog的最小复现，没有复现永久卡住。异常样本不签健康资格或性能数据。
+PMU count/execution在这些正常退出的调用之间继续累计；统计保留本身不等于资源泄漏，分析使用每次窗口增量。
+
+边界仍为 **unknown**：watchdog的精确计时/重载定义、原路径早期F32 CT状态的独立原因，以及其它历史卡死是否同因。
+成功的16段case虽然无中间join，但插桩间隙足够使每条GS在下一条发射前完成；尚未证明生产紧密发射也健康。
+因此单条触发指令已经定位，生产拆分修复、无插桩间隙验证和完整attention资格仍未完成。
+当前证据不支持把调大watchdog、添加全局join或改dtype直接作为生产修复。
+
+### 超时门限与计数位宽的进一步审计
+
+用户追问是否存在计数上限后，补查SDK、实际固件和厂商SLT二进制；一次故障后只读配置采样确认
+16 Tile的`NE_CT_TIMEOUT`均为`0xffffffff`、`LSU_TIMEOUT`均为`0x0000ffff`，所有engine exception enable均为1。
+没有写寄存器或新增kernel launch。LSU值与前述指令窗口记录一致；NE/CT值来自故障后的配置快照。
+
+| 对象 | 已取得的定义/证据 | 不能混同的结论 |
+| --- | --- | --- |
+| GS每维iteration | SDK为`uint32_t`，实际issuer以32-bit字段发射 | 未找到iteration乘积上限为65,535的定义 |
+| TDMA execution统计 | SDK分`31:0`与`63:32`两个寄存器，累计值已实测超过65,535 | 不是16-bit累计执行计数器 |
+| `LSU_TIMEOUT` | PMU base `0x590000`＋offset `0x28c`，现场值65,535 | 配置值不是已证明的硬件最大值或iteration上限 |
+| `NE_CT_TIMEOUT` | offset `0x288`，故障后读取`0xffffffff` | 不能把另一执行单元的门限套给TDMA |
+
+新找到厂商SLT的`ncc_ras_test.bin`。RDMA与WDMA timeout测试在开始时通过setter `0x3cac`，
+用32-bit `sw`向`0x59028c`写10；任务结束后写`0xffffffff`。这是厂商将此地址作为可配置超时门限使用的静态证据，
+不是本机修改或实测新门限。相关函数在SLT V1.6与V1.8二进制中逐byte一致。
+
+同包的TDMA timeout测试明确检查stream bit 12，却在开始/结束调用另一个setter `0x3c82`写`0x590288`；
+这与当前SDK对NE/CT和LSU的命名不一致。两个SLT版本都有这个差异，不能直接照搬其TDMA配置路径，
+也尚不能仅凭旧测试确认硬件版本差异还是测试代码问题。
+
+当前Kcore的`set_pmu_reg`确实截取16位并用halfword store，但已确认调用仅控制PMU clear/enable；
+尚未找到它以offset `0x28c`设置timeout的调用。因此不能把该helper的16-bit访问归为本次门限过小的原因。
+已安装`tsmvs`的`set_lsu_cfg`只是填充测试搬运参数并分配DDR，也不是硬件watchdog设置入口。
+
+**仍未知的是LSU_TIMEOUT实际有效位宽、reset值和当前值的写入者。** 软件用32-bit store不证明32位全部有效，
+读取`0xffff`也不证明硬件只有16位。需要寄存器有效位/reset定义或实际初始化写入路径才能闭合；
+当前没有通过写大值、改timeout或清异常试探。具体函数偏移、摘要和只读快照见
+[门限寄存器审计](data/board-performance/tdma-timeout-register-audit-20260921.json)。
+
+用户随后授权补充位宽及门限实验，并要求先准备齐再通知重启。已准备五个诊断包，当前仍**没有实卡读写结果**：
+先在没有GS在途的窗口写入/读回五种位型并逐项恢复；按读回选择同一GS的提高门限或降低门限对照。
+只有Tile 4的LSU_TIMEOUT参与写入。初始化RDMA已完成，GS终端观察和厂商join后恢复原值，随后才WDMA，
+使门限变化只覆盖GS窗口。两组的指令、输入、同步和采样相同，仅门限立即数不同；不改生产代码或异常mask。
+新ELF、全部导入符号、恢复/拒绝路径、完整oracle和no-card已验证；新boot最多三项，任何异常立即停批。
+这将区分寄存器可读写位与实际watchdog使用的位，不把软件读回当作硬件计时证明。具体入口、冻结摘要及边界见
+[实验准备记录](data/board-performance/tdma-timeout-experiment-preparation-20260921.json)。
+
+## 前次原路径故障区间与因果分析（2026-09-21）
 
 修正fill dtype后，重启的首个原路径诊断仍复现TDMA。本轮取得真正的stream fatal窗口，
 16 Tile均落在最近一次观察到task-done之后的四条实际命令中：**行最大值GS广播 → SubVV → Exp → 后继GS**。
@@ -293,21 +371,21 @@ SDK内部还可能派生最终寄存器字段，因此所录对象是issuer入�
 
 ### 仍需的设备证据
 
-1. 已有实际issue记录把本次现场收敛为四命令窗口。下一次先执行不含CT且仅有一条TDMA的原样广播，
-   并与预先准备的小规模、大颗粒及等价拆分对照；具体顺序见页首。这样即使last-command编码仍未知，
-   单条原样若复现也能直接确定该invocation的TDMA指令，同时排除早期CT状态作为必要前置。
-2. 单条广播正常时，使用已经构包的GS→Sub→Exp→后继GS前缀及移开目标地址的对照，
-   区分跨engine依赖、源覆盖和目标复用。初值与fill分支另有独立输出，不依赖故障后全attention的数值推断。
+1. 无CT的单条GS已在32,768次规模独立复现，指令定位门禁已满足。当前优先核对LSU门限的有效位宽、
+   reset值与初始化来源，不需要再用完整attention重复证明这条GS能够触发。
+2. 修复路径须另验证紧密发射的等价拆分、原Sub/Exp等直接consumer及完整attention。
+   当前成功拆分包含插桩间隙，不能代签生产队列/复用资格。初值与fill分支保留独立输出，
+   原路径早期CT状态另行定位，不依赖TDMA故障后全attention的数值推断。
 3. 继续保留实际packet、Tile/worker、动态序号、CSR/PMU/stream状态、execution计数和timeout配置。
-   计时关联需要LSU watchdog单位、重载条件及counter更新规则才能成为完整因果解释；不调大timeout或插join试修。
+   计时关联需要LSU watchdog单位、重载条件及counter更新规则才能成为完整硬件解释；不据此调大timeout或插join作为生产修复。
    采集会改变时序，SDK返回不等于硬件完成，顺序快照也不等于原子现场。
 4. 当前发行handler没有fault-PC快照。厂商debug固件或对应寄存器定义可以补足观测能力，
    但不把取得它们作为上述已准备对照的前置，也不把普通PMU采样说成handler入口现场。
    不重跑历史性能包，不在当前故障boot继续计算或自动reset。
 
 完成条件是拿到一次可关联实际指令的故障现场，据此修正确定缺陷，再以当前原始 case 及相应连续运行序列验证。
-目前完成了安装版本核对、告警路径还原、寄存器观测及实际四指令窗口捕获；尚未取得唯一硬件fault PC，
-**TDMA 根因与修复仍未完成**。
+目前已从实际四指令窗口进一步取得无CT的单GS复现，触发指令已确定；LSU计时/配置的完整硬件定义、
+生产修复和原attention验收仍未闭合，不能外推其它历史卡死均已解释。
 
 ## 原路径采集与fill格式修正（2026-09-21）
 

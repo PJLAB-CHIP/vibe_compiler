@@ -1,0 +1,184 @@
+{
+  "date": "2026-09-21",
+  "work_item": "board-testing",
+  "scope": "用户允许进一步实验，但要求准备齐后通知重启；本记录仅无卡准备，本故障boot没有寄存器写入或kernel launch。",
+  "status": "diagnostic-board-ready; waiting for user reboot",
+  "production_fix_complete": false,
+  "new_kernel_launches": 0,
+  "register_writes": 0,
+  "runner": "/data/vibe_compiler-validation/tdma-timeout-width-20260921/run.py",
+  "ready": "/data/vibe_compiler-validation/tdma-timeout-width-20260921/ready.json",
+  "ready_sha256": "424068fb4e9e842979e8ff47e17f7e83dea3da19a1fa429e9796a1330f26bcc8",
+  "blocked_boot_ids": [
+    "95deb0d6-ba12-4e32-ac44-8a2d8ce2b5d7",
+    "cf13ea5a-adc2-48ad-b5d1-46df562597df",
+    "f8a96643-1b42-4329-a3fc-08ef49df0e0a"
+  ],
+  "frozen_file_count": 96,
+  "firmware_sha256": "dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf",
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "cases": [
+    {
+      "name": "width",
+      "threshold": null,
+      "fresh_input": true,
+      "no_card": "passed",
+      "actual_board_execution": false
+    },
+    {
+      "name": "half-raised",
+      "threshold": 131071,
+      "fresh_input": true,
+      "no_card": "passed",
+      "actual_board_execution": false
+    },
+    {
+      "name": "half-default",
+      "threshold": 65535,
+      "fresh_input": true,
+      "no_card": "passed",
+      "actual_board_execution": false
+    },
+    {
+      "name": "quarter-default",
+      "threshold": 65535,
+      "fresh_input": true,
+      "no_card": "passed",
+      "actual_board_execution": false
+    },
+    {
+      "name": "quarter-lowered",
+      "threshold": 16383,
+      "fresh_input": true,
+      "no_card": "passed",
+      "actual_board_execution": false
+    }
+  ],
+  "freshness": "原诊断source scaffold和当前CRT/SDK复用；五份新ELF、重新生成输入/独立expected、final package/no-card。本轮输入不取历史raw输出。",
+  "plan": {
+    "first": "width: Tile4 LSU_TIMEOUT五种32-bit值，逐项读回/恢复；初始化RDMA完成后执行，不发GS。",
+    "values": [
+      "0xffffffff",
+      "0xaaaaaaaa",
+      "0x55555555",
+      "0x1ffff",
+      "0x8000ffff"
+    ],
+    "readback_32_bit": [
+      "half-raised:32768 copies, timeout=0x1ffff",
+      "half-default:same copies, timeout=0xffff"
+    ],
+    "readback_16_bit": [
+      "quarter-default:16384 copies, timeout=0xffff",
+      "quarter-lowered:same copies, timeout=0x3fff"
+    ],
+    "other_readback": "停止分析，不猜位宽或选择未准备分支。",
+    "maximum_launches": 3,
+    "fatal_position": "预期触发fatal的对照放最后；任何提前异常均立即停批。",
+    "window": "RDMA init -> vendor join -> save/set/read timeout -> one GS -> terminal observation -> vendor join -> restore/read -> WDMA -> vendor join/normal cleanup",
+    "writes": "仅Tile4 PMU+0x28c；不写NE_CT timeout、enable、mask、clear/reset；其它Tile无工作。",
+    "full_control_snapshot": "每case前后系统占用检查及16 Tile只读config/fatal；本轮准备没有执行这条实卡路径。"
+  },
+  "checks": [
+    "five fresh full input/expected oracles and all port dtype/byte checks",
+    "five final strict no-card plans contain 16 Tiles",
+    "native restore is 32-bit sw to 0x59028c; actual ELF packet/control-flow audits include rejected configuration",
+    "each A/B LLVM program and payload identical except timeout immediate",
+    "actual controller: both masks, healthy completion and first/second/third anomaly stop",
+    "bad restore/value/count/task-done/control snapshots rejected; nonmatching width stops",
+    "current fault boot rejected before device access",
+    "all new ELF imports present in actual current firmware export table",
+    "actual CLI rejects current fault boot before device access",
+    "frozen file hashes revalidated without device access"
+  ],
+  "actual_elf_audits": [
+    {
+      "configuration_accepted": true,
+      "case": "width",
+      "tiles": 16,
+      "packets": 2,
+      "passed": true
+    },
+    {
+      "configuration_accepted": true,
+      "case": "half-raised",
+      "tiles": 16,
+      "packets": 3,
+      "passed": true
+    },
+    {
+      "configuration_accepted": true,
+      "case": "half-default",
+      "tiles": 16,
+      "packets": 3,
+      "passed": true
+    },
+    {
+      "configuration_accepted": true,
+      "case": "quarter-default",
+      "tiles": 16,
+      "packets": 3,
+      "passed": true
+    },
+    {
+      "configuration_accepted": true,
+      "case": "quarter-lowered",
+      "tiles": 16,
+      "packets": 3,
+      "passed": true
+    },
+    {
+      "configuration_accepted": false,
+      "case": "half-raised",
+      "tiles": 16,
+      "packets": 2,
+      "passed": true
+    },
+    {
+      "configuration_accepted": false,
+      "case": "half-default",
+      "tiles": 16,
+      "packets": 2,
+      "passed": true
+    },
+    {
+      "configuration_accepted": false,
+      "case": "quarter-default",
+      "tiles": 16,
+      "packets": 2,
+      "passed": true
+    },
+    {
+      "configuration_accepted": false,
+      "case": "quarter-lowered",
+      "tiles": 16,
+      "packets": 2,
+      "passed": true
+    }
+  ],
+  "host_test_model_scope": "同一C helper在16/32-bit寄存器模型下验证恢复与错误路径；Unicorn执行实际ELF的entry/CRT/SDK，probe helper被stub用于检查控制流。原生MMIO的32-bit sw另以实际反汇编核对。均不证明硬件数值/时序。",
+  "no_card_scope": "strict loader计划及guard，不接受--resource绑定；输入端口dtype/shape/bytes和全量oracle单独验证。",
+  "preparation_errors_resolved": [
+    "初次将--resource传给no-card被CLI拒绝；改为合法no-card加独立输入检查。",
+    "初次manifest采用pretty JSON被strict loader拒绝；已按唯一canonical compact JSON重写并五项重验通过。"
+  ],
+  "limitations": [
+    "写入/读回仅证明寄存器可访问位；watchdog是否使用这些高位由对应GS对照判断。",
+    "两组均增加GS后终端边界以隔离WDMA；该边界不进入生产实现，也不代表原attention已修复。",
+    "如果厂商join永久不返回，设备侧恢复可能不可达；不强行写配置/杀进程掩盖，保留未恢复状态并停批。",
+    "硬件reset值、初始化写入者和精确时钟/重载规则仍未知。"
+  ],
+  "evidence_sha256": {
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/ready.json": "424068fb4e9e842979e8ff47e17f7e83dea3da19a1fa429e9796a1330f26bcc8",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/host-checks.json": "1db25b2114a5bb4b17affd3f220705180372538b637eadf70fa80e6518f91429",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/elf-audits.json": "b5bed29b55393f1b34a08489abb10ebba81cb4503967ebedc7fe7ea6a9a81f95",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/verify.log": "323cfb5bfc7b38da97bd6692263fdb1e4e89d6916a387a83a4cb55fea0bd841b",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/blocked-boot-test.log": "e92346b7e25690ad231b760ebe1a357a85d86f466d33900e04bea87cc9b9d1b1",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/prepare.py": "f82dd35a9f82583a4f422e995ead9268f1e8ac850c164ce6dfe5edfe38fcc14a",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/probe.c.inc": "56e3059b3c07b190cd8eb092aedcc10bfb3d863fc65c8b463d60555636ea84d0",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/run.py": "a4e9d8900b7dc9fe9d62827359e75c531d96f52d56ad8276455c9089fb102c67",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/read-config.py": "ef925b5debe430776d0ef0ec03b8d7680564629d97df20d9fee01f6c79a935f2",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/selftest.c": "82d69f0cbffeb71297a1e822f9762a136b0b2fbfc7a3704f174fc902acbc6ced",
+    "/data/vibe_compiler-validation/tdma-timeout-width-20260921/verify.py": "15ac7afc50126c2fd4a6baf4f77dfe124834c632c05b39218329484d791984f7"
+  }
+}

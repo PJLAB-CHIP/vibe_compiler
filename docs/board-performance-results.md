@@ -2927,3 +2927,17 @@ runner返回0且10,752 guard bytes通过，health wrapper仍拒绝资格。事�
 16 Tile的首次CT异常窗口均落在被CRT改成INT32的F32 `1.0`填充上；此时TDMA fatal尚为0。
 该软件格式替换及成本分类已修正，后续TDMA采集窗口也已补齐；本轮主机验证通过，尚未运行修正后的实卡。
 这不新增attention健康资格，也不签发TDMA根因或修复完成，见[本轮证据](data/board-performance/fill-dtype-correction-20260921.json)。
+
+## 2026-09-21：单条小颗粒GS的TDMA独立复现
+
+本轮使用已冻结的F32诊断包，Tile 4实际计算，16 Tile正常入口/退出；每项一次launch、同一新boot和SDK/固件身份。
+全系统占用和只读基线通过，前6项健康，第7项单条inner=4、iteration=`[64,256,2]`的GS触发stream bit 12，立即停批。
+完整65,536次访问拆为16条各4,096次成功，单条16,384次成功；32,768次失败case无CT及attention后继计算。
+健康拆分累计TDMA execution为133,840，健康16,384次为33,358；失败单条首次fatal时为65,863，现场timeout为65,535。
+这些均为寄存器原值，不作未校准时钟换算。具体指令、逐case参数与原始证据见
+[单条GS隔离记录](data/board-performance/tdma-single-gs-isolation-20260921.json)。
+
+本次将触发点从原attention四命令窗口收敛到唯一GS，强烈支持单命令持续时间触发watchdog；
+不支持以早期CT、迭代数必须达到65,536、累计搬运总量或厂商退出清理解释本次初始异常。
+失败case仍完成2 MiB exact回读、10,240 guard bytes和正常清理，不能据此签健康。
+插桩使成功拆分的相邻GS之间自然完成，紧密发射及生产attention尚未重验；没有生产性能收益结论。
