@@ -78,8 +78,27 @@ Tile 4三次TDMA累计周期从7,713,217降至6,977,801，CT仍约9,486,000；�
 非整除shape的per-batch padding导致其不能作为metadata view；保留为拒绝反例，正例改为保持batch映射，未放宽合法性。
 完整Transforms/Analysis/Planning/Conversion/Pipeline回归、canonical完整增量及随后Ninja no-op通过。
 具体构建、回归及身份见[本轮证据](../../docs/data/board-performance/attention-bf16-2048-gemm-view-writeback-20260921.json)。
-3ms目标仍未达到；下一步优先核查无psum GEMM前仍存在的初始化/布局搬运及剩余CT工作，
-必须先证明完整覆盖与无旧值观察，再选择对应owner消除，不能把PMU累计周期当作单site耗时。
+
+第三步闭合10号私有初始化规则：actual Tile中的layout copy→fill→layout copy→无psum GEMM链，
+旧内容在任何读取前已被完整覆盖。ExecutionStructure按fresh allocation、SSA alias闭包、同block完整覆盖及无alias读取消除旧内容复制，
+随后删除只有fill/纯view的私有初始化。提前读取、escape、部分覆盖、conditional/零次loop和已选pipeline对象保持原语义；
+不改变算术、dtype或同步，由下游重建actual owner/completion/SPM。
+
+fresh no-card和三次无采集实卡通过，计时8.461/8.442/8.401ms，中位数较前一步降低1.9%，较最初基线降低62.4%。
+每次完整数值、guard、16 Tile completion、正常清理和日志通过，最后一次输出与前一步逐bit一致。
+Tile 0–10的静态GS由80降到76，Tile 11–15由84降到82；所有Tile的fill由9降到7，GEMM/elementwise和单terminal join不变。
+Tile 4三次TDMA累计周期从6,977,801降到5,484,536，CT从9,485,825降到8,582,725；
+Tile 11的TDMA仍为7,788,315。不同Tile选择的布局不同，尚不能仅凭这些累计数给剩余site排定墙钟成本。
+
+新270组host矩阵覆盖三种source布局、F16/BF16/F32、1024/1025/1031、完整/部分覆盖、alias/escape、控制流及pipeline排除；
+18项ExecutionStructure测试、306项lit、三个非attention生产no-card通过。
+测试矩阵扩充时曾误改另一fixture的loop，编译失败后纠正；生产源码未变，构包与最终主机构建的compiler摘要相同。
+完整五个组件及三个产品合并CTest 8/8通过，canonical完整增量和随后Ninja no-op通过；
+本轮身份见[证据](../../docs/data/board-performance/attention-bf16-2048-dead-initialization-20260921.json)。
+用户明确要求使用已有profile查看总体耗时；下一步准备当前包的Primary/Count/Trace完整采集，
+检查全程调用、等待、engine活动及Tile结束跨度，定位剩余CT以及不同Tile布局的搬运成本。
+3ms目标仍未达到，诊断结果与无插桩性能样本分开；
+不能把PMU累计周期直接当作墙钟占比，也不能未归因就改变指令或数值语义。
 
 ### Host诊断工具入仓与无采集计时
 

@@ -10,6 +10,7 @@ add_mlir_library(WaferTileTransforms
   LoopSubsetState.cpp
   PhysicalMovementPlacement.cpp
   ScalarExecution.cpp
+  StorageInitialization.cpp
   Pipelines.cpp
   AccessReuse.cpp
   StructuredToTile.cpp

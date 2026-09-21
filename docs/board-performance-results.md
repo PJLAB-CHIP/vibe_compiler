@@ -16,6 +16,24 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-21：消除被完整覆盖的私有初始化
+
+同一BF16 `[1,28,2048,128]` causal attention，三次无采集/插桩设备时间为
+**8.461、8.442、8.401ms**，中位数较前一步降低**1.9%**，较最初22.458ms降低**62.4%**。
+全量数值、10,752 guard bytes、16 Tile completion、厂商正常退出和运行日志通过；
+最后一次输出与前一步逐bit一致，3ms目标仍未达到。
+
+根因是layout选择产生的私有内容复制，在后续完整fill或无psum GEMM覆盖后仍保留。
+ExecutionStructure现在沿实际SSA alias检查首次观察：同block完整写入且不读取旧alias内容时，
+以同type实际allocation替代layout copy，再删除没有读取或逃逸的fill/view初始化链。
+未知effect、提前读取、部分覆盖、条件执行和已选pipeline对象不能用此证明；算术及dtype保持不变。
+
+Tile 0–10各减少4处静态GS，Tile 11–15各减少2处；所有Tile各减少2处fill。
+Tile 4三次TDMA累计周期由6,977,801降至5,484,536，CT由9,485,825降至8,582,725；
+TDMA/FU累计周期比约33.5%，Tile 11仍约41.9%。两组Tile的实际布局不同；周期可重叠，不能当作墙钟比例或逐site成本。
+270组新host矩阵、当前生产包及三次板测的身份与完整证据见
+[机器可读记录](data/board-performance/attention-bf16-2048-dead-initialization-20260921.json)。
+
 ## 2026-09-21：跨metadata reshape消除GEMM结果写回
 
 同一BF16 `[1,28,2048,128]` causal attention，新生产包三次关闭采样/插桩的设备时间为

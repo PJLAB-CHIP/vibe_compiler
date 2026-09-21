@@ -634,3 +634,36 @@ psum与destination必须分离，低层不得自行选择复用。完成条件�
 | NCx batch2折叠为batch1，保留/破坏per-batch padding | 1024可证明等价；1025/1031物理footprint不同，保持原view并由lowering拒绝 |
 | 全部合法变体 | Tile→Instr、fresh terminal completion及actual SPM规划；不增加循环或非terminal join |
 | BF16目标产品 | fresh PyTorch→package/no-card；实际多Tile、多query/KV块；再测全量数值、guard和三次健康设备时间 |
+
+### 被完整覆盖的私有初始化
+
+- 输入：layout/bufferization和显式目标选择后的actual Tile IR。`tile.materialize_layout`已明确分配新结果并复制内容，
+  后续fill、GEMM_into或copy_into具有完整目标写入语义；allocation、view、alias和effect均已物化。
+- 根因：layout选择将初始化与consumer分配到不同布局，物化内容复制；后续GEMM已证明无需psum并完整写入目标，
+  原初始化内容却没有随其失去读取而删除。典型链是layout copy→fill→layout copy→GEMM_into，
+  其中两次copy和fill都不能贡献最终结果。这是已物化buffer上的死初始化，不是硬件限制。
+- 本层职责：在ExecutionStructure同一调用中、显式目标改写之后检查私有layout结果的SSA alias users。
+  首个可能观察内容的操作必须在同一block完整覆盖目标；其输入不得读取任何该结果的alias。
+  只有物理映射已证明可逆的完整metadata reshape可用于证明覆盖，子区间写入不能代表完整覆盖。
+- 输出：原layout materialization替换为同type、同默认alignment的实际`memref.alloc`，保留消费者和目标storage关系；
+  随后删除只有fill/纯view、没有读取或逃逸的私有alloc/layout结果及其死写。不改变任何仍可观察的算术或dtype。
+  每次修改后下游从current IR重建owner、completion及SPM，不用估算资源作准入。
+- 直接下游和用户入口：同一TileToInstr/completion/SPM与production search→package；不新增pass或产品旁路。
+- 非目标：不跨conditional/loop证明must-execute，不删除提前读取或escape，不猜测unknown effect，
+  不消除部分覆盖、不越过已选pipeline调度对象，不将unvalued engine resource effect当成地址alias。
+- 完成条件：下表矩阵及实际产品进入Instr/SPM；fresh BF16全量数值、guard、completion及无插桩计时，原门槛保持。
+
+方法依据[LLVM DSE](https://llvm.org/docs/Passes.html#dse-dead-store-elimination)的完整覆盖、必经写入和无中间读取条件。
+pinned `DeadStoreElimination.cpp`明确按这三项检查；MLIR `MemRefUtils.cpp::eraseDeadAllocAndStores`按私有use链删除无读取存储。
+本处不引入MemorySSA：已知fresh allocation和同block首次使用使证明局限于SSA alias闭包；
+不直接套用上游全root清理，因为当前pipeline对象必须保留，且Tile layout结果同样拥有allocation。
+
+| 覆盖类 | exact输出与直接下游witness |
+| --- | --- |
+| F16/BF16/F32，rank≥3，1024/1025/1031；NCx/Cx/NTensor到Tensor，fill完整覆盖 | 保留原fill值/dtype、目标与后续读取，前置layout copy消失；Instr/SPM正常 |
+| GEMM完整覆盖，直接/多级可逆reshape，独立psum | 同一GEMM输入与结果目标，初始化copy/fill消失；原结果数值不变 |
+| copy_into完整覆盖 | 保留复制的新内容，删除目的地旧内容初始化；source保持不变 |
+| 提前读取、未知调用/escape、psum或其它输入读取alias | 原初始化保留；不可用后面的覆盖抹掉先前观察 |
+| 子view部分覆盖、conditional/loop内才覆盖、pipeline对象 | 不合并；实际合法路径及必要输入内容保持 |
+| 私有root仅剩fill/纯view；有其它reader/escape | 前者整条死初始化删除；后者保留，shared source不删除 |
+| 目标attention及非attention生产输入 | fresh source→package/no-card，actual Instr工作量、fresh completion/SPM及数值见证 |

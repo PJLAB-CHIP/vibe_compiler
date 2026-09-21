@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Tile/ExecutionStructure.h"
 
+#include "StorageInitialization.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -1058,6 +1059,8 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
   eliminatePrivatePointwisePublications(*module, rewriter, pipelineOperations);
   eliminateElementwiseWritebacks(*module, rewriter, pipelineOperations);
   reuseElementwiseInputs(*module, rewriter, pipelineOperations);
+  eliminateUnusedStorageInitialization(module->getOperation(), rewriter,
+                                       pipelineOperations);
   if (mlir::failed(materializeLoopCarriedDestinations(*module, rewriter)))
     return materializationFailure(
         ExecutionStructureFailureKind::CompilerBug,
