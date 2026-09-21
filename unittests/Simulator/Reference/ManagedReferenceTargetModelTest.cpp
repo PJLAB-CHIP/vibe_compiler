@@ -8,9 +8,12 @@
 #include "gtest/gtest.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/Error.h"
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -300,6 +303,44 @@ TEST(ManagedReferenceTargetModelTest,
   ASSERT_EQ(reducedValues.size(), formalReduce.values.size());
   for (size_t index = 0; index < reducedValues.size(); ++index)
     EXPECT_EQ(reducedValues[index].bits, formalReduce.values[index].bits);
+}
+
+TEST(ManagedReferenceTargetModelTest, ExpLpPreservesMaskAndFiniteExponential) {
+  auto backend = makeBackend();
+  for (uint64_t extent : {1024u, 1031u}) {
+    SCOPED_TRACE(extent);
+    auto key = makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Tensor,
+                          {2, extent, 3});
+    auto operation = llvm::cantFail(createFormalElementwiseOperation(
+        TargetElementwiseOperation::ExpLp, {key}, key));
+    std::vector<RawLogicalValue> inputs;
+    for (uint64_t index = 0; index < key.getElementCount(); ++index) {
+      float value = -80.0F + 160.0F * index / (key.getElementCount() - 1);
+      if (index == 0)
+        value = -std::numeric_limits<float>::infinity();
+      if (index == 1)
+        value = 0.0F;
+      inputs.push_back({LogicalFormat::F32, llvm::bit_cast<uint32_t>(value)});
+    }
+    TargetModelElementwiseRequest request{
+        operation, {{makeStorage(key, inputs)}, makeTemplate(key)}};
+    auto result = backend->execute(
+        request, FormalNumericWorkBudget::create(key.getElementCount(), 0));
+    ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
+    auto values = unpack(*result);
+    ASSERT_EQ(values.size(), inputs.size());
+    EXPECT_EQ(values[0].bits, UINT64_C(0));
+    EXPECT_EQ(values[1].bits, UINT64_C(0x3f800000));
+    for (size_t index = 2; index < inputs.size(); ++index) {
+      const float input =
+          llvm::bit_cast<float>(static_cast<uint32_t>(inputs[index].bits));
+      const float actual =
+          llvm::bit_cast<float>(static_cast<uint32_t>(values[index].bits));
+      const double expected = std::exp(static_cast<double>(input));
+      EXPECT_NEAR(actual, expected, expected * 5e-6) << index;
+    }
+    EXPECT_EQ(result->evidence.scalarEvaluations, key.getElementCount());
+  }
 }
 
 TEST(ManagedReferenceTargetModelTest,

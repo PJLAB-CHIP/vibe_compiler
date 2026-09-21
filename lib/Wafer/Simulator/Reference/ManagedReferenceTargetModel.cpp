@@ -262,6 +262,12 @@ llvm::Expected<float> evaluateElementwise(TargetElementwiseOperation operation,
     return std::exp2(operands[0]);
   case TargetElementwiseOperation::Exp:
     return std::exp(operands[0]);
+  case TargetElementwiseOperation::ExpLp: {
+    // The vendor model multiplies in F32 by log2(e), then applies Pow2.
+    // This host reference follows that sequence, not device-exact rounding.
+    const float exponent = operands[0] * 0x1.715476p+0F;
+    return std::exp2(exponent);
+  }
   case TargetElementwiseOperation::Sin:
     return std::sin(operands[0]);
   case TargetElementwiseOperation::Cos:
@@ -285,7 +291,6 @@ llvm::Expected<float> evaluateElementwise(TargetElementwiseOperation operation,
   case TargetElementwiseOperation::LogicAnd:
   case TargetElementwiseOperation::LogicOr:
   case TargetElementwiseOperation::LogicXor:
-  case TargetElementwiseOperation::ExpLp:
   case TargetElementwiseOperation::SatRelu:
   case TargetElementwiseOperation::LeakyRelu:
     return referenceError("elementwise operation is not in the managed domain");

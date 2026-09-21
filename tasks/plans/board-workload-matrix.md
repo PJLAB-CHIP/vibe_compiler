@@ -5,6 +5,7 @@
 ### BF16 2048性能目标与通用修复合同
 
 用户将本轮性能目标指定为seqlen 2048，随后明确先只跑BF16，并要求通用pass改动必须分析根因和general适用性。
+最新要求改为尽可能优化性能，3ms保留为参考，不再作为硬性完成阈值；随后明确所有生产exp统一使用Explp。
 本节取代先前FP16/BF16同时推进的范围；已有4K记录保留作审计，不将4K耗时按比例推算成2048基线。
 
 - 输入：原PyTorch causal attention，Q/K/V均为`[1,28,2048,128]`、BF16；当前正式compiler/runtime与合法有限输入。
@@ -15,16 +16,19 @@
 - 用户入口：沿用正式PyTorch板测入口及production search→package路径，诊断采集和设备插桩默认关闭。
 - 非目标：本轮不跑FP16实卡，不重跑历史包；不新增针对case名称或固定2048/28的无语义依据特判，
   不降低数值门槛、不改算术dtype、不以推测硬件限制替代实现分析，不扩大为无关搜索或总体架构改写。
-- 完成条件：同一最终版本、相同配置下BF16连续三次健康运行的设备事件计时均低于3ms；全部输出、guard、
+- 完成条件：按下方有序方案关闭已确认的主要浪费，并记录未采用方案的实际限制或无收益证据；
+  同一最终版本、相同配置下BF16连续三次健康运行，记录完整设备事件计时；全部输出、guard、
   completion及厂商正常退出通过。诊断运行另记，不能混入最终性能样本。首个设备异常停止，不自动retry/reset。
-  代码、直接下游、受影响主机回归、canonical完整增量/Ninja no-op、文档和提交同时闭合；未实测达标不能签完成。
+  代码、直接下游、受影响主机回归、canonical完整增量/Ninja no-op、文档和提交同时闭合；未经实测不签性能完成，
+  不承诺已经证明全局最优。
 
 通用pass的每项修复必须在动手前给出以下根因链：原始合法输入→actual current IR中的问题→问题由哪一层引入→
 直接下游实际多做或做错什么→可复现的结构/计数/计时证据。只看到耗时或某类指令数量大，不能直接签瓶颈根因。
 区分软件实现缺陷、已有硬件能力尚未接入、已证实的硬件限制和unknown；算法选择须比较成熟实现/论文与本硬件实际能力。
 
 修复规则由type、shape、layout、indexing map、SSA/effect/alias及已确认target facts决定，说明适用条件、不适用边界、
-等价性和正确owner；保留现有合法性与数值语义。一般shape/dtype合法性和成本选择仍允许，禁止仅为目标case开旁路。
+等价性和正确owner；保留现有合法性与数值语义，唯一新增的数值许可是本轮明确授权的Exp→Explp。
+一般shape/dtype合法性和成本选择仍允许，禁止仅为目标case开旁路。
 受影响同机制的其它workload要从同一正式pass获益或保持正确，不能只证明attention单例通过。
 
 | 覆盖项 | 预期证据与直接下游witness |
@@ -35,6 +39,57 @@
 | 不适用及alias/effect | 同一规则的反例，不能证明等价/alias/完成域时维持原合法路径或typed拒绝，不猜测allocation/SPM/sync |
 | 性能归因 | 分别记录实际工作量、编译pass/analysis timing、wall/RSS及必要设备诊断；结构变少不代签设备收益 |
 | 交付 | 设计、producer/consumer、注册和测试一致，受影响保护项通过；保留失败与修正记录，不以跳过case代签 |
+
+#### 后续性能优化实施方案
+
+本节接续已有profile与current IR分析；本次授权先完成统一Explp替换并准备下列实施方案，其余项按顺序实施与验收。
+全部仍归 `board-testing`。当前开发版本的累加器转置尚无净收益，不能把6.579ms当作已经优于此前5.983ms。
+两者都是历史健康单样本，配置/版本不同；引用记录作比较，不重跑历史包。
+
+**输入、输出和实施边界**：输入为同一BF16 `[1,28,2048,128]` causal source、当前actual IR与profile；
+每项由现有05/08/10/11/14号阶段产生实际SSA、movement与effect，再沿唯一completion/SPM/target/package路径验证。
+消费者为 `wafer-run`、全量reference与profile工具。每项修改先补所属编号设计的具体变换及覆盖合同，
+候选须实际物化并重新规划SPM，不以估算决定合法性。用户入口保持正式none/search，诊断默认关闭。
+本轮不引入原生Transpose/Nchw2nhwc/Nhwc2nchw、额外safe分支、额外dtype窄化或历史包对跑。
+
+**证据基线**：当前转置state版profile Primary为6.388ms；忙Tile的CT约2.792ms、TDMA约1.699ms、
+NE约0.363ms。这些来自Trace的引擎活动量可以重叠，不能相加或直接当作可节省的时间。
+该包的真实展开包含72次KV更新、16个query block；以下计数只描述此actual样本，不进入编译器匹配条件。
+
+| 顺序 / 优化 | 根因与可行实现 | 验收及取舍 |
+| --- | --- | --- |
+| 1．统一Explp（本轮实施） | 高层自然指数经唯一TileToInstr映射发厂商102；所有score、行state、merge与普通exp一并使用，实际dtype不变。已有Instr/CRT可用，补的是生产选择及host reference。 | rank3、1024/1025/1031、三种浮点格式的source→Instr；目标fresh source/package/no-card核对全部exp_lp符号；恢复后完整输出及普通计时，再看CT活动。只据实测确定收益。 |
+| 2．消除GEMM结果的重复写回 | 当前循环中存在GEMM结果→私有中间buffer→loop state的完整复制链；`ExecutionStructure::eliminateGemmWritebacks`只消费紧邻GEMM的单条copy/metadata view，且psum与dest重叠会阻止原地写。扩展为通用完整copy-chain destination forwarding：保留独立psum读取buffer，让GEMM直接写最后一个合法destination，删掉被覆盖且无其它读取的中间copy。 | 先证明所有source alias/use、完整覆盖、effect间隔、psum/lhs/rhs与新dest NoAlias；不能通过放松alias条件强行合并。样本两次128KiB×72共18MiB有效copy payload，实际能删几次由变换后IR计数确定；非attention GEMM、循环/条件、多use反例和tail共同验证。 |
+| 3．减少行状态与等字节序布局复制 | 现包876次GS中有504次1KiB行状态复制，另有288次布局搬运在观察到的shape上具有相同物理字节序。前者在DPS/bufferization或后续current Tile use-def中处理新旧状态活跃区间；后者用现有物理遍历证明将真实等价关系变为metadata view或直接destination。 | m/l/alpha若同时有旧值读取就不能共用；布局名不同也不能自动判搬运必要或无用。对同字节序/真实置换、尾部padding、alias、多consumer成对覆盖；检查实际GS动态次数、SPM与无新增steady-state join。属于软件可优化空间，不是硬件能力缺失。 |
+| 4．输出恢复与累加器方向 | 整体转置消掉循环广播，却把最终BF16输出变成2字节GS内层；当前每query block 32768次内层复制，忙Tile共524288次。先把blocked→Tensor中间copy与输出方向恢复合成为直接写最终目标的同一movement，并按实际contiguous run合并descriptor。 | 融合只保证少一次中间搬运，不能声称消掉必须的元素置换。比较完整生命周期里的广播节省与输出成本；若仍无收益，将整链方向选择收敛回KQ score＋常规A，保留分组Loop收益。方向规则按maps、tile、物理访问与完整链成本决定，不能按case名或28/2048硬编码。 |
+| 5．让K/V读取与计算重叠 | 当前 `findLoadPipelines` 要求静态trip count且body不含region；causal loop的上界依赖query、body有if，实际没有进入该路径。优先将可见域拆成全可见steady loop和边界处理，再扩展同一通用pipeline以支持loop-invariant动态上界，物化首块预取、双buffer、末块收尾。 | 先证明load的依赖与跨迭代range，双buffer必须真的进入IR并通过SPM；根据跨worker实际hazard安排completion。分别覆盖0/1/多步、causal boundary和tail，不逐步强插全局join。RDMA活动约0.359ms，只能说明活动量，不能承诺同额净收益；优先级在删复制之后。 |
+| 6．tile与工作分配（后置） | 先处理每块固定成本，再用少量有依据的tile形状比较运算量、指令与actual SPM。当前256² causal有36个pair/head，128²变成136个，score算术仅少约5.6%，不应仅按mask浪费缩tile。28 head按16 Tile分配使12 Tile两head、4 Tile一head。 | 更均匀的head×query分配在该样本最多消除约12.5%的理想工作量不均衡，不代表总延迟必降12.5%。用户此前已暂缓空间切分/搜索预算，此项先保留分析，不随本轮重新打开搜索改造；恢复前明确实际movement和重复读取代价。 |
+
+2、3、4每项先检查current IR，使用本轮变换前后actual instruction/copy count与fresh分析归因；
+在对应owner内改一次、验一次，不同时混入pipeline和tile调整。5依赖复制与方向稳定后再做，否则双buffer会掩盖实际需求。
+既有VuVLoop的非完整分组收尾与第3项一起闭合：按actual view拆成unit64主组和余组，余组使用已有合法VS/VuV或movement，
+精确检查覆盖与padding；不恢复unit32等合同外实验，也不因目标2048整除而略过其它shape的tail。
+NE活动接近该工作量的理论算术时间，当前优先减少CT/TDMA与串行空隙，而不是先改变GEMM数值图。
+GPU FlashAttention的[分块online softmax](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/softmax.h)
+可借鉴数值组织；GPU warp shuffle、异步copy和tensor-memory机制不能直接当作TX81已支持的能力。
+
+每项主机覆盖包含：真实规模整除/非整除、适用与不适用关系、实际owner/coverage/lifetime、typed拒绝和直接下游；
+设备只测当前指定BF16目标及本项确实影响的增量保护case。最终三次普通计时报告全部样本、中位数与范围，
+profile另列Primary及各引擎/指令热点，不混成一个数。现故障session保持停止，先准备完成，再通知人工恢复；
+不能重启后继续已取消的原生转置专项。
+
+**Explp实现检查点**：统一映射及host近似reference已完成，BF16目标fresh source、合法输入、独立reference、package与no-card通过。
+16 Tile共64个静态指数调用点全部为 `wafer_tx81_elementwise_exp_lp`，每Tile含两处256元素行指数和两处65536元素score指数，
+均为F32 format；与此前转置state版的target LLVM相比，16份文件除指数符号外逐字节相同。
+planned guard为10752 bytes，no-card没有执行算术、completion或设备读回，不能签本轮实卡数值/性能通过。
+非attention的1024/1025/1031、F16/BF16/F32完整layout→Instr回归及host负/正区间指数检查通过，72项相关lit通过。
+扩大回归发现旧VuVLoop ABI的三个fixture producer遗漏group字段：一个将group填成1，两个仍生成8参数Add；
+已按现有9参数ABI修正，原75项numeric suite及6个SystemC失败项复测通过。没有修改厂商ABI、设备指令或同步行为。
+Driver的151项中150项通过，`SearchAccountsForFilteredAndEvaluatedReuse` 在extent=1025时仍失败：
+`accessReuseBranchesDiscovered=5` 小于 `accessReuseBranchesStarted=6`。该输入只有fill与batch_matmul，不含exp；
+本轮未修改搜索实现，也未运行改动前对照，不能据此宣称已确认失败起始版本。此统计断言尚未闭合，本轮不记全部回归通过。
+canonical完整增量构建及随后Ninja no-op通过；未启动新的设备执行。
+其余回归与本轮身份、限制见[主机证据](../../docs/data/board-performance/attention-explp-host-20260922.json)。
 
 #### Attention展开方向与VuVLoop实施方案
 
@@ -136,8 +191,8 @@ score与accumulator整体转置须计入输入packing、输出恢复的实际字
 4. 对下表进行直接受影响的主机验证，生产source→actual Instr/SPM→ExecutablePackage→fresh no-card闭合。
    准备好本轮目标输入/reference、完整输出比较、guard、正常退出及必要Loop几何见证后再上板；不重做无关fill专项。
 5. 用当前新包测普通设备时间，并用必要profile检查广播/布局热点是否按预期变化；普通与诊断样本分开。
-   本轮最终版本连续三次无采集/插桩计时均低于3ms才满足性能门禁。若仍不足，依新热点继续同一目标，
-   优先核算累加器整体转置的净收益，不以静态条数代签完成或擅自换exp/精度。
+   最终版本取得连续三次无采集/插桩健康计时，按本节顶部最新性能目标验收，3ms仅作参考。
+   接续顺序由“后续性能优化实施方案”拥有；指数统一遵循已授权Explp选择，不以静态条数代签收益。
 
 **本项覆盖矩阵**
 

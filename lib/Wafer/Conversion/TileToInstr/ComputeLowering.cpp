@@ -2458,7 +2458,7 @@ getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
   case ComputeElementwiseKind::Rsqrt:
     return makeKind(InstrElementwiseKind::Rsqrt);
   case ComputeElementwiseKind::Exp:
-    return makeKind(InstrElementwiseKind::Exp);
+    return makeKind(InstrElementwiseKind::ExpLp);
   case ComputeElementwiseKind::Ln:
     return makeKind(InstrElementwiseKind::Ln);
   case ComputeElementwiseKind::Tanh:

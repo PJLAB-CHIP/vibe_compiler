@@ -50,6 +50,27 @@ TensorProgram
 
 `none`只构造单一、可确定重现的baseline，不管理candidate set、shortlist或winner。
 
+## Explp数值实现边界
+
+当前SDK的 `TsmTranscendental` 同时提供 `Exp` 与 `Explp`，opcode分别为101、102，均接收source、destination、
+element count与实际 `Data_Format`。厂商示例源码将二者分别注为“高精度”和“高带宽”。已有CRT分别绑定原入口；
+F32使用 `Explp` 不代表把storage或compute改成BF16。当前安装包未找到独立 `Lnlp` 入口，不能由此推断所有硬件版本的能力。
+
+厂商软件模型 `libneuralcore_qemu.so`（SHA256 `fda91c45f488fb387c0ee25d1b15dfd063feba85f677423526e5d3d0d68a659a`）
+中 `CGRATensor_TransOp_V_V_exp_lp` 先按format读取为F32，以F32常量 `0x3fb8aa3b`（log2(e)）相乘，
+再调用 `dwfc_fp_pow2`，最后按原format写回。普通Exp调用 `dwfc_fp_exp`。这证明软件模型的数值组织，
+不证明设备内部电路或各dtype的完整ULP界。
+
+本轮直接调用厂商主机模型，在 `[-80,0]` 等距65537个F32输入上，Explp相对double数学指数的最大相对误差
+为 `3.7434e-6`，普通Exp为 `1.0009e-7`；0→1、负无穷→0。很小的subnormal结果相对误差可更大，
+上述扫描不是全定义域误差保证。20组长度2048的合法score在隔离指数误差、高精度求和归一化时，
+普通Exp与Explp的概率最大绝对差约 `1.06e-8`，不代替online recurrence或完整attention验证。
+
+证据分类：opcode/ABI与软件模型算法为已核对的接口/模型事实；历史已列normal/special tuple的板端资格仍按下表记录；
+本次统一替换后整包的数值及加速比尚待板端实测，属于unknown。不得把“高带宽”换算为固定加速倍数。
+Managed reference用相同F32乘法及host `exp2` 组织提供近似参考，保留与厂商primitive/设备逐bit可能不同的边界。
+生产选择由[11号指数合同](../tasks/11-instruction-ir.md#指数的生产指令选择)拥有。
+
 ## 证据解释
 
 `supported`表示独立value/shape/layout向量和真实纵向均通过，可进入当前profile的production capability；

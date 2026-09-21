@@ -3956,12 +3956,13 @@ TEST_F(StructuredToTileTest,
       }
 }
 
-TEST_F(StructuredToTileTest, TrigonometryKeepsItsNativeUnaryInstruction) {
+TEST_F(StructuredToTileTest, TranscendentalsSelectNativeInstructionAndKeepDtype) {
   for (int64_t extent : {1024, 1025, 1031})
-    for (bool sine : {false, true})
+    for (auto kind : {InstrElementwiseKind::Sin, InstrElementwiseKind::Cos,
+                      InstrElementwiseKind::ExpLp})
       for (llvm::StringRef dtype : {"f16", "bf16", "f32"}) {
         SCOPED_TRACE(extent);
-        SCOPED_TRACE(sine);
+        SCOPED_TRACE(static_cast<unsigned>(kind));
         SCOPED_TRACE(dtype.str());
         std::string source = makeSquareSource(extent, 2);
         for (size_t position = 0;
@@ -3976,12 +3977,15 @@ TEST_F(StructuredToTileTest, TrigonometryKeepsItsNativeUnaryInstruction) {
         ASSERT_TRUE(original);
         mlir::IRRewriter rewriter(module->getContext());
         rewriter.setInsertionPoint(original);
-        if (sine)
+        if (kind == InstrElementwiseKind::Sin)
           rewriter.replaceOpWithNewOp<mlir::math::SinOp>(original,
                                                          original.getLhs());
-        else
+        else if (kind == InstrElementwiseKind::Cos)
           rewriter.replaceOpWithNewOp<mlir::math::CosOp>(original,
                                                          original.getLhs());
+        else
+          rewriter.replaceOpWithNewOp<mlir::math::ExpOp>(original,
+                                                        original.getLhs());
         TileRegionOp region;
         module->walk([&](TileRegionOp current) { region = current; });
         StructuredMaterializationRelations relations;
@@ -4000,9 +4004,14 @@ TEST_F(StructuredToTileTest, TrigonometryKeepsItsNativeUnaryInstruction) {
               mlir::succeeded(convertTileRegionToInstr(current, conversion)));
         unsigned count = 0;
         module->walk([&](InstrElementwiseOp op) {
-          EXPECT_EQ(op.getKind(), sine ? InstrElementwiseKind::Sin
-                                       : InstrElementwiseKind::Cos);
+          EXPECT_EQ(op.getKind(), kind);
           EXPECT_EQ(op.getInputs().size(), 1u);
+          auto outputType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+          EXPECT_EQ(outputType.getElementType(),
+                    mlir::cast<mlir::MemRefType>(op.getInputs()[0].getType())
+                        .getElementType());
+          EXPECT_EQ(outputType.getShape(),
+                    llvm::ArrayRef<int64_t>({1, extent, 64}));
           ++count;
         });
         EXPECT_EQ(count, 1u);

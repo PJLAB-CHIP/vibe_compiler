@@ -276,8 +276,12 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
           std::get_if<TargetElementwiseOperation>(&descriptor.semantic)) {
     const bool logic = isTargetElementwiseLogic(*operation);
     const size_t formatArgument = getTargetElementwiseArity(*operation) + 2;
-    if (getTargetElementwiseArity(*operation) == 2 && !logic)
+    if (getTargetElementwiseArity(*operation) == 2 && !logic) {
       arguments[5] = 0;
+      arguments[6] = 0;
+      if (!isTargetElementwiseRelation(*operation))
+        arguments[7] = 0; // Ordinary VV has no grouped RHS.
+    }
     arguments[formatArgument] =
         supportedFormatCode(TargetFormatEngine::CT,
                             logic ? LogicalFormat::Bool : LogicalFormat::F32);

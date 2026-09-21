@@ -683,7 +683,8 @@ Pipeline position：
 - Output IR / files：行级maximum处理、指数缩放和归一化系数，局部score的subtract/exp及输出multiply；使用既有op与DPS/maps。
 - Downstream consumer：layout/bufferization、StructuredToTile、Instr、completion/SPM及原package/TargetModel/runtime。
 - User-level driver / named pipeline：现有`wafer-compile`和attention相关named transformations共用同一实现。
-- Explicit non-goals：不新增NaN/Inf扫描、输入修补、clamp、通用safe算子或运行时回退；不改变原score region、exp算法、dtype、KV顺序或验收容差。
+- Explicit non-goals：不新增NaN/Inf扫描、输入修补、clamp、通用safe算子或运行时回退；不改变原score region、dtype、KV顺序或验收容差。
+  全部自然指数的目标实现按用户最新要求统一为11号的Explp，包括score和行状态；本层不分别选择硬件入口。
 - Completion criteria：下面三项的最终Instr结构及覆盖矩阵闭合；fresh产品数值、实际SPM规划及统一板测计划规定的验收通过。
 
 整改要求：
@@ -704,7 +705,7 @@ Pipeline position：
    不先将分母铺成`BQ×D`后重复求倒数，不额外生成整块倒数计算；普通broadcast按既有VS/VuV/GS规则实现。
 
 [FlashAttention softmax实现](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/softmax.h)
-将maximum处理和最终归一化系数放在行循环中，再用于列元素。本合同采用这种计算范围划分，继续使用本目标既有指数和倒数指令。
+将maximum处理和最终归一化系数放在行循环中，再用于列元素。本合同采用这种计算范围划分；指数统一由11号映射到Explp，倒数保持现有实现。
 普通纯图的broadcast/逐元素等价优化仍由既有e-graph规则拥有，不在attention之外新增同义greedy旁路。
 可消除的工作按actual use-def与indexing maps判定，不能根据buffer名字或样本输入推断。
 
@@ -735,7 +736,8 @@ Pipeline position：
   不保存跨stage方向计划，不新增graph attention算法或future-output IR。
 - Downstream consumer：08号layout assignment、10号StructuredToTile/TileToInstr、11号Instr及唯一completion/SPM/target路径。
 - User-level driver / named pipeline：`wafer-compile`的none/search和原attention decomposition入口消费同一实现。
-- Explicit non-goals：不扩大空间切分或搜索预算；不重跑ordinary e-graph；不改变KV block顺序、scalar算术、exp、dtype、窄化位置或数值门槛。
+- Explicit non-goals：不扩大空间切分或搜索预算；不重跑ordinary e-graph；不改变KV block顺序、scalar算术、dtype、窄化位置或数值门槛。
+  指数统一遵循11号的Explp生产选择，不随展开方向分叉。
 - Completion criteria：方向与mask/state maps共同通过verifier，正式输入经实际Instr/SPM/package闭合；统一计划的结构、数值与性能门禁通过。
 
 三种展开的语义关系如下，`Pᵀ`表示按转置score方向保存的本block未归一化概率，仍在原位置转换为PV输入dtype：

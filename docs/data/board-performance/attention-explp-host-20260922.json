@@ -1,0 +1,475 @@
+{
+  "date": "2026-09-22",
+  "change": "全部生产自然指数统一lower为ExpLp，实际dtype不变",
+  "work_item": "board-testing",
+  "artifacts": "/data/vibe_compiler-validation/attention-explp-20260922",
+  "hardware_execution": false,
+  "device_performance_measured": false,
+  "device_session": "此前异常boot未恢复，未launch/retry/reset",
+  "implementation": {
+    "selection": "lib/Wafer/Conversion/TileToInstr/ComputeLowering.cpp",
+    "managed_reference": "F32 multiply by 0x3fb8aa3b, then host exp2, then original-format writeback",
+    "ordinary_exp_oracle_retained": true,
+    "board_exactness_claimed": false
+  },
+  "fresh_product": {
+    "case": "attention-prefill-28-heads-2048",
+    "qkv_shape": [
+      1,
+      28,
+      2048,
+      128
+    ],
+    "storage_dtype": "bf16",
+    "exponential_dtype": "f32",
+    "seed": 20260922,
+    "policy": "search",
+    "search_width": 8,
+    "search_trials": 42,
+    "source_export": true,
+    "independent_pytorch_reference": true,
+    "no_card_passed": true,
+    "planned_guard_bytes": 10752,
+    "output_elements": 7340032
+  },
+  "instruction_audit": {
+    "tiles": [
+      {
+        "tile": "tile_00000",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00001",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00002",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00003",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00004",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00005",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00006",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00007",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00008",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00009",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00010",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00011",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00012",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00013",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00014",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      },
+      {
+        "tile": "tile_00015",
+        "exp_lp_calls": 4,
+        "counts": {
+          "i32 256": 2,
+          "i32 65536": 2
+        },
+        "formats": {
+          "i32 5": 4
+        }
+      }
+    ],
+    "legacy_exp_calls": 0,
+    "actual_format": "FP32 (SDK code 5)",
+    "manifest_sha256": "ccb963ea07aa86c02b0e322c8615c83c93ac8340d8bcdd284858f7e11873315a",
+    "source": "fresh generated target LLVM",
+    "comparison_to_previous_llvm": [
+      {
+        "tile": "tile_00000",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00001",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00002",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00003",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00004",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00005",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00006",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00007",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00008",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00009",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00010",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00011",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00012",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00013",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00014",
+        "llvm_equal_except_exp_symbol": true
+      },
+      {
+        "tile": "tile_00015",
+        "llvm_equal_except_exp_symbol": true
+      }
+    ],
+    "package_modules": {
+      "modules/module_00000.so": "6367aa08c7c983eb06c7016580e113f3a2900851caca752e6472c7497fb52d4a"
+    }
+  },
+  "validation": {
+    "canonical_full_incremental_build": true,
+    "subsequent_ninja_noop": true,
+    "lit": {
+      "passed": 72,
+      "failed": 0,
+      "unsupported": 0
+    },
+    "transcendental_lowering_test": {
+      "passed": true,
+      "shapes": [
+        1024,
+        1025,
+        1031
+      ],
+      "formats": [
+        "f16",
+        "bf16",
+        "f32"
+      ],
+      "operations": [
+        "Sin",
+        "Cos",
+        "ExpLp"
+      ],
+      "source_to_instr": true
+    },
+    "managed_reference_test": {
+      "passed": true,
+      "shapes": [
+        [
+          2,
+          1024,
+          3
+        ],
+        [
+          2,
+          1031,
+          3
+        ]
+      ],
+      "domain": "F32 [-80,80], 0 and negative infinity",
+      "relative_tolerance_vs_double_exp": 5e-06
+    },
+    "component_regression": {
+      "all_passed": false,
+      "passed_groups": [
+        "WaferTransformsUnitTests",
+        "WaferConversionUnitTests",
+        "WaferSimulatorUnitTests",
+        "WaferTargetUnitTests"
+      ],
+      "systemc": "35项首次通过，6项ABI夹具修正后复测通过",
+      "driver": {
+        "executed": 151,
+        "passed": 150,
+        "failed": 1,
+        "test": "ExecutableCompilationPolicyTest.SearchAccountsForFilteredAndEvaluatedReuse",
+        "source": "unittests/Driver/ExecutableCompilationTest.cpp:820",
+        "extent": 1025,
+        "accessReuseBranchesDiscovered": 5,
+        "accessReuseBranchesStarted": 6,
+        "input": "F16 fill与batch_matmul，无exp",
+        "status": "未修复；本轮未修改搜索实现，未运行改动前对照，不判断失败起始版本"
+      }
+    },
+    "preexisting_fixture_failures": {
+      "count": 7,
+      "cause": "VuVLoop ABI新增rhs_group_elements后，1个字段构造器仍填1、2个SystemC helper仍按8参数生成Add",
+      "fix": "普通VV设置unit/scalar/group为0；SystemC helpers使用9参数并显式group=0",
+      "retests": [
+        {
+          "name": "WaferSystemCSimulatorDTEComputeDisjointTest",
+          "returncode": 0,
+          "wall_seconds": 0.2761072510002123
+        },
+        {
+          "name": "WaferSystemCSimulatorDTEComputeOverlapWithoutJoinTest",
+          "returncode": 0,
+          "wall_seconds": 0.28527500499694725
+        },
+        {
+          "name": "WaferSystemCSimulatorDTEComputeOverlapWithJoinTest",
+          "returncode": 0,
+          "wall_seconds": 0.2825816010008566
+        },
+        {
+          "name": "WaferSystemCSimulatorDTELateSourceWriteTest",
+          "returncode": 0,
+          "wall_seconds": 0.27830223699857015
+        },
+        {
+          "name": "WaferSystemCSimulatorDTELateDestinationReadTest",
+          "returncode": 0,
+          "wall_seconds": 0.2788626590008789
+        },
+        {
+          "name": "WaferSystemCSimulatorDTELateDestinationWriteTest",
+          "returncode": 0,
+          "wall_seconds": 0.26502566000272054
+        },
+        {
+          "name": "WaferReferenceNumericUnitTests",
+          "returncode": 0,
+          "wall_seconds": 23.151866098000028
+        }
+      ]
+    },
+    "logs": {
+      "components": "/data/vibe_compiler-validation/attention-explp-20260922/tests.log",
+      "numeric_initial": "/data/vibe_compiler-validation/attention-explp-20260922/numeric-tests.log",
+      "numeric_final": "/data/vibe_compiler-validation/attention-explp-20260922/WaferReferenceNumericUnitTests-retest.log",
+      "fixture_retests": "/data/vibe_compiler-validation/attention-explp-20260922/fixture-retests.json",
+      "exp_lowering": "/data/vibe_compiler-validation/attention-explp-20260922/exp-lowering-test.log",
+      "lit": "/data/vibe_compiler-validation/attention-explp-20260922/lit.log",
+      "canonical_build": "/data/vibe_compiler-validation/attention-explp-20260922/build-fixtures.log",
+      "canonical_noop": "/data/vibe_compiler-validation/attention-explp-20260922/build-final-noop.log",
+      "fresh_prepare": "/data/vibe_compiler-validation/attention-explp-20260922/prepare.log"
+    }
+  },
+  "resource_measurements": {
+    "fresh_prepare_wall_seconds": 254.09,
+    "fresh_prepare_peak_rss_kib": 1011700,
+    "compile_transaction_wall_ms": 248208,
+    "candidate_actualizations": 42,
+    "accepted_candidates": 4
+  },
+  "hashes": {
+    "prepared/package/manifest.json": "ccb963ea07aa86c02b0e322c8615c83c93ac8340d8bcdd284858f7e11873315a",
+    "prepared/package/modules/module_00000.so": "6367aa08c7c983eb06c7016580e113f3a2900851caca752e6472c7497fb52d4a",
+    "prepared/raw/card_00_output_0.expected.bf16.raw": "8407eae7605fd0ed5cf4858a6747ccfa2740fd8acf75c4409b001b242e559e35",
+    "prepared/raw/card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+    "prepared/raw/card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+    "prepared/raw/card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+  },
+  "limitations": [
+    "本轮no-card不执行算术或设备completion；整包误差与提速待实卡",
+    "扩大Driver回归有1项纯GEMM搜索计数断言失败，本轮不记全部回归通过",
+    "Managed reference为近似host参考，不代签厂商primitive或设备逐bit行为",
+    "ExpLp的既有formal-exact lane保持unsupported，不以普通Exp伪装其数值实现"
+  ],
+  "build_identity": {
+    "command": [
+      "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+      "-B",
+      "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "--case",
+      "attention-prefill-28-heads-2048",
+      "--dtype",
+      "bfloat16",
+      "--seed",
+      "20260922",
+      "--wafer-compile",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+      "--wafer-run",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+      "--work-dir",
+      "/data/vibe_compiler-validation/attention-explp-20260922/prepared",
+      "--dump-compiler-ir",
+      "/data/vibe_compiler-validation/attention-explp-20260922/ir",
+      "--optimization-policy",
+      "search",
+      "--memory-guards",
+      "--device-timing",
+      "--compile-timing",
+      "--expected-runtime-version",
+      "1400",
+      "--expected-device-name",
+      "/dev/accel/dev-0",
+      "--expected-pci-bus-id",
+      "0000:3b:00.0",
+      "--expected-tile-count",
+      "16",
+      "--expected-runtime-library-sha256",
+      "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+      "--completion-timeout-ms",
+      "60000",
+      "--board-diagnose-tool",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+      "--no-card"
+    ],
+    "source": "fresh PyTorch export, input and independent reference; prior command supplies configuration only",
+    "compiler_sha256": "2441aebc742c31410ff5bc6890c44d7a6ed30cfcb498b6c97a0174259431267a",
+    "git_head": "4f2d2b66710a529f98d992ec184cd76f85cbbb31",
+    "diff_sha256": "970e4a8166f25c535cbec00d820f5a356afa01afd814ac91c53dbdcfae345cac",
+    "board_execution": false
+  }
+}

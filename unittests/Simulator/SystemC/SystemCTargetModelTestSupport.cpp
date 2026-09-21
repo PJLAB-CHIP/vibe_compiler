@@ -638,7 +638,7 @@ insertPendingComputeBeforeDTEReceive(
   if (!format)
     return llvm::createStringError(
         "current target has no F32 data-format code");
-  if (elementwiseDescriptor.arguments.size() != 8 ||
+  if (elementwiseDescriptor.arguments.size() != 9 ||
       gemmDescriptor.arguments.size() != 12 ||
       joinDescriptor.arguments.size() != 1)
     return llvm::createStringError(
@@ -680,6 +680,7 @@ insertPendingComputeBeforeDTEReceive(
                           builder.getInt64(destination), builder.getInt32(4),
                           builder.getInt32(format->dataFormatCode),
                           builder.getInt32(0), builder.getInt32(0),
+                          builder.getInt32(0),
                           builder.getInt32(static_cast<uint32_t>(
                               TargetNCCWorker::Worker0))});
         ++result.elementwiseCount;
@@ -766,7 +767,7 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModules &targetLLVMModules,
   if (!format)
     return llvm::createStringError(
         "current target has no F32 data-format code");
-  if (elementwiseDescriptor.arguments.size() != 8 ||
+  if (elementwiseDescriptor.arguments.size() != 9 ||
       joinDescriptor.arguments.size() != 1)
     return llvm::createStringError(
         "late-join test descriptors have unexpected signatures");
@@ -837,7 +838,7 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModules &targetLLVMModules,
         {builder.getInt64(lhs), builder.getInt64(safeRHS),
          builder.getInt64(destination), builder.getInt32(4),
          builder.getInt32(format->dataFormatCode), builder.getInt32(0),
-         builder.getInt32(0),
+         builder.getInt32(0), builder.getInt32(0),
          builder.getInt32(static_cast<uint32_t>(TargetNCCWorker::Worker0))});
     compute->setCallingConv(llvm::CallingConv::C);
     ++result.insertedComputeCount;

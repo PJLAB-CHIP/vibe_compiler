@@ -18,11 +18,19 @@
 
 ## 当前调度
 
-2026-09-21当前目标已按用户收敛：先仅优化BF16 causal attention，Q/K/V为`[1,28,2048,128]`，
-关闭Host采集与设备插桩后设备事件计时低于3ms；FP16板测暂不执行。先建立fresh基线，再按实际瓶颈推进。
+当前目标按用户最新要求收敛：先仅优化BF16 causal attention，Q/K/V为`[1,28,2048,128]`，
+尽可能消除已确认的性能浪费，3ms作为参考、不再是硬性阈值；FP16板测暂不执行。
+正式计时关闭Host采集与设备插桩，最终版本须有重复健康样本和剩余瓶颈说明。
 涉及通用pass必须先定位可复现根因，按通用IR语义和明确合法条件修复并覆盖同机制其它输入，禁止单case特判。
-本目标仍归board-testing；数值、guard、正常清理及性能全部实测达标前不标完成，见
+本目标仍归board-testing；数值、guard、正常清理及性能优化验收闭合前不标完成，见
 [BF16 2048性能目标与通用修复合同](plans/board-workload-matrix.md#bf16-2048性能目标与通用修复合同)。
+最新授权为所有生产exp统一使用Explp，覆盖score、行状态、merge与普通逐元素指数，dtype及原验收容差保持；
+统一TileToInstr映射、host近似reference及直接回归已通过，新目标包完成fresh no-card，实卡数值和性能待设备恢复后验证。
+扩大回归仍有纯GEMM的Driver搜索计数断言失败，已记录，不能将本轮记为全部回归通过。
+后续按GEMM写回、行状态/等字节序copy、输出恢复、
+K/V流水化的顺序推进，tile/空间切分后置；具体根因、实施边界及覆盖见
+[后续性能优化实施方案](plans/board-workload-matrix.md#后续性能优化实施方案)。
+当前没有新的板端结果；此前设备异常后的停止状态和原生转置族禁用约束保持。
 新BF16 2048生产包已完成fresh no-card和三次无插桩实卡基线，数值/guard/正常退出通过，性能尚未达标。
 11号GS重复读取优化已通过主机回归及同版本三次BF16实卡，性能明显改善但仍未达标；
 随后补齐跨metadata reshape的GEMM写回消除，BF16三次实卡健康，仍未达到3ms；
@@ -37,7 +45,7 @@
 用户已授权按方案实现并上板验证；完整组VuVLoop、KQ展开及profile策略转交已接入。
 同时修复payload轴顺序及Tensor→blocked搬运的source stride缺陷；新版本BF16完整数值、guard、completion和厂商退出通过。
 本轮profile已取得；重复布局求解、厂商SDK函数表生命周期及局部完整复制的通用修复已通过新包实卡。
-累加器整链转置通过完整数值，但输出小颗粒GS导致性能回退，尚无净收益；分组tail及3ms门禁未闭合。
+累加器整链转置通过完整数值，但输出小颗粒GS导致性能回退，尚无净收益；分组tail及性能验收未闭合。
 随后独立原生`Nchw2nhwc`资格出现新的Tile-0 TDMA timeout，设备批次已停，未retry/reset；
 生产路径未接入该原生入口。用户随后明确该指令及其它原生transpose指令不可用，
 本轮统一排除原生搬运转置路线，包含`Transpose`、`Nchw2nhwc`、`Nhwc2nchw`；

@@ -792,6 +792,7 @@ instruction lowering 必须显式执行：
 
 ```text
 #wafer.elementwise_kind<add> -> #wafer.instr_elementwise_kind<add>
+#wafer.elementwise_kind<exp> -> #wafer.instr_elementwise_kind<exp_lp>
 #wafer.reduce_kind<sum>      -> #wafer.instr_reduce_kind<sum>
 semantic select              -> gather_scatter + bit2fp + mask_move
 ```
@@ -853,6 +854,35 @@ source一致，integer仍须满足exact/modular合同；保留在Instr IR但不�
 | Elementwise同形状同布局Tensor/NTensor/Cx/NCx，rank3、1024/1025/1031、C=65 | 原输入SSA直接消费、结果布局保留，GS及layout materialization均为0 | Instr verifier及物理遍历证明 |
 | 非identity init、negative zero、integer和原有多轴边界 | 保留有序Tensor展开及init；不误入native | 既有ordered与negative测试 |
 | 完整LLaMA block `[1,16,4096]` | fresh输入/reference、全量PyTorch及匹配计时；数值容差不变 | 普通package、真实SPM规划及串行设备执行 |
+
+#### 指数的生产指令选择
+
+全部生产自然指数统一为 `Explp`。这是一项数值实现选择，不限于attention的score，
+也覆盖行状态缩放、merge及普通逐元素指数；输入输出dtype、形状、maps、DPS、窄化位置与验收容差保持。
+
+- 输入：StructuredToTile已物化的 `tile.elementwise` / `tile.elementwise_into`，kind为 `exp`。
+- 职责：唯一TileToInstr映射将该semantic kind选择为已有 `InstrElementwiseKind::ExpLp`。
+- 输出与直接消费者：显式 `instr.elementwise <exp_lp>` → 既有TargetCall、`wafer_tx81_elementwise_exp_lp`
+  与厂商 `Explp`；同一Instr进入completion、SPM和成本分析。
+- 用户入口：production `wafer-compile` 的none/search与named TileToInstr pipeline共用该映射。
+- 非目标：不改成整数或BF16模拟F32，不改 `exp2`、`Ln`、activation内部实现，不新增近似模式开关或逐case规则。
+  指令层已有的 `exp` 仍准确表示厂商opcode 101，供显式Instr/ABI验证使用，不能把它的wrapper偷偷改发102。
+- 完成条件：普通指数与attention所有指数均生成102对应调用；F16/BF16/F32保持原format，真实规模整除/尾部
+  source→Instr与生产source→package/no-card通过；主机模型显式实现近似路径。设备误差和性能另外以本轮实卡验收。
+
+`math.exp`和Tile层仍保存自然指数语义，目标数值实现及误差资格由本节与校准文档拥有；不增加硬件opcode到高层IR，
+不以标准 `afn` 的有无建立两条生产指数路径。
+已有ExpLp kind、verifier、TargetCall和CRT足以表达并消费选择，无需新增op、attribute或旁路lowering。
+
+Managed reference按厂商软件模型可观察的F32 `x * log2(e)`、`Pow2`顺序实现，再按实际dtype写回；
+它是host近似参考，不宣称复现设备所有bit。正式MPFR的数学指数oracle保持独立，不能把ExpLp伪装成普通Exp的exact执行。
+软硬件证据强度与当前误差边界见[硬件校准](../docs/tx81-compiler-hardware-calibration.md#explp数值实现边界)。
+
+| 覆盖类 | exact结构 / 数值检查 | 直接下游 |
+| --- | --- | --- |
+| 非attention自然指数，rank 3、1024/1025/1031、F16/BF16/F32 | semantic exp统一成为exp_lp；单输入、原dtype/shape/范围；其它一元指令不变 | Linalg→layout/bufferization→Tile→Instr verifier |
+| F32负/正有限域、0与mask的负无穷；rank 3、1024/1031 | host近似参考的误差、0→1、负无穷→0；保留normal Exp独立oracle | Managed reference的实际tensor存储与结果 |
+| BF16 causal prefill、多Tile/多KV block | score与行指数都为exp_lp，无生产exp调用；format为F32，完整输入/reference/guard与符号闭合 | PyTorch→当前package→fresh no-card；板端单列待验 |
 
 ### 7.5 GEMM
 

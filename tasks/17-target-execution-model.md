@@ -321,6 +321,11 @@ Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是�
 不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约消费5.2节同一数学子集，NaN和其它原不支持域仍typed拒绝。
 覆盖rank3 1024/1025/1031、正负零、subnormal、普通值、最大有限数与舍入边界，对照formal完整codeword；全LM继续使用原比较合同。
 
+生产指数统一为11号的 `ExpLp` 后，managed-reference增加独立分支：按F32常量log2(e)先乘、再调用host `exp2`，
+最后由相同codec写回实际F16/BF16/F32。该分支按厂商软件模型可见顺序提供近似参考，不用 `std::exp` 冒充ExpLp；
+不宣称与设备primitive逐bit一致。原Exp数学oracle保持独立，已有不支持的exact lane保持typed拒绝。
+rank3 1024/1031的负/正有限域与0、负无穷检查数学误差及实际存储结果；设备数值与加速比由board-testing另验。
+
 ### Formal GEMM 的独立输出并行
 
 输入为已验证的FormalGemmOperation、同次invocation的不可变logical inputs及原work budget。较大的实际GEMM可按输出元素并行；
