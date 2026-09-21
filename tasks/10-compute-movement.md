@@ -652,7 +652,7 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 全部GEMM输入（含psum）与目标由fresh alias analysis证明NoAlias时，
 将二者合并为`tile.gemm_into`。它与functional GEMM共享shape/dtype/方向合同，目标为明确Write operand，
 不再分配结果。现有elementwise_into不能表达收缩与psum；新op的直接消费者是同一TileToInstr GEMM lowering。
-目标identity及其已有view保持不变；不跨中间观察者、pipeline调度边界或materializing shape/layout copy链合并。
+目标identity及其已有view保持不变；不跨中间观察者、pipeline调度边界或materializing shape/layout转换合并。
 psum与destination必须分离，低层不得自行选择复用。完成条件包括rank3、1024/1025/1031，
 无psum/独立psum正例和重叠psum/额外use/中间观察反例，Instr目标identity、无多余copy、fresh completion/SPM。
 
@@ -682,6 +682,33 @@ psum与destination必须分离，低层不得自行选择复用。完成条件�
 | NCx batch2折叠为batch1，保留/破坏per-batch padding | 1024可证明等价；1025/1031物理footprint不同，保持原view并由lowering拒绝 |
 | 全部合法变体 | Tile→Instr、fresh terminal completion及actual SPM规划；不增加循环或非terminal join |
 | BF16目标产品 | fresh PyTorch→package/no-card；实际多Tile、多query/KV块；再测全量数值、guard和三次健康设备时间 |
+
+完整复制链的目标转交：
+
+- 上游输入：同一dynamic block中的functional GEMM、可逆metadata reshape及相邻完整复制链；
+  链由已有`tile.copy_into`和bufferization生成的`memref.copy`表达，每段source/dest type相同。
+  原规则只检查第一段；若该段目标是psum，即使后面还复制到独立循环状态，也不能消掉两次搬运。
+- 本层职责：沿实际相邻copy继续寻找合法最终目标。被跳过的中间目标必须是同block私有allocation，
+  所有metadata alias的use均可枚举；除链中下一段读取外，没有覆盖后的reader、escape或未知effect。
+  覆盖前的初始化和GEMM psum读取保留。最终目标须在GEMM处可用，且与全部GEMM输入和被跳过的中间目标NoAlias。
+- 输出：GEMM在原位置直接写选定目标的可逆view；删除被取代的完整copy和结果view，保留psum缓冲及其生产者。
+  不改变最终目标已有alias/reader、算术、dtype、GEMM方向或控制流。
+- 直接下游：原TileToInstr、fresh completion及实际SPM规划；production与named pipeline共用同一ExecutionStructure。
+  不在driver或lowering另建匹配，不预估未来buffer或同步。
+- 非目标：不穿越region、非相邻memory operation、partial copy、layout置换；不合并未知alias或有覆盖后观察者的中间目标。
+  本规则不把原psum与dest强行复用，也不依赖attention、head或tile尺寸。
+- 方法：与[LLVM MemCpyOpt](https://llvm.org/docs/Passes.html#memcpyopt-memcpy-optimization)的copy forwarding和call-slot
+  目标转交比较，采用同block、完整覆盖、无中间观察及实际alias证明；pinned `MemCpyOptimizer.cpp`分别检查这几项。
+  Tensor DPS仍归One-Shot Bufferize，此处只消费已物化的buffer读写事实。
+- 完成条件：下表及目标fresh source→package/no-card、实卡数值/guard/退出/无采集计时闭合；实际删掉的copy按IR记录。
+
+| 完整复制链覆盖 | exact输出或保留条件；直接下游 |
+| --- | --- |
+| F16/BF16输入、F32 psum，rank≥3，1024/1025/1031 | 两段/多段完整copy直接写最终目标，保留独立psum；Instr目标和SPM验证 |
+| 可逆metadata reshape；动态loop与conditional内部 | 同一dynamic block内优化，循环状态及branch reader仍读原目标；无额外steady-state join |
+| 中间值或其view被覆盖后读取、逃逸、未知effect | 不跨该段删除copy，保留可观察结果 |
+| 最终目标与psum/input alias、目标在GEMM之后才定义、非相邻observer | 不提前写入，原合法路径不变 |
+| 非attention及目标attention | 同一变换入口；实际多Tile/block/tail、完整Instr/completion/SPM与产品数值证据 |
 
 ### 被完整覆盖的私有初始化
 

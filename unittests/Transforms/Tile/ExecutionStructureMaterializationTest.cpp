@@ -527,6 +527,161 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     GemmCopyChainForwardsFinalDestinationWithoutOverwritingPsum) {
+  enum class Case {
+    Pair,
+    Chain,
+    LoopBranch,
+    LateRead,
+    AliasRead,
+    Escape,
+    AliasedDestination,
+    Observer,
+    LateDestination
+  };
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (auto test :
+           {Case::Pair, Case::Chain, Case::LoopBranch, Case::LateRead,
+            Case::AliasRead, Case::Escape, Case::AliasedDestination,
+            Case::Observer, Case::LateDestination}) {
+        SCOPED_TRACE(::testing::Message() << dtype << '/' << extent << '/'
+                                          << static_cast<int>(test));
+        auto context = createContext();
+        std::string lhs = "memref<2x" + std::to_string(extent) + "x16x" +
+                          dtype + ", #wafer.memory<spm, ncx>>";
+        std::string rhs = "memref<2x16x16x" + std::string(dtype) +
+                          ", #wafer.memory<spm, ncx>>";
+        std::string result = "memref<2x" + std::to_string(extent) +
+                             "x16xf32, #wafer.memory<spm, ncx>>";
+        std::string dest = "memref<2x1x" + std::to_string(extent) +
+                           "x16xf32, #wafer.memory<spm, ncx>>";
+        bool loop = test == Case::LoopBranch;
+        bool folded = test == Case::Pair || test == Case::Chain || loop;
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { ";
+        if (test == Case::Escape)
+          out << "func.func private @escape(" << dest << ")\n";
+        out << "func.func @main(%n: index, %cond: i1) { "
+               "wafer.tile.region(%n, %cond : index, i1) -> () {\n"
+               "^bb0(%bound: index, %condition: i1):\n"
+               "%a = memref.alloc() : "
+            << lhs << "\n%b = memref.alloc() : " << rhs << '\n';
+        if (test != Case::LateDestination)
+          out << "%d = memref.alloc() : " << dest << '\n';
+        if (loop)
+          out << "%c0 = arith.constant 0 : index\n"
+                 "%c256 = arith.constant 256 : index\n"
+                 "scf.for %iv = %c0 to %bound step %c256 {\n"
+                 "scf.if %condition {\n";
+        out << "%p = memref.alloc() : " << dest
+            << "\n%one = arith.constant 1.0 : f32\n"
+               "wafer.tile.fill %p, %one {fill_domain = "
+               "#wafer.fill_domain<physical_footprint>} : "
+            << dest << ", f32"
+            << "\n%psum = wafer.tile.reshape %p : " << dest << " -> " << result
+            << '\n';
+        if (test == Case::AliasRead)
+          out << "%alias = memref.cast %p : " << dest << " to " << dest << '\n';
+        if (test == Case::Chain)
+          out << "%middle = memref.alloc() : " << dest << '\n';
+        out << "%r = wafer.tile.gemm %a, %b psum(%psum : " << result
+            << ") {batch_count = 2 : i64, lhs_batch_dims = array<i64: 0>, "
+               "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+               "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : i64, "
+               "rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+               "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : ("
+            << lhs << ", " << rhs << ") -> " << result
+            << "\n%v = wafer.tile.reshape %r : " << result << " -> " << dest
+            << "\nwafer.tile.copy_into %v into %p : " << dest << " into "
+            << dest << '\n';
+        if (test == Case::Observer)
+          out << "%observe = wafer.tile.copy %d : " << dest << " -> " << dest
+              << '\n';
+        if (test == Case::LateDestination)
+          out << "%d = memref.alloc() : " << dest << '\n';
+        if (test == Case::Chain)
+          out << "wafer.tile.copy_into %p into %middle : " << dest << " into "
+              << dest << '\n';
+        out << "memref.copy %" << (test == Case::Chain ? "middle" : "p")
+            << ", %" << (test == Case::AliasedDestination ? "p" : "d") << " : "
+            << dest << " to " << dest << '\n';
+        if (test == Case::LateRead || test == Case::AliasRead)
+          out << "%extra = wafer.tile.copy %"
+              << (test == Case::AliasRead ? "alias" : "p") << " : " << dest
+              << " -> " << dest << '\n';
+        if (test == Case::Escape)
+          out << "func.call @escape(%p) : (" << dest << ") -> ()\n";
+        out << "%read = wafer.tile.copy %d : " << dest << " -> " << dest
+            << '\n';
+        if (loop)
+          out << "} }\n";
+        out << "wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        mlir::Value psum, destination;
+        module->walk([&](ComputeGemmOp op) { psum = op.getPsum(); });
+        module->walk(
+            [&](mlir::memref::CopyOp op) { destination = op.getTarget(); });
+        auto prepared = prepareTileExecutionStructure(*module, {});
+        ASSERT_TRUE(prepared.succeeded());
+        auto materialized = materializeExecutionStructure(
+            std::move(module), std::move(*prepared.prepared));
+        ASSERT_TRUE(materialized.succeeded())
+            << (materialized.failure ? materialized.failure->detail : "");
+        auto &output = materialized.materialized->module;
+        unsigned into = 0, functional = 0, copies = 0;
+        output->walk([&](ComputeGemmIntoOp op) {
+          ++into;
+          EXPECT_EQ(op.getPsum(), psum);
+          auto view = op.getDest().getDefiningOp<ViewReshapeOp>();
+          ASSERT_TRUE(view);
+          EXPECT_EQ(view.getSource(), destination);
+        });
+        output->walk([&](ComputeGemmOp op) {
+          ++functional;
+          EXPECT_EQ(op.getPsum(), psum);
+        });
+        output->walk([&](mlir::Operation *op) {
+          copies += mlir::isa<MoveCopyIntoOp, mlir::memref::CopyOp>(op);
+        });
+        EXPECT_EQ(into, folded ? 1u : 0u);
+        EXPECT_EQ(functional, folded ? 0u : 1u);
+        EXPECT_EQ(copies, folded ? 0u : 2u);
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*output)));
+        // Unknown external effects are a preservation test, not a target call.
+        if (test == Case::Escape)
+          continue;
+        TileRegionOp region;
+        output->walk([&](TileRegionOp op) { region = op; });
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(
+            convertBufferizationCopiesToInstr(*output, session)));
+        unsigned gemms = 0;
+        output->walk([&](InstrGemmOp op) {
+          ++gemms;
+          if (folded) {
+            auto view =
+                op.getDest().getDefiningOp<mlir::memref::ReinterpretCastOp>();
+            ASSERT_TRUE(view);
+            EXPECT_EQ(view.getSource(), destination);
+          }
+          EXPECT_NE(op.getDest(), op.getPsum());
+        });
+        EXPECT_EQ(gemms, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*output)));
+        output->walk([&](SyncNCCJoinOp op) {
+          EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+        });
+        EXPECT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*output, 0, 3 * 1024 * 1024, 16)));
+      }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      EliminateOverwrittenLayoutInitialization) {
   enum class Case {
     Fill,

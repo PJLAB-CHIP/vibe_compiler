@@ -640,10 +640,8 @@ public:
         }
         auto sibling = choice;
         sibling.reuse = std::get<AccessReuseIntent>(std::move(captured));
-        if (discover(std::move(sibling), temporal.choices,
-                     selection.estimatedBenefitPicoseconds) &&
-            statistics)
-          ++statistics->accessReuseBranchesDiscovered;
+        discover(std::move(sibling), temporal.choices,
+                 selection.estimatedBenefitPicoseconds);
       }
     }
     if (choice.reuse) {
@@ -947,6 +945,10 @@ private:
     implementations.push_back(std::move(branch));
     const auto id = implementations.size() - 1;
     const auto &selected = implementations.back()->choice;
+    // Placement/pipeline siblings can inherit reuse too. Count each actual
+    // new branch here, independently of which discovery path produced it.
+    if (selected.reuse && statistics)
+      ++statistics->accessReuseBranchesDiscovered;
     auto count = [&](llvm::StringRef field, uint64_t value) {
       support::addCompileCounter("search-implementation",
                                  llvm::formatv("structural-{0}-choice-{1}-{2}",

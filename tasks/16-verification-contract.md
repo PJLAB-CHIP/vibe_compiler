@@ -646,6 +646,8 @@ current target容量、target-model能力或host预算不足，必须按stage报
 - 每个actual candidate只构造一次并调用一次actual memory/target gate；rejected/loser owner销毁，Accepted owner携带该次
   offsets和target input继续下游。Search winner不得重建，baseline不存在winner comparison。
 - IR op count、profile或expected inventory只能作为测试证据，不能成为production legality或另一份materialization verifier。
+- 搜索分支统计在唯一分支创建/激活处记录：继承reuse的placement、pipeline等派生分支同样计入discovered，
+  重复发现同一分支不重复计数；started不得超过discovered。计数只作观测，不改变候选生成、预算或排序。
 
 ### 10.2 IR and resource evidence
 

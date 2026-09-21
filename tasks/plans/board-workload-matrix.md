@@ -42,7 +42,7 @@
 
 #### 后续性能优化实施方案
 
-本节接续已有profile与current IR分析；本次授权先完成统一Explp替换并准备下列实施方案，其余项按顺序实施与验收。
+本节接续已有profile与current IR分析；用户确认重启并授权按本方案继续实现和实卡验收，以下各项按顺序推进。
 全部仍归 `board-testing`。当前开发版本的累加器转置尚无净收益，不能把6.579ms当作已经优于此前5.983ms。
 两者都是历史健康单样本，配置/版本不同；引用记录作比较，不重跑历史包。
 
@@ -75,7 +75,7 @@ GPU FlashAttention的[分块online softmax](https://github.com/Dao-AILab/flash-a
 
 每项主机覆盖包含：真实规模整除/非整除、适用与不适用关系、实际owner/coverage/lifetime、typed拒绝和直接下游；
 设备只测当前指定BF16目标及本项确实影响的增量保护case。最终三次普通计时报告全部样本、中位数与范围，
-profile另列Primary及各引擎/指令热点，不混成一个数。现故障session保持停止，先准备完成，再通知人工恢复；
+profile另列Primary及各引擎/指令热点，不混成一个数。当前恢复会话只执行本轮已准备的生产包；
 不能重启后继续已取消的原生转置专项。
 
 **Explp实现检查点**：统一映射及host近似reference已完成，BF16目标fresh source、合法输入、独立reference、package与no-card通过。
@@ -90,6 +90,26 @@ Driver的151项中150项通过，`SearchAccountsForFilteredAndEvaluatedReuse` �
 本轮未修改搜索实现，也未运行改动前对照，不能据此宣称已确认失败起始版本。此统计断言尚未闭合，本轮不记全部回归通过。
 canonical完整增量构建及随后Ninja no-op通过；未启动新的设备执行。
 其余回归与本轮身份、限制见[主机证据](../../docs/data/board-performance/attention-explp-host-20260922.json)。
+
+**重启后的接续检查点（2026-09-22）**：新boot确认、全系统设备占用检查通过，只存在已核实的厂商日志服务。
+Explp新包无寄存器采集、无设备插桩实卡为4.714ms，7,340,032个输出无超阈值元素，cosine为0.999998133，
+relative L2为0.00193234；10752字节guard、16 Tile完成、厂商退出及执行窗口故障日志检查通过。
+相对上一普通Exp转置state版6.579ms历史单样本约降低28.3%，不是同会话重复样本的稳定加速比。
+
+第2项根因已落实到producer：`LayoutOptimization`先将不能原地bufferize的循环yield绑定到实际state，
+生成`memref.copy`；`StructuredToTile::publishComputedValue`又将functional GEMM结果写回原DPS/psum缓冲。
+两段copy进入ExecutionStructure时已存在。原规则只检查第一段，psum alias正确地阻止原地写，却漏掉后面的独立最终目标。
+已按10号合同扩展同一规则，初轮actual target IR每Tile静态GS由27降为23；两条branch的GEMM各消掉两段128KiB写回，
+按该包忙Tile的72次KV更新计算，减少144次完整copy、18MiB有效payload。最终fresh no-card及三次无采集实卡通过，耗时4.574/4.535/4.470ms，中位数4.535ms；
+全部7,340,032个输出无超阈值元素，10752字节guard、16 Tile完成及厂商退出通过。数值指标与Explp基线一致。
+独立profile Primary为4.611ms，Count/Trace读回一致，62,480个事件完整；忙Tile的CT约1.090ms、
+TDMA约1.449ms、NE约0.363ms。引擎活动可以重叠，不能相加；单指令NCC归因标为ambiguous，不能签精确热点耗时。
+本项直接19个测试（含新增54种dtype/extent/结构组合）、39项相关lit及完整511项Transforms全部通过。
+canonical完整增量及随后Ninja no-op通过；最终fresh prepare为235.04s、峰值RSS 1,023,856KiB。
+当前推进第3项行状态与等字节序复制；第4/5项及分组tail仍未闭合，不标整体性能完成。
+此前搜索计数失败的根因是继承reuse的placement/pipeline sibling未经过reuse发现callsite，故discovered漏计。
+统计移至统一`discover`新建分支处后，原1024/1025/1031/4096输入全部通过；未改变选择、排序或预算。
+本轮证据汇总见[接续记录](../../docs/data/board-performance/attention-copy-chain-20260922.json)。
 
 #### Attention展开方向与VuVLoop实施方案
 

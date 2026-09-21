@@ -13,6 +13,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
@@ -496,51 +497,155 @@ static void preservePrivateScalarBroadcasts(
   });
 }
 
+struct CompleteCopy {
+  mlir::Operation *operation;
+  mlir::Value source;
+  mlir::Value dest;
+};
+
+static std::optional<CompleteCopy> getCompleteCopy(mlir::Operation *operation) {
+  CompleteCopy copy;
+  if (auto into = mlir::dyn_cast_or_null<MoveCopyIntoOp>(operation))
+    copy = {operation, into.getSource(), into.getDest()};
+  else if (auto memref =
+               mlir::dyn_cast_or_null<mlir::memref::CopyOp>(operation))
+    copy = {operation, memref.getSource(), memref.getTarget()};
+  else
+    return std::nullopt;
+  if (copy.source.getType() != copy.dest.getType() ||
+      !isWaferSPMMemRefType(copy.dest.getType()))
+    return std::nullopt;
+  return copy;
+}
+
+// Earlier reads (including psum) still need the intermediate allocation.
+// Only its overwritten contents may disappear: after this write, the next
+// copy must be its sole observer, including through pre-existing aliases.
+static bool isPrivateCopyIntermediate(
+    const CompleteCopy &write, const CompleteCopy &read,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  auto allocation = write.dest.getDefiningOp<mlir::memref::AllocOp>();
+  if (!allocation || allocation->getBlock() != write.operation->getBlock() ||
+      pipelineOperations.contains(allocation))
+    return false;
+  llvm::SmallVector<mlir::Value> pending{write.dest};
+  llvm::DenseSet<mlir::Value> visited;
+  while (!pending.empty()) {
+    mlir::Value alias = pending.pop_back_val();
+    if (!visited.insert(alias).second)
+      continue;
+    for (mlir::OpOperand &use : alias.getUses()) {
+      mlir::Operation *user = use.getOwner();
+      if (alias == write.dest &&
+          ((user == write.operation && use.getOperandNumber() == 1) ||
+           (user == read.operation && use.getOperandNumber() == 0)))
+        continue;
+      if (user->getBlock() != write.operation->getBlock() ||
+          !user->isBeforeInBlock(write.operation) || user->getNumRegions() ||
+          pipelineOperations.contains(user))
+        return false;
+      if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
+        if (view.getViewSource() != alias || !mlir::isMemoryEffectFree(user))
+          return false;
+        pending.append(user->getResults().begin(), user->getResults().end());
+        continue;
+      }
+      auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(user);
+      if (!effects)
+        return false;
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> instances;
+      effects.getEffectsOnValue(alias, instances);
+      if (instances.empty() || llvm::any_of(instances, [](const auto &effect) {
+            return !mlir::isa<mlir::MemoryEffects::Read,
+                              mlir::MemoryEffects::Write>(effect.getEffect());
+          }))
+        return false;
+      effects.getEffects(instances);
+      if (llvm::any_of(instances, [](const auto &effect) {
+            return !effect.getValue() &&
+                   effect.getResource() ==
+                       mlir::SideEffects::DefaultResource::get();
+          }))
+        return false;
+      for (mlir::Value result : user->getResults())
+        if (mlir::isa<mlir::ShapedType>(result.getType()) &&
+            !effects.getEffectOnValue<mlir::MemoryEffects::Allocate>(result))
+          return false;
+    }
+  }
+  return true;
+}
+
 static void eliminateGemmWritebacks(
     mlir::ModuleOp module, mlir::IRRewriter &rewriter,
     const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
-  module.walk([&](MoveCopyIntoOp copy) {
-    if (copy.getSource().getType() != copy.getDest().getType() ||
-        pipelineOperations.contains(copy))
-      return;
-    // Batch flattening can leave only metadata views between the functional
-    // GEMM and its writeback. Keep the destination's storage identity; invert
-    // the proven physical mapping instead of redirecting its other users.
-    mlir::Value source = copy.getSource();
-    mlir::Operation *next = copy;
+  llvm::SmallVector<ComputeGemmOp> gemms;
+  module.walk([&](ComputeGemmOp gemm) { gemms.push_back(gemm); });
+  for (auto gemm : gemms) {
+    if (!gemm.getResult().hasOneUse() || pipelineOperations.contains(gemm))
+      continue;
+    // Follow only the actual adjacent result chain. Inverting a proven view
+    // keeps the final destination's storage identity and all of its readers.
+    mlir::Value source = gemm.getResult();
+    mlir::Operation *next = gemm->getNextNode();
     llvm::SmallVector<ViewReshapeOp> views;
-    while (auto view = source.getDefiningOp<ViewReshapeOp>()) {
-      if (!source.hasOneUse() || view->getNextNode() != next ||
+    while (auto view = mlir::dyn_cast_or_null<ViewReshapeOp>(next)) {
+      if (view.getSource() != source || !view.getResult().hasOneUse() ||
           pipelineOperations.contains(view) ||
           mlir::failed(
               analysis::TransferRealizability::proveStaticReshapeMetadataView(
                   mlir::cast<mlir::MemRefType>(view.getSource().getType()),
                   mlir::cast<mlir::MemRefType>(view.getResult().getType()),
                   /*destinationMayWrite=*/false)))
-        return;
+        break;
       views.push_back(view);
-      source = view.getSource();
-      next = view;
+      source = view.getResult();
+      next = view->getNextNode();
     }
-    auto gemm = source.getDefiningOp<ComputeGemmOp>();
-    if (!gemm || !gemm.getResult().hasOneUse() || gemm->getNextNode() != next ||
-        pipelineOperations.contains(gemm))
-      return;
-    if (copy.getDest().getType() != gemm.getResult().getType() &&
-        mlir::failed(
-            analysis::TransferRealizability::proveStaticReshapeMetadataView(
-                mlir::cast<mlir::MemRefType>(copy.getDest().getType()),
-                mlir::cast<mlir::MemRefType>(gemm.getResult().getType()),
-                /*destinationMayWrite=*/true)))
-      return;
+    auto first = getCompleteCopy(next);
+    if (!first || first->source != source ||
+        pipelineOperations.contains(first->operation))
+      continue;
+    llvm::SmallVector<CompleteCopy> copies{*first};
+    while (auto following =
+               getCompleteCopy(copies.back().operation->getNextNode())) {
+      if (following->source != copies.back().dest ||
+          pipelineOperations.contains(following->operation) ||
+          !isPrivateCopyIntermediate(copies.back(), *following,
+                                     pipelineOperations))
+        break;
+      copies.push_back(*following);
+    }
+    size_t selected = 0;
     {
       mlir::AliasAnalysis aliases(module);
-      for (auto input : gemm->getOperands())
-        if (!aliases.alias(input, copy.getDest()).isNo())
-          return;
+      mlir::DominanceInfo dominance(module);
+      for (auto [index, copy] : llvm::enumerate(copies)) {
+        if (!dominance.dominates(copy.dest, gemm) ||
+            llvm::any_of(gemm->getOperands(),
+                         [&](mlir::Value input) {
+                           return !aliases.alias(input, copy.dest).isNo();
+                         }) ||
+            llvm::any_of(
+                llvm::ArrayRef(copies).take_front(index),
+                [&](const CompleteCopy &previous) {
+                  return !aliases.alias(previous.dest, copy.dest).isNo();
+                }))
+          continue;
+        if (copy.dest.getType() != gemm.getResult().getType() &&
+            mlir::failed(
+                analysis::TransferRealizability::proveStaticReshapeMetadataView(
+                    mlir::cast<mlir::MemRefType>(copy.dest.getType()),
+                    mlir::cast<mlir::MemRefType>(gemm.getResult().getType()),
+                    /*destinationMayWrite=*/true)))
+          continue;
+        selected = index + 1;
+      }
     }
+    if (!selected)
+      continue;
     rewriter.setInsertionPoint(gemm);
-    mlir::Value dest = copy.getDest();
+    mlir::Value dest = copies[selected - 1].dest;
     if (dest.getType() != gemm.getResult().getType())
       dest = rewriter.create<ViewReshapeOp>(gemm.getLoc(),
                                             gemm.getResult().getType(), dest);
@@ -552,11 +657,13 @@ static void eliminateGemmWritebacks(
         gemm.getRhsBatchDimsAttr(), gemm.getRhsContractingDimAttr(),
         gemm.getRhsNDimAttr(), gemm.getResultBatchDimsAttr(),
         gemm.getResultMDimAttr(), gemm.getResultNDimAttr());
-    rewriter.eraseOp(copy);
-    for (auto view : views)
+    for (const auto &copy :
+         llvm::reverse(llvm::ArrayRef(copies).take_front(selected)))
+      rewriter.eraseOp(copy.operation);
+    for (auto view : llvm::reverse(views))
       rewriter.eraseOp(view);
     rewriter.eraseOp(gemm);
-  });
+  }
 }
 
 // A private DPS publication is not an observable storage identity. Remove

@@ -1,0 +1,536 @@
+{
+  "work_item": "board-testing",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bf16",
+  "shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "explp_baseline": {
+    "device_elapsed_ms": 4.714,
+    "numeric": {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "ccb963ea07aa86c02b0e322c8615c83c93ac8340d8bcdd284858f7e11873315a",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4714000"
+      ]
+    },
+    "device_health": {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-explp-20260922/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-explp-20260922/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-explp-20260922/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-explp-20260922/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-explp-20260922/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 8885,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    },
+    "host_register_capture": false,
+    "device_profile": false,
+    "output_sha256": "eee6bd5c2988a42fec9646b1dd5d3f98c51468a323bd1c9229a59ece03260152"
+  },
+  "copy_chain": {
+    "status": "passed host, fresh no-card, three ordinary board executions and separate profile",
+    "root_cause": "StructuredToTile publishes the functional GEMM result back to its DPS psum buffer; the earlier layout/bufferization loop-destination binding also copies it to the loop state. The old writeback rule stops at the psum-aliased first destination.",
+    "rewrite": "Follow adjacent full copies after proven metadata views; preserve psum, private intermediates must have no later observer/escape, final destination must dominate GEMM and not alias inputs or skipped intermediates.",
+    "host_direct_suite": "19/19 execution-structure tests passed; new test covers 54 dtype/extent/structure combinations",
+    "lit": "39/39 passed, no skipped or unsupported tests",
+    "first_analysis_prepare_wall_seconds": 230.31,
+    "first_analysis_prepare_max_rss_kib": 1017624,
+    "static_gather_scatter_per_tile": {
+      "before": 27,
+      "after": 23,
+      "tiles": 16
+    },
+    "busy_tile_removed_copy_count": 144,
+    "busy_tile_removed_payload_bytes": 18874368,
+    "device_elapsed_ms": [
+      4.574,
+      4.535,
+      4.47
+    ],
+    "median_device_elapsed_ms": 4.535,
+    "host_full_transforms": {
+      "passed": 511,
+      "failed": 0,
+      "wall_seconds": 534.73,
+      "max_rss_kib": 1054244
+    },
+    "final_prepare_wall_seconds": 235.04,
+    "final_prepare_max_rss_kib": 1023856,
+    "canonical_build": "full incremental passed; subsequent Ninja no-op",
+    "prepare_identity": {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "attention-prefill-28-heads-2048",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260922",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/attention-copy-chain-final-20260922/prepared",
+        "--dump-compiler-ir",
+        "/data/vibe_compiler-validation/attention-copy-chain-final-20260922/ir",
+        "--optimization-policy",
+        "search",
+        "--memory-guards",
+        "--device-timing",
+        "--compile-timing",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--board-diagnose-tool",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+        "--no-card"
+      ],
+      "compiler_sha256": "9037a9758bc3e65364fe9349de682e9897563a249889fe2cae379155afb890ef",
+      "board_execution": false
+    },
+    "board_samples": [
+      {
+        "numeric": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "f25cb0a4d75b2e7d2b8691ae2118d3294a96b74b6aba31b4cc6cb67a912b55b0",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4574000"
+          ]
+        },
+        "health": {
+          "host_register_capture": false,
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "passed": true
+        }
+      },
+      {
+        "numeric": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "f25cb0a4d75b2e7d2b8691ae2118d3294a96b74b6aba31b4cc6cb67a912b55b0",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4535000"
+          ]
+        },
+        "health": {
+          "host_register_capture": false,
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "passed": true
+        }
+      },
+      {
+        "numeric": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "f25cb0a4d75b2e7d2b8691ae2118d3294a96b74b6aba31b4cc6cb67a912b55b0",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4470000"
+          ]
+        },
+        "health": {
+          "host_register_capture": false,
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "passed": true
+        }
+      }
+    ],
+    "profile": {
+      "valid": true,
+      "validity": {
+        "clock_alignment": false,
+        "cost_accounting": true,
+        "environment": true,
+        "full_trace": true,
+        "host_completion_resolution": false,
+        "measurement_basis": true,
+        "output_equivalence": true,
+        "pmu": true,
+        "pmu_restore": true,
+        "profile_instrumentation": true,
+        "program_contract": true,
+        "semantic_correctness": null,
+        "trace": true
+      },
+      "trace_capture": {
+        "captured_events": 62480,
+        "full_execution": true,
+        "scope": "full-execution",
+        "total_events": 62480
+      },
+      "program": {
+        "duration": {
+          "completion_observation_fraction": 0.003574946156141061,
+          "completion_observation_resolution_ns": 17495,
+          "device_elapsed_ns": 4611000,
+          "device_elapsed_quantized_zero": false,
+          "device_timer_kind": "tx-stream-events",
+          "host_completion_high_resolution": false,
+          "host_envelope_available": true,
+          "host_launch_to_completion_ns": 4893780,
+          "host_non_submit_envelope_ns": 4777164,
+          "host_submit_ns": 116616,
+          "host_submit_quantized_zero": false,
+          "includes_device_control_wait_and_scheduling": true,
+          "includes_host_completion_polling": false,
+          "includes_host_submit": false,
+          "includes_trace_instrumentation": false,
+          "is_engine_only": false,
+          "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+          "qualified": true,
+          "sample_id": "primary",
+          "sample_index": 0,
+          "scope": "primary-launch-to-stream-completion",
+          "status": "Measured"
+        },
+        "engine_active_time": {
+          "additive_to_kernel_launch_envelope": false,
+          "by_engine": [
+            {
+              "active_tile_count": 16,
+              "available_tile_count": 16,
+              "average_per_tile_ns": 953664.0,
+              "engine": "CT",
+              "maximum_per_tile_ns": 1089544,
+              "measurement_kind": "trace-pmu-engine-active-time",
+              "minimum_per_tile_ns": 546042,
+              "status": "Measured",
+              "sum_across_tiles_work_ns": 15258624
+            },
+            {
+              "active_tile_count": 16,
+              "available_tile_count": 16,
+              "average_per_tile_ns": 318024.0,
+              "engine": "NE",
+              "maximum_per_tile_ns": 363456,
+              "measurement_kind": "trace-pmu-engine-active-time",
+              "minimum_per_tile_ns": 181728,
+              "status": "Measured",
+              "sum_across_tiles_work_ns": 5088384
+            },
+            {
+              "active_tile_count": 16,
+              "available_tile_count": 16,
+              "average_per_tile_ns": 300497.5,
+              "engine": "RDMA",
+              "maximum_per_tile_ns": 367103,
+              "measurement_kind": "trace-pmu-engine-active-time",
+              "minimum_per_tile_ns": 181524,
+              "status": "Measured",
+              "sum_across_tiles_work_ns": 4807960
+            },
+            {
+              "active_tile_count": 16,
+              "available_tile_count": 16,
+              "average_per_tile_ns": 25267.4375,
+              "engine": "WDMA",
+              "maximum_per_tile_ns": 32901,
+              "measurement_kind": "trace-pmu-engine-active-time",
+              "minimum_per_tile_ns": 16332,
+              "status": "Measured",
+              "sum_across_tiles_work_ns": 404279
+            },
+            {
+              "active_tile_count": 16,
+              "available_tile_count": 16,
+              "average_per_tile_ns": 1284618.6875,
+              "engine": "TDMA",
+              "maximum_per_tile_ns": 1448679,
+              "measurement_kind": "trace-pmu-engine-active-time",
+              "minimum_per_tile_ns": 792527,
+              "status": "Measured",
+              "sum_across_tiles_work_ns": 20553899
+            }
+          ],
+          "card_wide_engine_elapsed_ns": null,
+          "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+          "card_wide_engine_elapsed_status": "Unavailable",
+          "cross_tile_sum_role": "work-volume-not-wall-time",
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "measurement_run": "trace-diagnostic",
+          "per_tile_work_volume": {
+            "available_tile_count": 16,
+            "average_per_tile_total_work_ns": 2882071.625,
+            "maximum_per_tile_total_work_ns": 3298332,
+            "minimum_per_tile_total_work_ns": 1718364,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 46113146
+          },
+          "relation_to_primary": "separate-run-proxy",
+          "scope": "per-tile-per-ncc-engine",
+          "source_capture": "trace",
+          "unit": "ns"
+        },
+        "output": {
+          "correctness_status": "primary-validated",
+          "diagnostic_captures_match_primary": true,
+          "independent_expected_coverage": "none",
+          "primary_output_validated": true,
+          "resource_count": 1
+        },
+        "package_digest": "sha256:f25cb0a4d75b2e7d2b8691ae2118d3294a96b74b6aba31b4cc6cb67a912b55b0"
+      },
+      "numeric": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "f25cb0a4d75b2e7d2b8691ae2118d3294a96b74b6aba31b4cc6cb67a912b55b0",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=4611000",
+          "profile_run: /data/vibe_compiler-validation/attention-copy-chain-profile-20260922/prepared/package/package.profile/runs/current"
+        ]
+      },
+      "health": {
+        "host_register_capture": false,
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "returncode": 0,
+        "alarms": [],
+        "problems": [],
+        "passed": true
+      },
+      "interpretation": "Engine active work can overlap and is not additive to Primary. Per-site NCC attribution is ambiguous; engine totals and complete event counts remain usable. External numeric audit passed independently."
+    }
+  },
+  "search_counter": {
+    "root_cause": "Derived placement/pipeline branches inherit reuse but were not counted by the reuse-only discovery callsite.",
+    "change": "Count each newly created reuse-bearing branch in the common discover function; no search decisions or budgets change.",
+    "regression": "SearchAccountsForFilteredAndEvaluatedReuse passed at all original 1024/1025/1031/4096 inputs in 42.762s."
+  }
+}

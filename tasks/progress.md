@@ -25,12 +25,14 @@
 本目标仍归board-testing；数值、guard、正常清理及性能优化验收闭合前不标完成，见
 [BF16 2048性能目标与通用修复合同](plans/board-workload-matrix.md#bf16-2048性能目标与通用修复合同)。
 最新授权为所有生产exp统一使用Explp，覆盖score、行状态、merge与普通逐元素指数，dtype及原验收容差保持；
-统一TileToInstr映射、host近似reference及直接回归已通过，新目标包完成fresh no-card，实卡数值和性能待设备恢复后验证。
-扩大回归仍有纯GEMM的Driver搜索计数断言失败，已记录，不能将本轮记为全部回归通过。
+统一TileToInstr映射、host近似reference及直接回归已通过；用户确认重启后，新目标包的实卡数值、guard、完成和正常退出通过。
+完整GEMM复制链的目标转交已通过完整主机回归、fresh no-card、三次普通实卡及独立profile；
+当前按第3项继续处理行状态与等字节序copy，第4/5项及分组tail仍未闭合。
+此前纯GEMM的Driver搜索计数断言已定位为派生reuse分支漏计；统一创建处计数修正后原输入回归通过，搜索选择和预算不变。
 后续按GEMM写回、行状态/等字节序copy、输出恢复、
 K/V流水化的顺序推进，tile/空间切分后置；具体根因、实施边界及覆盖见
 [后续性能优化实施方案](plans/board-workload-matrix.md#后续性能优化实施方案)。
-当前没有新的板端结果；此前设备异常后的停止状态和原生转置族禁用约束保持。
+当前会话已恢复并取得Explp版本健康实卡结果；原生转置族禁用约束保持。具体数字与验证边界见同一计划顶部。
 新BF16 2048生产包已完成fresh no-card和三次无插桩实卡基线，数值/guard/正常退出通过，性能尚未达标。
 11号GS重复读取优化已通过主机回归及同版本三次BF16实卡，性能明显改善但仍未达标；
 随后补齐跨metadata reshape的GEMM写回消除，BF16三次实卡健康，仍未达到3ms；
