@@ -16,6 +16,23 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-21：跨metadata reshape消除GEMM结果写回
+
+同一BF16 `[1,28,2048,128]` causal attention，新生产包三次关闭采样/插桩的设备时间为
+**8.691、8.606、8.586ms**，中位数较前一步8.782ms降低**2.0%**。完整输出、10,752 guard bytes、
+16 Tile completion和正常退出通过，无driver/firmware告警；最后一次输出与前一步逐bit相同，3ms目标仍未达到。
+
+StructuredToTile的batch flattening在functional GEMM与DPS写回之间生成metadata reshape，旧规则只匹配直接def，
+因此漏掉整块结果复制。ExecutionStructure现在证明连续单use view链及其可写逆映射，让GEMM通过原目标的view直接写入。
+原目标identity不变；全部输入含psum仍须NoAlias，不跨layout转换、真实reshape copy或中间观察者。
+这是通用写回规则，不依赖attention、2048长度或28个head。
+
+本产品每Tile静态GS site减少2，忙碌Tile每次少72次QK结果复制、18 MiB有效数据搬运；算术、fill和terminal join数量不变。
+Tile 4三次TDMA累计周期从7,713,217降至6,977,801，CT仍约9,486,000。engine周期存在重叠，
+此结果只支持小幅写回收益，没有定位剩余CT的逐site成本。
+新60组真实规模reshape矩阵、原36组直接写回矩阵、306项lit及三个非attention PyTorch产品no-card通过，
+完整数值、PMU、编译工作量和版本身份见[机器可读证据](data/board-performance/attention-bf16-2048-gemm-view-writeback-20260921.json)。
+
 ## 2026-09-21：GS前缀复制降低2048 BF16广播成本
 
 同一boot、输入、dtype及数值门槛下，生产search包三次无插桩设备计时为**8.914、8.755、8.782ms**。

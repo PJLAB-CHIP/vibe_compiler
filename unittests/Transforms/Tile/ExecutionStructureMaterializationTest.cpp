@@ -370,6 +370,161 @@ TEST(ExecutionStructureMaterializationTest,
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     GemmWritebackThroughMetadataReshapesPreservesStorage) {
+  enum class Case {
+    Single,
+    Chain,
+    SeparatePsum,
+    AliasedPsum,
+    ResultShared,
+    ViewShared,
+    Observer,
+    MaterializingReshape,
+    DifferentMapping,
+    FoldBatchPadding
+  };
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (auto test :
+           {Case::Single, Case::Chain, Case::SeparatePsum, Case::AliasedPsum,
+            Case::ResultShared, Case::ViewShared, Case::Observer,
+            Case::MaterializingReshape, Case::DifferentMapping,
+            Case::FoldBatchPadding}) {
+        SCOPED_TRACE(::testing::Message() << dtype << '/' << extent << '/'
+                                          << static_cast<int>(test));
+        auto context = createContext();
+        std::string lhs = "memref<2x" + std::to_string(extent) + "x16x" +
+                          dtype + ", #wafer.memory<spm, ncx>>";
+        std::string rhs = "memref<2x16x16x" + std::string(dtype) +
+                          ", #wafer.memory<spm, ncx>>";
+        std::string result = "memref<2x" + std::to_string(extent) +
+                             "x16xf32, #wafer.memory<spm, ncx>>";
+        std::string view = "memref<2x1x" + std::to_string(extent) +
+                           "x16xf32, #wafer.memory<spm, ncx>>";
+        bool chain = test == Case::Chain || test == Case::ViewShared;
+        std::string dest = chain ? "memref<2x1x1x" + std::to_string(extent) +
+                                       "x16xf32, #wafer.memory<spm, ncx>>"
+                                 : view;
+        if (test == Case::DifferentMapping)
+          dest = view = "memref<2x16x" + std::to_string(extent) +
+                        "xf32, #wafer.memory<spm, ncx>>";
+        if (test == Case::FoldBatchPadding)
+          dest = view = "memref<1x2x" + std::to_string(extent) +
+                        "x16xf32, #wafer.memory<spm, ncx>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main() { wafer.tile.region() -> () {\n"
+               "%a = memref.alloc() : "
+            << lhs << "\n%b = memref.alloc() : " << rhs
+            << "\n%d = memref.alloc() : " << dest
+            << "\n%p = memref.alloc() : " << result << '\n';
+        if (test == Case::AliasedPsum)
+          out << "%alias = wafer.tile.reshape %d : " << dest << " -> " << result
+              << '\n';
+        out << "%r = wafer.tile.gemm %a, %b";
+        if (test == Case::SeparatePsum || test == Case::AliasedPsum)
+          out << " psum(%" << (test == Case::SeparatePsum ? "p" : "alias")
+              << " : " << result << ')';
+        out << " {batch_count = 2 : i64, lhs_batch_dims = array<i64: 0>, "
+               "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+               "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : i64, "
+               "rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+               "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : ("
+            << lhs << ", " << rhs << ") -> " << result << '\n';
+        out << "%v = wafer.tile."
+            << (test == Case::MaterializingReshape ? "reshape_copy" : "reshape")
+            << " %r : " << result << " -> " << view << '\n';
+        if (chain)
+          out << "%w = wafer.tile.reshape %v : " << view << " -> " << dest
+              << '\n';
+        if (test == Case::Observer)
+          out << "%old = wafer.tile.copy %d : " << dest << " -> " << dest
+              << '\n';
+        out << "wafer.tile.copy_into %" << (chain ? "w" : "v")
+            << " into %d : " << dest << " into " << dest << '\n';
+        if (test == Case::ResultShared || test == Case::ViewShared)
+          out << "%extra = wafer.tile.copy %"
+              << (test == Case::ResultShared ? "r" : "v") << " : "
+              << (test == Case::ResultShared ? result : view) << " -> "
+              << (test == Case::ResultShared ? result : view) << '\n';
+        // Observe the original destination, independently of its new view.
+        out << "%read = wafer.tile.copy %d : " << dest << " -> " << dest
+            << "\nwafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        mlir::Value originalDest;
+        module->walk([&](MoveCopyIntoOp op) { originalDest = op.getDest(); });
+        auto prepared = prepareTileExecutionStructure(*module, {});
+        ASSERT_TRUE(prepared.succeeded());
+        auto materialized = materializeExecutionStructure(
+            std::move(module), std::move(*prepared.prepared));
+        ASSERT_TRUE(materialized.succeeded())
+            << (materialized.failure ? materialized.failure->detail : "");
+        bool folded = test == Case::Single || test == Case::Chain ||
+                      test == Case::SeparatePsum ||
+                      (test == Case::FoldBatchPadding && extent == 1024);
+        unsigned into = 0, copies = 0, functional = 0;
+        TileRegionOp region;
+        materialized.materialized->module->walk([&](ComputeGemmIntoOp op) {
+          ++into;
+          auto inverse = op.getDest().getDefiningOp<ViewReshapeOp>();
+          ASSERT_TRUE(inverse);
+          EXPECT_EQ(inverse.getSource(), originalDest);
+          EXPECT_EQ(
+              mlir::cast<mlir::MemRefType>(op.getDest().getType()).getShape(),
+              llvm::ArrayRef<int64_t>({2, extent, 16}));
+          EXPECT_EQ(static_cast<bool>(op.getPsum()),
+                    test == Case::SeparatePsum);
+        });
+        materialized.materialized->module->walk(
+            [&](ComputeGemmOp) { ++functional; });
+        materialized.materialized->module->walk([&](MoveCopyIntoOp op) {
+          ++copies;
+          EXPECT_EQ(op.getDest(), originalDest);
+        });
+        materialized.materialized->module->walk(
+            [&](TileRegionOp op) { region = op; });
+        EXPECT_EQ(into, folded ? 1u : 0u);
+        EXPECT_EQ(functional, folded ? 0u : 1u);
+        EXPECT_EQ(copies, folded ? 0u : 1u);
+        ASSERT_TRUE(
+            mlir::succeeded(mlir::verify(*materialized.materialized->module)));
+        TileRegionToInstrLoweringSession session(*context);
+        if (test == Case::DifferentMapping ||
+            (test == Case::FoldBatchPadding && extent != 1024)) {
+          // Equal element counts do not imply an NCx metadata alias. The
+          // existing lowering must reject this verifier-valid unsupported view.
+          EXPECT_TRUE(mlir::failed(convertTileRegionToInstr(region, session)));
+          continue;
+        }
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        unsigned gemms = 0;
+        region.walk([&](InstrGemmOp op) {
+          ++gemms;
+          if (folded) {
+            auto inverse =
+                op.getDest().getDefiningOp<mlir::memref::ReinterpretCastOp>();
+            ASSERT_TRUE(inverse);
+            EXPECT_EQ(inverse.getSource(), originalDest);
+          }
+          EXPECT_NE(op.getDest(), op.getPsum());
+        });
+        EXPECT_EQ(gemms, 1u);
+        ASSERT_TRUE(mlir::succeeded(
+            rebuildRequiredNCCJoins(*materialized.materialized->module)));
+        unsigned joins = 0;
+        materialized.materialized->module->walk([&](SyncNCCJoinOp op) {
+          ++joins;
+          EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
+        });
+        EXPECT_EQ(joins, 1u);
+        EXPECT_TRUE(mlir::succeeded(planSPMMemoryModule(
+            *materialized.materialized->module, 0, 3 * 1024 * 1024, 16)));
+      }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      ReusePrivateScalarArithmeticButPreserveRepeatedInput) {
   for (int64_t extent : {1024, 1025, 1031})
     for (unsigned variant = 0; variant < 3; ++variant) {

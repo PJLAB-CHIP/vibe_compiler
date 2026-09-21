@@ -64,6 +64,23 @@ scope fan-out边的线性判重另改为保序集合，13号规则不变；三�
 旧失败目录与分类证据保留，没有故障后retry或设备reset。完整记录见
 [前缀复制实测](../../docs/data/board-performance/attention-bf16-2048-prefix-copy-20260921.json)。
 
+第二步补齐10号GEMM显式目标规则：StructuredToTile将batch轴折叠后，通过metadata reshape恢复结果rank，
+原ExecutionStructure只匹配直接GEMM def，漏掉其后的整块写回。现在仅穿过连续单use且物理映射可逆的metadata view，
+保留原目标identity、psum NoAlias约束、算术和dtype；物化layout/reshape copy及可观察中间值不穿越。
+生产包每Tile消除两处QK结果写回site，忙碌Tile每invocation减少72次复制、18 MiB有效数据搬运；
+其它算术与fill不变，每Tile仍只有一个terminal join。
+
+本轮fresh no-card及三次实卡通过，计时8.691/8.606/8.586ms，中位数比前一步8.782ms降低2.0%。
+完整输出、guard、completion、厂商退出和日志均通过，最后一次输出与前一步逐bit一致。
+Tile 4三次TDMA累计周期从7,713,217降至6,977,801，CT仍约9,486,000；只说明这项写回有小幅收益，不能代签剩余热点。
+新60组host矩阵覆盖FP16/BF16、1024/1025/1031、单/多view、独立/重叠psum、额外use、observer和physical-map反例；
+原36组直接写回、306项lit及三个非attention PyTorch产品no-card通过。初版fixture将NCx batch2折叠为batch1，
+非整除shape的per-batch padding导致其不能作为metadata view；保留为拒绝反例，正例改为保持batch映射，未放宽合法性。
+完整Transforms/Analysis/Planning/Conversion/Pipeline回归、canonical完整增量及随后Ninja no-op通过。
+具体构建、回归及身份见[本轮证据](../../docs/data/board-performance/attention-bf16-2048-gemm-view-writeback-20260921.json)。
+3ms目标仍未达到；下一步优先核查无psum GEMM前仍存在的初始化/布局搬运及剩余CT工作，
+必须先证明完整覆盖与无旧值观察，再选择对应owner消除，不能把PMU累计周期当作单site耗时。
+
 ### Host诊断工具入仓与无采集计时
 
 用户授权将已验证的Host寄存器采集能力迁入仓库，默认关闭，并重新测当前attention耗时。

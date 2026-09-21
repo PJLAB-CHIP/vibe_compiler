@@ -599,10 +599,38 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 
 ### GEMM显式目标与相邻写回
 
-输入为已完成layout/bufferization的`tile.gemm`及其唯一相邻`tile.copy_into`。ExecutionStructure仅在
-结果与目标type完全相同、全部GEMM输入（含psum）与目标由fresh alias analysis证明NoAlias时，
+输入为已完成layout/bufferization的`tile.gemm`及其唯一相邻`tile.copy_into`，允许两者之间仅有
+连续、单use的`tile.reshape`元数据view。ExecutionStructure仅在copy源与目标type完全相同、
+全部GEMM输入（含psum）与目标由fresh alias analysis证明NoAlias时，
 将二者合并为`tile.gemm_into`。它与functional GEMM共享shape/dtype/方向合同，目标为明确Write operand，
 不再分配结果。现有elementwise_into不能表达收缩与psum；新op的直接消费者是同一TileToInstr GEMM lowering。
-目标identity及其已有view保持不变；不跨中间观察者、pipeline调度边界或shape/layout copy链合并。
+目标identity及其已有view保持不变；不跨中间观察者、pipeline调度边界或materializing shape/layout copy链合并。
 psum与destination必须分离，低层不得自行选择复用。完成条件包括rank3、1024/1025/1031，
 无psum/独立psum正例和重叠psum/额外use/中间观察反例，Instr目标identity、无多余copy、fresh completion/SPM。
+
+元数据reshape写回的扩展合同：
+
+- 上游输入：StructuredToTile将batch轴折叠后的GEMM结果，用`ViewReshapeOp`恢复逻辑rank后写入DPS目标；
+  此时实际buffer、view、读写和layout已经存在。原规则只匹配copy的直接def，因而漏掉这类完整结果写回。
+- 本层职责：沿相邻单use SSA链识别GEMM，使用`TransferRealizability`证明每个view的物理元素映射，
+  并证明从原copy目标到GEMM结果type的反向可写metadata view。所有检查和fresh alias查询在修改前完成。
+- 输出：在原GEMM位置为原目标建立反向`tile.reshape`，以它作为`tile.gemm_into`的dest；删除旧结果view链及copy。
+  原目标allocation、其它view和consumer均不改写，不产生新storage或改变算术、dtype、psum。
+- 下游：既有TileToInstr将目标view降低为`memref.reinterpret_cast`，随后fresh completion/SPM从actual IR规划。
+  production driver和named pipeline均调用同一ExecutionStructure实现。
+- 非目标：不跨任意pure op/region/observer，不穿越`reshape_copy`或layout转换，不允许psum与dest alias，
+  不把shape元素数相同当作physical mapping相同，也不在上游猜测bufferization后的allocation。
+- 方法比较：[MLIR One-Shot Bufferize](https://mlir.llvm.org/docs/Bufferization/)通过DPS和SSA读写分析选择目标；pinned `EmptyTensorElimination.cpp`
+  的等价反向链明确止于reshape，不能直接用于此处已选物理layout的buffer写回。
+  本扩展沿用已有buffer层显式目标规则，以实际view的可逆物理映射补齐rank变化，不新增第二套bufferization。
+
+| 元数据写回覆盖 | 预期结果和直接下游witness |
+| --- | --- |
+| FP16/BF16输入、F32累加；1024/1025/1031；rank3→4→5 | 单/多view均写入原目标的反向view；一条Instr GEMM，无结果copy；目标物理identity不变 |
+| 无psum、独立psum | 仅消除写回；保留相同输入、算术、psum及原目标后续reader |
+| result或中间view额外use、中间目标observer | 不合并，保留原写回和可观察结果 |
+| psum与目标直接/通过view alias | 不合并；保留独立functional结果及写回，直接下游仍合法 |
+| view物理映射不等价 | 不合并；lowering继续拒绝原输入的不支持映射，不擅自copy或改layout |
+| NCx batch2折叠为batch1，保留/破坏per-batch padding | 1024可证明等价；1025/1031物理footprint不同，保持原view并由lowering拒绝 |
+| 全部合法变体 | Tile→Instr、fresh terminal completion及actual SPM规划；不增加循环或非terminal join |
+| BF16目标产品 | fresh PyTorch→package/no-card；实际多Tile、多query/KV块；再测全量数值、guard和三次健康设备时间 |

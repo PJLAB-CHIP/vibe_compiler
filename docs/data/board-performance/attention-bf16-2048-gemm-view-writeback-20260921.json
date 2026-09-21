@@ -1,0 +1,877 @@
+{
+  "date": "2026-09-21",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bfloat16",
+  "qkv_shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "seed": 20260922,
+  "policy": "search",
+  "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback",
+  "previous_record": "attention-bf16-2048-prefix-copy-20260921.json",
+  "previous_device_ms": [
+    8.914,
+    8.755,
+    8.782
+  ],
+  "device_ms": [
+    8.691,
+    8.606,
+    8.586
+  ],
+  "median_latency_reduction_fraction": 0.02004099294010475,
+  "target_ms": 3,
+  "target_achieved": false,
+  "fresh_no_card": true,
+  "compiler_identity": {
+    "compiler_sha256": "14eeb9764f2996eefde6aecaaec503012cc079339b5a8af1a68e206b7535651e",
+    "git_head": "1418460cacbacc41194662b40cbd628c26144be2",
+    "source_diff_sha256": "d6f1240e3b978a39fc4d9cf640133e4a1d37de437f3c0f980f79dba0230e61b3",
+    "command": [
+      "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+      "-B",
+      "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "--case",
+      "attention-prefill-28-heads-2048",
+      "--dtype",
+      "bfloat16",
+      "--seed",
+      "20260922",
+      "--wafer-compile",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+      "--wafer-run",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+      "--work-dir",
+      "/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/prepared",
+      "--dump-compiler-ir",
+      "/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/ir",
+      "--optimization-policy",
+      "search",
+      "--memory-guards",
+      "--device-timing",
+      "--compile-timing",
+      "--expected-runtime-version",
+      "1400",
+      "--expected-device-name",
+      "/dev/accel/dev-0",
+      "--expected-pci-bus-id",
+      "0000:3b:00.0",
+      "--expected-tile-count",
+      "16",
+      "--expected-runtime-library-sha256",
+      "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+      "--completion-timeout-ms",
+      "60000",
+      "--board-diagnose-tool",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+      "--no-card"
+    ],
+    "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+    "stage": "prepare",
+    "register_capture": false,
+    "device_profile": false
+  },
+  "manifest_sha256": "c9c3f6ecae89026a9251be73bafd442d0969e072cb755361e07fdb75716f77a9",
+  "module_sha256": "84a208d2535b34a6bff6da2e64f8e56b7f73513cf85a43915fb03bcbecf8cdcd",
+  "root_cause": "StructuredToTile batch flattening restores result rank with a metadata reshape; ExecutionStructure recognized only a direct functional GEMM result before copy_into, leaving a redundant full result writeback.",
+  "change": "Fold an adjacent single-use metadata reshape chain using exact physical mapping and writable inverse-view proof; GEMM writes through the original destination view. All inputs including psum must remain NoAlias. No new storage, arithmetic, dtype, tile partition or joins.",
+  "static_current_ir_counts": {
+    "prefix-bounded": [
+      {
+        "tile": 0,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 1,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 2,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 3,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 4,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 5,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 6,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 7,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 8,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 9,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 10,
+        "gs_sites": 82,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 11,
+        "gs_sites": 86,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 12,
+        "gs_sites": 86,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 13,
+        "gs_sites": 86,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 14,
+        "gs_sites": 86,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      },
+      {
+        "tile": 15,
+        "gs_sites": 86,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 0
+      }
+    ],
+    "gemm-view-writeback": [
+      {
+        "tile": 0,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 1,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 2,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 3,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 4,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 5,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 6,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 7,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 8,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 9,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 10,
+        "gs_sites": 80,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 11,
+        "gs_sites": 84,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 12,
+        "gs_sites": 84,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 13,
+        "gs_sites": 84,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 14,
+        "gs_sites": 84,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      },
+      {
+        "tile": 15,
+        "gs_sites": 84,
+        "gemm_sites": 4,
+        "fill_sites": 9,
+        "terminal_join_sites": 1,
+        "gemm_into_sites": 2
+      }
+    ]
+  },
+  "dynamic_work_removed_per_busy_tile": {
+    "qk_writeback_calls": 72,
+    "copied_bytes": 18874368,
+    "basis": "Two heads, eight Q blocks, 36 causal block pairs per head; one QK result writeback per pair removed. Static branches are mutually exclusive."
+  },
+  "measurement_conditions": [
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    },
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    },
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    }
+  ],
+  "numeric_audits": [
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "c9c3f6ecae89026a9251be73bafd442d0969e072cb755361e07fdb75716f77a9",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8691000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "c9c3f6ecae89026a9251be73bafd442d0969e072cb755361e07fdb75716f77a9",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8606000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "c9c3f6ecae89026a9251be73bafd442d0969e072cb755361e07fdb75716f77a9",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8586000"
+      ]
+    }
+  ],
+  "log_audits": [
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 124339,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    },
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 124400,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    },
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/gemm-view-writeback/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 124473,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    }
+  ],
+  "bitwise_equal_to_previous_last_output": true,
+  "last_output_sha256": "806556741f836b60413eb4d8901bb859eb69fa5a0ceed14cc2b5c104745f5362",
+  "pmu": {
+    "source": "Idle read-only snapshots bracketing the three timed launches; no register writes or run-time sampler.",
+    "before_sha256": "edf4a15f263c9a9438a51814714c0981233c3026f18a9727009246fd4acfc097",
+    "after_sha256": "c887ac7d68a9dcea559cfdb9dd4b1fd8b1b1af19333af57b36264f91444d9a6e",
+    "cycles": [
+      {
+        "tile": 0,
+        "delta": {
+          "window": 69735409311,
+          "fu": 18175776,
+          "ct": 9494750,
+          "ne": 1090352,
+          "rdma": 1005690,
+          "wdma": 80272,
+          "tdma": 6979813,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 1,
+        "delta": {
+          "window": 69735454023,
+          "fu": 18113287,
+          "ct": 9485820,
+          "ne": 1090368,
+          "rdma": 940143,
+          "wdma": 83330,
+          "tdma": 6977766,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 2,
+        "delta": {
+          "window": 69735496154,
+          "fu": 18158581,
+          "ct": 9485819,
+          "ne": 1090368,
+          "rdma": 1018428,
+          "wdma": 80759,
+          "tdma": 6977522,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 3,
+        "delta": {
+          "window": 69735539310,
+          "fu": 18226883,
+          "ct": 9485818,
+          "ne": 1090368,
+          "rdma": 1099979,
+          "wdma": 80407,
+          "tdma": 6976883,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 4,
+        "delta": {
+          "window": 69735576614,
+          "fu": 18188680,
+          "ct": 9485825,
+          "ne": 1090368,
+          "rdma": 1062163,
+          "wdma": 78558,
+          "tdma": 6977801,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 5,
+        "delta": {
+          "window": 69735617626,
+          "fu": 18192220,
+          "ct": 9485819,
+          "ne": 1090368,
+          "rdma": 1064178,
+          "wdma": 88476,
+          "tdma": 6977781,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 6,
+        "delta": {
+          "window": 69735662117,
+          "fu": 18178823,
+          "ct": 9485828,
+          "ne": 1090368,
+          "rdma": 1062663,
+          "wdma": 82712,
+          "tdma": 6977802,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 7,
+        "delta": {
+          "window": 69735703353,
+          "fu": 18181950,
+          "ct": 9485819,
+          "ne": 1090368,
+          "rdma": 1015615,
+          "wdma": 84573,
+          "tdma": 6966983,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 8,
+        "delta": {
+          "window": 69735745805,
+          "fu": 18210163,
+          "ct": 9485810,
+          "ne": 1090368,
+          "rdma": 1031106,
+          "wdma": 87879,
+          "tdma": 6977650,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 9,
+        "delta": {
+          "window": 69735788805,
+          "fu": 18212055,
+          "ct": 9485825,
+          "ne": 1090368,
+          "rdma": 1041294,
+          "wdma": 94748,
+          "tdma": 6977001,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 10,
+        "delta": {
+          "window": 69735830896,
+          "fu": 18255598,
+          "ct": 9485812,
+          "ne": 1090368,
+          "rdma": 1117662,
+          "wdma": 94959,
+          "tdma": 6977781,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 11,
+        "delta": {
+          "window": 69735874244,
+          "fu": 19296501,
+          "ct": 8606874,
+          "ne": 1090368,
+          "rdma": 1009785,
+          "wdma": 74039,
+          "tdma": 8533299,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 12,
+        "delta": {
+          "window": 69735904476,
+          "fu": 9711900,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 548122,
+          "wdma": 41818,
+          "tdma": 4271763,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 13,
+        "delta": {
+          "window": 69735948200,
+          "fu": 9646049,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 483792,
+          "wdma": 44880,
+          "tdma": 4271763,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 14,
+        "delta": {
+          "window": 69736006123,
+          "fu": 9718329,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 555573,
+          "wdma": 50951,
+          "tdma": 4271763,
+          "scalar": 0
+        }
+      },
+      {
+        "tile": 15,
+        "delta": {
+          "window": 69736048887,
+          "fu": 9760354,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 598391,
+          "wdma": 46643,
+          "tdma": 4271763,
+          "scalar": 0
+        }
+      }
+    ],
+    "limits": "Overlapping engine activity, not wall-time share or calibrated milliseconds; no per-site timing. Instruction counter effective width not inferred from MMIO width."
+  },
+  "compile_stats": [
+    "wafer-compile: compile-stats stage=compile-transaction wall_ms=127031 peak_rss_kib=1079636",
+    "wafer-compile: compile-counter category=communication-construction name=effect-summaries value=119620 overflow=false",
+    "wafer-compile: compile-counter category=communication-construction name=query-work value=517407 overflow=false"
+  ],
+  "host_validation": {
+    "reshape_matrix_combinations": 60,
+    "existing_direct_writeback_combinations": 36,
+    "lit_passed": 306,
+    "fresh_non_attention_products": [
+      "batch-shared-rhs-gemm/fp16/search",
+      "batch-shared-rhs-gemm-tail-1025/fp16/search",
+      "gemm-long-k-1025/bf16/search (TargetModel)"
+    ],
+    "canonical_full_incremental": true,
+    "following_ninja_noop": true,
+    "component_tests": "Transforms, Analysis, Planning, Conversion, Pipeline all passed (5/5 component executables)",
+    "log_sha256": {
+      "gemm-view-host-tests.log": "66448f706bea1c56b59602625382e761bb3cb48a54fa4b4fd21d3ed661108a71",
+      "gemm-view-lit.log": "144bbe7f7639bc1be430256e21ef2a78104db9f85ca8ac84880f707a19026a03",
+      "gemm-view-products.log": "049766eef8af12591f516f0a65bf1a656caacc7b78043df16a95c02186ec0a8d"
+    }
+  },
+  "pre_board_corrections": [
+    "Initial C++ build required explicit MemRefType casts for generated Value accessors.",
+    "The first tail fixture incorrectly merged NCx batch2 into batch1 across per-batch padding; retained this as an explicit negative and used padding-preserving rank changes for positive tails. No production legality was relaxed."
+  ],
+  "limitations": [
+    "The 3 ms target is not achieved.",
+    "CT cycle count and arithmetic remain unchanged; this result isolates a modest writeback improvement, not the remaining compute bottleneck.",
+    "Host compilation overlapped regression tests; wall time is not an isolated compiler benchmark."
+  ]
+}

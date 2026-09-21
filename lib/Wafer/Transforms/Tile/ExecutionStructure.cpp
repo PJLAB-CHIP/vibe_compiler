@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Tile/ExecutionStructure.h"
 
+#include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -498,11 +499,38 @@ static void eliminateGemmWritebacks(
     mlir::ModuleOp module, mlir::IRRewriter &rewriter,
     const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
   module.walk([&](MoveCopyIntoOp copy) {
-    auto gemm = copy.getSource().getDefiningOp<ComputeGemmOp>();
-    if (!gemm || !gemm.getResult().hasOneUse() ||
-        gemm->getNextNode() != copy.getOperation() ||
-        copy.getSource().getType() != copy.getDest().getType() ||
-        pipelineOperations.contains(gemm) || pipelineOperations.contains(copy))
+    if (copy.getSource().getType() != copy.getDest().getType() ||
+        pipelineOperations.contains(copy))
+      return;
+    // Batch flattening can leave only metadata views between the functional
+    // GEMM and its writeback. Keep the destination's storage identity; invert
+    // the proven physical mapping instead of redirecting its other users.
+    mlir::Value source = copy.getSource();
+    mlir::Operation *next = copy;
+    llvm::SmallVector<ViewReshapeOp> views;
+    while (auto view = source.getDefiningOp<ViewReshapeOp>()) {
+      if (!source.hasOneUse() || view->getNextNode() != next ||
+          pipelineOperations.contains(view) ||
+          mlir::failed(
+              analysis::TransferRealizability::proveStaticReshapeMetadataView(
+                  mlir::cast<mlir::MemRefType>(view.getSource().getType()),
+                  mlir::cast<mlir::MemRefType>(view.getResult().getType()),
+                  /*destinationMayWrite=*/false)))
+        return;
+      views.push_back(view);
+      source = view.getSource();
+      next = view;
+    }
+    auto gemm = source.getDefiningOp<ComputeGemmOp>();
+    if (!gemm || !gemm.getResult().hasOneUse() || gemm->getNextNode() != next ||
+        pipelineOperations.contains(gemm))
+      return;
+    if (copy.getDest().getType() != gemm.getResult().getType() &&
+        mlir::failed(
+            analysis::TransferRealizability::proveStaticReshapeMetadataView(
+                mlir::cast<mlir::MemRefType>(copy.getDest().getType()),
+                mlir::cast<mlir::MemRefType>(gemm.getResult().getType()),
+                /*destinationMayWrite=*/true)))
       return;
     {
       mlir::AliasAnalysis aliases(module);
@@ -511,16 +539,21 @@ static void eliminateGemmWritebacks(
           return;
     }
     rewriter.setInsertionPoint(gemm);
+    mlir::Value dest = copy.getDest();
+    if (dest.getType() != gemm.getResult().getType())
+      dest = rewriter.create<ViewReshapeOp>(gemm.getLoc(),
+                                            gemm.getResult().getType(), dest);
     rewriter.create<ComputeGemmIntoOp>(
-        gemm.getLoc(), gemm.getLhs(), gemm.getRhs(), copy.getDest(),
-        gemm.getPsum(), gemm.getLhsOrientationAttr(),
-        gemm.getRhsOrientationAttr(), gemm.getBatchCountAttr(),
-        gemm.getLhsBatchDimsAttr(), gemm.getLhsMDimAttr(),
-        gemm.getLhsContractingDimAttr(), gemm.getRhsBatchDimsAttr(),
-        gemm.getRhsContractingDimAttr(), gemm.getRhsNDimAttr(),
-        gemm.getResultBatchDimsAttr(), gemm.getResultMDimAttr(),
-        gemm.getResultNDimAttr());
+        gemm.getLoc(), gemm.getLhs(), gemm.getRhs(), dest, gemm.getPsum(),
+        gemm.getLhsOrientationAttr(), gemm.getRhsOrientationAttr(),
+        gemm.getBatchCountAttr(), gemm.getLhsBatchDimsAttr(),
+        gemm.getLhsMDimAttr(), gemm.getLhsContractingDimAttr(),
+        gemm.getRhsBatchDimsAttr(), gemm.getRhsContractingDimAttr(),
+        gemm.getRhsNDimAttr(), gemm.getResultBatchDimsAttr(),
+        gemm.getResultMDimAttr(), gemm.getResultNDimAttr());
     rewriter.eraseOp(copy);
+    for (auto view : views)
+      rewriter.eraseOp(view);
     rewriter.eraseOp(gemm);
   });
 }
