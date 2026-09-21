@@ -378,7 +378,30 @@ results from raw `unit_elem_count=32` or `37` packets are out-of-contract
 hardware observations; they do not extend compiler, runtime, or production
 legality.
 
-CT opcode ranges:
+### VuVLoop算术分组边界
+
+本节补充算术Loop的元素与地址解释；compiler接入分别由10、11、14号设计拥有。
+来源为当前`instr_adapter_plat.h`/`instr_def.h`、对应SDK wrapper与
+[`wafer_ct_vuvloop_semantics_catalog.py`](../../test/Board/Support/wafer_ct_vuvloop_semantics_catalog.py)的明确geometry；
+既有设备证据见[校准记录](../tx81-compiler-hardware-calibration.md)的VuVLoop行。
+
+| 事实 | 证据等级与边界 |
+| --- | --- |
+| `U=unit_elem_count=64`，正count，`E=elem_count`为U整数倍，`F*U=E*V` | supported算术分组合同；`F=full_elem_count`、`V=full_unit_elem_count`。乘积应widen/check，不用截断除法判断相等 |
+| 完整分组的`F=G*E, V=G*U` | supported已列形式；每组lhs/dst推进E个元素、rhs推进U个元素，组内rhs以U为周期重复 |
+| `(E,U,F,V)=(128,64,384,192)`和`(192,64,384,128)` | board-observed：已有exact数值、physical span、guard和completion记录；不代签更大geometry的本轮产品资格 |
+| count按元素，地址跨度按对应format字节数 | supported SDK字段解释；F属于src0/dst，V属于src1，保持真实dtype |
+| SDK四个count参数为`uint32_t`；packet的E/U容器为`uint64_t`，F/V为`uint32_t` | supported ABI存储事实；硬件内部有效位宽及大块持续时间界限仍unknown，不从C类型推定，也不套GS的LSU timeout门限 |
+| 普通VuV的unit范围与Loop范围 | Loop的unit32/37属于excluded合同外packet；普通VuV的小unit支持不能外推为Loop unit1支持 |
+| 非完整末组、其它dtype/opcode族的附加约束 | 仍须对应tuple证据；上述完整算术分组不签发任意非完整末组或其它opcode族的支持 |
+
+对完整组，线性目标元素`i`读取的rhs序号为
+`floor(i/E)*U + (i mod E) mod U`；普通VuV则全程只读取同一个unit。
+Loop接口没有任意stride参数，调用者须证明组间连续区间；padding/gap或rhs重用边界不能靠总count越过。
+范围解释与寄存器end编码分开：当前end值由匹配版本SDK wrapper生成，不混用历史源码的开闭区间约定。
+这里不增加新的硬件位宽或尾部支持结论。
+
+### CT opcode ranges
 
 | range | operation family |
 |---:|---|

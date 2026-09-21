@@ -393,7 +393,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | current production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | current production target op | 真实layout materialization、SPM copy和可静态证明的slice/transpose/broadcast movement展开为一条或多条gather/scatter；完整copy在selected IR由08用IndexRelation、physical map、effect/lifetime/completion重证，能安全coalesce时删除，不能证明或无法压成supported descriptor时分别保留或结构化失败 |
 | CT scalar fill | `wafer.instr.fill` | current production target op | attr缺省保持Tensor logical-valid count；显式`physical_footprint`从Cx/NCx/BOOL physical encoding checked派生count并覆盖padding/tail/unused bits。BOOL full physical footprint按I8 byte-fill处理，logical-valid BOOL仍fail closed；不再调用厂商Memset |
-| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | current production target op | 覆盖当前enum中的target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`。existing encoding implementation的Cx/NCx `i1` mapping可用既有full-traversal fields承载value-form relation/logic的bitpacked result；scalar immediate、VuV/VuVLoop和缺失rounding field的形态仍需显式target variant |
+| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | current production target op | 覆盖当前enum中的target kind；tile-level map先证明为直接遍历、VS/VuV或显式movement，再strip，terminal op不携带`indexing_maps`。浮点binary的VS/VuV及relation packed/value结果已有typed合同；VuVLoop与其它缺字段形式须按各自接入合同闭合 |
 | semantic select | 无单条 select op | composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；source lowering的sum/max/min支持边界见7.4 | terminal op不携带init operand/attr；完整domain/dimension/combiner/init与target format合同闭合时直接生成native Instr，不能丢弃非identity init |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | current production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
@@ -410,7 +410,7 @@ packet/register与板端证据另由`tasks/16` gate。
 | TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | current production target op；LLVM call emitted | pad/img2col分别证明source/dest shape、pad、kernel/stride关系；普通copy/layout segment仍优先使用`gather_scatter`；transform-like kind到target LLVM必须结构化失败 |
 | TDMA mirror / transpose / rotate / NCHW-NHWC / TensorNom | 无 production target op；enum 保留用于 imported/pre-lowering IR | composite lowering or future target extension | 当前实现 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。`transpose` 使用 `permutation`，`mirror` 使用一个或多个 `axes`，`rotate90/180/270` 使用有序二元 `axes` 表示旋转平面，NCHW/NHWC 使用固定 4D layout permutation，`tensor_nom` 使用 logical-linear 到 physical-layout materialization。package / target export 如果仍看到这些 kind，说明 pipeline 漏了 materialization，应拒绝 |
 | concat / maskgather variants | 无单独 op | composite；native `dims=HW`永久target-illegal | source-level任意轴concat在当前实现一律展开为typed `gather_scatter` movement；current production wrapper只证明last logical dim映射到native CT concat的C编码，W/H的bounded raw completion不构成production资格。header虽公开HW编码，但native Concat `dims=HW`是错误/非法指令组合：不得构造、序列化或提交板端packet，不保留board case，也没有复测或重新资格化入口。maskgather variants仍需bool/index operand policy；未定义前不能复用`tdma_data_move` |
-| VuV / VuVLoop / scalar-immediate BOOL variants | 当前`elementwise`只覆盖value-form opcode family kind，不单独建模这些variant | future extension | current bitpacked result只复用existing value-form instruction与encoding traversal；VuV/VuVLoop、scalar immediate和其它缺字段variant仍须独立typed target合同，不能靠`elementwise`名称吞掉 |
+| VuVLoop与未覆盖的BOOL operand variants | VuVLoop尚未进入production；算术分组接入复用`elementwise`，见7.4 | planned extension；接入前target-illegal | ordinary VS/VuV按已有合同执行；Loop须显式表达分组geometry并闭合CRT/model，不能从kind、总shape或symbol猜测；未覆盖的BOOL/logic形式不由浮点Loop外推 |
 | Peripheral argmax/argmin/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | current production target op；LLVM call emitted | kind决定input/output arity；`elem_count`必须与primary input和所有kind-specific buffers/shape capacity一致，LUT table另与`lut_elem_count`一致。Count mechanical/numeric纵向属于Count writeback extension，current target保持拒绝；bitcount仍不纳入production |
 | Peripheral factorize | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind<factorize>` | IR kind保留；production target-illegal | 当前没有精确factorize semantic profile；target conversion以`unsupported_target_operation`拒绝，repo-local CRT header/source不得保留对应symbol |
 | raw DTE non-unicast / stream / mailbox | 无 | future communication ABI | 需要独立 communication ABI 和板端验证；current physical peer path只生成fixed-size unicast DTE packet |
@@ -796,10 +796,20 @@ semantic select              -> gather_scatter + bit2fp + mask_move
 这样 `select` 和未来其它无法直接对应目标 wrapper 的 semantic op 不会靠 verifier 黑名单混入
 instruction IR。
 
-当前target LLVM elementwise emission只按kind、operand/dest地址、element count和单一format选择unary/binary vector
-wrapper，不消费`indexing_maps`。因此tile→instruction必须先把所有map展开为`gather_scatter`/其它movement和same-shape
-operands，再生成无map的terminal `wafer.instr.elementwise`；identity map也strip，避免重复事实。ODS/verifier拒绝任何残留
+当前target LLVM elementwise emission按kind、operand/dest、element count、format及已有VS/VuV字段选择wrapper，
+不消费`indexing_maps`。因此tile→instruction必须先证明直接物理遍历或已支持的operand form，
+其它map显式展开为movement，再生成无map的terminal `wafer.instr.elementwise`；identity map也strip，避免重复事实。ODS/verifier拒绝任何残留
 `indexing_maps` attr，target conversion只做defensive check，CModel不得读取该attr补做broadcast。
+
+VuVLoop接入合同：复用同一`instr.elementwise`，以typed ODS字段区分operand form并记录不能从operand view重算的单组geometry；
+保留原kind/dtype，不能将多组RHS伪装成现有`rhs_unit_elements`要求的单个短向量。总元素数从actual连续operand/dest view
+唯一派生，目标四个count必须与它们一致；不保存attention语义、上层map或第二份buffer计划。
+op verifier检查arity、format、正count、unit64、整除及比例、lhs/dst与rhs实际跨度和ABI可表示性；
+跨operation的alias/lifetime仍由共同owner验证，不能在op verifier扫描任意user。
+10号proof负责source关系等价，terminal Instr仅表达已确定的物理分组执行。下游CRT和numeric model都按full范围消费，
+不能只执行首组，也不能按dst长度读取紧凑RHS。首轮完整组与tail的范围见10号，不由旧小case外推硬件有效计数位宽。
+实现前后同步ODS、builders/verifier、target/model及直接下游测试，未闭合前不得将该形式列入current production capability；
+具体覆盖见[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)。
 
 当前target LLVM reduce emission不传init，所以tile→instruction先验证tile-level SSA `init`与`init_value`互斥且类型一致。
 source-reduce legalization对满足既有native合同的输入优先生成原生归约，不以归约长度或编译展开预算阻止native检查。

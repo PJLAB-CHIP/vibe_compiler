@@ -463,7 +463,8 @@ completion字段：FA/FD差异已经由graph op验证并由actual contribution c
 `online_attention`完成spatial/temporal tiling后由一个确定性decomposition pattern展开为QK、scale/mask、online state update和PV；该pattern
 不选择tile、Tile、layout、movement、worker或completion。
 
-Decomposition从current maps构造score map`(B, M, K2)`：QK只reduction K1，随后按current op顺序应用scale和optional additive mask；
+Decomposition的现有score map为`(B, M, K2)`；4.8节规定等价方向的接入边界。两种方向均从current maps构造，
+QK只reduction K1，随后按current op顺序应用scale和optional additive mask；
 Maximum/Sum只reduction K2，Accumulator由probability与V的K2 contraction更新。Old Sum/Accumulator通过
 `exp(oldMaximum - exponentMaximum)`缩放后作为本block的DPS init，maximum状态及其指数用行值的区分见4.7；
 已有SCF loop自然承载running state。Score/probability复用一个
@@ -717,6 +718,53 @@ Pipeline position：
 
 指令条数、处理元素数、broadcast字节、实际allocation/SPM峰值分别统计，不能把元素数减少直接写成issue数或设备耗时同比下降。
 共享路径的普通Add/compare/select和原合法mask继续回归；输入使用合法有限Q/K/V，既有mask的`-inf`按其真实语义生成。
+
+### 4.8 Attention展开方向与分组广播
+
+本节规定等价展开的接入合同；实施顺序与覆盖矩阵见
+[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)，实现状态以`progress.md`为准。
+`BQ/BK/D`取已经选定的query tile、KV block与输出列数，batch/head前缀由current maps表达；不预设256或其它块长。
+目标是减少score、行状态广播及布局转换，保持4.6的mask合同和4.7的行级计算语义。
+
+Pipeline position：
+
+- Upstream IR / input：candidate-owned、已完成spatial/temporal tiling的`online_attention`及实际Q/K/V、score region、三项DPS state和maps。
+- Current stage responsibility：candidate materialization在唯一online decomposition边界选择等价的逻辑轴排列，并立即生成实际Linalg/Tensor/SCF。
+  选择只在已知actual tile与显式只读target facts后发生；decomposition机械执行该选择，不决定layout、buffer、movement或completion。
+- Output IR / files：两次contraction、score/行state计算及必要的显式view；所有下游需要的方向事实由实际shape、maps、SSA与DPS表达。
+  不保存跨stage方向计划，不新增graph attention算法或future-output IR。
+- Downstream consumer：08号layout assignment、10号StructuredToTile/TileToInstr、11号Instr及唯一completion/SPM/target路径。
+- User-level driver / named pipeline：`wafer-compile`的none/search和原attention decomposition入口消费同一实现。
+- Explicit non-goals：不扩大空间切分或搜索预算；不重跑ordinary e-graph；不改变KV block顺序、scalar算术、exp、dtype、窄化位置或数值门槛。
+- Completion criteria：方向与mask/state maps共同通过verifier，正式输入经实际Instr/SPM/package闭合；统一计划的结构、数值与性能门禁通过。
+
+三种展开的语义关系如下，`Pᵀ`表示按转置score方向保存的本block未归一化概率，仍在原位置转换为PV输入dtype：
+
+| 展开 | score / probability | Accumulator与PV | 广播与输出边界 |
+| --- | --- | --- | --- |
+| 常规方向 | `Q × Kᵀ`，`[BQ,BK]` | `A[BQ,D]`，`P × V` | Q=1时行值退化为标量；多query的行广播须按实际物理关系实现 |
+| score转置方向 | `K × Qᵀ`，`[BK,BQ]` | 保持`A[BQ,D]`，PV消费`(Pᵀ)ᵀ × V` | query分组可直接供VuVLoop使用；用已有GEMM转置操作数形式，不先物化完整P转置 |
+| score与累加器均转置 | 同上 | `Aᵀ[D,BQ]`，`Vᵀ × Pᵀ` | score、accumulator缩放及最终归一化均可匹配分组广播；输出边界计入恢复方向的真实搬运 |
+
+Prefill首轮采用score转置、accumulator保持原方向的实现路线；Q=1 decode保留常规方向。短Q、多token decode和tail按实际
+query extent、padding、contraction接受范围与转换代价判断，不按名称硬编码。既有FA/FD分类和coupled merge不随方向改变。
+score转置后max/sum仍归约key；`m/l`仍按query索引。`exponentMaximum`、old-state缩放与最终行系数继续使用4.7的同一语义。
+scale/普通mask/causal bias的map与score轴排列一起组合；可见性仍用原逻辑query/key坐标，保持全可见、不可见及边界块覆盖。
+
+方向比较先列明两次GEMM、reduce/pointwise、输入packing、broadcast、最终转换与store的工作量、粒度和动态次数，
+用于确定实现路线，不增加整条attention的穷举候选。静态推导不能冒充actual instruction inventory或SPM合法性；
+选定方向必须在同一candidate transaction物化、verify并重做analysis，最终合法性仍由actual Instr的memory/target gate决定。
+不能只转置GEMM后再把score搬回原方向，也不能把KQ方向误解为只交换Q/K参数而不修改完整消费链。
+
+累加器整体转置须先比较每个KV block节省的缩放广播与每个query block一次输出恢复的代价。
+采用时必须连同整个KV循环的state init/iter_args/yield及finalize一起保持该方向；不能在每个online step来回转换。
+其它observable state consumer、FD transfer/merge和output map必须共同闭合后才接入，不能只替换局部PV。
+厂商存在Transpose入口不等于当前生产链已接入；输出恢复按实际可发射路径计费。
+
+算法仍沿用本章FlashAttention/IREE的online state组织。对照FlashInfer的
+[prefill](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/prefill.cuh)与
+[decode](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/decode.cuh)分开的实现，
+采用按query工作量区分展开的思路；TX81上的方向收益由自身NCx布局、NE方向和CT分组访问决定，不照搬GPU线程或warp布局。
 
 ## 5. Attention Algorithms
 

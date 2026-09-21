@@ -36,6 +36,83 @@
 | 性能归因 | 分别记录实际工作量、编译pass/analysis timing、wall/RSS及必要设备诊断；结构变少不代签设备收益 |
 | 交付 | 设计、producer/consumer、注册和测试一致，受影响保护项通过；保留失败与修正记录，不以跳过case代签 |
 
+#### Attention展开方向与VuVLoop实施方案
+
+本方案归同一`board-testing`，接续完整profile得到的广播/布局热点；以下为待实施合同，不表示已有生产Loop指令或新性能结果。
+目标与上方完成条件不变。稳定合同分别由[05号展开方向](../05-local-compute-normalization.md#48-attention展开方向与分组广播)、
+[08号布局](../08-physical-realization.md#attention链路暴露的布局覆盖补齐)、
+[10号分组广播](../10-compute-movement.md#分组广播与vuvloop接入合同)、
+[11号Instr](../11-instruction-ir.md#74-fill--elementwise--reduce--convert)及
+[14号目标调用](../14-target-code-generation.md#vuvloop目标调用接入)拥有；本节只保存本轮问题证据、顺序、示例和覆盖。
+
+**当前证据与根因边界**
+
+| 已确认的问题 | 当前producer / 缺口 | 本轮处理及边界 |
+| --- | --- | --- |
+| 双head Tile行max广播648次GS；accumulator缩放576次；最终归一化128次，合计1352次 | 常规score/accumulator方向的行访问需物化广播；`TransferRealizability::proveUnitVectorBroadcast`只证明全程重复同一个短向量，尚无分组推进形式 | 接通通用VuVLoop证明与消费链；prefill先转置score，首轮只以消除648次max广播为结构目标，剩余704次不计入首轮收益 |
+| 部分Tile额外216次score布局转换、54 MiB有效复制 | actual IR存在NCx→Tensor及reduce前回NCx；具体layout factor/consumer的选择原因还须定位 | 先定位首次引入往返的owner；布局与lowering共享分组广播证明，保留可直接消费的整条score链，不强制所有值使用NCx |
+| SDK/已列unit64校准支持分组Loop，但生产Instr/CRT/model未贯通 | 软件能力缺口；并非硬件没有该指令 | 依硬件合同接入typed geometry；字段可编码宽度与硬件有效计数位宽分开，目标规模资格仍需验证 |
+| profile request remap漏传guard配置 | `remapBoardInvocationFilePlan`的请求转交缺陷 | 同步核对其它请求策略字段，补直接consumer回归；新设备采集前完成，旧profile不补签guard通过 |
+
+普通健康基线及原profile数据引用[性能记录](../../docs/board-performance-results.md#2026-09-212048-bf16完整profile热点)。
+普通基线中位数8.442ms；profile Primary为8.479ms。CT/TDMA活动量可重叠，Trace含插桩成本，不据此推算可消除毫秒数。
+
+**展开方向与静态示例**
+
+按05号4.8的三种方向核算整条链，首轮实现`KQᵀ score + 常规A[BQ,D]`；Q=1保留QKᵀ。
+score与accumulator整体转置须计入输入packing、输出恢复的实际字节、GS内层粒度与执行频率，再决定是否接入。
+方向比较用于收敛实现路线，不新增整条attention候选穷举，不重开head切分/搜索预算工作。
+
+若实际选中的tile为`BQ=BK=256`，score为F32、NCx主块物理遍历为`[4,256,64]`，
+归约后的query行值为连续四组64元素，则减最大值的Loop参数为：
+
+| 参数 | 推导 | 示例 |
+| --- | --- | --- |
+| `elem_count = E` | `BK × 64` | 16384 |
+| `unit_elem_count = U` | 硬件支持的短向量元素数 | 64 |
+| `full_elem_count = F` | `BK × BQ`，仅此完整主块 | 65536 |
+| `full_unit_elem_count = V` | 实际连续行值元素数 | 256 |
+
+`F/V = E/U = 256`，共有四个大组。这里65536是总元素数，不是软件循环次数；256也不是固定tile策略。
+该链静态目标由每pair `9 GS + 1 SubVV`变为`1 SubVuVLoop`；72个pair的648次GS预期消失。
+其它BQ/BK、batch padding或tail由实际物理关系重算，不能套这张表。
+累加器保持常规方向时，576+128次广播仍按原合法路径处理；整条转置可进一步处理它们，但增加的输出搬运须单列。
+动态条数随最终实际tiling与覆盖改变；上述数字只用于原profile对应结构的解释，不作为pass匹配条件。
+
+**实施顺序**
+
+1. 固定原profile对应的actual IR，记录通用pass根因链和编译work count/timing、wall time/RSS；补齐profile策略转交。
+   对照三种方向的指令与搬运推导，明确首轮选择；不运行历史包，不为分析重新启动完整板测矩阵。
+2. 在同一`TransferRealizability`体系增加分组关系证明。08号只用其确定可直接消费的layout关系，
+   10号在GS/广播buffer物化前选择Loop，11号显式保存必要geometry，14号及17号贯通TargetCall、CRT、decoder和numeric model。
+   单组走普通VuV；完整组用Loop；尾组按actual view单独处理。同步完成symbol、参数宽度、dtype、range与required-symbol检查。
+3. 05号唯一online decomposition接入KQᵀ方向，保持原score region、行状态、PV转换和accumulator方向；
+   mask maps、key归约与PV转置操作数一同闭合。08号按已定位的因果修正layout factor，核对实际score链的往返搬运。
+4. 对下表进行直接受影响的主机验证，生产source→actual Instr/SPM→ExecutablePackage→fresh no-card闭合。
+   准备好本轮目标输入/reference、完整输出比较、guard、正常退出及必要Loop几何见证后再上板；不重做无关fill专项。
+5. 用当前新包测普通设备时间，并用必要profile检查广播/布局热点是否按预期变化；普通与诊断样本分开。
+   本轮最终版本连续三次无采集/插桩计时均低于3ms才满足性能门禁。若仍不足，依新热点继续同一目标，
+   优先核算累加器整体转置的净收益，不以静态条数代签完成或擅自换exp/精度。
+
+**本项覆盖矩阵**
+
+| 输入等价类 / 结构分支 | exact检查、typed失败与不适用边界 | 直接下游witness |
+| --- | --- | --- |
+| BF16目标`[1,28,2048,128]`，多Tile/多KV block | 实际KQ方向、query行state、原PV窄化、正确块覆盖；核对max广播与布局转换动态数，原数值门槛不变 | 原始source→Instr→SPM→package/no-card→全量输出/guard/正常退出及最终三次计时 |
+| 非attention分组算术广播，Sub/Mul主路径及Add/Max/Min同族；rank≥3、主要维度1024/1025/1031，F16/BF16/F32 | 每组及每lane使用互异合法值；验证rhs组间推进、组内重复和全目标恰好一次覆盖；不把FP位型当整数运算 | 同一proof→layout→TileToInstr→TargetCall/模型完整数值；Loop实际地址与count |
+| 多种BQ/BK/D、非方形tile、64分组边界与tail、多batch | 主块Loop与尾块VuV的精确范围；真实padding/guard、batch间gap及RHS重用时正确分段，不能平推跨越hole | actual views/Instr→range、completion、SPM与数值 |
+| 单组、普通scalar/VuV、高效GS、非连续或不匹配的映射 | 单组不增加Loop；原合法路径保持；不能把不存在的padding或布局转换当作已物化事实 | actual指令种类/数量及原始数学映射 |
+| unit非64、比例不符、E不整除64、零count、ABI narrowing与range越界 | host typed拒绝；乘积校验不截断；不发送合同外packet | Instr/TargetCall verifier及required-symbol/packet字段检查 |
+| KQ主块F32目标geometry，总元素65536及合法邻接规模 | 由BF16 attention的真实F32 score消费需求引入；计数/地址/物理span一致，不能沿用GS的timeout门限推断CT界限 | 同一当前SDK/CRT的模型与必要定向板端见证；无硬件位宽结论时单列unknown |
+| 私有dst==lhs、独立dst、rhs与dst重叠/其它alias、多use | 保持实际DPS/effect；重复读取rhs不得被提前覆盖；未证明的alias不新增原地更新 | bufferization→actual Instr→fresh lifetime/completion/SPM；无无故steady-state join |
+| prefill、Q=1、短Q；无mask、causal三类块、普通bool/additive mask、GQA/FD相关consumer | 按逻辑q/k保持mask和state语义；Q=1不因转置膨胀；FD merge、KV更新与旧prefix保持；整数/BOOL Loop不由浮点算术资格外推 | 同一正式展开入口的主机数值/结构回归；受影响产品fresh no-card |
+| 累加器整体转置（采用时） | 整个KV循环保持Aᵀ；每query block至多一次方向恢复，计入新增搬运；不逐step往返 | loop state/merge/finalize→实际输出路径，完整数值、工作量及匹配设备收益 |
+
+主机tiny geometry只用于单点地址/参数oracle；不得代替上表真实规模路径。板端只执行本轮必要增量case，
+既有unit32/37合同外实验不恢复。每次异常按现有板测规则停批，厂商正常清理路径保持。
+
+#### BF16 2048已完成检查点
+
 新2048 BF16 case已从PyTorch source生成合法输入、独立reference和当前生产包，通过fresh no-card。
 三次关闭Host运行期采样及设备插桩的计时为22.486/22.415001/22.458ms；每次完整7,340,032输出、10,752 guard bytes、
 16 Tile completion和厂商正常退出通过，无新增driver/firmware异常。44项Python case回归及canonical增量/no-op通过。

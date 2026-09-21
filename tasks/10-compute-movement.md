@@ -213,7 +213,8 @@ Instr、DDR/SPM规划及SystemC exact后，原ViT完整package/no-card与实卡�
 
 `wafer.linalg_ext.attention`只存在于normalized TensorProgram。Spatial/Region materialization把它破坏性转换为per-Tile三结果
 `wafer.linalg_ext.online_attention`、FD state endpoints和selected merge/finalize；temporal stage再从current interfaces物化parallel/K2
-loops。紧随其后的decomposition不接收planning choice，只在既有loop和Accumulator/Maximum/Sum SSA上生成`tensor.extract_slice`与Linalg compute：
+loops。紧随其后的decomposition不接收spatial/temporal旁路计划，只在既有loop和Accumulator/Maximum/Sum SSA上生成
+`tensor.extract_slice`与Linalg compute。05号4.8的方向选择在同一展开调用内立即消费，结果只保存在实际maps/shape/SSA中：
 
 ```text
 QK contraction
@@ -327,7 +328,8 @@ target lowering复核左端traversal，CRT发射VuV，numeric model只读取实�
 不经CPU读回SPM；真正的scalar SSA仍走VS。覆盖F16/BF16/F32、1024/1025/1031及写入/alias/其它scalar user反例。
 只有原算术可交换时才交换scalar左operand。Instr/TargetCall以type明确区分scalar bits与地址，
 runtime保持原storage bits，numeric model不对immediate产生SPM读取。unary/logic及其它位置的scalar拒绝。
-本形式不包含VuVLoop；超出短向量合同的row仍通过既有GS物化，不推测循环广播的参数。
+上述已实现短向量形式不包含VuVLoop；分组形式的接入合同见下节。在其Instr/CRT/model闭合前，
+超出短向量合同的row仍通过既有GS物化，不推测循环广播的参数。
 新增覆盖同时检查1/32/64元素周期、1024/1025/1031长度、源共享、非连续映射保持movement、非法unit与unary/logic拒绝，
 以及实际target call、完整数值和越界guard；最终实卡要求仍由统一attention矩阵拥有。
 
@@ -357,6 +359,46 @@ body；一般`math.powf`不匹配，也不通过buffer名称、shape或allocatio
 
 `wafer.tile.compute.convert`显式改变dtype，其参数由既有target operation合同拥有，不能由target call名字恢复。不同dtype block
 geometry无法direct traversal时保留显式movement。
+
+#### 分组广播与VuVLoop接入合同
+
+输入为layout-resolved mapped binary elementwise的actual operands/destination及exact indexing relation。
+输出为直接消费紧凑分组RHS的`instr.elementwise`，必要的主块/tail subview与既有合法movement；
+直接下游为11号verifier、fresh completion/SPM、14号TargetCall/CRT及17号模型。
+入口沿用production与named TileToInstr conversion的同一个实现，不另建attention广播pass。
+本节不选择layout、tile或worker，不改变dtype、算术、division分解或原source广播语义；完成门禁见
+[本项覆盖矩阵](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)。
+
+短向量形式证明`rhs_ordinal = dst_ordinal mod U`；完整分组形式扩展同一`TransferRealizability`证明体系为：
+
+```text
+rhs_ordinal = floor(dst_ordinal / E) * U + (dst_ordinal mod E) mod U
+U = unit_elem_count
+E = elem_count
+F = full_elem_count       // 当前指令lhs/dst实际连续区间的元素数
+V = full_unit_elem_count  // 当前指令rhs实际连续区间的元素数
+```
+
+`U=64`、正count、`E mod U=0`及`F*U=E*V`来自
+[SDK支持合同](../docs/tx8-deps-reverse-engineering/tx8-interface-contract.md#vuvloop算术分组边界)；
+交叉乘法使用checked/widened整数。首轮完整组要求`F mod E=0`与`V mod U=0`，对应相同组数；
+这限定本次可证明的物化路径，不宣称硬件没有其它尾组形式。单组继续使用普通VuV。
+
+proof将current logical indexing relation与两端physical ordinal合成，检查lhs/dst线性遍历、rhs分组推进及完整范围；
+不能只看相同元素总数、layout名称或`BQ/BK`数值。地址间gap、batch padding、每batch重用同一个rhs时，
+只在已证明连续的区间内发射；tail从actual physical view派生普通VuV参数，不能将逻辑余数直接当physical unit。
+主块、tail和padding的读写跨度各有实际allocation/view owner，全部逻辑结果恰好覆盖一次，不增加无定义的RHS padding读取。
+布局分析只读复用此proof，实际conversion在首次mutation前完成检查，匹配后直接保留紧凑RHS，不先创建广播大buffer。
+
+首轮接通现有浮点Add/Sub/Mul/Max/Min的分组形式，F16/BF16/F32保持原dtype与舍入；attention优先使用Sub/Mul。
+左侧广播只在原算术可交换且完整关系成立时交换inputs；Sub不交换。Division保持现有紧凑Recip加Mul合同，
+其乘法复用同一证明；不能因SDK有DivVuVLoop就改成另一种数值实现。比较/BOOL/logic的Loop形式按其独立结果编码合同处理，
+本轮浮点算术证明不自动扩大这些tuple。普通VS/VuV、已有高效GS与不能匹配的合法movement继续使用各自合同。
+
+原地更新沿用DPS和实际alias/effect证明，`dst==lhs`不因Loop形式一律禁止；
+RHS在其最后一次重复读取前不得被覆盖，不能直接继承一次性VV读取的重叠假设。
+没有新增buffer时不凭空增加allocation、join或wait；消除broadcast buffer后由同一actual IR重新计算owner、lifetime、completion和SPM。
+无法匹配当前关系与非法Loop参数分别保持“未命中优化”和typed target failure，不把二者混成capacity反馈。
 
 ### Reduce 与 fill
 

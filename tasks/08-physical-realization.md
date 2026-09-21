@@ -111,6 +111,15 @@ search integration只增加独立choice/controller owner，不增加第二套rew
 输入仍是已完成attention展开的actual structural IR，输出仍是同一个layout assignment及其实际materialization，
 直接下游为One-Shot bufferization和StructuredToTile。有限目标继续使用本节的转换成本，
 不扩展成预测指令inventory或SPM准入；同一proof规则必须与convert/elementwise lowering一致。
+05号4.8的展开方向与10号分组广播接入后，本stage对已展开的current SSA复用同一物理分组关系证明：
+能直接消费的VuVLoop operand关系不计广播materialization成本；其计算成本仍由实际Instr的下游分析拥有。
+证明未成立时保留真实转换成本，不能因某个consumer是attention就将整条链标为零成本。
+score的GEMM、scale/mask、max/sub/exp/sum、概率转换与PV共同参与原layout query，不能把局部elementwise转Tensor
+而忽略前后固定布局的转换。发现往返时追溯首次引入它的factor或consumer，再按一般physical traversal规则修正，
+不统一强制NCx，也不把方向选择或预测指令数量加入PBQP。
+分组proof的scope、key和失效规则沿用当前只读type/map query；layout与lowering不得维护两份相近但不同的准入判断。
+覆盖主块/tail、batch padding、非连续映射、共享源和必要转换的正反例，检查实际转换链与fresh Instr/SPM结果；
+本轮覆盖由[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有。
 DPS不准确导致的复制回到producer修复；已确定storage的冗余copy只凭actual alias/effect/lifetime消除。
 循环不变转换沿用现有PhysicalMovementPlacement，不能为attention另建hoist或状态写回特判。
 同一placement处理实际allocating copy/convert及私有allocation的DPS load/fill：destination必须只由该操作初始化，

@@ -30,6 +30,12 @@
 当前完整profile已将调查重点收敛到GS广播/布局搬运与CT计算链；同时发现profile请求漏传guard开关，
 后续上板前须先修正并回归。仍为board-testing doing，热点证据及资格边界见同一计划顶部。
 
+最新接续：用户已确认将KQ展开、VuVLoop与score布局优化方案落入文档。
+首轮prefill采用转置score、常规accumulator，Q=1保留QK；累加器整体转置先核算最终输出搬运。
+通用指令合同、实现边界、顺序及覆盖已记录于
+[实施方案](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)和对应编号设计。
+本次仅完成方案文档，尚未修改实现或新增主机/板端资格；3ms性能目标仍未达成，任务保持`doing`。
+
 2026-09-21最新接续：Host寄存器诊断已迁入`wafer-board-diagnose`，普通入口默认关闭，显式开关才采集；
 当前4K 28-head attention在关闭采集/设备插桩条件下完成FP16/BF16各三次实卡，完整数值、guard及运行日志通过。
 中位数仍约79ms，高频采集不能解释主要耗时；整体性能工作和未验收矩阵仍未完成，board-testing保持doing。

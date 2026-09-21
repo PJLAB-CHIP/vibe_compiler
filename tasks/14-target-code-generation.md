@@ -94,6 +94,23 @@ TargetCall以typed结果种类保存该字段；decoder拒绝其它编码。CRT�
 验收覆盖全部六种比较、F16/BF16/F32、VV/VS/VuV、packed和值输出、1024/1025/1031及特殊值机制，
 同时核对最终SDK wrapper/packet、模型0/1位型、typed拒绝和原BOOL consumer；设备资格仍按16号单独签发。
 
+### VuVLoop目标调用接入
+
+输入为11号已验证的分组elementwise、actual SPM binding和worker；输出为同一closed TargetCall registry中的typed arithmetic
+调用及SDK Loop packet，直接消费者为CRT、required-symbol/device link、TargetCall decoder及17号模型。
+该形式当前尚未进入production；接入不建立V2 wrapper或兼容reader，不让runtime补选广播方式。
+
+10号的E/U/F/V按元素数传递，format来自实际operand/destination；宽化乘积、count narrowing与SPM byte range先在target gate闭合。
+SDK wrapper拥有当前revision的end字段编码，不能把历史源码的exclusive end手写到当前packet，也不把count改成bytes或count-1。
+CRT选择已确认的Add/Sub/Mul/Max/Min Loop entry并保持原舍入，浮点输入不得改用同宽整数format。
+Division继续遵守11号Recip加Mul合同；普通VS/VuV及relation/logic接口不因算术Loop接入改变数值语义。
+
+model command与decoder必须保存全部必要分组参数，按10号地址关系计算并只读取RHS实际full范围；
+SystemC/numeric adapter不得从symbol、layout名字或attention shape补回遗漏字段。整组、tail、原地更新和guard span用同一实际range验证。
+TargetCall descriptor、C声明/定义、LLVM参数顺序、模型解码和required-symbol检查同步更新，通过本轮no-card后才进入板端验证。
+该指令使用已有CT issue order/completion合同，不附加逐组join。覆盖与设备资格由
+[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有，SDK字段宽度不代签硬件计数上限。
+
 ### GEMM混合format调用
 
 输入是verified Tile/Instr上的低精度lhs/rhs、可选F32 psum及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/
