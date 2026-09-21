@@ -36,7 +36,33 @@
 | 性能归因 | 分别记录实际工作量、编译pass/analysis timing、wall/RSS及必要设备诊断；结构变少不代签设备收益 |
 | 交付 | 设计、producer/consumer、注册和测试一致，受影响保护项通过；保留失败与修正记录，不以跳过case代签 |
 
-截至本目标修订，只完成范围及验收收敛；2048新基线和低于3ms结果尚未取得。
+新2048 BF16 case已从PyTorch source生成合法输入、独立reference和当前生产包，通过fresh no-card。
+三次关闭Host运行期采样及设备插桩的计时为22.486/22.415001/22.458ms；每次完整7,340,032输出、10,752 guard bytes、
+16 Tile completion和厂商正常退出通过，无新增driver/firmware异常。44项Python case回归及canonical增量/no-op通过。
+准备时修正外部脚本的SDK/PATH缺项，以及旧mock缺失新增diagnostic参数；失败记录保留，不涉及设备失败。
+
+本轮在三次运行之外各做一次空闲只读PMU快照，没有改enable、clear或其它寄存器。忙碌Tile的TDMA累计cycle/FU活动cycle约83%，
+不解释成墙钟占比，也没有取得逐site计时。actual Instr中的零stride行广播仍产生每忙碌Tile约760万次4-byte inner搬运；
+根因产生于projected indexing map到GS的逐element重复读取，之前的有序分段只解决单条持续时间。
+接续按11号“连续目标的重复读取展开”合同，在同一通用GS stage实现已有目标前缀复制，先证明字节映射/alias/幂等及下游闭合，
+再以新生产包实测收益。CT、其它copy及调度成本另行根据剩余实测处理，3ms目标尚未达成。
+基线及限制见[本轮证据](../../docs/data/board-performance/attention-bf16-2048-baseline-20260921.json)。
+
+本步实测已完成：前缀复制版本三次8.914/8.755/8.782ms，中位数比基线降低60.9%，完整数值、guard、completion和日志通过；
+最后一次输出与基线逐bit相同。Tile 4三次TDMA累计周期从51,311,566降到7,713,217，CT仍约9,485,000；
+每Tile仍只有terminal join。该收益证明小颗粒重复读取是主要成本之一，尚不足以达到3ms。
+下一步从actual IR核查剩余布局copy、初始化及CT工作，修改前仍补齐owner、通用条件与覆盖，不能从累计周期猜测单site成本。
+
+通用GS专项13项与Direct DTE 45项通过，完整306项lit及Analysis/Planning/Conversion/Pipeline回归通过；
+首轮完整Transforms也通过，lit旧escaped-scalar循环断言已按新exact复制结构更新并复测。
+大候选初版逐小段展开使通信effect summaries达到7,818,526；改为每个完整前缀步骤独立分段并保留循环后降到119,640。
+scope fan-out边的线性判重另改为保序集合，13号规则不变；三版最终设备ELF完全相同。
+编译transaction观测从初版538.861s回到125.572s、peak RSS约1.02GiB；host并行任务存在，不能视为隔离性能实验。
+
+首次启动前因历史kernel journal已轮转为空而没有取得cursor，runner没有执行，前后PMU指令/FU计数不变。
+16号工具已改用当前boot全局cursor划窗口，回读仍筛kernel；11项工具host回归和随后三次真实日志采集通过。
+旧失败目录与分类证据保留，没有故障后retry或设备reset。完整记录见
+[前缀复制实测](../../docs/data/board-performance/attention-bf16-2048-prefix-copy-20260921.json)。
 
 ### Host诊断工具入仓与无采集计时
 

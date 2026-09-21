@@ -1,0 +1,1524 @@
+{
+  "date": "2026-09-21",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bfloat16",
+  "qkv_shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "seed": 20260922,
+  "policy": "search",
+  "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921",
+  "baseline_record": "attention-bf16-2048-baseline-20260921.json",
+  "baseline_device_ms": [
+    22.486,
+    22.415001,
+    22.458
+  ],
+  "optimized_device_ms": [
+    8.914,
+    8.755,
+    8.782
+  ],
+  "median_speedup": 2.557276246868595,
+  "median_latency_reduction_fraction": 0.6089589455873186,
+  "target_ms": 3,
+  "target_achieved": false,
+  "fresh_no_card": true,
+  "compiler_identity": {
+    "compiler_sha256": "a79ec0db7782d066e33eeb4362f990cfa12bde51dd7bfac6433aed60902af188",
+    "git_head": "50c0b36684f64cd758fcf8c3b2f6c09a1c2b4154",
+    "source_diff_sha256": "34b2808085460dfe5d3d3f0285c968a1ac6816b06b658d05c53c493256372ba2",
+    "command": [
+      "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+      "-B",
+      "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "--case",
+      "attention-prefill-28-heads-2048",
+      "--dtype",
+      "bfloat16",
+      "--seed",
+      "20260922",
+      "--wafer-compile",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+      "--wafer-run",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+      "--work-dir",
+      "/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/prepared",
+      "--dump-compiler-ir",
+      "/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/ir",
+      "--optimization-policy",
+      "search",
+      "--memory-guards",
+      "--device-timing",
+      "--compile-timing",
+      "--expected-runtime-version",
+      "1400",
+      "--expected-device-name",
+      "/dev/accel/dev-0",
+      "--expected-pci-bus-id",
+      "0000:3b:00.0",
+      "--expected-tile-count",
+      "16",
+      "--expected-runtime-library-sha256",
+      "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+      "--completion-timeout-ms",
+      "60000",
+      "--board-diagnose-tool",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+      "--no-card"
+    ],
+    "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+    "stage": "prepare",
+    "register_capture": false,
+    "device_profile": false
+  },
+  "manifest_sha256": "f2621e0a3214041166964375a158d8e67db4d64afa01ae8d126cc621cd07655b",
+  "module_sha256": "c7a3d97575b2e376f963eac138ffd6e26d1d6a2d2587db36f76f1491bbec527d",
+  "diagnose_tool_sha256": "f4076d19d1fc88687bb6a674a40e4bcbd54ef0db4c12a9c3021fe3f9a28aa187",
+  "measurement_conditions": [
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    },
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    },
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    }
+  ],
+  "numeric_audits": [
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "f2621e0a3214041166964375a158d8e67db4d64afa01ae8d126cc621cd07655b",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8914000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "f2621e0a3214041166964375a158d8e67db4d64afa01ae8d126cc621cd07655b",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8755000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "f2621e0a3214041166964375a158d8e67db4d64afa01ae8d126cc621cd07655b",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=8782000"
+      ]
+    }
+  ],
+  "last_output_bitwise_matches_baseline": true,
+  "diagnostic_reports": [
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 100222,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    },
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 100457,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    },
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/prefix-bounded/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 100531,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    }
+  ],
+  "pmu": {
+    "register_writes": 0,
+    "sampling_during_launch": false,
+    "snapshots": {
+      "prefix-pmu-before-launch.json": "9b2c0a529786cf2c37e5e7e3fe5b5d528430ee3e40a77f901bf8b1c4c5af13d6",
+      "prefix-pmu-after.json": "7a822ad35893ce89c7aacbd94c66353dcb4c7f64eb616e0feab9504c51045a22"
+    },
+    "tile_deltas": [
+      {
+        "tile": 0,
+        "cycles": {
+          "window": 47699625974,
+          "fu": 18671667,
+          "ct": 9493611,
+          "ne": 1090687,
+          "rdma": 1085206,
+          "wdma": 82842,
+          "tdma": 7715989,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 1,
+        "cycles": {
+          "window": 47699628587,
+          "fu": 18600391,
+          "ct": 9484723,
+          "ne": 1090704,
+          "rdma": 868832,
+          "wdma": 83346,
+          "tdma": 7712715,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 2,
+        "cycles": {
+          "window": 47699630843,
+          "fu": 18615968,
+          "ct": 9484734,
+          "ne": 1090704,
+          "rdma": 927016,
+          "wdma": 79638,
+          "tdma": 7712549,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 3,
+        "cycles": {
+          "window": 47699632123,
+          "fu": 18705719,
+          "ct": 9484727,
+          "ne": 1090704,
+          "rdma": 1143440,
+          "wdma": 86224,
+          "tdma": 7712220,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 4,
+        "cycles": {
+          "window": 47699633794,
+          "fu": 18748753,
+          "ct": 9484725,
+          "ne": 1090704,
+          "rdma": 1209439,
+          "wdma": 89520,
+          "tdma": 7713217,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42314,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5101,
+            0,
+            0
+          ],
+          "wdma": [
+            306,
+            0,
+            0
+          ],
+          "tdma": [
+            60732,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46418,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5584,
+            0,
+            0
+          ],
+          "wdma": [
+            354,
+            0,
+            0
+          ],
+          "tdma": [
+            3407,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 5,
+        "cycles": {
+          "window": 47699648791,
+          "fu": 18669264,
+          "ct": 9484725,
+          "ne": 1090704,
+          "rdma": 1060056,
+          "wdma": 87232,
+          "tdma": 7713003,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 6,
+        "cycles": {
+          "window": 47699636223,
+          "fu": 18675295,
+          "ct": 9484727,
+          "ne": 1090704,
+          "rdma": 1078571,
+          "wdma": 79800,
+          "tdma": 7712990,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 7,
+        "cycles": {
+          "window": 47699613583,
+          "fu": 18727353,
+          "ct": 9484725,
+          "ne": 1090704,
+          "rdma": 1143014,
+          "wdma": 86341,
+          "tdma": 7701280,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 8,
+        "cycles": {
+          "window": 47699599626,
+          "fu": 18698778,
+          "ct": 9484724,
+          "ne": 1090704,
+          "rdma": 1041841,
+          "wdma": 81263,
+          "tdma": 7713058,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 9,
+        "cycles": {
+          "window": 47699584971,
+          "fu": 18733861,
+          "ct": 9484729,
+          "ne": 1090704,
+          "rdma": 1150116,
+          "wdma": 110580,
+          "tdma": 7712223,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 10,
+        "cycles": {
+          "window": 47699570819,
+          "fu": 18703356,
+          "ct": 9484725,
+          "ne": 1090704,
+          "rdma": 1099657,
+          "wdma": 92145,
+          "tdma": 7713100,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            42312,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            60723,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            46416,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            3398,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 11,
+        "cycles": {
+          "window": 47699557155,
+          "fu": 20088756,
+          "ct": 8606874,
+          "ne": 1090368,
+          "rdma": 1062269,
+          "wdma": 81385,
+          "tdma": 9268923,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            37572,
+            0,
+            0
+          ],
+          "ne": [
+            4784,
+            0,
+            0
+          ],
+          "rdma": [
+            5099,
+            0,
+            0
+          ],
+          "wdma": [
+            304,
+            0,
+            0
+          ],
+          "tdma": [
+            65507,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            41256,
+            0,
+            0
+          ],
+          "ne": [
+            5216,
+            0,
+            0
+          ],
+          "rdma": [
+            5582,
+            0,
+            0
+          ],
+          "wdma": [
+            352,
+            0,
+            0
+          ],
+          "tdma": [
+            8614,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 12,
+        "cycles": {
+          "window": 47699542743,
+          "fu": 10053513,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 522371,
+          "wdma": 40837,
+          "tdma": 4639599,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            18852,
+            0,
+            0
+          ],
+          "ne": [
+            2392,
+            0,
+            0
+          ],
+          "rdma": [
+            2556,
+            0,
+            0
+          ],
+          "wdma": [
+            153,
+            0,
+            0
+          ],
+          "tdma": [
+            32763,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            20712,
+            0,
+            0
+          ],
+          "ne": [
+            2608,
+            0,
+            0
+          ],
+          "rdma": [
+            2799,
+            0,
+            0
+          ],
+          "wdma": [
+            177,
+            0,
+            0
+          ],
+          "tdma": [
+            37086,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 13,
+        "cycles": {
+          "window": 47699528423,
+          "fu": 10037245,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 506835,
+          "wdma": 43612,
+          "tdma": 4639599,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            18852,
+            0,
+            0
+          ],
+          "ne": [
+            2392,
+            0,
+            0
+          ],
+          "rdma": [
+            2555,
+            0,
+            0
+          ],
+          "wdma": [
+            152,
+            0,
+            0
+          ],
+          "tdma": [
+            32759,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            20712,
+            0,
+            0
+          ],
+          "ne": [
+            2608,
+            0,
+            0
+          ],
+          "rdma": [
+            2798,
+            0,
+            0
+          ],
+          "wdma": [
+            176,
+            0,
+            0
+          ],
+          "tdma": [
+            37082,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 14,
+        "cycles": {
+          "window": 47699514207,
+          "fu": 10072522,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 540539,
+          "wdma": 47269,
+          "tdma": 4639551,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            18852,
+            0,
+            0
+          ],
+          "ne": [
+            2392,
+            0,
+            0
+          ],
+          "rdma": [
+            2555,
+            0,
+            0
+          ],
+          "wdma": [
+            152,
+            0,
+            0
+          ],
+          "tdma": [
+            32759,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            20712,
+            0,
+            0
+          ],
+          "ne": [
+            2608,
+            0,
+            0
+          ],
+          "rdma": [
+            2798,
+            0,
+            0
+          ],
+          "wdma": [
+            176,
+            0,
+            0
+          ],
+          "tdma": [
+            37082,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "tile": 15,
+        "cycles": {
+          "window": 47699500035,
+          "fu": 10107514,
+          "ct": 4316586,
+          "ne": 545184,
+          "rdma": 575968,
+          "wdma": 44583,
+          "tdma": 4639551,
+          "scalar": 0
+        },
+        "counts_before_raw": {
+          "ct": [
+            18852,
+            0,
+            0
+          ],
+          "ne": [
+            2392,
+            0,
+            0
+          ],
+          "rdma": [
+            2555,
+            0,
+            0
+          ],
+          "wdma": [
+            152,
+            0,
+            0
+          ],
+          "tdma": [
+            32759,
+            0,
+            0
+          ]
+        },
+        "counts_after_raw": {
+          "ct": [
+            20712,
+            0,
+            0
+          ],
+          "ne": [
+            2608,
+            0,
+            0
+          ],
+          "rdma": [
+            2798,
+            0,
+            0
+          ],
+          "wdma": [
+            176,
+            0,
+            0
+          ],
+          "tdma": [
+            37082,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    "interpretation": "Cycles are cumulative engine activity, not additive wall time. Raw TDMA instruction counts crossed 65536 in this window; no 32-bit subtraction is presented as the actual issue count. Width/wrap semantics are not inferred from register access width."
+  },
+  "compiler_work": [
+    {
+      "stage": "baseline",
+      "wall_ms": 118172,
+      "peak_rss_kib": 1077776,
+      "communication_counters": {
+        "effect-summaries": 123950,
+        "frontier-queries": 31,
+        "query-work": 534759,
+        "ready-groups": 106
+      },
+      "log_sha256": "0a7bb809f2de89260d782add8877303a56d0206f39dc71cfa1eece4e8fc817bd"
+    },
+    {
+      "stage": "prefix-copy",
+      "wall_ms": 538861,
+      "peak_rss_kib": 4764624,
+      "communication_counters": {
+        "effect-summaries": 7818526,
+        "frontier-queries": 31,
+        "query-work": 33879741,
+        "ready-groups": 106
+      },
+      "log_sha256": "1fff3471a3213356c66073db738bc96621b03ac5739f8325445c820e95e74dd7"
+    },
+    {
+      "stage": "prefix-copy-fast",
+      "wall_ms": 389941,
+      "peak_rss_kib": 4870740,
+      "communication_counters": {
+        "effect-summaries": 7818526,
+        "frontier-queries": 31,
+        "query-work": 33879741,
+        "ready-groups": 106
+      },
+      "log_sha256": "0302b39b702640f32442eb393a7acfbf5c129a18d1c758ab82c433be17addd19"
+    },
+    {
+      "stage": "prefix-bounded",
+      "wall_ms": 125572,
+      "peak_rss_kib": 1068168,
+      "communication_counters": {
+        "effect-summaries": 119640,
+        "frontier-queries": 31,
+        "query-work": 517487,
+        "ready-groups": 106
+      },
+      "log_sha256": "a7e1f2ea01ad09650cd019028058431c2fdefe2a69ef897d1cc0d988a36fbcc4"
+    }
+  ],
+  "all_three_optimization_prototypes_same_elf": true,
+  "host_validation": {
+    "initial_full_components_passed": [
+      "Analysis",
+      "Transforms",
+      "Planning",
+      "Conversion",
+      "Pipeline"
+    ],
+    "initial_lit_failure": "One old escaped-scalar GS-loop assertion; replaced by initialized-prefix structure check",
+    "final_lit_passed": 306,
+    "final_gs_and_dte_tests_passed": 58,
+    "final_analysis_planning_conversion_pipeline_passed": true,
+    "python_case_tests_passed": 44,
+    "diagnose_tests_passed": 11,
+    "canonical_full_incremental_and_noop": true
+  },
+  "prelaunch_failure": {
+    "classification": "host_prelaunch_failure",
+    "runner_launched": false,
+    "pmu_commands_and_fu_unchanged": true,
+    "root_cause": "kernel history rotated away; global current-boot cursor remains available",
+    "resolution": "global journal cursor for start; kernel filtering only on readback",
+    "device_retry": false
+  },
+  "limitations": [
+    "Only BF16 2048 attention was run on board after this change.",
+    "No per-site timing was captured; remaining CT and TDMA causes require further work.",
+    "Compiler timings overlap host test/build work; they are observations, not isolated benchmark samples."
+  ]
+}

@@ -19,6 +19,8 @@ python3 -B build/bin/wafer-board-diagnose run \
 
 `--`后的参数原样转发。默认只检查占用、保存日志，不映射寄存器；日志服务收尾等待在kernel事件计时之外。
 `run.json`明确记录`host_register_capture: false`。输出目录必须是新目录，避免覆盖已有故障现场。
+日志起点使用当前boot的全局journal游标，回读时筛选kernel记录；历史kernel日志轮转为空仍可采集新运行窗口。
+`run.json`的`launched`区分启动前失败与runner已经执行。
 `--timeout-seconds`默认120秒，只限制等待原runner的时间；超时保留进程交给厂商清理并返回失败，
 不发送kill、reset或自动重试。发现本窗口driver/firmware告警同样返回失败，不能用runner返回0覆盖告警。
 
@@ -66,7 +68,8 @@ python3 -B build/bin/wafer-board-diagnose decode /tmp/registers.bin \
 
 - `run.json`、`runner.log`、`occupancy.json`、`kernel.log`、`firmware.log`：本次运行及健康判定依据。
 - 开启采集时的`capture.bin`、`.identity.json`、`.summary.json`：原始记录、采集配置/映射/工具摘要、触发邻域及采样间隔。
-- 每Tile计数差按32位模数计算，描述保留窗口；有reset或多次wrap时不能把差值当作完整命令总量。
+- 每Tile计数差按32位原始字模数计算；MMIO读取宽度不证明计数有效位宽。发生回绕、reset或覆盖不完整时，
+  不能把该原始差值当作实际命令总量。
 
 顺序读取不是原子快照，last-command不是已确认fault PC；未采到fatal不证明任意瞬态都没有出现。
 只读采集仍可能改变总线时序，带采集与关闭采集的计时必须分别标记。工具的host文件模型验证不代替真实fault采集。

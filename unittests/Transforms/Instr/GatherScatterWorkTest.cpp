@@ -16,6 +16,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <array>
 #include <numeric>
 #include <vector>
@@ -98,6 +99,7 @@ protected:
   struct Stream {
     std::vector<AddressPair> bytes;
     unsigned commands = 0;
+    uint64_t transfers = 0;
   };
 
   // Independent byte-stream interpreter: execute the actual output loops and
@@ -105,6 +107,8 @@ protected:
   Stream stream(mlir::ModuleOp module, bool bounded) {
     Stream result;
     llvm::DenseMap<mlir::Value, int64_t> values;
+    llvm::DenseMap<mlir::Value, llvm::DenseMap<int64_t, int64_t>> memory;
+    mlir::Value originalSource;
     std::function<void(mlir::Block &)> run = [&](mlir::Block &block) {
       for (mlir::Operation &operation : block) {
         if (auto c = mlir::dyn_cast<mlir::arith::ConstantIndexOp>(operation))
@@ -128,7 +132,10 @@ protected:
           }
           EXPECT_EQ(gs.getWorker(), wafer::NCCWorker::Worker1);
           EXPECT_EQ(gs.getDdrResourceAttr().getResourceId(), 7);
+          if (!originalSource)
+            originalSource = gs.getSource();
           ++result.commands;
+          result.transfers += gs.getByteCount() / gs.getInnerBytes();
           auto address = [&](bool source, int64_t ordinal) {
             auto fixed = source ? gs.getSrcOffsetAttr() : gs.getDstOffsetAttr();
             auto dynamic =
@@ -144,12 +151,26 @@ protected:
             }
             return value;
           };
+          std::vector<AddressPair> writes;
           for (uint64_t n = 0; n < gs.getByteCount() / gs.getInnerBytes();
                ++n) {
             const int64_t source = address(true, n), dest = address(false, n);
-            for (uint64_t byte = 0; byte < gs.getInnerBytes(); ++byte)
-              result.bytes.emplace_back(source + byte, dest + byte);
+            for (uint64_t byte = 0; byte < gs.getInnerBytes(); ++byte) {
+              const auto &contents = memory[gs.getSource()];
+              auto found = contents.find(source + byte);
+              EXPECT_TRUE(found != contents.end() ||
+                          gs.getSource() == originalSource)
+                  << "read from uninitialized destination byte";
+              // Unique byte identities model arbitrary data, including floating
+              // bit patterns; this is movement, with no arithmetic oracle.
+              int64_t identity =
+                  found != contents.end() ? found->second : source + byte;
+              writes.emplace_back(identity, dest + byte);
+            }
           }
+          for (auto [identity, dest] : writes)
+            memory[gs.getDest()][dest] = identity;
+          result.bytes.insert(result.bytes.end(), writes.begin(), writes.end());
         }
       }
     };
@@ -167,11 +188,17 @@ protected:
         wafer::createMaterializeGatherScatterWorkPass());
     ASSERT_TRUE(mlir::succeeded(manager.run(module)));
     Stream actual = stream(module, true);
+    // Prefix replication changes issue order, while each destination byte must
+    // still be written exactly as often with the same source byte identity.
+    std::sort(expected.bytes.begin(), expected.bytes.end());
+    std::sort(actual.bytes.begin(), actual.bytes.end());
     ASSERT_EQ(actual.bytes, expected.bytes);
     auto repeat = wafer::materializeGatherScatterWork(function);
     ASSERT_TRUE(repeat.succeeded());
     EXPECT_EQ(repeat.rewrittenOperations, 0u);
-    EXPECT_EQ(stream(module, true).bytes, expected.bytes);
+    Stream repeated = stream(module, true);
+    std::sort(repeated.bytes.begin(), repeated.bytes.end());
+    EXPECT_EQ(repeated.bytes, expected.bytes);
     if (downstream) {
       ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(function)));
       unsigned joins = 0;
@@ -203,16 +230,17 @@ TEST_F(GatherScatterWorkTest, BroadcastMainTailAndDynamicOffsets) {
       }
 }
 
-TEST_F(GatherScatterWorkTest, FaultDescriptorBecomesFourTightIssues) {
+TEST_F(GatherScatterWorkTest, RepeatedInnerAndOuterAxesUseInitializedPrefixes) {
   // Bounded fault oracle: exact original descriptor; realistic rank/length
   // coverage is provided by BroadcastMainTailAndDynamicOffsets above.
   auto module = make(4, {64, 256, 4}, {0, 4, 0}, {64, 256, 4}, {4, 256, 65536},
                      mlir::Float32Type::get(&context));
   check(*module);
-  EXPECT_EQ(stream(*module, true).commands, 4u);
+  EXPECT_EQ(stream(*module, true).commands, 9u);
+  EXPECT_EQ(stream(*module, true).transfers, 1794u);
   unsigned staticGS = 0;
   module->walk([&](wafer::InstrGatherScatterOp) { ++staticGS; });
-  EXPECT_EQ(staticGS, 1u);
+  EXPECT_EQ(staticGS, 9u);
 }
 
 TEST_F(GatherScatterWorkTest, DifferentRadicesAndHolesPreserveOrderedPairs) {
@@ -220,7 +248,9 @@ TEST_F(GatherScatterWorkTest, DifferentRadicesAndHolesPreserveOrderedPairs) {
     auto module =
         make(2, {6, length, 4}, {4, 32, 32 * length}, {8, 3 * length, 1},
              {2, 32, 0}, mlir::Float16Type::get(&context), false, 16, 32);
+    Stream before = stream(*module, false);
     check(*module);
+    EXPECT_EQ(stream(*module, true).bytes, before.bytes);
   }
 }
 
@@ -261,9 +291,92 @@ TEST_F(GatherScatterWorkTest, SameBufferDisjointRangesAndAliasingRejection) {
   }
 }
 
-TEST_F(GatherScatterWorkTest, AlreadyBoundedDescriptorIsUnchanged) {
+TEST_F(GatherScatterWorkTest, AlreadyBoundedRepetitionAlsoReducesInnerWork) {
   auto module = make(2, {8, 1024, 1}, {0, 2, 0}, {8, 1024, 1}, {2, 16, 0},
                      mlir::Float16Type::get(&context));
+  auto result = wafer::materializeGatherScatterWork(
+      *module->getOps<mlir::func::FuncOp>().begin());
+  EXPECT_TRUE(result.succeeded());
+  EXPECT_EQ(result.rewrittenOperations, 1u);
+  EXPECT_EQ(stream(*module, true).transfers, 4096u);
+  check(*module);
+}
+
+TEST_F(GatherScatterWorkTest, NonPowerOfTwoRepetitionAndDifferentRadices) {
+  for (int64_t rows : {1024, 1025, 1031}) {
+    auto module =
+        make(2, {37, rows, 3}, {0, 6, 0}, {37 * rows * 3, 1, 1}, {2, 0, 0},
+             mlir::BFloat16Type::get(&context), false, 16, 32);
+    const auto before = stream(*module, false).transfers;
+    check(*module);
+    EXPECT_LT(stream(*module, true).transfers, before);
+  }
+}
+
+TEST_F(GatherScatterWorkTest, DestinationHolesRetainOrderedBroadcast) {
+  auto module = make(1, {17, 1031, 1}, {0, 2, 0}, {17, 1031, 1}, {2, 48, 0},
+                     mlir::IntegerType::get(&context, 8));
+  Stream before = stream(*module, false);
+  check(*module);
+  EXPECT_EQ(stream(*module, true).bytes, before.bytes);
+}
+
+TEST_F(GatherScatterWorkTest, OversizedPrefixStepsRetainCompactLoops) {
+  auto module = make(1, {4, 32768, 1}, {0, 2, 0}, {4, 32768, 1}, {1, 4, 0},
+                     mlir::IntegerType::get(&context, 8));
+  Stream before = stream(*module, false);
+  check(*module);
+  EXPECT_LT(stream(*module, true).transfers, before.transfers);
+  unsigned staticGS = 0, loops = 0;
+  module->walk([&](wafer::InstrGatherScatterOp) { ++staticGS; });
+  module->walk([&](mlir::scf::ForOp) { ++loops; });
+  // The seed and two growth steps each split into two equal commands. Keep
+  // three loop bodies instead of interleaving a separate tree per partition.
+  EXPECT_EQ(staticGS, 3u);
+  EXPECT_EQ(loops, 3u);
+}
+
+TEST_F(GatherScatterWorkTest, BoundedContinuousCopyIsUnchanged) {
+  auto module = make(2, {8, 1024, 1}, {2, 16, 0}, {8, 1024, 1}, {2, 16, 0},
+                     mlir::Float16Type::get(&context));
+  auto result = wafer::materializeGatherScatterWork(
+      *module->getOps<mlir::func::FuncOp>().begin());
+  EXPECT_TRUE(result.succeeded());
+  EXPECT_EQ(result.rewrittenOperations, 0u);
+  check(*module);
+}
+
+TEST_F(GatherScatterWorkTest, UnknownAliasCannotUseDestinationPrefixes) {
+  for (int64_t width : {8, 32}) {
+    auto module = make(2, {width, 1031, 1}, {0, 2, 0}, {width, 1031, 1},
+                       {2, 2 * width, 0}, mlir::Float16Type::get(&context));
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto first = *function.getOps<mlir::memref::AllocOp>().begin();
+    auto type = first.getType();
+    function.setType(mlir::FunctionType::get(&context, {type, type}, {}));
+    llvm::SmallVector<mlir::memref::AllocOp> allocations;
+    for (auto alloc : function.getOps<mlir::memref::AllocOp>())
+      allocations.push_back(alloc);
+    for (auto alloc : allocations) {
+      auto argument = function.front().addArgument(type, function.getLoc());
+      alloc.replaceAllUsesWith(argument);
+      alloc.erase();
+    }
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    mlir::ScopedDiagnosticHandler handler(
+        &context, [](mlir::Diagnostic &) { return mlir::success(); });
+    auto result = wafer::materializeGatherScatterWork(function);
+    EXPECT_EQ(result.rewrittenOperations, 0u);
+    EXPECT_EQ(result.failure,
+              width == 8
+                  ? wafer::GatherScatterWorkFailure::None
+                  : wafer::GatherScatterWorkFailure::UnsupportedAliasing);
+  }
+}
+
+TEST_F(GatherScatterWorkTest, WideInnerBroadcastKeepsEfficientSingleIssue) {
+  auto module = make(4096, {64, 1, 1}, {0, 0, 0}, {64, 1, 1}, {4096, 0, 0},
+                     mlir::Float32Type::get(&context));
   auto result = wafer::materializeGatherScatterWork(
       *module->getOps<mlir::func::FuncOp>().begin());
   EXPECT_TRUE(result.succeeded());

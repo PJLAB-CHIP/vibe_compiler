@@ -5,7 +5,7 @@
 
 def MaterializeGatherScatterWorkPass
     : Pass<"wafer-materialize-gather-scatter-work", "mlir::func::FuncOp"> {
-  let summary = "Coalesce and split GS work into ordered bounded instructions";
+  let summary = "Materialize bounded GS copies, replication and ordered splits";
   let dependentDialects = ["mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
                            "wafer::WaferDialect"];
 }

@@ -240,17 +240,20 @@ def live_capture(args):
     return report
 
 
-def journal(*arguments):
+def journal(*arguments, kernel_only=True):
     prefix = ['sudo', '-n'] if os.geteuid() != 0 else []
-    return subprocess.check_output(prefix + ['journalctl', '-k', '--no-pager',
+    filters = ['-b', '-k'] if kernel_only else ['-b']
+    return subprocess.check_output(prefix + ['journalctl', *filters, '--no-pager',
                                    '--output=short-iso', *arguments], text=True, timeout=10)
 
 
 def log_start(pci):
-    text = journal('-n', '1', '--show-cursor')
+    # A journal cursor identifies a global position, independent of filters.
+    # Old kernel entries may have rotated away while the journal is healthy.
+    text = journal('-n', '1', '--show-cursor', kernel_only=False)
     match = re.search(r'^-- cursor: (.+)$', text, re.M)
     if not match:
-        raise ValueError('kernel journal cursor unavailable')
+        raise ValueError('journal cursor unavailable')
     directory = Path('/var/npu_ep_log') / pci
     if not directory.is_dir():
         raise ValueError('firmware log directory unavailable')
@@ -347,6 +350,7 @@ def run_command(args):
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         report['problems'].append(str(error))
     finally:
+        report['launched'] = launched
         if observer and observer.poll() is None:
             stop.write_text('controller finished\n')
             try:

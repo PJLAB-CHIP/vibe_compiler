@@ -133,6 +133,25 @@ class CaptureTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 tool.tile_bases(bad)
 
+    def test_kernel_history_can_be_empty_before_new_fault_window(self):
+        firmware = self.root / 'pci'
+        firmware.mkdir()
+        folder = self.root / 'logs'
+        folder.mkdir()
+        def journal(*arguments, kernel_only=True):
+            if '--show-cursor' in arguments:
+                return ('-- No entries --\n' if kernel_only else
+                        'current userspace entry\n-- cursor: global-position\n')
+            self.assertTrue(kernel_only)
+            self.assertEqual(arguments, ('--after-cursor=global-position',))
+            return 'NPU LSU TDMA Timeout\n'
+        with mock.patch.object(tool, 'journal', side_effect=journal), \
+             mock.patch.object(tool, 'Path', return_value=self.root):
+            start = tool.log_start('pci')
+            logs = tool.collect_logs(folder, start)
+        self.assertTrue(tool.ALARM.search(logs))
+        self.assertEqual((folder / 'kernel.log').read_text(), logs.rstrip() + '\n')
+
     def test_run_defaults_off_and_only_launches_original_command(self):
         args = tool.parser().parse_args(['run', '--output-dir', str(self.root / 'run'),
             '--device', '/dev/accel/dev-0', '--pci-bus-id', '0000:00:00.0', '--', 'original-runner'])

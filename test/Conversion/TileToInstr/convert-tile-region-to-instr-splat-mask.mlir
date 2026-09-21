@@ -101,10 +101,15 @@ func.func @escaped_value() {
 }
 
 // CHECK-LABEL: func.func @escaped_value
-// CHECK: call @escape
-// CHECK: scf.for
-// CHECK: wafer.instr.gather_scatter {{.*}}src_iterations = array<i64: 16384, 1, 1>
-// CHECK: wafer.instr.gather_scatter
+// The escaped scalar must be read after the call. Replication then copies the
+// initialized destination prefix; it cannot replace that read with a fill.
+// CHECK: call @escape(%[[SCALAR:[a-zA-Z0-9_]+]])
+// CHECK: %[[EXPANDED:.*]] = memref.alloc()
+// CHECK-NOT: wafer.instr.fill
+// CHECK: wafer.instr.gather_scatter %[[SCALAR]] to %[[EXPANDED]] {{.*}}byte_count = 4 : i64
+// CHECK-COUNT-15: wafer.instr.gather_scatter %[[EXPANDED]] to %[[EXPANDED]]
+// CHECK: wafer.instr.gather_scatter %[[EXPANDED]] to %[[EXPANDED]] {{.*}}byte_count = 131072 : i64{{.*}}inner_bytes = 131072 : i64
+// CHECK: wafer.instr.gather_scatter {{.*}}byte_count = 262144 : i64
 // CHECK: wafer.instr.mask_move
 
 

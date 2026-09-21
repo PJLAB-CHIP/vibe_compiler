@@ -206,6 +206,9 @@ NCC join各自只表达本域事实，不能单独作为远端store→load先行
 当前构造支持单block entry的顶层TileRegion内的单次通信；普通局部loop作为当前operation汇总effect而不展开。
 含通信的loop、条件、call或已绑定transport保持typed unsupported，不能猜测动态次数或丢弃其它完成域的token。
 每次只读查询按actual storage root汇总每个operation的effect；普通操作间已有顺序链，只比较涉及通信issue的访问冲突，避免重复执行普通操作的二次方比较。
+查询内的后继边按首次插入顺序保存，并用集合判重。scope begin等高fan-out节点不能对每次插边线性扫描已有后继，
+否则广播物化增加实际Instr后，建图会出现二次方开销。该索引只属于当前查询，不改变依赖、work计数、就绪顺序或输出IR；
+以原通信构造的消息闭合/确定性/预算回归及真实生产candidate验证，记录相同work下的wall和RSS。
 Direct DTE completion及transport检查沿用各自查询内的effect索引，保留原byte range和unknown语义；所有摘要在相关IR mutation后失效。
 每个DTE收发组必须同时满足source先行依赖和destination可写条件，不单独占住recv等待未安排的远端操作；同组先准备recv，再issue send。
 组内sender/receiver容量及source/destination区间冲突共同检查，native fanout作为不可拆的完整接收集合检查。

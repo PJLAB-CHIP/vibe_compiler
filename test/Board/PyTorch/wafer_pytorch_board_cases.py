@@ -1470,6 +1470,11 @@ CASE_FACTORIES: dict[
     ),
     "attention-prefill": _attention_prefill,
     "attention-prefill-llama-2-7b": _llama_2_7b_attention_prefill,
+    "attention-prefill-28-heads-2048": lambda dtype, seed: _read_only_attention(
+        dtype, seed, name="attention-prefill-28-heads-2048",
+        query_length=2048, key_value_length=2048, causal=True,
+        num_heads=28, head_dim=128,
+    ),
     "attention-prefill-28-heads-4096": lambda dtype, seed: _read_only_attention(
         dtype, seed, name="attention-prefill-28-heads-4096",
         query_length=4096, key_value_length=4096, causal=True,

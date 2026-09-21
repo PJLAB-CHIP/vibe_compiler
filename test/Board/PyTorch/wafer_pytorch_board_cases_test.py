@@ -130,11 +130,12 @@ class PyTorchBoardCasesTest(unittest.TestCase):
 
     def test_large_prefill_keeps_all_28_heads(self):
         for dtype in (torch.float16, torch.bfloat16):
-            case = cases.make_case("attention-prefill-28-heads-4096", dtype=dtype, seed=41)
-            self.assertEqual(len(case.inputs), 3)
-            for value in case.inputs:
-                self.assertEqual(value.shape, (1, 28, 4096, 128))
-                self.assertEqual(value.dtype, dtype)
+            for extent in (2048, 4096):
+                case = cases.make_case(f"attention-prefill-28-heads-{extent}", dtype=dtype, seed=41)
+                self.assertEqual(len(case.inputs), 3)
+                for value in case.inputs:
+                    self.assertEqual(value.shape, (1, 28, extent, 128))
+                    self.assertEqual(value.dtype, dtype)
             # Full reference and all output elements are checked by the
             # registered source-to-package and real-board cases.
 
@@ -743,6 +744,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             work_dir=pathlib.Path("work"),
             dump_compiler_ir=None,
             compile_timing=False, profile=False, profile_trace_event_limit=None,
+            capture_registers=False,
+            board_diagnose_tool=None,
             optimization_policy="none",
             qualify_communication=None,
             no_card=True,

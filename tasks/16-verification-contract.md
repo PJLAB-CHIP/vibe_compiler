@@ -62,6 +62,8 @@ package并fresh no-card；职责已由后继接管时直接从current queue移�
 - 输出：运行条件/返回状态、driver/firmware日志、可选原始ring与采样摘要；直接消费者为板测判定及离线排障。
 - 用户入口：`wafer-board-diagnose run`默认关闭寄存器采集，只有`--capture-registers`启用；`decode`仅处理文件。
   PyTorch板测入口可显式指定该工具；普通运行不隐式开启诊断。工具不创建runtime context，计算仍由原runner执行。
+- 日志窗口以当前boot的全局journal末尾cursor开始，回读时才筛选kernel记录；历史kernel记录已轮转不应阻止建立新窗口。
+  cursor取得失败仍在launch前停止；`run.json`明确记录是否已启动runner。
 - 非目标：不改production ELF、设备profiler ABI、同步、timeout配置或异常mask；不reset/retry，不解释未知last-command为fault PC。
 - 完成条件：canonical构建、已注册host文件模型验证、离线解析和当前包关闭采集的真实计时。迁移后live采集资格单列，
   不用历史实现的实测代替新工具验收。带采集计时必须标注，不作为关闭诊断的性能基线。

@@ -29,12 +29,20 @@ module {
 }
 
 // REJECT: unmaterialized_gather_scatter_work
-// INSTR: scf.for
-// INSTR: wafer.instr.gather_scatter
-// INSTR-SAME: byte_count = 65536 : i64
+// INSTR: wafer.instr.gather_scatter %[[SOURCE:.*]] to %[[DEST:.*]] src_offset_value
+// INSTR-SAME: byte_count = 8200 : i64
+// INSTR-SAME: inner_bytes = 4 : i64
 // INSTR-NOT: wafer.instr.ncc_join
-// INSTR: wafer.instr.gather_scatter
-// INSTR-SAME: byte_count = 256 : i64
+// INSTR: wafer.instr.gather_scatter %[[DEST]] to %[[DEST]]
+// INSTR-SAME: inner_bytes = 4 : i64
+// INSTR: wafer.instr.gather_scatter %[[DEST]] to %[[DEST]]
+// INSTR-SAME: inner_bytes = 8 : i64
+// INSTR: wafer.instr.gather_scatter %[[DEST]] to %[[DEST]]
+// INSTR-SAME: inner_bytes = 16 : i64
+// INSTR: wafer.instr.gather_scatter %[[DEST]] to %[[DEST]]
+// INSTR-SAME: inner_bytes = 32 : i64
+// INSTR: wafer.instr.gather_scatter %[[DEST]] to %[[DEST]]
+// INSTR-SAME: inner_bytes = 64 : i64
 // INSTR: wafer.instr.elementwise <add>
 // INSTR: wafer.instr.ncc_join [0]
 // INSTR-NEXT: return

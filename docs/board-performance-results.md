@@ -16,6 +16,42 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-21：GS前缀复制降低2048 BF16广播成本
+
+同一boot、输入、dtype及数值门槛下，生产search包三次无插桩设备计时为**8.914、8.755、8.782ms**。
+相对本轮基线中位数22.458ms，降低**60.9%**，约2.56倍加速。每次完整7,340,032输出、10,752 guard bytes、
+16 Tile completion和正常退出通过，driver/firmware无告警；最后一次输出与基线逐bit一致。3ms目标仍未达到。
+
+根因是projected broadcast被物化为零source stride的逐element GS读取。通用Instr变换先写每组首份数据，
+再按已初始化目标前缀倍增复制；仅准入连续目标及已证明不相交的源/目标，保留原始位型、worker和effects。
+超单条策略的步骤用同一有序分段器处理，相同分段保留循环；宽inner、低iteration的高效GS不因存在重复源而增加issue。
+没有改变fill、算术dtype、tile/head切分或同步规则，每Tile仍只有一个terminal join。
+
+批次前后空闲PMU差值中，Tile 4的TDMA累计周期从51,311,566降至7,713,217，减少约85%；
+CT约9,485,000周期，基本不变。Tile 11的TDMA从52,502,629降至9,268,923。
+这支持小颗粒广播的成本归因；engine周期仍不等于墙钟时间，也没有取得逐site耗时。
+本窗口部分TDMA原始指令计数跨越65,536回绕，记录保留原值，不将32-bit MMIO读取宽度当作有效计数位宽。
+
+编译侧同时修复大候选的静态IR膨胀及调度边线性判重；三版最终ELF摘要一致，主机回归、fresh no-card与完整构建/no-op通过。
+首次启动前的journal空历史问题、修复及全部原始数值/PMU/身份/编译工作量见
+[机器可读证据](data/board-performance/attention-bf16-2048-prefix-copy-20260921.json)。
+
+## 2026-09-21：BF16 2048、28-head causal attention基线
+
+Q/K/V均为`[1,28,2048,128]`，BF16，seed为20260922，生产search路径。本轮新导出source、生成有限输入及PyTorch reference，
+通过fresh guarded no-card；普通生产包不带profile，运行期Host寄存器采集关闭。三次设备事件计时分别为
+**22.486、22.415001、22.458ms**。每次7,340,032输出元素通过原有完整比较，elementwise mismatch为0，
+10,752 guard bytes和16 Tile completion通过；厂商正常退出，运行窗口无driver/firmware异常。
+
+三次launch前后各做一次空闲只读PMU快照，保持既有enable=1，不写寄存器；本记录的PMU来自普通执行，并非Trace。
+Tile 4三次TDMA累计51,311,566周期、FU累计62,055,331周期，比值82.69%；Tile 11为83.21%。各engine可能重叠，
+不能相加，也不能据此说TDMA占墙钟83%或断言某一site的精确成本。
+实际Instr按head分配，忙碌Tile两个head，每head八个Q block、36个causal block pair；行max与输出缩放广播及最后归一化
+合计7,602,176次4-byte inner搬运/忙碌Tile。GS分段保持了这些重复读取，所以当前优先检查此通用物化成本。
+
+此处只记录基线及优化依据，没有签发任何性能改进；3ms目标未达成。代码版本、包/ELF摘要、输入、三次全量数值和日志审计、
+PMU原始快照身份及准备失败修正见[机器可读证据](data/board-performance/attention-bf16-2048-baseline-20260921.json)。
+
 ## 2026-09-09：Decode共享mask访问与单向接收调度
 
 ### 输入与测量条件

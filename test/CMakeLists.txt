@@ -402,6 +402,8 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
 
   wafer_add_pytorch_source_no_card_test(
     attention-prefill-llama-2-7b float16 fp16 search)
+  wafer_add_pytorch_source_no_card_test(
+    attention-prefill-28-heads-2048 bfloat16 bf16 search)
   foreach(_wafer_gqa_case IN ITEMS attention-gqa attention-gqa-tail-1025)
     wafer_add_pytorch_source_no_card_test(
       ${_wafer_gqa_case} float16 fp16 search)

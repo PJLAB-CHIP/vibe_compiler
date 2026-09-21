@@ -1,6 +1,7 @@
-//===- GatherScatterWork.cpp - Ordered GS coalescing and splitting --------===//
+//===- GatherScatterWork.cpp - Materialize bounded GS byte movement -------===//
 
 #include "GatherScatterWork.h"
+#include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -35,6 +36,8 @@ struct Endpoint {
   Triple iterations;
 };
 
+enum class SegmentSource { Original, Destination };
+
 struct Segment {
   int64_t inner;
   int64_t bytes;
@@ -42,6 +45,7 @@ struct Segment {
   int64_t destOffset;
   Endpoint source;
   Endpoint dest;
+  SegmentSource sourceBuffer = SegmentSource::Original;
 };
 
 static Triple triple(llvm::ArrayRef<int64_t> values) {
@@ -69,6 +73,113 @@ static Endpoint normalize(Endpoint endpoint) {
     result.iterations[index] = axis.second;
   }
   return result;
+}
+
+static Segment coalesce(Segment segment) {
+  segment.source = normalize(segment.source);
+  segment.dest = normalize(segment.dest);
+  int64_t common = std::gcd(
+      segment.source.strides[0] == segment.inner ? segment.source.iterations[0]
+                                                 : 1,
+      segment.dest.strides[0] == segment.inner ? segment.dest.iterations[0]
+                                               : 1);
+  if (common > 1) {
+    segment.inner *= common;
+    for (Endpoint *endpoint : {&segment.source, &segment.dest}) {
+      endpoint->iterations[0] /= common;
+      endpoint->strides[0] *= common;
+      *endpoint = normalize(*endpoint);
+    }
+  }
+  return segment;
+}
+
+static bool hasRepeatedSource(InstrGatherScatterOp op) {
+  for (unsigned axis = 0; axis < 3; ++axis)
+    if (op.getSrcStrides()[axis] == 0 && op.getSrcIterations()[axis] > 1)
+      return true;
+  return false;
+}
+
+static llvm::SmallVector<Segment> split(const Segment &original);
+
+// The caller proves that the original source and destination accesses are
+// disjoint. A linear destination has a unique radix decomposition, so each
+// growing-prefix copy reads initialized bytes and writes a disjoint suffix.
+// This uses descriptor facts only, including when the endpoint radices differ.
+static llvm::SmallVector<Segment>
+expandRepeatedSource(const Segment &original) {
+  Endpoint source = normalize(original.source);
+  Endpoint dest = normalize(original.dest);
+  const int64_t inner = original.inner;
+  const int64_t count = original.bytes / inner;
+  if (dest.strides[0] != inner || dest.iterations[0] != count)
+    return {};
+
+  Endpoint expanded{{0, 0, 0}, source.iterations};
+  int64_t stride = inner;
+  for (unsigned axis = 0; axis < 3; ++axis) {
+    expanded.strides[axis] = stride;
+    stride *= source.iterations[axis];
+    if (source.strides[axis] == 0)
+      expanded.iterations[axis] = 1;
+  }
+  Endpoint seed = source;
+  seed.iterations = expanded.iterations;
+  auto bytes = [inner](const Endpoint &endpoint) {
+    return std::accumulate(endpoint.iterations.begin(),
+                           endpoint.iterations.end(), inner,
+                           std::multiplies<int64_t>());
+  };
+  llvm::SmallVector<Segment> segments;
+  segments.push_back(coalesce({inner, bytes(seed), 0, 0, seed, expanded}));
+  for (unsigned axis = 0; axis < 3; ++axis) {
+    if (source.strides[axis] != 0)
+      continue;
+    const int64_t extent = source.iterations[axis];
+    for (int64_t filled = 1; filled < extent;) {
+      const int64_t copied = std::min(filled, extent - filled);
+      Endpoint part = expanded;
+      part.iterations[axis] = copied;
+      segments.push_back(
+          coalesce({inner, bytes(part), 0, filled * expanded.strides[axis],
+                    part, part, SegmentSource::Destination}));
+      filled += copied;
+    }
+    expanded.iterations[axis] = extent;
+  }
+
+  // Bound each complete prefix step, retaining adjacent equal descriptors for
+  // loop emission. Replicating each original small partition independently
+  // would interleave different steps and inflate the static instruction IR.
+  llvm::SmallVector<Segment> bounded;
+  int64_t transfers = 0;
+  for (const Segment &segment : segments)
+    for (const Segment &part : split(segment)) {
+      bounded.push_back(part);
+      transfers += part.bytes / part.inner;
+    }
+  segments = std::move(bounded);
+  // Use the shared submission/traversal priors for profitability only. Payload
+  // bytes are unchanged; saving a handful of already-wide transfers must not
+  // buy several extra software submissions. This is not a hardware limit.
+  if (transfers >= count)
+    return {};
+  const analysis::SearchCostPolicy policy;
+  const uint64_t savedTraversal =
+      (count - transfers) *
+      policy.gatherScatterInnerIterationPicosecondsEstimate;
+  const uint64_t addedIssue =
+      (segments.size() - 1) * policy.instructionFixedPicosecondsEstimate;
+  if (savedTraversal <= addedIssue)
+    return {};
+  for (Segment &segment : segments) {
+    segment.sourceOffset += segment.sourceBuffer == SegmentSource::Original
+                                ? original.sourceOffset
+                                : original.destOffset;
+    segment.destOffset += original.destOffset;
+  }
+  return segments;
 }
 
 static int64_t offsetAt(const Endpoint &endpoint, int64_t ordinal) {
@@ -108,26 +219,19 @@ static Endpoint slice(Endpoint endpoint, SliceLevel level, int64_t length) {
   return normalize(endpoint);
 }
 
-static llvm::SmallVector<Segment> split(InstrGatherScatterOp op) {
-  Endpoint source =
-      normalize({triple(op.getSrcStrides()), triple(op.getSrcIterations())});
-  Endpoint dest =
-      normalize({triple(op.getDstStrides()), triple(op.getDstIterations())});
-  int64_t inner = op.getInnerBytes();
-  int64_t common =
-      std::gcd(source.strides[0] == inner ? source.iterations[0] : 1,
-               dest.strides[0] == inner ? dest.iterations[0] : 1);
-  if (common > 1) {
-    inner *= common;
-    for (Endpoint *endpoint : {&source, &dest}) {
-      endpoint->iterations[0] /= common;
-      endpoint->strides[0] *= common;
-      *endpoint = normalize(*endpoint);
-    }
-  }
-
+static llvm::SmallVector<Segment> split(const Segment &original) {
+  Segment normalized = coalesce(original);
+  const Endpoint &source = normalized.source;
+  const Endpoint &dest = normalized.dest;
+  const int64_t inner = normalized.inner;
   llvm::SmallVector<Segment> segments;
-  const int64_t count = op.getByteCount() / inner;
+  auto append = [&](Segment segment) {
+    segment.sourceOffset += original.sourceOffset;
+    segment.destOffset += original.destOffset;
+    segment.sourceBuffer = original.sourceBuffer;
+    segments.push_back(segment);
+  };
+  const int64_t count = original.bytes / inner;
   if (inner > target::kGatherScatterMaxPayloadBytes) {
     // Keep all pieces of an inner transfer before advancing either endpoint.
     // The verified uint32 payload bounds this expansion independently of the
@@ -136,12 +240,12 @@ static llvm::SmallVector<Segment> split(InstrGatherScatterOp op) {
       for (int64_t byte = 0; byte < inner;) {
         int64_t size =
             std::min(inner - byte, target::kGatherScatterMaxPayloadBytes);
-        segments.push_back({size,
-                            size,
-                            offsetAt(source, ordinal) + byte,
-                            offsetAt(dest, ordinal) + byte,
-                            {{0, 0, 0}, {1, 1, 1}},
-                            {{0, 0, 0}, {1, 1, 1}}});
+        append({size,
+                size,
+                offsetAt(source, ordinal) + byte,
+                offsetAt(dest, ordinal) + byte,
+                {{0, 0, 0}, {1, 1, 1}},
+                {{0, 0, 0}, {1, 1, 1}}});
         byte += size;
       }
     return segments;
@@ -168,18 +272,17 @@ static llvm::SmallVector<Segment> split(InstrGatherScatterOp op) {
       }
     // Both endpoints always admit one original inner transfer.
     assert(best > 0 && "verified GS must admit an ordered prefix");
-    segments.push_back({inner, inner * best, offsetAt(source, ordinal),
-                        offsetAt(dest, ordinal),
-                        slice(source, sourceLevel, best),
-                        slice(dest, destLevel, best)});
+    append({inner, inner * best, offsetAt(source, ordinal),
+            offsetAt(dest, ordinal), slice(source, sourceLevel, best),
+            slice(dest, destLevel, best)});
     ordinal += best;
   }
   return segments;
 }
 
 static bool sameStructure(const Segment &lhs, const Segment &rhs) {
-  return lhs.inner == rhs.inner && lhs.bytes == rhs.bytes &&
-         lhs.source.strides == rhs.source.strides &&
+  return lhs.sourceBuffer == rhs.sourceBuffer && lhs.inner == rhs.inner &&
+         lhs.bytes == rhs.bytes && lhs.source.strides == rhs.source.strides &&
          lhs.source.iterations == rhs.source.iterations &&
          lhs.dest.strides == rhs.dest.strides &&
          lhs.dest.iterations == rhs.dest.iterations;
@@ -244,9 +347,11 @@ static void emit(mlir::IRRewriter &rewriter, InstrGatherScatterOp op,
       }
       return value;
     };
+    const bool fromDest = segment.sourceBuffer == SegmentSource::Destination;
     auto newOp = rewriter.create<InstrGatherScatterOp>(
-        loc, op.getSource(), op.getDest(),
-        offset(op.getSrcOffsetValue(), op.getSrcOffsetAttr(),
+        loc, fromDest ? op.getDest() : op.getSource(), op.getDest(),
+        offset(fromDest ? op.getDstOffsetValue() : op.getSrcOffsetValue(),
+               fromDest ? op.getDstOffsetAttr() : op.getSrcOffsetAttr(),
                segment.sourceOffset, sourceStep),
         offset(op.getDstOffsetValue(), op.getDstOffsetAttr(),
                segment.destOffset, destStep),
@@ -305,22 +410,58 @@ wafer::materializeGatherScatterWork(mlir::func::FuncOp function) {
   GatherScatterWorkResult result;
   llvm::SmallVector<InstrGatherScatterOp> work;
   function.walk([&](InstrGatherScatterOp op) {
-    if (!target::isGatherScatterIssueBounded(op.getByteCount(),
-                                             op.getInnerBytes()))
+    if (hasRepeatedSource(op) || !target::isGatherScatterIssueBounded(
+                                     op.getByteCount(), op.getInnerBytes()))
       work.push_back(op);
   });
   mlir::IRRewriter rewriter(function.getContext());
   for (InstrGatherScatterOp op : work) {
-    llvm::SmallVector<Segment> segments = split(op);
     // Fresh for each current IR epoch. Coalescing into one instruction retains
     // the same snapshot and does not require a disjointness proof.
     mlir::AliasAnalysis aliases(function);
-    if (segments.size() > 1 && !haveDisjointEndpoints(op, aliases)) {
+    llvm::SmallVector<Segment> segments;
+    const Segment original{
+        static_cast<int64_t>(op.getInnerBytes()),
+        static_cast<int64_t>(op.getByteCount()),
+        0,
+        0,
+        {triple(op.getSrcStrides()), triple(op.getSrcIterations())},
+        {triple(op.getDstStrides()), triple(op.getDstIterations())}};
+    const bool disjoint = haveDisjointEndpoints(op, aliases);
+    if (hasRepeatedSource(op) && disjoint)
+      segments = expandRepeatedSource(original);
+    if (!segments.empty()) {
+      support::addCompileCounter("movement", "replicated-source-gather-scatter",
+                                 1);
+      result.issuedSegments += segments.size();
+      emit(rewriter, op, segments);
+      ++result.rewrittenOperations;
+      continue;
+    }
+    if (target::isGatherScatterIssueBounded(op.getByteCount(),
+                                            op.getInnerBytes()))
+      continue;
+    segments = split(original);
+    if (segments.size() > 1 && !disjoint) {
       op.emitError(
           "unsupported_gather_scatter_alias: splitting requires proven "
           "disjoint source and destination accesses");
       result.failure = GatherScatterWorkFailure::UnsupportedAliasing;
       return result;
+    }
+    // A large prefix may need the ordinary ordered partition first. Optimize
+    // its now-bounded pieces before emission, so one invocation reaches the
+    // same result as repeating the pass on the actual emitted instructions.
+    if (hasRepeatedSource(op) && disjoint) {
+      llvm::SmallVector<Segment> expanded;
+      for (const Segment &segment : segments) {
+        auto repeated = expandRepeatedSource(segment);
+        if (repeated.empty())
+          expanded.push_back(segment);
+        else
+          expanded.append(repeated);
+      }
+      segments = std::move(expanded);
     }
     result.issuedSegments += segments.size();
     emit(rewriter, op, segments);

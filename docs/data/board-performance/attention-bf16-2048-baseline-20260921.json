@@ -1,0 +1,1010 @@
+{
+  "date": "2026-09-21",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bfloat16",
+  "qkv_shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "seed": 20260922,
+  "policy": "search",
+  "compiler_base_commit": "50c0b36684f64cd758fcf8c3b2f6c09a1c2b4154",
+  "case_registration_uncommitted_at_measurement": true,
+  "artifacts": "/data/vibe_compiler-validation/attention-bf16-2048-20260921",
+  "manifest_sha256": "92b86286894aca4415c9c7fd08227435bcd370aefa8e1a47f8c5f68006d2b160",
+  "runner_sha256": "936465a28f6124b0553ba11a1134f02e8ab2d6824b5365b2ef3e6b4d4bc4ba34",
+  "modules": {
+    "module_00000.so": "e0e76307c8db53948140ba4fdb22021d7646c77991f2dc0a78ca2397d9356f80"
+  },
+  "fresh_no_card": true,
+  "canonical_incremental_and_noop": true,
+  "python_cases_test_count": 44,
+  "baseline_device_ms": [
+    22.486,
+    22.415001,
+    22.458
+  ],
+  "measurement_conditions": [
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    },
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    },
+    {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    }
+  ],
+  "numeric_audits": [
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "92b86286894aca4415c9c7fd08227435bcd370aefa8e1a47f8c5f68006d2b160",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=22486000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "92b86286894aca4415c9c7fd08227435bcd370aefa8e1a47f8c5f68006d2b160",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=22415001"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "92b86286894aca4415c9c7fd08227435bcd370aefa8e1a47f8c5f68006d2b160",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981331464928,
+          "relative_l2_error": 0.001932300068678443,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965503192438035e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=22458000"
+      ]
+    }
+  ],
+  "diagnostics": [
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 47997,
+      "returncode": 0,
+      "alarms": [],
+      "passed": true
+    },
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 48088,
+      "returncode": 0,
+      "alarms": [],
+      "passed": true
+    },
+    {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/attention-bf16-2048-20260921/baseline/board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 48265,
+      "returncode": 0,
+      "alarms": [],
+      "passed": true
+    }
+  ],
+  "pmu": {
+    "method": "Idle-only snapshots outside all three timed launches; no register writes or concurrent sampler",
+    "before_sha256": "62b130e36af7717fc9dfe6814ac47a9574d1d6518e561e6a2b7d44efe5c11633",
+    "after_sha256": "df38207a88acc296353043908c462bc7de7f8a244c9bd7f8d226e63fdee49c4e",
+    "tiles": [
+      {
+        "tile": 0,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967375,
+          "fu": 62058430,
+          "ct": 9494153,
+          "ne": 1090703,
+          "rdma": 932248,
+          "wdma": 101051,
+          "tdma": 51314028,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8268663580435406
+      },
+      {
+        "tile": 1,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688966415,
+          "fu": 62040695,
+          "ct": 9484941,
+          "ne": 1090704,
+          "rdma": 898419,
+          "wdma": 99363,
+          "tdma": 51311562,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.827062978582042
+      },
+      {
+        "tile": 2,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688966527,
+          "fu": 62042842,
+          "ct": 9484933,
+          "ne": 1090704,
+          "rdma": 918989,
+          "wdma": 97543,
+          "tdma": 51311365,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8270311827430471
+      },
+      {
+        "tile": 3,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967642,
+          "fu": 62051228,
+          "ct": 9484931,
+          "ne": 1090704,
+          "rdma": 937143,
+          "wdma": 102548,
+          "tdma": 51310868,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8269114029459659
+      },
+      {
+        "tile": 4,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688966568,
+          "fu": 62055331,
+          "ct": 9484941,
+          "ne": 1090704,
+          "rdma": 954333,
+          "wdma": 93187,
+          "tdma": 51311566,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8268679769027418
+      },
+      {
+        "tile": 5,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688966543,
+          "fu": 62090608,
+          "ct": 9484928,
+          "ne": 1090704,
+          "rdma": 996060,
+          "wdma": 115044,
+          "tdma": 51311867,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8264030366718265
+      },
+      {
+        "tile": 6,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688966611,
+          "fu": 62062792,
+          "ct": 9484939,
+          "ne": 1090704,
+          "rdma": 951093,
+          "wdma": 99153,
+          "tdma": 51311608,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8267692500846562
+      },
+      {
+        "tile": 7,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967583,
+          "fu": 62070226,
+          "ct": 9484937,
+          "ne": 1090704,
+          "rdma": 975353,
+          "wdma": 103216,
+          "tdma": 51298069,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.826452106038731
+      },
+      {
+        "tile": 8,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967444,
+          "fu": 62078950,
+          "ct": 9484923,
+          "ne": 1090704,
+          "rdma": 957708,
+          "wdma": 107498,
+          "tdma": 51311612,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8265541218077948
+      },
+      {
+        "tile": 9,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967931,
+          "fu": 62087775,
+          "ct": 9484904,
+          "ne": 1090704,
+          "rdma": 962296,
+          "wdma": 118213,
+          "tdma": 51310716,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.826422206303898
+      },
+      {
+        "tile": 10,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688968119,
+          "fu": 62068400,
+          "ct": 9484928,
+          "ne": 1090704,
+          "rdma": 963132,
+          "wdma": 104777,
+          "tdma": 51311695,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            4104,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5547,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8266959515631143
+      },
+      {
+        "tile": 11,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967631,
+          "fu": 63099144,
+          "ct": 8607091,
+          "ne": 1090368,
+          "rdma": 992596,
+          "wdma": 97847,
+          "tdma": 52502629,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            3684,
+            0,
+            0
+          ],
+          "ne": [
+            432,
+            0,
+            0
+          ],
+          "rdma": [
+            483,
+            0,
+            0
+          ],
+          "wdma": [
+            48,
+            0,
+            0
+          ],
+          "tdma": [
+            5979,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8320656299236009
+      },
+      {
+        "tile": 12,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688967656,
+          "fu": 31598297,
+          "ct": 4316680,
+          "ne": 545184,
+          "rdma": 520433,
+          "wdma": 59892,
+          "tdma": 26256461,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            1860,
+            0,
+            0
+          ],
+          "ne": [
+            216,
+            0,
+            0
+          ],
+          "rdma": [
+            243,
+            0,
+            0
+          ],
+          "wdma": [
+            24,
+            0,
+            0
+          ],
+          "tdma": [
+            2991,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8309454462055345
+      },
+      {
+        "tile": 13,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688968547,
+          "fu": 31591761,
+          "ct": 4316685,
+          "ne": 545184,
+          "rdma": 513525,
+          "wdma": 65189,
+          "tdma": 26256445,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            1860,
+            0,
+            0
+          ],
+          "ne": [
+            216,
+            0,
+            0
+          ],
+          "rdma": [
+            243,
+            0,
+            0
+          ],
+          "wdma": [
+            24,
+            0,
+            0
+          ],
+          "tdma": [
+            2991,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8311168535365914
+      },
+      {
+        "tile": 14,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688968603,
+          "fu": 31597992,
+          "ct": 4316679,
+          "ne": 545184,
+          "rdma": 520875,
+          "wdma": 60772,
+          "tdma": 26256460,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            1860,
+            0,
+            0
+          ],
+          "ne": [
+            216,
+            0,
+            0
+          ],
+          "rdma": [
+            243,
+            0,
+            0
+          ],
+          "wdma": [
+            24,
+            0,
+            0
+          ],
+          "tdma": [
+            2991,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8309534352689247
+      },
+      {
+        "tile": 15,
+        "enable_before": 1,
+        "enable_after": 1,
+        "cycles": {
+          "window": 56688968476,
+          "fu": 31669958,
+          "ct": 4316677,
+          "ne": 545184,
+          "rdma": 591224,
+          "wdma": 68391,
+          "tdma": 26256445,
+          "scalar": 0
+        },
+        "counts": {
+          "ct": [
+            1860,
+            0,
+            0
+          ],
+          "ne": [
+            216,
+            0,
+            0
+          ],
+          "rdma": [
+            243,
+            0,
+            0
+          ],
+          "wdma": [
+            24,
+            0,
+            0
+          ],
+          "tdma": [
+            2991,
+            0,
+            0
+          ]
+        },
+        "tdma_over_fu": 0.8290647243674905
+      }
+    ],
+    "limits": "Deltas aggregate three invocations; engine counters may overlap. Ratio to FU activity is not percentage of wall time. No per-site attribution.",
+    "worker_count": 3,
+    "raw_snapshot_note": "The initial reader also read a fourth reserved group; only the three ABI-defined worker groups are interpreted here."
+  },
+  "preparation_failures": [
+    "missing TX8_DEPS_ROOT in external experiment launcher",
+    "missing managed clang++ directory in PATH",
+    "mock args omitted capture_registers and board_diagnose_tool; corrected; all 44 tests rerun and passed"
+  ],
+  "performance_target_achieved": false,
+  "compiler_identity_note": "Baseline compiler was built from compiler_base_commit; binary hash was not frozen before the subsequent optimization rebuild. Package/ELF hashes identify the actual measured product."
+}

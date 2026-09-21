@@ -684,6 +684,48 @@ worker/resource保持、幂等、actual completion零新增steady-state join、S
 与直接调门限、CRT隐式拆分和逐元素展开相比，本层显式分段使后续analysis看到实际指令与effects。
 具体API以pinned SCF Utils、IRRewriter和AliasAnalysis源码为准。
 
+#### 连续目标的重复读取展开
+
+普通广播在10号`MoveBroadcastLowering`及`ElementwiseLowering`的projected indexing map物化处产生零source stride的GS。
+旧实现对每个目标element重复读取一次source；上面的有序分段只缩短单条持续时间，不减少inner搬运总数。
+这属于软件物化成本问题，不是广播数学语义或已证实的硬件功能限制。最终Instr中两端物理地址、alias和worker均已明确，
+因此在同一GS工作量stage处理这个通用descriptor等价式，不在attention或上层纯图加入旁路。
+
+输入仍为current GS：destination线性连续、source至少有一个非平凡零stride维，并且source与destination实际访问不相交。
+目标连续性由destination descriptor证明，不按layout名字或shape常量判定；source/destination的iteration radix可以不同。
+沿source的radix重建对应destination strides，将零stride轴的iteration暂置1，先写入每组第一份数据；
+再从内向外逐轴复制已经初始化的destination前缀，倍增到该轴完整长度，最后一次按剩余长度复制。
+每个新GS的读集合必须已初始化，且与该指令的写集合不相交；目标线性地址的唯一radix分解保证各步写集合互不重叠、
+并集精确等于原目标集合。只改变复制来源和顺序，不改变任意字节的最终位型，包括NaN payload、signed zero和整数。
+
+本项不新增op、buffer、layout、算术、dtype转换或join。输出为同一worker上的显式GS与offset SSA，直接下游从actual IR
+重新构建completion、lifetime、SPM和cost；内部从destination读取也必须在effect中可见。生产driver与named pipeline使用同一实现。
+所有前缀步骤在mutation前计算，每个超策略步骤沿用同一有序分段实现；相邻同结构分段仍物化为循环，避免对每个小段
+分别复制整套前缀步骤而膨胀静态IR。总inner搬运数必须严格减少，一次调用达到幂等。无法证明条件的段保持原有搬运。
+未知alias不准入新规则，原本超策略的未知alias仍typed拒绝。暂不优化带hole的destination、任意跨轴重排或CT VuV/VuVLoop；
+这些是当前软件规则边界，不声称硬件不支持。
+Profitability还使用同一`SearchCostPolicy`的issue和GS inner traversal先验：减少的inner遍历估时必须大于新增issue估时。
+原总payload不变；这些未校准先验只决定是否做等价优化，不参与合法性或SPM，不能解释成硬件时延。
+因此已有宽inner、少量iteration的高效广播保留单条GS，不因存在零stride就展开更多命令。
+
+算法比较：[MLIR Broadcast lowering](https://mlir.llvm.org/doxygen/LowerVectorBroadcast_8cpp_source.html)逐层复制已形成的低rank向量，
+最终交给vector/splat支持；TX81这里的current对象是SPM字节搬运，不能直接假设具有同样的寄存器shuffle路径。
+[Arrow BinaryRepeat](https://github.com/apache/arrow/blob/main/cpp/src/arrow/compute/kernels/scalar_string_ascii.cc)用已写前缀倍增并单独处理余数；
+这里将同一复制原则扩展到GS的独立外层组，利用已有大inner搬运，避免逐行CPU发射或逐element展开。
+CT VS/VuV保持原有合法路径；不同source行值的物理重复不替换成同值fill，也不引入浮点加零改变位型。
+
+本项完成矩阵：
+
+| 输入等价类 | exact结果与直接下游witness |
+| --- | --- |
+| 非attention rank3/4、1024/1025/1031、F16/BF16/F32和byte payload | 原descriptor独立逐byte oracle；所有读取已初始化、目标exact coverage且无重复写、holes不变 |
+| 一个/多个零stride轴、非2次幂重复数、两端不同radix、source holes | 内层和外层倍增、余数、原值位型与最终位置相同；实际inner搬运减少 |
+| 非零/SSA offset、同buffer不相交 | 内部读的基址使用原destination offset，不能误用source offset；worker/resource不变 |
+| 连续copy、destination holes、未知/交叠alias、过大步骤 | 不误用重复规则，保留原有合法结果或typed alias拒绝 |
+| Pipeline与性能 | 幂等；actual completion无额外steady-state join；actual SPM及TargetCall消费；PyTorch BF16 fresh no-card/全量实卡/无插桩计时 |
+
+结构证明和PMU归因不代签设备收益；最终结论以同配置修改前后健康实测为准。
+
 ### 7.4 Fill / Elementwise / Reduce / Convert
 
 ```text

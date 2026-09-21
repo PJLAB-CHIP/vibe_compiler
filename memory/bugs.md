@@ -7,6 +7,15 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## GS有界分段不等于高效广播
+
+- 现象：watchdog问题已消除，普通广播仍消耗大量TDMA活动周期；减少单条iteration并没有减少总inner搬运。
+- 根因：零source stride让每个目标element重新发起一次小读取；只按总payload或静态GS数量评估会遗漏这种成本。
+- 修复模式：在实际descriptor、alias和effect明确后，对连续目标复制已初始化前缀，扩大inner；保持字节位型和同worker顺序。
+  每个完整前缀步骤再作有界分段，相同分段用循环表示；不能逐小段交错展开整套步骤而膨胀candidate IR。
+- 防复发：独立逐byte oracle检查每次读取已初始化、exact coverage、非2次幂余数、动态offset、alias及幂等；
+  检查大步骤的静态循环规模，记录actual work、编译wall/RSS及独立无插桩实卡收益。宽inner的高效原GS须保留。
+
 ## 等元素数broadcast不能直接当作reshape
 
 - 现象：独立算子数值正常，组合图在rank变化处发生大误差；元素数、dtype、buffer大小和完成状态均正确。

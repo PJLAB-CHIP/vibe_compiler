@@ -41,7 +41,7 @@ bool isIssue(mlir::Operation *op) {
 
 struct Node {
   llvm::SmallVector<mlir::Operation *, 4> operations;
-  llvm::SmallVector<unsigned> next;
+  llvm::SmallSetVector<unsigned, 4> next;
   unsigned degree = 0;
   bool exchange = false;
 };
@@ -224,8 +224,7 @@ private:
       return;
     if (endpoint && isIssue(endpoint))
       endpointDependencies[endpoint].insert(from);
-    if (!llvm::is_contained(nodes[from].next, to)) {
-      nodes[from].next.push_back(to);
+    if (nodes[from].next.insert(to)) {
       ++nodes[to].degree;
     }
   }
