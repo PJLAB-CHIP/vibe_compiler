@@ -18,6 +18,8 @@ LSU timeout对该TDMA的因果已经实测成立，不再只是相关性。三�
 接续为减少普通broadcast单条小颗粒GS持续时间，比较实际可合并搬运和语义等价分段，随后验证紧密发射、直接consumer和原attention。
 不尝试向这个字段写大值修复；不把16位timeout误写成iteration合法性上限；早期F32 fill状态和其它历史永久卡死仍分别处理。
 本轮不新增产品矩阵资格，详见[门限因果实测](../../docs/data/board-performance/tdma-timeout-width-causal-results-20260921.json)。
+按用户要求，已将调查过程、误判修正、单变量实验及结案边界整理为
+[排查复盘](../../docs/tx81-tdma-timeout-investigation-retrospective.md)；这是文档总结，不改变生产修复和实卡接续状态。
 
 ### 前轮检查点：单条GS触发已定位（2026-09-21）
 

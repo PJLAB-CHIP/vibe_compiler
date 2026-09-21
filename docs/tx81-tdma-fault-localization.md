@@ -4,6 +4,8 @@
 输出是可核对的故障链、已确认的观测缺口和下一次采集所需字段；直接消费者是板测诊断及厂商问题复现。
 本页不定义新的 runtime 清理协议，也不把二进制审计当作板端根因或修复证明。
 
+完整排查经历、判断变化和方法教训见[TDMA Timeout排查复盘](tx81-tdma-timeout-investigation-retrospective.md)。
+
 本次证据见 [2026-09-20 审计记录](data/board-performance/tdma-firmware-localization-20260920.json)。
 首次 TDMA 告警、后续执行和最终清理错误分别归档。历史 raw 仅用于离线审计，不作为新测试输入。
 
@@ -446,4 +448,5 @@ SDK将CSR该位定义为CT输入NaN。此记录定位了首次状态变化窗口
 原采集器遇到CT状态即冻结，漏掉后续TDMA窗口；现改为单独保存首次CT状态，继续记录packet，
 仅在stream TDMA bit 12出现时冻结ring。故障注入、16 Tile原ABI调用对照、新输入/reference及no-card通过。
 清理后只读两个填充地址所得全零不能代替指令时刻的数据。后续正确F32的原路径仍复现，见页首；
-fill独立数值资格、唯一TDMA故障指令及两者因果关系仍未闭合。
+该阶段尚未完成fill独立数值资格及唯一TDMA指令定位。后续无CT单GS复现和门限对照已确认TDMA触发机制，
+见页首；早期F32 fill状态和独立数值资格仍分别保留，不能因TDMA已定位而代签。

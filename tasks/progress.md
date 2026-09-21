@@ -25,6 +25,7 @@
 当前接续（2026-09-21）：用户再次确认重启后，已完成冻结的位宽与GS门限单变量对照。
 LSU_TIMEOUT的32-bit写入只保留低16位；相同GS仅降低门限即从健康变为TDMA fatal，
 本复现的触发原因和该字段上限已确认，不再只是持续时间相关性。异常后立即停批，原配置恢复并读回核对通过。
+排查经历已整理为[复盘文档](../docs/tx81-tdma-timeout-investigation-retrospective.md)，保留关键实验、弯路和证据边界。
 当前boot不再计算；接续工作是降低普通broadcast单条小颗粒GS的持续时间，完成紧密发射、直接consumer和原attention验收。
 不以调大该字段修复，也不将timeout值当iteration合法性上限。生产修复、早期F32 fill状态及产品资格仍未闭合。
 具体覆盖和证据以[计划顶部](plans/board-workload-matrix.md#当前检查点lsu门限因果与位宽已实测确认2026-09-21)为准；
