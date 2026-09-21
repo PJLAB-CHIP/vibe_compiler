@@ -1,0 +1,1958 @@
+{
+  "date": "2026-09-21",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bfloat16",
+  "qkv_shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "seed": 20260922,
+  "git_head": "e24df725",
+  "artifact_root": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/dead-initialization-profile",
+  "profile_run": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/dead-initialization-profile/prepared/package/package.profile/runs/run-533707-35c2f4",
+  "prepare_invocation": {
+    "compiler_sha256": "742b622e42eea3b13b1e2e8b9754b15382228bb1a8a6559905bef1fe41e09b3b",
+    "git_head": "e24df72588ac253f630ae176730d07d847f43a5d",
+    "source_diff_sha256": "bdb9d3dde9b6f7e189a1501c361847861e6d8d28a0e51f3fd655a606e04b3aab",
+    "command": [
+      "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+      "-B",
+      "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "--case",
+      "attention-prefill-28-heads-2048",
+      "--dtype",
+      "bfloat16",
+      "--seed",
+      "20260922",
+      "--wafer-compile",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+      "--wafer-run",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+      "--work-dir",
+      "/data/vibe_compiler-validation/attention-bf16-2048-20260921/dead-initialization-profile/prepared",
+      "--dump-compiler-ir",
+      "/data/vibe_compiler-validation/attention-bf16-2048-20260921/dead-initialization-profile/ir",
+      "--optimization-policy",
+      "search",
+      "--memory-guards",
+      "--device-timing",
+      "--compile-timing",
+      "--expected-runtime-version",
+      "1400",
+      "--expected-device-name",
+      "/dev/accel/dev-0",
+      "--expected-pci-bus-id",
+      "0000:3b:00.0",
+      "--expected-tile-count",
+      "16",
+      "--expected-runtime-library-sha256",
+      "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+      "--completion-timeout-ms",
+      "60000",
+      "--profile",
+      "--no-card"
+    ],
+    "boot_id": "bf999e47-792c-4768-9e48-f7f09692da90",
+    "stage": "prepare",
+    "register_capture": false,
+    "device_profile": true
+  },
+  "primary_elf_matches_previous_ordinary": true,
+  "primary_device_ms": 8.479,
+  "primary_measurement": {
+    "samples": [
+      {
+        "sample_id": "primary",
+        "sample_index": 0,
+        "device_elapsed_ns": 8479000,
+        "device_timer_kind": "tx-stream-events",
+        "host_submit_ns": 425903,
+        "host_launch_to_completion_ns": 9125709,
+        "completion_observation_resolution_ns": 30379
+      }
+    ]
+  },
+  "profile_validity": {
+    "clock_alignment": false,
+    "cost_accounting": true,
+    "environment": true,
+    "full_trace": true,
+    "host_completion_resolution": false,
+    "measurement_basis": true,
+    "output_equivalence": true,
+    "pmu": true,
+    "pmu_restore": true,
+    "profile_instrumentation": true,
+    "program_contract": true,
+    "semantic_correctness": null,
+    "trace": true
+  },
+  "trace_capture": {
+    "captured_events": 114480,
+    "full_execution": true,
+    "scope": "full-execution",
+    "total_events": 114480
+  },
+  "diagnostic_counts": {
+    "completion_resolution_too_coarse": 1,
+    "ncc_site_attribution_ambiguous": 57592,
+    "statistics_window_unusable": 16
+  },
+  "tiles": [
+    {
+      "tile": 0,
+      "trace_entry_cycles": 13430031,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2861895,
+        "NE": 363455,
+        "RDMA": 323964,
+        "WDMA": 28811,
+        "TDMA": 1828171
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11295070,
+        "ncc-submit": 1027198,
+        "entry-epilogue": 3061,
+        "completion-wait-proxy": 2798,
+        "entry-prologue": 1752,
+        "between-site-gap": 1100152
+      },
+      "known_inside_trace_overhead_cycles": 5711783,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7472190
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 768325
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 526822
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 423499
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420208
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 328029
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 286001
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 273030
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264537
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 257554
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 254917
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 248020
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 241725
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 227065
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 215942
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 59796
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51256
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6150
+        }
+      }
+    },
+    {
+      "tile": 1,
+      "trace_entry_cycles": 13363286,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860694,
+        "NE": 363456,
+        "RDMA": 311458,
+        "WDMA": 29716,
+        "TDMA": 1828080
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11269348,
+        "ncc-submit": 1002287,
+        "completion-wait-proxy": 2436,
+        "entry-epilogue": 2305,
+        "between-site-gap": 1085320,
+        "entry-prologue": 1590
+      },
+      "known_inside_trace_overhead_cycles": 5684005,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7462875
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 745490
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 510275
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 421783
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420266
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 327978
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 287362
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 266963
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264025
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 258562
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 255004
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 247956
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 240200
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 227517
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 221377
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 60257
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 50481
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 5700
+        }
+      }
+    },
+    {
+      "tile": 2,
+      "trace_entry_cycles": 13320102,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860666,
+        "NE": 363456,
+        "RDMA": 293177,
+        "WDMA": 27129,
+        "TDMA": 1828058
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11214067,
+        "ncc-submit": 1011459,
+        "completion-wait-proxy": 2832,
+        "entry-epilogue": 2400,
+        "between-site-gap": 1087544,
+        "entry-prologue": 1800
+      },
+      "known_inside_trace_overhead_cycles": 5695225,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7447135
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 739319
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 495859
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 421408
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 416673
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 330264
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 285041
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 265335
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 262611
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 261151
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 256771
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 243949
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 238375
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 225501
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 220848
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 61289
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51151
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 5678
+        }
+      }
+    },
+    {
+      "tile": 3,
+      "trace_entry_cycles": 13370766,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860651,
+        "NE": 363456,
+        "RDMA": 334717,
+        "WDMA": 27222,
+        "TDMA": 1828059
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11270766,
+        "ncc-submit": 1007004,
+        "completion-wait-proxy": 2999,
+        "between-site-gap": 1085994,
+        "entry-epilogue": 2173,
+        "entry-prologue": 1830
+      },
+      "known_inside_trace_overhead_cycles": 5701217,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7467374
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 741481
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 520371
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 418759
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 417817
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 332906
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 289984
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 269817
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 262357
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 254510
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 252803
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 249904
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 240668
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 224064
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 218312
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 62090
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51066
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6486
+        }
+      }
+    },
+    {
+      "tile": 4,
+      "trace_entry_cycles": 13351438,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860641,
+        "NE": 363456,
+        "RDMA": 331357,
+        "WDMA": 26702,
+        "TDMA": 1828060
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11266421,
+        "ncc-submit": 998239,
+        "completion-wait-proxy": 2476,
+        "entry-epilogue": 2155,
+        "between-site-gap": 1080538,
+        "entry-prologue": 1609
+      },
+      "known_inside_trace_overhead_cycles": 5704764,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7464548
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 744368
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 513825
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420556
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 419053
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 327858
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 286472
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 268532
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264634
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 253208
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 251592
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 247919
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 237317
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 227705
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 216322
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 65484
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51055
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6688
+        }
+      }
+    },
+    {
+      "tile": 5,
+      "trace_entry_cycles": 13333585,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860680,
+        "NE": 363456,
+        "RDMA": 362391,
+        "WDMA": 30446,
+        "TDMA": 1828047
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11227367,
+        "ncc-submit": 1012080,
+        "completion-wait-proxy": 2599,
+        "entry-prologue": 2084,
+        "entry-epilogue": 1980,
+        "between-site-gap": 1087475
+      },
+      "known_inside_trace_overhead_cycles": 5692241,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7433617
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 740149
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 529048
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 419977
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 418053
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 328894
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 285309
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 266540
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264829
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 255027
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 254167
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 244345
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 234912
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 227478
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 219699
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 61589
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51863
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6550
+        }
+      }
+    },
+    {
+      "tile": 6,
+      "trace_entry_cycles": 13317761,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860689,
+        "NE": 363456,
+        "RDMA": 311694,
+        "WDMA": 24834,
+        "TDMA": 1828047
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11222846,
+        "ncc-submit": 1006160,
+        "completion-wait-proxy": 2792,
+        "entry-epilogue": 2227,
+        "entry-prologue": 2186,
+        "between-site-gap": 1081550
+      },
+      "known_inside_trace_overhead_cycles": 5685496,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7427263
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 740951
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 513586
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420501
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 418343
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 335779
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 287775
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 268672
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 262718
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 257247
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 251524
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 243308
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 241724
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 226082
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 219703
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 59825
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 50829
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 5968
+        }
+      }
+    },
+    {
+      "tile": 7,
+      "trace_entry_cycles": 13371323,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860665,
+        "NE": 363456,
+        "RDMA": 320857,
+        "WDMA": 24247,
+        "TDMA": 1826921
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11279379,
+        "ncc-submit": 1006307,
+        "completion-wait-proxy": 2710,
+        "between-site-gap": 1078839,
+        "entry-prologue": 2107,
+        "entry-epilogue": 1981
+      },
+      "known_inside_trace_overhead_cycles": 5702179,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7468861
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 747040
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 517474
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 421930
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 421371
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 336111
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 287967
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 267740
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264344
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 259277
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 252877
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 247525
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 236495
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 226240
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 216776
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 59618
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 50785
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 5965
+        }
+      }
+    },
+    {
+      "tile": 8,
+      "trace_entry_cycles": 13369755,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860636,
+        "NE": 363456,
+        "RDMA": 313264,
+        "WDMA": 26706,
+        "TDMA": 1828094
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11272673,
+        "entry-prologue": 5067,
+        "ncc-submit": 988707,
+        "completion-wait-proxy": 2744,
+        "entry-epilogue": 2407,
+        "between-site-gap": 1098157
+      },
+      "known_inside_trace_overhead_cycles": 5715910,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7454343
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 757781
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 515087
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420136
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 419465
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 319650
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 286437
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 266728
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264699
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 257819
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 254686
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 243616
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 235841
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 228387
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 218523
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 63232
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51280
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6414
+        }
+      }
+    },
+    {
+      "tile": 9,
+      "trace_entry_cycles": 13323999,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860669,
+        "NE": 363456,
+        "RDMA": 355088,
+        "WDMA": 29114,
+        "TDMA": 1828053
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11240193,
+        "ncc-submit": 998971,
+        "entry-prologue": 2319,
+        "completion-wait-proxy": 2291,
+        "entry-epilogue": 2167,
+        "between-site-gap": 1078058
+      },
+      "known_inside_trace_overhead_cycles": 5683926,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7438000
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 735651
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 526447
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 419959
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 418032
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 333477
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 286457
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 264004
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 262835
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 256591
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 252882
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 243000
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 239396
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 227067
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 220639
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 59634
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 51306
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6078
+        }
+      }
+    },
+    {
+      "tile": 10,
+      "trace_entry_cycles": 13335153,
+      "captured_events": 8082,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860650,
+        "NE": 363456,
+        "RDMA": 317802,
+        "WDMA": 25472,
+        "TDMA": 1828050
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11245388,
+        "ncc-submit": 1003440,
+        "entry-prologue": 4898,
+        "completion-wait-proxy": 2894,
+        "entry-epilogue": 2093,
+        "between-site-gap": 1076440
+      },
+      "known_inside_trace_overhead_cycles": 5685715,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2521,
+          "trace_site_envelope_cycles": 7450456
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 738583
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 529034
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 421037
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420580
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 330912
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 285785
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 269089
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 261697
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 255304
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 254603
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 242147
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 237883
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 225397
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 212246
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 59276
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 50610
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 7083
+        }
+      }
+    },
+    {
+      "tile": 11,
+      "trace_entry_cycles": 14072760,
+      "captured_events": 8514,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 2860596,
+        "NE": 363456,
+        "RDMA": 308234,
+        "WDMA": 24688,
+        "TDMA": 2600345
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 11826403,
+        "ncc-submit": 1093167,
+        "entry-prologue": 2811,
+        "completion-wait-proxy": 2792,
+        "between-site-gap": 1145564,
+        "entry-epilogue": 2023
+      },
+      "known_inside_trace_overhead_cycles": 6002889,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 2737,
+          "trace_site_envelope_cycles": 8122263
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 248,
+          "trace_site_envelope_cycles": 743957
+        },
+        "wafer_tx81_rdma": {
+          "calls": 161,
+          "trace_site_envelope_cycles": 509317
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 424278
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 144,
+          "trace_site_envelope_cycles": 420024
+        },
+        "wafer_tx81_memset": {
+          "calls": 52,
+          "trace_site_envelope_cycles": 324685
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 286337
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 269588
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 265396
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 88,
+          "trace_site_envelope_cycles": 254016
+        },
+        "wafer_tx81_gemm": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 253206
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 243763
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 239114
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 232635
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 216389
+        },
+        "wafer_tx81_wdma": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 60592
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 16,
+          "trace_site_envelope_cycles": 50820
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 5982
+        }
+      }
+    },
+    {
+      "tile": 12,
+      "trace_entry_cycles": 7124494,
+      "captured_events": 4266,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 1430500,
+        "NE": 181728,
+        "RDMA": 164738,
+        "WDMA": 12880,
+        "TDMA": 1301877
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 5976692,
+        "entry-prologue": 4649,
+        "ncc-submit": 560126,
+        "completion-wait-proxy": 2782,
+        "entry-epilogue": 2148,
+        "between-site-gap": 578097
+      },
+      "known_inside_trace_overhead_cycles": 3018783,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 1369,
+          "trace_site_envelope_cycles": 4078607
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 124,
+          "trace_site_envelope_cycles": 374026
+        },
+        "wafer_tx81_rdma": {
+          "calls": 81,
+          "trace_site_envelope_cycles": 274201
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 213329
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 212516
+        },
+        "wafer_tx81_memset": {
+          "calls": 28,
+          "trace_site_envelope_cycles": 179437
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 143654
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 134216
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 134189
+        },
+        "wafer_tx81_gemm": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 128478
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 127677
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 124141
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 120168
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 115810
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 112050
+        },
+        "wafer_tx81_wdma": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 34757
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 25962
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6382
+        }
+      }
+    },
+    {
+      "tile": 13,
+      "trace_entry_cycles": 7048703,
+      "captured_events": 4266,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 1430500,
+        "NE": 181728,
+        "RDMA": 154178,
+        "WDMA": 13417,
+        "TDMA": 1301877
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 5909346,
+        "entry-prologue": 4955,
+        "ncc-submit": 559129,
+        "between-site-gap": 570669,
+        "completion-wait-proxy": 2402,
+        "entry-epilogue": 2202
+      },
+      "known_inside_trace_overhead_cycles": 2994355,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 1369,
+          "trace_site_envelope_cycles": 4047836
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 124,
+          "trace_site_envelope_cycles": 365576
+        },
+        "wafer_tx81_rdma": {
+          "calls": 81,
+          "trace_site_envelope_cycles": 267161
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 210950
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 209163
+        },
+        "wafer_tx81_memset": {
+          "calls": 28,
+          "trace_site_envelope_cycles": 172234
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 144698
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 133729
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 131852
+        },
+        "wafer_tx81_gemm": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 128298
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 126710
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 123968
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 120095
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 114873
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 109878
+        },
+        "wafer_tx81_wdma": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 32566
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 26045
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 5245
+        }
+      }
+    },
+    {
+      "tile": 14,
+      "trace_entry_cycles": 7119077,
+      "captured_events": 4266,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 1430500,
+        "NE": 181728,
+        "RDMA": 159880,
+        "WDMA": 12843,
+        "TDMA": 1301877
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 5971783,
+        "ncc-submit": 565314,
+        "entry-prologue": 4583,
+        "completion-wait-proxy": 2773,
+        "between-site-gap": 572815,
+        "entry-epilogue": 1809
+      },
+      "known_inside_trace_overhead_cycles": 3006071,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 1369,
+          "trace_site_envelope_cycles": 4077753
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 124,
+          "trace_site_envelope_cycles": 369724
+        },
+        "wafer_tx81_rdma": {
+          "calls": 81,
+          "trace_site_envelope_cycles": 280332
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 209907
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 209820
+        },
+        "wafer_tx81_memset": {
+          "calls": 28,
+          "trace_site_envelope_cycles": 178966
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 145775
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 136561
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 132723
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 129343
+        },
+        "wafer_tx81_gemm": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 128314
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 125032
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 120565
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 115034
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 112107
+        },
+        "wafer_tx81_wdma": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 33536
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 27392
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6986
+        }
+      }
+    },
+    {
+      "tile": 15,
+      "trace_entry_cycles": 7080532,
+      "captured_events": 4266,
+      "full_trace": true,
+      "engine_active_time_ns": {
+        "CT": 1430500,
+        "NE": 181728,
+        "RDMA": 160652,
+        "WDMA": 13054,
+        "TDMA": 1301877
+      },
+      "trace_semantic_partition_cycles": {
+        "site-control": 5939524,
+        "ncc-submit": 561230,
+        "entry-prologue": 3806,
+        "completion-wait-proxy": 2871,
+        "between-site-gap": 571113,
+        "entry-epilogue": 1988
+      },
+      "known_inside_trace_overhead_cycles": 3001524,
+      "call_families": {
+        "wafer_tx81_gather_scatter": {
+          "calls": 1369,
+          "trace_site_envelope_cycles": 4060317
+        },
+        "wafer_tx81_elementwise_mul": {
+          "calls": 124,
+          "trace_site_envelope_cycles": 368495
+        },
+        "wafer_tx81_rdma": {
+          "calls": 81,
+          "trace_site_envelope_cycles": 272897
+        },
+        "wafer_tx81_elementwise_sub": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 211587
+        },
+        "wafer_tx81_elementwise_exp": {
+          "calls": 72,
+          "trace_site_envelope_cycles": 209163
+        },
+        "wafer_tx81_memset": {
+          "calls": 28,
+          "trace_site_envelope_cycles": 178616
+        },
+        "wafer_tx81_elementwise_eq": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 145383
+        },
+        "wafer_tx81_convert_fp32_bf16": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 135762
+        },
+        "wafer_tx81_elementwise_add": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 132346
+        },
+        "wafer_tx81_gemm": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 129008
+        },
+        "wafer_tx81_mask_move": {
+          "calls": 44,
+          "trace_site_envelope_cycles": 125644
+        },
+        "wafer_tx81_gemm_oriented": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 123759
+        },
+        "wafer_tx81_reduce_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 123125
+        },
+        "wafer_tx81_reduce_sum": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 114162
+        },
+        "wafer_tx81_elementwise_max": {
+          "calls": 36,
+          "trace_site_envelope_cycles": 107130
+        },
+        "wafer_tx81_wdma": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 33420
+        },
+        "wafer_tx81_elementwise_recip": {
+          "calls": 8,
+          "trace_site_envelope_cycles": 26525
+        },
+        "wafer_tx81_ncc_join": {
+          "calls": 1,
+          "trace_site_envelope_cycles": 6286
+        }
+      }
+    }
+  ],
+  "gs_groups": {
+    "4": {
+      "score_row_broadcast": {
+        "site_ids": [
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85
+        ],
+        "llvm_lines": [
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182,
+          183
+        ],
+        "calls": 648,
+        "trace_site_envelope_cycles": 1857129
+      },
+      "accumulator_row_broadcast": {
+        "site_ids": [
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100
+        ],
+        "llvm_lines": [
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199
+        ],
+        "calls": 576,
+        "trace_site_envelope_cycles": 1813412
+      },
+      "final_normalization_broadcast": {
+        "site_ids": [
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123
+        ],
+        "llvm_lines": [
+          228,
+          229,
+          230,
+          231,
+          232,
+          233,
+          234,
+          235
+        ],
+        "calls": 128,
+        "trace_site_envelope_cycles": 368669
+      }
+    },
+    "11": {
+      "score_row_broadcast": {
+        "site_ids": [
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90
+        ],
+        "llvm_lines": [
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          180,
+          181,
+          182,
+          183,
+          184,
+          185,
+          186,
+          187,
+          188
+        ],
+        "calls": 648,
+        "trace_site_envelope_cycles": 1852619
+      },
+      "accumulator_row_broadcast": {
+        "site_ids": [
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106
+        ],
+        "llvm_lines": [
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205
+        ],
+        "calls": 576,
+        "trace_site_envelope_cycles": 1880989
+      },
+      "final_normalization_broadcast": {
+        "site_ids": [
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129
+        ],
+        "llvm_lines": [
+          234,
+          235,
+          236,
+          237,
+          238,
+          239,
+          240,
+          241
+        ],
+        "calls": 128,
+        "trace_site_envelope_cycles": 362611
+      },
+      "extra_score_layout_conversions": {
+        "site_ids": [
+          15,
+          17,
+          40,
+          67,
+          70,
+          93
+        ],
+        "llvm_lines": [
+          109,
+          111,
+          134,
+          165,
+          168,
+          191
+        ],
+        "calls": 216,
+        "trace_site_envelope_cycles": 633478
+      }
+    }
+  },
+  "phase_audits": [
+    {
+      "passed": true,
+      "alarms": []
+    },
+    {
+      "passed": true,
+      "alarms": []
+    },
+    {
+      "passed": true,
+      "alarms": []
+    }
+  ],
+  "debugger": {
+    "exit_code": 0,
+    "phases": 3,
+    "gate_failed": false
+  },
+  "final_log_audit": {
+    "alarms": [],
+    "passed": true
+  },
+  "artifact_sha256": {
+    "evidence.json": "c1e83d72c1b7cc73e933477d54ded0083723efebc66d719c66d52b608300f7c7",
+    "analysis.json": "233cd1dd564f3e25e59b9845126feaf489e3f61b1b022b4c4fea3eb8fdebfad1",
+    "index.html": "1d8d0cf56000e7443097d462683e2bdd88e6cbce71e407043b1075a56526438a"
+  },
+  "qualification": {
+    "profiling_observation_completed": true,
+    "full_guard_acceptance": false,
+    "failure": "Profile remap drops memoryGuardPolicy; runner exited normally, then the PyTorch harness correctly rejected missing guard evidence. No device retry or reset. Offline comparison against this run fresh full PyTorch reference passed with unchanged tolerances."
+  },
+  "interpretation": [
+    "CT engine activity is about 2.861 ms on the two-head tiles; TDMA is about 1.828 ms on Tile 4 and 2.600 ms on Tile 11. NE GEMM activity is about 0.363 ms. Engine times may overlap and cannot sum to Primary wall time.",
+    "GS call envelopes are the largest Trace call family. Row broadcasts account for 1352 GS calls per two-head Tile. These envelopes include instrumentation and are not pure hardware GS duration.",
+    "Tile 11 issues 216 more score layout conversions than Tile 4 for the same two-head workload. Actual input/result layouts explain the difference.",
+    "Tile 11 has the largest observed local Trace span; four one-head Tiles have roughly half that work. No cross-Tile clock alignment or exact global critical path is established.",
+    "The only terminal NCC wait is short in Trace; instrumentation changes issue/overlap timing, so this does not prove the same Primary wait magnitude."
+  ],
+  "limits": [
+    "No per-site exclusive CT/TDMA engine duration: all NCC site activity attribution is ambiguous in this capture.",
+    "Known in-entry Trace instrumentation costs about 43% of the observed local Trace span. Do not scale call-envelope shares to Primary milliseconds.",
+    "The profiler ABI labels NCC execution counters in nanoseconds; Kcore rdcycle spans remain cycles. Earlier idle-snapshot records retained raw deltas under the label cycles, which must not be reused for absolute time conversions.",
+    "Host debugger stopped at invocation boundaries for system-wide occupancy/fatal/log checks. Vendor dlopen of /proc/self/fd/3 initially confused debugger solib lookup before the first invocation; auto-solib loading was disabled, and the same process then completed all three phases and vendor normal exit.",
+    "3 ms goal remains unmet."
+  ],
+  "offline_full_numeric_audit": {
+    "comparison_passed": true,
+    "elements": 7340032,
+    "comparison": {
+      "rtol": 0.006,
+      "atol": 0.008,
+      "equal_nan": false,
+      "min_cosine": 0.9999,
+      "max_relative_l2": 0.01
+    },
+    "statistics": {
+      "cosine_similarity": 0.9999981331464928,
+      "relative_l2_error": 0.001932300068678443,
+      "elementwise_mismatches": 0,
+      "mean_abs_error": 3.965503192438035e-05,
+      "max_abs_error": 0.015625
+    },
+    "scope": "offline comparison of this run output against this run fresh PyTorch reference; no new launch",
+    "memory_guards_checked": false
+  },
+  "primary_manifest_sha256": "ce58e8836119ec546d60f578e7cfdcb3fa26890efde1d57650d72826c569d5e6",
+  "primary_module_sha256": "a2dbbea8ba4837f581d8f56ffe5b0a5ff167bdf181d0b5440cb51724563e65d6",
+  "external_capture_scripts_sha256": {
+    "profile-phase-gate.py": "35af0acddec820e8e80f4740f44e05b0820616ec3cb7fea1f676c68b3819a313",
+    "profile-phase-gates.gdb": "bc07c750ff3adacbc419054dd5321dca0f653218f55ef49e5a096a964891cbad",
+    "profile-runner": "8cdb1c6309bc0f4226fb051fe9648c6fb5bda2a2efb28f726713f2a1f0ba34e3",
+    "run-profile.py": "23c0007a211465026c1f2963c35608c8ba46661cbe74d09e4b5f7e33b576b86f"
+  }
+}

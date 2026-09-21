@@ -16,6 +16,42 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-21：2048 BF16完整profile热点
+
+当前版本完成一次Primary/Count/Trace，Primary ELF与前一步普通包逐byte相同，设备事件时间为**8.479ms**。
+16 Tile完整采集114,480条事件，Count/Trace一致、无overflow，三阶段输出逐bit一致；
+返回输出随后对本轮新PyTorch reference完成全部7,340,032元素比较，原门槛通过、elementwise mismatch为0。
+采集各阶段与厂商正常退出后均无driver/firmware告警。
+
+下表为同一Trace中各Tile的engine累计活动时间，单位按现有profiler ABI为ms；它们可能重叠，不能相加或从Primary相减。
+
+| Tile及工作量 | CT逐点/归约等 | TDMA搬运 | NE矩阵计算 | RDMA | WDMA |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Tile 4，两个head | 2.861 | 1.828 | 0.363 | 0.331 | 0.027 |
+| Tile 11，两个head | 2.861 | 2.600 | 0.363 | 0.308 | 0.025 |
+| Tile 12，一个head | 1.431 | 1.302 | 0.182 | 0.165 | 0.013 |
+
+热点调查顺序由此收敛到**广播/布局搬运和CT计算链**。NE活动量明显较小，目前没有证据支持先优化GEMM本身。
+完整调用记录进一步确认：
+
+- Tile 4/11分别执行2,521/2,737次GS，是Trace调用包络最大的函数类。每个双head Tile的行max广播648次、
+  accumulator缩放广播576次、最终归一化广播128次，合计1,352次。这些是输入行数据广播，不是常量mask fill。
+- Tile 11在QK后将score从NCx转为Tensor，再在max/sum归约前转回NCx，每个block pair额外三次布局转换，
+  共216次、54 MiB有效复制数据；对应其比Tile 4更高的TDMA活动量。这是actual IR中的软件布局选择差异，不能归为硬件不支持。
+- Tile 11的本地Trace跨度为14,072,760 Kcore cycles，Tile 4为13,351,438；单head Tile约7.05–7.12M。
+  各Tile时钟未对齐，不能据此声称已取得全卡精确关键路径或全局结束时刻。
+- Trace中每Tile仅有一个terminal NCC wait，Tile 11的等待区间为2,792 cycles。插桩会改变发射与重叠节奏，
+  这个数不能直接代替Primary的等待时间。
+
+Trace已测的入口内插桩成本约占本地跨度43%；GS调用包络也包含采样、记录和wrapper工作。
+因此不能把其约58%的Trace占比乘以8.479ms当成生产GS耗时。CT/TDMA逐site活动归属均为ambiguous，
+本轮能确定函数类、实际工作量和布局差异，尚不能给Exp、reduce或某一GS填写精确独占硬件耗时。
+
+资格缺口：`remapBoardInvocationFilePlan`遗漏传递`memoryGuardPolicy`，导致profile未执行请求的guard检查；
+PyTorch外层因此正确报失败。上述数据仅作热点诊断，不签完整板测验收。已保留失败、完整输出及阶段日志，没有重跑设备。
+另有首次设备调用前的Host GDB库路径问题，关闭自动solib加载后同一进程完成采集；详情与原始摘要见
+[机器可读证据](data/board-performance/attention-bf16-2048-profile-20260921.json)。
+
 ## 2026-09-21：消除被完整覆盖的私有初始化
 
 同一BF16 `[1,28,2048,128]` causal attention，三次无采集/插桩设备时间为

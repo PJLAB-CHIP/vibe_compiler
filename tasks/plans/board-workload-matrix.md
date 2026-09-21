@@ -95,8 +95,17 @@ Tile 11的TDMA仍为7,788,315。不同Tile选择的布局不同，尚不能仅�
 测试矩阵扩充时曾误改另一fixture的loop，编译失败后纠正；生产源码未变，构包与最终主机构建的compiler摘要相同。
 完整五个组件及三个产品合并CTest 8/8通过，canonical完整增量和随后Ninja no-op通过；
 本轮身份见[证据](../../docs/data/board-performance/attention-bf16-2048-dead-initialization-20260921.json)。
-用户明确要求使用已有profile查看总体耗时；下一步准备当前包的Primary/Count/Trace完整采集，
-检查全程调用、等待、engine活动及Tile结束跨度，定位剩余CT以及不同Tile布局的搬运成本。
+用户明确要求使用已有profile查看热点；当前包已完成一次Primary/Count/Trace，Primary为8.479ms，
+16 Tile共114,480条事件完整、无overflow，三阶段输出一致，本轮独立reference全量比较通过，无设备告警。
+热点为GS广播/布局搬运与CT计算链；双head Tile的1,352次行数据广播，以及Tile 11额外216次score布局转换已对应到actual IR。
+CT活动约2.861ms，TDMA在Tile 4/11为1.828/2.600ms，NE仅约0.363ms；engine可重叠，不能相加为Primary。
+Trace插桩占入口跨度约43%，逐site engine归属为ambiguous；不据此签发精确生产耗时分解。
+
+本轮发现profile request remap漏传`memoryGuardPolicy`，外层因缺失guard证据报失败；不能标本轮完整guard验收通过。
+这是Host配置传递缺陷，无设备fatal/timeout；失败记录保留，未重跑。后续设备采集前先补齐该通用请求传递及直接consumer回归，
+再按上述热点核查广播直接消费与布局转换的产生owner、合法条件和实际收益，不继续凭静态数量修零散小项。
+本轮热点、限制及外部采集启动修正见[报告](../../docs/board-performance-results.md#2026-09-21：2048-bf16完整profile热点)
+与[机器证据](../../docs/data/board-performance/attention-bf16-2048-profile-20260921.json)。
 3ms目标仍未达到，诊断结果与无插桩性能样本分开；
 不能把PMU累计周期直接当作墙钟占比，也不能未归因就改变指令或数值语义。
 

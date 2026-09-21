@@ -27,7 +27,8 @@
 11号GS重复读取优化已通过主机回归及同版本三次BF16实卡，性能明显改善但仍未达标；
 随后补齐跨metadata reshape的GEMM写回消除，BF16三次实卡健康，仍未达到3ms；
 随后消除被完整覆盖的私有初始化/布局复制，三次BF16实卡健康，性能仍未达标；
-接续定位剩余CT及不同Tile布局的搬运成本，仍为board-testing doing，证据见同一计划顶部。
+当前完整profile已将调查重点收敛到GS广播/布局搬运与CT计算链；同时发现profile请求漏传guard开关，
+后续上板前须先修正并回归。仍为board-testing doing，热点证据及资格边界见同一计划顶部。
 
 2026-09-21最新接续：Host寄存器诊断已迁入`wafer-board-diagnose`，普通入口默认关闭，显式开关才采集；
 当前4K 28-head attention在关闭采集/设备插桩条件下完成FP16/BF16各三次实卡，完整数值、guard及运行日志通过。
