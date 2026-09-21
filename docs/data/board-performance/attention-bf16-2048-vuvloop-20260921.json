@@ -3869,7 +3869,31 @@
     ],
     "read_only_snapshot": "/data/vibe_compiler-validation/attention-bf16-2048-20260921/native-transpose-qualification-current/failure-registers.json"
   },
-  "next_native_transpose_qualifications": [
+  "host_validation_checkpoint": {
+    "canonical_build": "vuvloop/build-checkpoint.log",
+    "canonical_noop": "vuvloop/build-checkpoint-noop.log",
+    "affected_lit": {
+      "executed": 155,
+      "passed": 155,
+      "log": "vuvloop/affected-lit-final2.log"
+    },
+    "unit_suites": {
+      "analysis": "passed",
+      "planning": "passed",
+      "conversion": "passed",
+      "simulator": "passed",
+      "target": "passed",
+      "runtime_board_io": "passed",
+      "transforms": "Original full 509 tests: one state-publication SPM failure; private DPS init fixed, failed test and all 11 decomposition tests rerun passed."
+    },
+    "completion": "Incomplete: grouped-tail segmented realization, transpose net performance benefit and final three runs below 3 ms remain open.",
+    "latest_direct_regression": {
+      "executed": 12,
+      "passed": 12,
+      "log": "vuvloop/state-checkpoint-tests.log"
+    }
+  },
+  "cancelled_native_transpose_qualifications": [
     {
       "rows": [
         {
@@ -3906,7 +3930,9 @@
       "fresh_no_card": true,
       "requires_new_healthy_boot": true,
       "native_instructions_per_invocation": 1,
-      "reason_for_small_shape": "Bounded hardware geometry qualification before production use; not a compiler shape coverage substitute."
+      "reason_for_small_shape": "Bounded hardware geometry qualification before production use; not a compiler shape coverage substitute.",
+      "status": "cancelled",
+      "cancellation_reason": "用户明确原生 Nchw2nhwc 不能使用，取消后续专项。"
     },
     {
       "rows": [
@@ -3944,31 +3970,16 @@
       "fresh_no_card": true,
       "requires_new_healthy_boot": true,
       "native_instructions_per_invocation": 1,
-      "reason_for_small_shape": "Bounded hardware geometry qualification before production use; not a compiler shape coverage substitute."
+      "reason_for_small_shape": "Bounded hardware geometry qualification before production use; not a compiler shape coverage substitute.",
+      "status": "cancelled",
+      "cancellation_reason": "用户明确原生 Nchw2nhwc 不能使用，取消后续专项。"
     }
   ],
-  "host_validation_checkpoint": {
-    "canonical_build": "vuvloop/build-checkpoint.log",
-    "canonical_noop": "vuvloop/build-checkpoint-noop.log",
-    "affected_lit": {
-      "executed": 155,
-      "passed": 155,
-      "log": "vuvloop/affected-lit-final2.log"
-    },
-    "unit_suites": {
-      "analysis": "passed",
-      "planning": "passed",
-      "conversion": "passed",
-      "simulator": "passed",
-      "target": "passed",
-      "runtime_board_io": "passed",
-      "transforms": "Original full 509 tests: one state-publication SPM failure; private DPS init fixed, failed test and all 11 decomposition tests rerun passed."
-    },
-    "completion": "Incomplete: grouped-tail segmented realization, transpose net performance benefit and final three runs below 3 ms remain open.",
-    "latest_direct_regression": {
-      "executed": 12,
-      "passed": 12,
-      "log": "vuvloop/state-checkpoint-tests.log"
-    }
+  "native_transpose_availability": {
+    "status": "excluded",
+    "basis": "用户明确该指令不能使用。",
+    "further_qualification_authorized": false,
+    "production_use_allowed": false,
+    "failure_mechanism": "unknown"
   }
 }

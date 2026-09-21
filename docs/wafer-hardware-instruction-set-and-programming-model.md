@@ -352,7 +352,9 @@ layout 相关信息分成两层，二者不能混用：
 当前SDK的`Data_Shape`成员顺序为`n,h,w,c`、各16位。厂商OpLib `op_transpose.c`将rank-3 `[N,M,K]`
 按NCx输入处理，并以`Data_Shape{N,1,K,M}`调用`Nchw2nhwc`实现末两轴交换；这是源码调用观察。
 **board-observed failure**：2026-09-21独立BF16包包含`[1,1024,64]`和`[1,128,256]`两条该入口，出现Tile-0 TDMA timeout。
-尚无单条归因，不能从SDK字段宽度或这次失败推出原生element计数上限；有效几何和性能资格仍为**unknown**。
+尚无单条归因，不能从SDK字段宽度或这次失败推出原生element计数上限；故障机制仍为**unknown**。
+**excluded（用户明确约束）**：用户随后确认原生`Nchw2nhwc`不能使用；生产方案及后续资格实验均排除该入口。
+这是采用用户提供的可用性约束，不将本次双指令失败冒充全部几何的实验结论。
 Wafer当前生产转置仍由已验证GS路径实现。具体包、参数和失败边界见
 [实测证据](data/board-performance/attention-bf16-2048-vuvloop-20260921.json)。
 
