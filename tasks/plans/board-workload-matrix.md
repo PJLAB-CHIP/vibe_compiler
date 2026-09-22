@@ -1155,7 +1155,7 @@ noncausal两种dtype的旧包已被覆盖，sliding-window两种dtype没有健�
    不得只删检查就放过真正不兼容的stride、padding或跨dtype遍历。Reduce/GEMM自身的明确硬件约束继续独立成立。
 2. 逐元素分解新增DPS destination后，旧的last-use复用只看allocation-producing结果，漏掉publication之后的链。
    已观察到旧IR为`select(..., sub_result) into sub_result`，新IR改成另一个destination，产生整块false-value copy。
-   草稿在`ExecutionStructure.cpp`中先证明并消除private publication，再交给既有复用逻辑；不能在lowering里猜alias。
+   `StorageOptimization.cpp`先证明并消除private publication，再交给既有复用逻辑；不能在lowering里猜alias。
    接续要检查额外写入、view/escape、共享读、跨loop、pipeline绑定及无reader情形，并审查与既有writeback消除的顺序。
 
 讨论中已确定的要求：

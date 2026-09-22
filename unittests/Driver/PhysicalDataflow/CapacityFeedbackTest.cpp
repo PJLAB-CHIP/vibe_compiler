@@ -9,8 +9,8 @@
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Linalg/CommunicationRegionClosure.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
-#include "Wafer/Transforms/Tile/ExecutionStructure.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Transforms/Tile/LoadPipelining.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

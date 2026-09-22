@@ -3,7 +3,11 @@ add_mlir_library(WaferTileTransforms
   BooleanReduction.cpp
   DistributedCollectiveMovement.cpp
   ElementwisePayloads.cpp
-  ExecutionStructure.cpp
+  LoopPipelining.cpp
+  LoadPipelining.cpp
+  RotatingBuffers.cpp
+  StorageOptimization.cpp
+  MovementFusion.cpp
   GemmFinalization.cpp
   GatherLowering.cpp
   LayoutOptimization.cpp

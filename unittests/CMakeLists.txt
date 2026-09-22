@@ -131,7 +131,11 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Tile/LayoutOptimizationTest.cpp
     Transforms/Tile/GatherLoweringTest.cpp
     Transforms/Tile/StructuredToTileTest.cpp
-    Transforms/Tile/ExecutionStructureMaterializationTest.cpp
+    Transforms/Tile/LoopPipeliningTest.cpp
+    Transforms/Tile/LoadPipeliningTest.cpp
+    Transforms/Tile/RotatingBuffersTest.cpp
+    Transforms/Tile/StorageOptimizationTest.cpp
+    Transforms/Tile/MovementFusionTest.cpp
     Transforms/Tile/AccessReuseTest.cpp
     Transforms/Linalg/AttentionNormalizationTest.cpp
     Transforms/Linalg/BatchNormFusionTest.cpp

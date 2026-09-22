@@ -14,6 +14,8 @@
 #include "Wafer/Transforms/Instr/NativeDirectDTEMultiSend.h"
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
+#include "Wafer/Transforms/Tile/MovementFusion.h"
+#include "Wafer/Transforms/Tile/StorageOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -162,45 +164,61 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
   const PhysicalDataflowIRInventory physicalInventory =
       collectPhysicalCandidateInventory(*module);
 
-  MaterializedExecutionStructureResult execution;
+  PipelinedModuleResult execution;
   if (options.distanceOneLoadPipeline) {
-    if (!options.executionPipelines.empty())
+    if (!options.pipelineChoices.empty())
       return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "execution-structure",
-                  "conflicting execution structure choices");
+                  "loop-pipelining", "conflicting loop pipelining choices");
     execution =
         materializeDistanceOneLoadPipelines(std::move(module), relations);
   } else {
-    PreparedExecutionStructureResult prepared = prepareTileExecutionStructure(
-        *module, options.executionPipelines, options.executionLimits);
+    PreparedLoopPipelinesResult prepared = prepareLoopPipelines(
+        *module, options.pipelineChoices, options.pipelineLimits);
     if (!prepared.succeeded()) {
-      const ExecutionStructureFailureKind kind = prepared.failure->kind;
-      return fail(kind == ExecutionStructureFailureKind::Indeterminate
+      const LoopPipeliningFailureKind kind = prepared.failure->kind;
+      return fail(kind == LoopPipeliningFailureKind::Indeterminate
                       ? ExecutableCompilationStatus::IndeterminateFailure
-                      : (kind == ExecutionStructureFailureKind::Unsupported
+                      : (kind == LoopPipeliningFailureKind::Unsupported
                              ? ExecutableCompilationStatus::UnsupportedFailure
                              : ExecutableCompilationStatus::CompilerFailure),
-                  "execution-structure", prepared.failure->detail);
+                  "loop-pipelining", prepared.failure->detail);
     }
-    execution = materializeExecutionStructure(std::move(module),
-                                              std::move(*prepared.prepared));
+    execution = pipelineLoops(std::move(module), std::move(*prepared.prepared));
   }
   if (!execution.succeeded()) {
-    const ExecutionStructureFailureKind kind = execution.failure->kind;
-    return fail(kind == ExecutionStructureFailureKind::Indeterminate
+    const LoopPipeliningFailureKind kind = execution.failure->kind;
+    return fail(kind == LoopPipeliningFailureKind::Indeterminate
                     ? ExecutableCompilationStatus::IndeterminateFailure
-                    : (kind == ExecutionStructureFailureKind::Unsupported
+                    : (kind == LoopPipeliningFailureKind::Unsupported
                            ? ExecutableCompilationStatus::UnsupportedFailure
                            : ExecutableCompilationStatus::CompilerFailure),
-                "execution-structure", execution.failure->detail);
+                "loop-pipelining", execution.failure->detail);
   }
+  auto &pipelined = *execution.materialized;
+  llvm::DenseSet<mlir::Operation *> pipelineOperations;
+  for (const PipelinedLoop &pipeline : pipelined.pipelines)
+    for (const PipelinedOperation &operation : pipeline.operations)
+      pipelineOperations.insert(operation.operation);
+  mlir::IRRewriter rewriter(pipelined.module->getContext());
+  preservePrivateScalarBroadcasts(*pipelined.module, rewriter,
+                                  pipelineOperations);
+  fuseTransposeLayoutMovements(*pipelined.module, rewriter, pipelineOperations);
+  if (mlir::failed(
+          optimizeStorage(*pipelined.module, rewriter, pipelineOperations)))
+    return fail(ExecutableCompilationStatus::CompilerFailure,
+                "storage-optimization",
+                "storage optimization produced an invalid explicit "
+                "loop-carried destination");
+  std::string pipelineFailure;
+  if (mlir::failed(verifyPipelinedModule(pipelined, &pipelineFailure)))
+    return fail(ExecutableCompilationStatus::CompilerFailure, "loop-pipelining",
+                pipelineFailure);
   module = std::move(execution.materialized->module);
   rebuildCurrentBufferOwnerRelations(module->getOperation(), relations);
   if (downstreamStatistics)
-    downstreamStatistics->materializedExecutionPipelines +=
+    downstreamStatistics->pipelinedLoops +=
         execution.materialized->pipelines.size();
-  wafer::support::addCompileCounter("execution-structure",
-                                    "materialized-pipelines",
+  wafer::support::addCompileCounter("loop-pipelining", "materialized-pipelines",
                                     execution.materialized->pipelines.size());
 
   std::string fanoutFailure;

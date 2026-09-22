@@ -492,8 +492,7 @@ ExecutableCompilationResult compileBaselineCurrentIR(
     // leaf still cannot satisfy explicit pipeline qualification.
     if (qualifyPipeline && !applyPipeline && result.isAccepted())
       return fail(ExecutableCompilationStatus::UnsupportedFailure,
-                  "execution-structure",
-                  "baseline has no eligible load pipeline");
+                  "loop-pipelining", "baseline has no eligible load pipeline");
     if (!result.isProvenExactRejection())
       return result;
     lastCapacityRejection = std::move(result);

@@ -4,8 +4,8 @@
 #define WAFER_DRIVER_CURRENTIREXECUTABLEPIPELINE_H
 
 #include "Wafer/Driver/ExecutableCompilation.h"
-#include "Wafer/Transforms/Tile/ExecutionStructure.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "Wafer/Transforms/Tile/LoadPipelining.h"
 
 #include <cstdint>
 #include <vector>
@@ -17,8 +17,8 @@ enum class CommunicationProposalPolicy { Fixed, DependencyOrdered };
 struct CurrentIRDownstreamOptions {
   LayoutMaterializationPlacement movementPlacement =
       LayoutMaterializationPlacement::FirstUse;
-  std::vector<TilePipelineChoice> executionPipelines;
-  ExecutionStructureLimits executionLimits;
+  std::vector<TilePipelineChoice> pipelineChoices;
+  LoopPipeliningLimits pipelineLimits;
   bool distanceOneLoadPipeline = false;
   CommunicationProposalPolicy communication =
       CommunicationProposalPolicy::Fixed;
@@ -28,7 +28,7 @@ struct CurrentIRDownstreamOptions {
 };
 
 struct CurrentIRDownstreamStatistics {
-  uint64_t materializedExecutionPipelines = 0;
+  uint64_t pipelinedLoops = 0;
   uint64_t tileRegionsLowered = 0;
   uint64_t instructionOperations = 0;
   uint64_t rdmaOperations = 0;
@@ -44,10 +44,11 @@ struct CurrentIRDownstreamStatistics {
 };
 
 /// Consumes one physical, movement-closed current-IR candidate and executes
-/// the shared downstream stage sequence: execution structure, standalone Tile
-/// fanout, Tile-to-Instr, exact transfer cleanup, fresh completion and the
-/// unique actual memory/target leaf. It never constructs a structural choice,
-/// repairs a failed candidate or rebuilds an accepted owner.
+/// the shared downstream stage sequence: loop pipelining, storage and movement
+/// optimization, standalone Tile fanout, Tile-to-Instr, exact transfer cleanup,
+/// fresh completion and the unique actual memory/target leaf. It never
+/// constructs a structural choice, repairs a failed candidate or rebuilds an
+/// accepted owner.
 ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     StructuredMaterializationRelations relations, CardId expectedCardId,

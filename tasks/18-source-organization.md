@@ -176,7 +176,7 @@ Transforms与Conversion分别拥有自己的`Passes.td`、generated declaration�
 StableHLO/Shardy依赖不进入通用Transforms target。
 
 `WaferLinalgTransforms`与`WaferTileTransforms`是同层独立library：前者拥有structured/attention rewrite，后者拥有current relation listener、
-value/use layout assignment、output DPS、唯一One-Shot Bufferization、layout cleanup和execution-structure mechanics。Linalg需要retarget
+value/use layout assignment、output DPS、唯一One-Shot Bufferization、layout cleanup及LoopPipelining/RotatingBuffers/StorageOptimization。Linalg需要retarget
 relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
 `WaferTransforms`；umbrella只组合公开transform components和Instr/Module passes，不能用static archive链接顺序掩盖component cycle。
 

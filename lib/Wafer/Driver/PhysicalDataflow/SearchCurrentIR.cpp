@@ -380,7 +380,7 @@ static bool advanceTemporalAxes(const std::vector<TemporalAxis> &axes,
 static void
 addDownstreamStatistics(CurrentIRDownstreamStatistics &total,
                         const CurrentIRDownstreamStatistics &value) {
-  total.materializedExecutionPipelines += value.materializedExecutionPipelines;
+  total.pipelinedLoops += value.pipelinedLoops;
   total.tileRegionsLowered += value.tileRegionsLowered;
   total.instructionOperations += value.instructionOperations;
   total.rdmaOperations += value.rdmaOperations;

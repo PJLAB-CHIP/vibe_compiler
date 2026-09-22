@@ -15,7 +15,7 @@ Pipeline position:
 - Current stage responsibility:
   消费已物化的candidate-owned TileModule/TileRegion IR。Attention在该transaction内展开selected Linalg/Tensor/SCF；
   compute lowering只读current structured op/SSA，layout/view/bufferization和movement transformation只读current value/use并生成new IR；
-  movement闭合后，execution-structure transformation在current Tile IR上物化actual serialized/pipelined loop与rotating slot；
+  movement闭合后，LoopPipelining/RotatingBuffers在current Tile IR上物化actual serialized/pipelined loop与rotating slot；
   最后把每个structure-closed Tile module合法化为canonical/unplaced `wafer.instr.*`。
 - Output IR / files:
   selected complete top-level TileModule set中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
@@ -109,7 +109,7 @@ selected `wafer.tile.*` op必须满足：
 SPM value/alias不能跨TileModule，也不能跨TileRegion boundary。跨region数据显式store/load；跨Tile数据由
 peer/collective communication与destination staging表达。TileRegion boundary不是completion或barrier。
 
-多stage流水不是一个target-abstract mode。Execution-structure transformation的输出Tile IR必须显式包含每个chunk/temporal
+多stage流水不是一个target-abstract mode。LoopPipelining的输出Tile IR必须显式包含每个chunk/temporal
 iteration、相应load/store/local/peer
 movement、独立或rotating buffer roots及slot relation、数据依赖和event；Instr IR继续物化实际issue order与completion。
 缺少其中任一项时，planning必须拒绝对应typed plan；若selected lowering才发现则终止为合同缺口，不能按估算补全。
@@ -307,7 +307,7 @@ low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的can
 
 输入为布局已选定的current Tile IR。`tile.transpose`表达logical permutation及源、目标各自的physical encoding；
 两端必须都是SPM、dtype相同、rank/shape符合permutation，不要求encoding相同。
-ExecutionStructure将单use的`transpose → materialize_layout`合成一次transpose，保留原transpose位置的source读取；
+MovementFusion将单use的`transpose → materialize_layout`合成一次transpose，保留原transpose位置的source读取；
 最终结果类型直接取layout consumer。中间结果有其它observer或任一操作属于已物化pipeline时不融合。
 输出仍是同一个Tile transpose，下游唯一MovementLowering合成logical relation与两端physical relation，发GS descriptor；
 实际destination及scratch重新进入owner/SPM/completion分析。不存在原生transpose调用，也不改变算术、dtype或输出顺序。
@@ -357,12 +357,12 @@ transcendental。没有indexing relation时shape一致；存在broadcast/permuta
 lowering形成实际Instr链后可按11号合同合成private compare/fill→Bit2Fp；数值结果由最终Instr destination type表达，
 不修改Tile层的logical predicate语义，也不为causal bias重新引入该比较链。
 
-ExecutionStructure可把同一dynamic scope内、Allocate effect明确、仅被当前op读取且与其它输入NoAlias的最后使用
+StorageOptimization可把同一dynamic scope内、Allocate effect明确、仅被当前op读取且与其它输入NoAlias的最后使用
 buffer选为实际destination，物化`elementwise_into`后替换result。被复用input的map必须identity且type与result相同；
 Select只复用false输入并由MaskMove保留未选中位置。外层loop输入、共享值、view/未知alias和已绑定pipeline的op不改写。
 该变换先于completion和actual SPM规划；它不授权GEMM psum/destination同址。
 逐元素分解产生的private DPS publication若只是同block内allocation-producing compute到fresh allocation的同type copy，
-且copy之后的destination用户均为有明确Read effect的同block操作，则ExecutionStructure先将读取绑定到原compute结果，删除该copy与空allocation。
+且copy之后的destination用户均为有明确Read effect的同block操作，则StorageOptimization先将读取绑定到原compute结果，删除该copy与空allocation。
 源结果必须只有该copy一个use，destination不得有其它写入、alias、escape或pipeline绑定；随后复用上述唯一last-use路径。
 这使显式中间SSA不会凭空阻断原select对false输入的复用。验收须覆盖1024/1025/1031及第二次写入、view/escape和跨loop反例。
 
@@ -594,18 +594,18 @@ dependency，并生成对应issue op；最终worker/issue order和latest-necessa
 物化，不能携带pipeline recipe或shadow schedule跨过本边界。输入没有显式execution structure时，conversion不得自行选择
 pipeline、复制buffer或构造rotating slot。
 
-Execution-structure closure还负责把可证明dead-at-write的loop-carried destination显式化：若一个functional Tile result只由同一
+StorageOptimization还负责把可证明dead-at-write的loop-carried destination显式化：若一个functional Tile result只由同一
 `scf.for`的对应`scf.yield`消费、result与iter_arg类型相同，并且旧iter_arg的全部actual use都严格位于该operation之前，则map-free
 elementwise、layout materialization和same-shape copy改写为已有的destination-style Tile op并直接写入iter_arg；elementwise还允许旧
 iter_arg由该operation自身读取，因为`elementwise_into`明确支持destination同时作为input。任何更晚的use、不同类型、
 mapped elementwise或无法证明的control flow都保持原IR；Tile-to-Instr lowering不得重新查看users后临时决定alias或复用，也不得为已经显式
 loop-carried的结果创建body-local allocation。
 
-Execution-structure closure同时消除相邻的elementwise写回：functional `elementwise`的唯一use必须是紧接着的
+StorageOptimization同时消除相邻的elementwise写回：functional `elementwise`的唯一use必须是紧接着的
 `copy_into`，result和destination的完整memref type相同。`elementwise_into`保留原typed indexing maps，
 由同一个Tile→Instr实现完成实际输入布局与广播物化；不能为复用destination猜测新的alias。
-每个input必须由fresh MLIR AliasAnalysis证明NoAlias；原map-free同型逐点operation另允许destination为同一SSA input。
-Mapped或select输入与destination存在任何alias时保留原临时结果和copy。MustAlias但不是同一view、
+每个input必须由fresh MLIR AliasAnalysis证明NoAlias；非Select另允许destination为同一SSA input，
+该输入的map必须为identity或原操作无maps，其它输入的broadcast/permutation不影响这一条件。Select有alias时保留原临时结果和copy。MustAlias但不是同一view、
 PartialAlias和MayAlias均不支持此优化。满足条件时以`elementwise_into`直接写入原destination，并删除临时result和copy。
 原destination的view、后续reader和loop state保持不变；不跨越任何operation，不合并已经绑定pipeline stage/phase的operation。
 这是已有明确写入的局部转发，不重新运行Tensor bufferization、不改变算术、layout或通信选择；下游从新IR重建completion与SPM。
@@ -613,7 +613,7 @@ Functional Tile compute与layout materialization的memref result拥有独立stor
 effect表达这一既有合同，使MLIR AliasAnalysis能证明独立结果的NoAlias；destination-style op不声明新allocation。
 
 算法选择对照[MLIR One-Shot Bufferization](https://mlir.llvm.org/docs/Bufferization/)的DPS与冲突检查：Tensor层继续使用
-One-Shot；这里的functional Tile临时量产生于bufferization之后，因此在已有execution-structure owner内消除，不能用第二次
+One-Shot；这里的functional Tile临时量产生于bufferization之后，因此在同一StorageOptimization调用内消除，不能用第二次
 bufferization或Instr allocator合并storage代替。具体alias查询以pinned MLIR `LocalAliasAnalysis`为准。
 
 | 写回消除输入等价类 | exact输出或保留条件 | 直接下游witness |
@@ -635,7 +635,7 @@ selected complete top-level TileModule set统一经过：
 selected top-level TileModule set
   -> structural-to-layout-resolved transformation
   -> movement and physical-boundary closure
-  -> execution-structure/rotating-slot transformation
+  -> LoopPipelining/RotatingBuffers
   -> createStandaloneTileModules
   -> Tile-to-Instr conversion
   -> worker/order placement and fresh completion
@@ -683,7 +683,7 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 ### GEMM显式目标与相邻写回
 
 输入为已完成layout/bufferization的`tile.gemm`及其唯一相邻`tile.copy_into`，允许两者之间仅有
-连续、单use的`tile.reshape`元数据view。ExecutionStructure仅在copy源与目标type完全相同、
+连续、单use的`tile.reshape`元数据view。StorageOptimization仅在copy源与目标type完全相同、
 全部GEMM输入（含psum）与目标由fresh alias analysis证明NoAlias时，
 将二者合并为`tile.gemm_into`。它与functional GEMM共享shape/dtype/方向合同，目标为明确Write operand，
 不再分配结果。现有elementwise_into不能表达收缩与psum；新op的直接消费者是同一TileToInstr GEMM lowering。
@@ -700,7 +700,7 @@ psum与destination必须分离，低层不得自行选择复用。完成条件�
 - 输出：在原GEMM位置为原目标建立反向`tile.reshape`，以它作为`tile.gemm_into`的dest；删除旧结果view链及copy。
   原目标allocation、其它view和consumer均不改写，不产生新storage或改变算术、dtype、psum。
 - 下游：既有TileToInstr将目标view降低为`memref.reinterpret_cast`，随后fresh completion/SPM从actual IR规划。
-  production driver和named pipeline均调用同一ExecutionStructure实现。
+  production driver调用同一StorageOptimization实现。
 - 非目标：不跨任意pure op/region/observer，不穿越`reshape_copy`或layout转换，不允许psum与dest alias，
   不把shape元素数相同当作physical mapping相同，也不在上游猜测bufferization后的allocation。
 - 方法比较：[MLIR One-Shot Bufferize](https://mlir.llvm.org/docs/Bufferization/)通过DPS和SSA读写分析选择目标；pinned `EmptyTensorElimination.cpp`
@@ -728,7 +728,7 @@ psum与destination必须分离，低层不得自行选择复用。完成条件�
   覆盖前的初始化和GEMM psum读取保留。最终目标须在GEMM处可用，且与全部GEMM输入和被跳过的中间目标NoAlias。
 - 输出：GEMM在原位置直接写选定目标的可逆view；删除被取代的完整copy和结果view，保留psum缓冲及其生产者。
   不改变最终目标已有alias/reader、算术、dtype、GEMM方向或控制流。
-- 直接下游：原TileToInstr、fresh completion及实际SPM规划；production与named pipeline共用同一ExecutionStructure。
+- 直接下游：原TileToInstr、fresh completion及实际SPM规划；production调用同一StorageOptimization实现。
   不在driver或lowering另建匹配，不预估未来buffer或同步。
 - 非目标：不穿越region、非相邻memory operation、partial copy、layout置换；不合并未知alias或有覆盖后观察者的中间目标。
   本规则不把原psum与dest强行复用，也不依赖attention、head或tile尺寸。
@@ -752,7 +752,7 @@ psum与destination必须分离，低层不得自行选择复用。完成条件�
 - 根因：layout选择将初始化与consumer分配到不同布局，物化内容复制；后续GEMM已证明无需psum并完整写入目标，
   原初始化内容却没有随其失去读取而删除。典型链是layout copy→fill→layout copy→GEMM_into，
   其中两次copy和fill都不能贡献最终结果。这是已物化buffer上的死初始化，不是硬件限制。
-- 本层职责：在ExecutionStructure同一调用中、显式目标改写之后检查私有layout结果的SSA alias users。
+- 本层职责：在StorageOptimization同一调用中、显式目标改写之后检查私有layout结果的SSA alias users。
   首个可能观察内容的操作必须在同一block完整覆盖目标；其输入不得读取任何该结果的alias。
   只有物理映射已证明可逆的完整metadata reshape可用于证明覆盖，子区间写入不能代表完整覆盖。
 - 输出：原layout materialization替换为同type、同默认alignment的实际`memref.alloc`，保留消费者和目标storage关系；
@@ -806,7 +806,8 @@ pinned `DeadStoreElimination.cpp`明确按这三项检查；MLIR `MemRefUtils.cp
 
 本节规定职责分拆及通用流水的目标合同，实现顺序、当前差距和验收矩阵见
 [实施计划](plans/tile-loop-pipelining.md)。源码owner遵循18号，MLIR scope与失效规则遵循19号。
-现有`ExecutionStructure`是driver调用的变换集合，不能将其名称当作一个已注册的atomic pass。
+LoopPipelining、LoadPipelining、RotatingBuffers、StorageOptimization及MovementFusion由driver按明确顺序组合，
+各自拥有public header；它们不是同名注册pass。旧万能入口不再保留。
 
 ### 输入、输出与直接消费者
 

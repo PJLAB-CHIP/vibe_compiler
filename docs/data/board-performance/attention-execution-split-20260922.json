@@ -1,0 +1,205 @@
+{
+  "baseline_commit": "aa05b1d1",
+  "compiler_sha256": "d142ea328c994202efb1883a1b1a9ea9789a924ac24dcde85a067de6d3f57bc2",
+  "parity": {
+    "tile-dataflow": {
+      "files": 16,
+      "identical": [
+        "tile_00000.mlir",
+        "tile_00001.mlir",
+        "tile_00002.mlir",
+        "tile_00003.mlir",
+        "tile_00004.mlir",
+        "tile_00005.mlir",
+        "tile_00006.mlir",
+        "tile_00007.mlir",
+        "tile_00008.mlir",
+        "tile_00009.mlir",
+        "tile_00010.mlir",
+        "tile_00011.mlir",
+        "tile_00012.mlir",
+        "tile_00013.mlir",
+        "tile_00014.mlir",
+        "tile_00015.mlir"
+      ],
+      "different": [],
+      "sha256": {
+        "tile_00000.mlir": "a7552f9c1e198a01f977fb63d211fbadc0abfd0c7b01f5627649ab2b3cb43232",
+        "tile_00001.mlir": "4f25a108c0c52ab689978d03cde2494066fbda30836b9eba21fb23291e572975",
+        "tile_00002.mlir": "5936948a420273c0e0adc5a3ffadf6a369e6c917f896a32fa11fb4614ea96791",
+        "tile_00003.mlir": "30ad9d3cc2a2679094049c153113738def8d85c6a2aabcccf3b21e235f34d939",
+        "tile_00004.mlir": "faacab26b420079c6be3b13935df2f23b6b164a86873cd6b1545df282ab29220",
+        "tile_00005.mlir": "72ea9038d15e0078595a001a46435f13d25e52439dee4aa1561acdc6dd79ee21",
+        "tile_00006.mlir": "78ecc192a7e4917716315fbb142019580d599f5be2aae4dae4c56e2cf8176a09",
+        "tile_00007.mlir": "e90e7d70538722f775eb81ce81ca5c79bf80318e560bdc5c29fb4872b8f90af1",
+        "tile_00008.mlir": "c3e54e65c25acf6a3d45570c8c9eb305674563d5eb27be5434c958459565226e",
+        "tile_00009.mlir": "bd287097ca4915b6ca7076988e4aafebc9041d5d54830b2750b62e20f4568ad4",
+        "tile_00010.mlir": "603f41a94c2edb57629c39e7ecba34173a4c55008f9d224b4f8795f86c7739b9",
+        "tile_00011.mlir": "4074bd36e1fbea73cef3ffe43383756e86670ae57c565444e3d7751116d07b5f",
+        "tile_00012.mlir": "93815c96937c4431d0aaa8fcd75b835fc9d3fe7b470e73b3bf7ef9f5edacc600",
+        "tile_00013.mlir": "64083e278d09ba67c7226cdc5a4f22c6d19faf8335fea1e73de3ecb93732c700",
+        "tile_00014.mlir": "5e55e7ee19bc2d6abaf26b8daee2369bf0accb72c9ac98e65edb0add112fefe7",
+        "tile_00015.mlir": "cf9978e9fbde5a795753d54188d4290b6b5d7470871f698fa549828ba8b57f79"
+      }
+    },
+    "instruction": {
+      "files": 16,
+      "identical": [
+        "tile_00000.mlir",
+        "tile_00001.mlir",
+        "tile_00002.mlir",
+        "tile_00003.mlir",
+        "tile_00004.mlir",
+        "tile_00005.mlir",
+        "tile_00006.mlir",
+        "tile_00007.mlir",
+        "tile_00008.mlir",
+        "tile_00009.mlir",
+        "tile_00010.mlir",
+        "tile_00011.mlir",
+        "tile_00012.mlir",
+        "tile_00013.mlir",
+        "tile_00014.mlir",
+        "tile_00015.mlir"
+      ],
+      "different": [],
+      "sha256": {
+        "tile_00000.mlir": "0bfbcc9f657e3d60a7f9e0b5b7ede3885a79dee16b7079901cf9529c3ae6d735",
+        "tile_00001.mlir": "e072f7f509db3e4e8c03db360dd7b89d9bbdf4e81762a6199a9b58b4a4e2f822",
+        "tile_00002.mlir": "f1ac451dbd2e87a8fa15c556860336283c91eff73d783ad4b9c1db872592e64e",
+        "tile_00003.mlir": "c865f0ceed7bbfee1c984279ef2ddff301ff86f895280b1ce0212765672973de",
+        "tile_00004.mlir": "3802ec3c9269ebb4a90a9040e065d9df72bf7caf075968a90ffb51f51f644c86",
+        "tile_00005.mlir": "19c262d1f58becf31544f5f35e2f4d1ff58a361ef01fe610f99b30916e893a9a",
+        "tile_00006.mlir": "bca55d71dcf6fc3f68c0d6608ef76b1c70bf7517c97a4404034fc3fbbed82a79",
+        "tile_00007.mlir": "ba57a233e19a69e6f104b363835877b9b3d4f58c1713bed4a53edcf07745d5de",
+        "tile_00008.mlir": "9641d00c9f6f44f45c3654da756494fecb2acfa2523218859eeff590885fd63c",
+        "tile_00009.mlir": "39dd5806a2e0b216acfd557590f36dbae552152a70e0aa9ac9b96ad6308b21e4",
+        "tile_00010.mlir": "a32d7919136ccc869b00ee3830bb84371bbf32811d85b005d60ab43d20557a95",
+        "tile_00011.mlir": "576b920ab1a058e91a23288ed1cab5beff0103245768d0dd9e0cb8b8a1a39098",
+        "tile_00012.mlir": "7203689c183ca3a30a3bc1f17d37d8c7e678c8cc64b0e5db3740807163ec502c",
+        "tile_00013.mlir": "f0fb13b7486216bebb65c8a202b54dc167ef36735747f7a4c3391dec15e62421",
+        "tile_00014.mlir": "681358af183f834ba9b2427266120845f7d8f2769db3cf5af9a9339657cd555c",
+        "tile_00015.mlir": "bd1091d5ae973d8090f8b39cabb4c0f1c3cdcf39fd844b549ca66811cd40849d"
+      }
+    },
+    "target-llvm": {
+      "files": 16,
+      "identical": [
+        "tile_00000.ll",
+        "tile_00001.ll",
+        "tile_00002.ll",
+        "tile_00003.ll",
+        "tile_00004.ll",
+        "tile_00005.ll",
+        "tile_00006.ll",
+        "tile_00007.ll",
+        "tile_00008.ll",
+        "tile_00009.ll",
+        "tile_00010.ll",
+        "tile_00011.ll",
+        "tile_00012.ll",
+        "tile_00013.ll",
+        "tile_00014.ll",
+        "tile_00015.ll"
+      ],
+      "different": [],
+      "sha256": {
+        "tile_00000.ll": "cb6c84596042158d8ed9c19b37391863edd5d01b9d204248cb4ac6bff71924eb",
+        "tile_00001.ll": "2d59665d0b9f5b1d7fbe4bd2d74efa05a34eb5bc9960dc9a4843e8f0a6aa18b9",
+        "tile_00002.ll": "2a1f579aa0f797b45dc26057e809c6b02dfaffc11541c0edc6df8e0088cb3807",
+        "tile_00003.ll": "abad3710455ea2a269a1daa178498db9f050fce357e9692f4ce9d0058724926a",
+        "tile_00004.ll": "2ab31db48a80e50c7666c72da9cac1445eee0f280e8d5c8a480497715650c28c",
+        "tile_00005.ll": "27a73da3bd4a668611608dea60e913da008874bac45b79ad8b8b22038d28bd3f",
+        "tile_00006.ll": "836eaf4bc422aec8d19c888185a435b4dca681b85685a81e000bde7788b5e559",
+        "tile_00007.ll": "e848eb30afd4675764c35ea94e9ec198ccee86ce94da4c400b5a4eab6607c853",
+        "tile_00008.ll": "6d521a9202437d35f99157aa53e8b795256255437510eb58ca1a59fb6c95b110",
+        "tile_00009.ll": "dc66e180999ca177c8f1f6880f722264057f8de0646ae161fdd62223fc93cbf9",
+        "tile_00010.ll": "393cc6686bbafb74f390bf4268ed6ab587e3c38093ef01be4c358c3abe086928",
+        "tile_00011.ll": "e92dddfab5b7209bbe11b1faeaddc20b7068f063c5de06123e800da78960d461",
+        "tile_00012.ll": "1fa6d8e61eafe039fed6567920cf0638d7764cbb4d562fc495327c26c83ba75d",
+        "tile_00013.ll": "ab4751b49f1199d72fa152173d312a6db8af058b2e064e9d2c76d36984865369",
+        "tile_00014.ll": "342bfda28d281cbdf7a5418eea9b494c57445f9ba7f092820e88cab8e81576a4",
+        "tile_00015.ll": "1ee6bbcd2a98e18662f3751666faa5add6c46da03b21fe7b35616e1e55a18c9a"
+      }
+    }
+  },
+  "leaf_body_parity": {
+    "getStaticTripCount": true,
+    "getStageCount": true,
+    "getNestedOperands": true,
+    "getActualDependence": true,
+    "collectStorageRoots": true,
+    "getStorageRoots": true,
+    "isExternalToLoop": true,
+    "isDistanceOneRotatingView": true,
+    "checkExternalEffects": true,
+    "collectLoadDependencies": true,
+    "hasOnlyPostLoadReads": true,
+    "findLoadPipelines": true,
+    "hasTemporaryAttributes": true,
+    "clearTemporaryAttributes": true,
+    "hasMapFreeEquivalent": true,
+    "getCompleteCopy": true,
+    "isPrivateCopyIntermediate": true,
+    "fuseTransposeLayoutMovements": true,
+    "eliminateGemmWritebacks": true,
+    "eliminatePrivatePointwisePublications": true,
+    "eliminateElementwiseWritebacks": true,
+    "reuseElementwiseInputs": true,
+    "materializeLoopCarriedDestinations": true
+  },
+  "headers": [
+    {
+      "header": "LoopPipelining",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "header": "LoadPipelining",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "header": "RotatingBuffers",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "header": "StorageOptimization",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "header": "MovementFusion",
+      "returncode": 0,
+      "output": ""
+    }
+  ],
+  "prepare_resources": "\tCommand being timed: \"/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python -B /home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py --case attention-prefill-28-heads-2048 --dtype bfloat16 --seed 20260922 --wafer-compile /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile --wafer-run /home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run --work-dir /data/vibe_compiler-validation/attention-closure-20260922/execution-split-prepared --dump-compiler-ir /data/vibe_compiler-validation/attention-closure-20260922/execution-split-ir --optimization-policy search --memory-guards --device-timing --compile-timing --expected-runtime-version 1400 --expected-device-name /dev/accel/dev-0 --expected-pci-bus-id 0000:3b:00.0 --expected-tile-count 16 --expected-runtime-library-sha256 3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c --completion-timeout-ms 60000 --board-diagnose-tool /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose --no-card\"\n\tUser time (seconds): 397.21\n\tSystem time (seconds): 25.12\n\tPercent of CPU this job got: 203%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 3:27.84\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1377900\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 268\n\tMinor (reclaiming a frame) page faults: 6987885\n\tVoluntary context switches: 59034\n\tInvoluntary context switches: 2633\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 157456\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "source_organization_passed": true,
+  "lit_passed": 38,
+  "canonical_incremental": true,
+  "no_op": true,
+  "new_board_execution": false,
+  "unit_final": {
+    "driver_passed": true,
+    "driver_seconds": 975.8,
+    "transforms_passed_after_test_fix": true,
+    "transforms_seconds": 546.53,
+    "compiler_public_link_smoke_passed": true
+  },
+  "entry_body_parity": {
+    "prepareLoopPipelines": true,
+    "verifyPipelinedModule": true,
+    "materializeRotatingAllocations": true,
+    "hasDistanceOneLoadPipeline": true,
+    "getDistanceOneLoadPipelineLoops": true,
+    "materializeDistanceOneLoadPipelines": true
+  },
+  "transforms_final_seconds": 546.53,
+  "test_migration_fix": "移除测试中遗留的 OwningOpRef 自 move；完整 Transforms 已复测通过。",
+  "limits": [
+    "仅职责迁移，不新增动态流水能力；未新增设备运行。",
+    "首次 CTest 中 Transforms 因测试自 move 崩溃；修正后单独完整 suite 通过，不将首次汇总标为全通过。"
+  ]
+}

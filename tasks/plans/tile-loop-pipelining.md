@@ -3,13 +3,13 @@
 本计划归`board-testing`，状态和直接前置只由[progress](../progress.md)拥有。
 用户最新要求先完成已有部分实现，再开展尚未实现的优化。职责分拆与通用流水设计已完成，
 实施前先按[性能计划](board-workload-matrix.md#已有改动的收尾与接续)完成已有改动及方向取舍。
-本文的文件布局和能力矩阵是实施目标，不能据此宣称代码已拆分、动态流水已接入或设备性能已改善。
+文件布局按第3节迁移，动态流水能力仍按第4节单独实施；文件分拆不能代签流水接入或性能改善。
 稳定语义由[10号第9节](../10-compute-movement.md#9-循环流水与存储优化的职责边界)拥有，源码组织遵循18号，
 作用域及变换规则遵循19号，完成与内存分别遵循11/09号；本计划不建立第二套IR或同步协议。
 
 ## 1. 输入、产出与范围
 
-- 输入：当前`ExecutionStructure.cpp/.h`及全部直接调用者，candidate-owned physical Tile IR、现有registered tests；
+- 输入：分拆前`ExecutionStructure.cpp/.h`及全部直接调用者，candidate-owned physical Tile IR、现有registered tests；
   通用流水验收另含普通分块计算与当前BF16 causal attention的fresh source/package。
 - 职责：先按实际功能拆源码和API，再在同一流水实现上扩展动态域、条件、访问依赖和缓冲复用。
 - 输出：职责明确的transform实现、唯一driver调用链、显式SCF/memref/Tile流水、对应测试及验证记录。
@@ -33,7 +33,7 @@
 | `kernelDynamicTripCount`实际保存静态数字 | 动态次数需要IR SSA与显式unknown统计，0不能承担两种意义 | 循环结果/统计合同 |
 | causal loop中的full/boundary分支 | 算法位置关系尚未充分暴露成普通循环 | 上游attention visibility，不进入通用流水matcher |
 
-当前实现在driver内直接调用，并不存在名为ExecutionStructure的独立注册MLIR pass。
+迁移前的实现在driver内直接调用，不存在名为ExecutionStructure的独立注册MLIR pass。
 现有规则总体按current SSA、maps、effect和alias判断；“已有通用规则”与“覆盖完整”是两件事。
 
 ## 3. 第一步：按职责拆源码和调用链
@@ -69,6 +69,27 @@ LoadPipelining私有实现，不仅为了拆文件就新建AnalysisManager cache
   不归一化掉operation顺序、descriptor、offset、owner或同步差异。差异须解释并修复，不用宽松比较掩盖。
 - 唯一CMake owner、public header自包含、旧入口残留、source organization和`git diff --check`通过。
 - canonical完整增量构建及随后Ninja no-op；纯源码分拆不额外上板刷性能数据。
+
+### 职责迁移对照与本轮检查
+
+| 原能力 | 当前实现和正式调用者 | 对应测试 |
+| --- | --- | --- |
+| schedule preflight、SCF/有限展开、结果验证 | `prepareLoopPipelines`、`pipelineLoops`、`verifyPipelinedModule`；driver与LoadPipelining共用 | `LoopPipeliningTest`，4项 |
+| load选择和组合物化 | `LoadPipelining.cpp`；none/search经同一driver入口 | `LoadPipeliningTest`及Driver capacity feedback |
+| actual轮转槽/最后槽/typed owner | `RotatingBuffers.cpp`；load与显式槽调用者 | `RotatingBuffersTest`，真实MiniMalloc |
+| scalar、GEMM/逐元素写回、publication、初始化及loop destination | `preservePrivateScalarBroadcasts`、`optimizeStorage`；driver调用 | `StorageOptimizationTest`，14项原机制矩阵 |
+| transpose＋layout合成 | `fuseTransposeLayoutMovements`；driver调用 | `MovementFusionTest`，dtype/整除/尾块及额外观察者 |
+
+旧header和万能入口已删除，不保留wrapper；原21项测试迁到五个文件，存储测试直接调用存储API。
+纯迁移顺序保持 `pipeline → scalar → movement fusion → GEMM/publication/elementwise/reuse/initialization/destination → verify`；
+已绑定流水对象的排除集合来自本次actual结果。第4节的共同输入调整尚未在此步实施。
+两个只读/结果辅助函数留在同component的private header，不新建library、IR或analysis cache。
+23个迁移leaf和6个入口函数体经token对照相同；两处祖先查找等价改用`Block::findAncestorOpInBlock`，原scope判断保持。
+本轮新产品的16 Tile Dataflow、16 Instr与16 LLVM文件同分拆前逐字节一致，未忽略任何字段；纯文件迁移不新增板测。
+五个public header分别独立编译、source organization及38项相关lit通过；canonical全量增量及no-op通过。
+完整Driver、Compiler public-link smoke及修正后的完整Transforms均通过。首次迁移测试遗留一次`OwningOpRef`自move，
+已删除该测试语句，生产代码未受影响；失败首次记录保留，不能将其CTest汇总冒充全通过。
+本步证据见[分拆验收](../../docs/data/board-performance/attention-execution-split-20260922.json)。
 
 ## 4. 第二步：同一实现扩展通用流水
 
@@ -189,5 +210,5 @@ issue间隙、buffer及完成域；RDMA活动周期不是可直接扣除的总�
 5. 通用流水：先共同输入/依赖与动态域，再条件、rotation/completion/SPM和driver接入；按完整矩阵验证后提交。
 6. K/V接入及最终性能：复用第2步可见域与第4步存储结果，完成fresh no-card、实卡与独立profile，记录实际收益和剩余瓶颈。
 
-本次只调整接续顺序和验证边界，未执行新构建或板测；源码拆分与通用流水实现仍待前置完成。
+职责分拆的迁移与行为保持证据见第3节；通用流水扩展仍按第4节接续。
 稳定设计不因排期改变；全部归同一board-testing，不新增work item，也不重新打开head/tile搜索。

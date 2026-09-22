@@ -182,6 +182,10 @@ materializer 将 acquire 放在整个 reader Region 前，将 publish 放在整�
 
 ## 表达能力与实际可访问性
 
+本节能力判断属于上述固定二进制的审计记录，接口拼写随仓库迁移更新。后续none/search已通过
+`distanceOneLoadPipeline`接入静态load流水选择；显式`pipelineChoices`默认空不再等于产品没有流水候选。
+动态/条件流水的当前差距和实施边界以[10号](../tasks/10-compute-movement.md#9-循环流水与存储优化的职责边界)及其计划为准。
+
 现有有界 oracle 覆盖 Spatial scheme、Tile embedding、归约 merge placement、多节点笛卡尔积，
 以及 Temporal 的正尺寸和合法 loop order。它们验证指定有限输入上的 domain 枚举，并不证明生产预算能找到性能好的方案。
 
@@ -190,7 +194,7 @@ materializer 将 acquire 放在整个 reader Region 前，将 publish 放在整�
 - 原始 Spatial successor 先枚举 merge placement，再枚举 Tile embedding，之后才改变划分 axes；程序笛卡尔积先改变最后一个节点。
   16 个不同 Tile 的全排列本身有 `16! = 20,922,789,888,000` 种。保留所有原始点有正确性价值，
   但这样的顺序无法在几十或几百次预算里提供轴划分的多样性。
-- `CurrentIRDownstreamOptions::executionPipelines` 默认空，生产调用没有生成 `TilePipelineChoice`。
+- `CurrentIRDownstreamOptions::pipelineChoices` 默认空，生产调用没有生成 `TilePipelineChoice`。
   当前实现具备 materialize pipeline 的能力，但生产搜索没有把它作为可比较的 choice。
   因而“预算更大就会自动搜索到更好的流水”在当前产品路径上不成立。
 
@@ -205,7 +209,7 @@ Layout 当前由独立求解过程选取，movement 使用已有离散候选家�
 | Layout | 当前算子允许的 layout 与转换位置，由 exact PBQP 求解并 bufferize | 每个实际 Temporal/Region 候选只保留一个 layout 解，再交 movement/Instr；没有按最终耗时比较多个 layout 解 |
 | Movement | 保持当前 peer 机制或 shared DDR；Ring/recursive-doubling AllGather、direct/dimension-ordered AllToAll、central/ring reduction 及有限组合 | availability 依据当前 boundary relations；算法开关作用于候选中的适用 components，没有任意逐边 transport/algorithm 笛卡尔积 |
 | 外部输入复用 | 各 Tile 按实际输入窗口直接从 DDR 读取 | `BoundaryMovement.cpp` 对没有 peer relation 的逻辑输入调用 `resolveDDRInput`；未生成“先在某 Tile 读入，再给其它 Tile 共享”的外部权重候选 |
-| 流水与 overlap | 下游支持显式 `TilePipelineChoice` | 生产 `executionPipelines` 为空；不能通过增大 trials 自动获得这类方案 |
+| 流水与 overlap | 下游支持显式 `TilePipelineChoice` | 生产 `pipelineChoices` 为空；不能通过增大 trials 自动获得这类方案 |
 
 `width` 还改变初始 Region proposal 数量，因此 `8/126` 到 `16/126` 并非简单延长完全相同的候选前缀。
 当前详细 objective 日志只记录前 8 个 structural 候选；宽度 16 的“已记录候选最小估时”可能不是最终 winner 估时，
