@@ -19,6 +19,23 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-23：M=N4096、K1024 GEMM测量
+
+用户指定`M=N=4096、K=1024`，本次使用BF16、batch=1、seed20260803及16 Tile，
+沿用standard search width8/trials42。通过现有`_single_card_gemm`参数化工厂和唯一PyTorch板测runner，
+本轮重新导出source、生成输入和完整reference、编译package并通过带guard的no-card。
+此前未提交的容量IR临时打印已撤除；正式源码未改变优化逻辑，canonical增量及随后Ninja no-op通过。
+
+三次普通TX stream-event计时为 **3.489 / 3.583 / 3.495ms**，中位数 **3.495ms**。
+guard开启，Host寄存器采集和device profile关闭；每次launch前的系统占用检查均为空闲。
+三次全部16,777,216个BF16输出通过原相似度合同，cosine为0.99999999737、relative L2为0.000072528；
+逐点阈值超差数99按原规则单列，不将相似度通过写成逐点exact。每次20,800字节guard、completion、
+执行窗口日志与厂商正常清理均通过，无timeout/fatal。
+
+这是该shape在当前默认搜索预算下的性能测量，未开展新的优化或profile，不据此判断瓶颈及极限性能。
+全部样本、工厂参数、命令、编译器/包/输入身份和完整比较见
+[实测证据](data/board-performance/gemm-m4096-k1024-n4096-20260923.json)。
+
 ## 2026-09-22：全矩阵数值回归与4096 GEMM性能复核
 
 本轮75项既定实卡配置覆盖79个step配置，每步三次，共237次普通运行，全部通过原完整输出比较、

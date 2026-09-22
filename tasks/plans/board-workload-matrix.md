@@ -34,7 +34,7 @@
 后者包含非byte对齐i1 store；两者后续容量样本仍有完整K/V规模的SPM allocation。
 本轮随后以既有同步capacity observer检查仍存活的实际Instr与allocation/user，限制四次actual尝试。
 已确认FA循环内存在分块计算，而输入仍保留完整K/V assembly；代码审查发现多轴需求生成及共享取舍的边界限制。
-诊断未改变候选、SPM gate或设备指令；临时打印仍须在正式构包前移除。后续按上方通用整改计划推进，
+诊断未改变候选、SPM gate或设备指令；临时打印已在9月23日独立GEMM测量前撤除并恢复正式构建。后续按上方通用整改计划推进，
 不把Tensor局部化设计代签packed-i1尾部写回问题或实际容量/数值/性能验收。
 
 ## Attention收束后的当前版本板测接续（2026-09-22）

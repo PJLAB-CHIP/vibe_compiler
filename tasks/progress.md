@@ -18,6 +18,11 @@
 
 ## 当前调度
 
+2026-09-23用户追加M=N4096、K1024 GEMM性能测量：BF16、batch1、standard 8/42的fresh产品及guard no-card通过；
+三次普通实卡3.489/3.583/3.495ms，中位数3.495ms，完整相似度、guard及厂商清理健康，
+见[记录](../docs/board-performance-results.md#2026-09-23mn4096k1024-gemm测量)。本次指定测量已完成，未扩大优化范围。
+容量调查临时打印已撤除并恢复正式构建；下方Tensor整改仍为设计完成、实现待推进，四项保护验收仍须随整改新测。
+
 2026-09-23最新要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
 本轮先交付文档；06/08/18号边界与[实施计划](plans/tensor-subset-materialization.md)已同步，代码实现、fresh产品和实卡尚未完成。
 后续顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；仍归`board-testing`，
