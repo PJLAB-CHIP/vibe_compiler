@@ -802,6 +802,42 @@ pinned `DeadStoreElimination.cpp`明确按这三项检查；MLIR `MemRefUtils.cp
 | 源或其alias在区间内更新/释放；未知effect；目标提前被读取或逃逸 | 保留原copy，不延迟读取旧内容 |
 | 真正布局置换或padding/footprint不同；首次consumer在子region；pipeline对象 | 不转交，保留现有合法路径 |
 
+### 已确定布局后的状态发布链
+
+- Upstream/input：layout/bufferization后的实际Tile/memref，包含LayoutMaterializeOp、完整memref.copy/MoveCopyInto、明确的elementwise_into destination及普通SCF控制流。
+- 本层职责：StorageOptimization缩短私有结果到已存在最终目标的发布链；不改变算术、dtype、layout选择或SCF迭代顺序。
+- 输出：同层显式MoveCopyInto/elementwise_into，删除没有独立观察者的临时结果及copy。原最终目标及其alias身份保持。
+- 直接下游：同一Tile→Instr、fresh completion/actual SPM与TargetLLVM。
+- 用户入口：none/search的同一CurrentIRExecutablePipeline；focused tests调用optimizeStorage。
+- non-goals：不令GEMM psum/destination同址，不替换行级数值处理，不靠估计SPM决定合并，不修改未知效果或条件路径。
+- 完成：下表机制矩阵、current产品最终GS/实际buffer对照、fresh no-card及BF16主块/1031尾块数值/guard/普通时间。
+
+规则依次处理三种current-IR关系：
+1. layout结果只有一个完整copy use，且同block；在最终copy处直接从layout source转换到既有destination。fresh alias证明新两端NoAlias，source在跨越区间无write/free/unknown；保留最终目标写入位置。布局可不同，仍须同shape/dtype且existing transfer proof支持。
+2. 完整copy写入private allocation，覆盖前的psum/view读取仍存在，但覆盖后唯一reader是紧邻的layout/copy；复用现有私有中间值证明，让reader直接读取原copy source，删除中间写回。新source和final destination必须NoAlias；不把原psum直接用作GEMM destination。
+3. 普通elementwise_into写临时目标，之后完整copy将它发布到现有目标；两种encoding的逻辑元素physical traversal相同，原source覆盖新目标完整遍历，临时目标及其padding没有独立覆盖后observer。最终目标在writer处可用，且writer与publication之间没有其read/write/free/unknown；把writer destination改为最终目标并删除copy。exact input=dest仅在identity map及硬件已有in-place形式允许时接受，其余输入必须NoAlias；Select不套用此规则。
+
+必须先完成私有初始化的读取转交、物化既有loop-carried destination，再匹配发布链；直接yield的layout结果在此之前没有显式copy。
+alias继续消费pinned标准分析，不新增按状态名称或shape恢复root的旁路。
+
+如果padding使初始化读取不能转交，writer仍可读取原私有快照，仅将destination转给最终目标；
+同一writer的输入读取属于覆盖前观察，不能误判为覆盖后的额外reader。
+
+scalar和elementwise数值operation不增删、不重排；只改变已证明多余的storage/movement。行最大值在中途仍需旧值/alpha或MaskMove独立可修改值时保留当前copy，不通过统一指针替换跨轮生命周期。
+
+| 覆盖 | exact要求 | 下游 |
+| --- | --- | --- |
+| rank3+、1024/1025/1031，F16/BF16/F32；Tensor/NCx/Cx | 相同逻辑元素与最终目标，真正permutation只由copy_into执行 | Instr descriptor/dtype、completion/SPM |
+| 相邻或中间独立操作；动态loop/条件内 | source snapshot不变，最终写入位置或提前写入证明明确 | 操作次序及实际目标use |
+| source/alias write、free、unknown、额外reader/escape | 不删发布，不改变快照 | 原IR保留/合法下游 |
+| 私有psum中间缓冲的早期读取 | GEMM仍独立psum/result，仅改后续movement source | Instr psum/dest不同、少两次copy |
+| 同一identity输入=最终dest；部分重叠/置换input | 合法in-place应用，其余保留 | 非attention例与实际attention同一入口 |
+| m/l/A残余 | 按真实SSA/effect分别消除或说明保留原因 | 主块/尾块fresh no-card、全量数值与guard |
+
+方法比较：One-Shot Bufferize决定tensor DPS alias，本规则消费之后已选定的physical layout；LLVM MemCpyOpt在buffer上证明长度、source snapshot与alias后前向转交。这里复用已有Wafer transfer proof和private-copy observer证明，不新增shadow buffer方案。
+
+参考：[MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/)及[LLVM MemCpyOpt](https://llvm.org/doxygen/MemCpyOptimizer_8cpp_source.html)；具体effect和alias API以pinned源码为准。
+
 ## 9. 循环流水与存储优化的职责边界
 
 本节规定职责分拆及通用流水的目标合同，实现顺序、当前差距和验收矩阵见

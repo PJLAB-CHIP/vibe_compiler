@@ -1520,4 +1520,307 @@ TEST(StorageOptimizationTest,
   }
 }
 
+TEST(StorageOptimizationTest, LayoutPublicationPreservesSourceSnapshot) {
+  enum class Case {
+    Direct,
+    Independent,
+    ConditionalWrite,
+    AliasWrite,
+    Free,
+    Unknown,
+    ExtraReader
+  };
+  for (auto sourceLayout : {"ncx", "cx"})
+    for (auto dtype : {"f16", "bf16", "f32"})
+      for (int64_t extent : {1024, 1025, 1031})
+        for (auto test :
+             {Case::Direct, Case::Independent, Case::ConditionalWrite,
+              Case::AliasWrite, Case::Free, Case::Unknown, Case::ExtraReader}) {
+          SCOPED_TRACE(::testing::Message() << dtype << '/' << extent << '/'
+                                            << static_cast<int>(test));
+          auto context = createContext();
+          const std::string shape = "1x" + std::to_string(extent) + "x128x";
+          const std::string src = "memref<" + shape + dtype +
+                                  ", #wafer.memory<spm, " + sourceLayout + ">>";
+          const std::string dst =
+              "memref<" + shape + dtype + ", #wafer.memory<spm, tensor>>";
+          std::string text;
+          llvm::raw_string_ostream out(text);
+          out << "module { func.func private @unknown()\n"
+                 "func.func @main(%n: index, %take: i1) {\n"
+                 "wafer.tile.region(%n, %take : index, i1) -> () {\n"
+                 "^bb0(%bound: index, %cond: i1):\n"
+                 "%c0 = arith.constant 0 : index\n"
+                 "%c1 = arith.constant 1 : index\n"
+                 "%zero = arith.constant 0.0 : "
+              << dtype
+              << "\n"
+                 "scf.for %iv = %c0 to %bound step %c1 { scf.if %cond {\n"
+                 "%source = memref.alloc() : "
+              << src
+              << "\n"
+                 "%dest = memref.alloc() : "
+              << dst
+              << "\n"
+                 "%other = memref.alloc() : "
+              << src
+              << "\n"
+                 "%snapshot = wafer.tile.materialize_layout %source : "
+              << src << " -> " << dst << "\n";
+          if (test == Case::Independent)
+            out << "wafer.tile.fill %other, %zero {fill_domain = "
+                   "#wafer.fill_domain<physical_footprint>} : "
+                << src << ", " << dtype << "\n";
+          if (test == Case::ConditionalWrite)
+            out << "scf.if %cond { wafer.tile.fill %source, %zero {fill_domain "
+                   "= "
+                   "#wafer.fill_domain<physical_footprint>} : "
+                << src << ", " << dtype << " }\n";
+          if (test == Case::AliasWrite)
+            out << "%alias = memref.cast %source : " << src << " to " << src
+                << "\nwafer.tile.fill %alias, %zero {fill_domain = "
+                   "#wafer.fill_domain<physical_footprint>} : "
+                << src << ", " << dtype << "\n";
+          if (test == Case::Free)
+            out << "memref.dealloc %source : " << src << "\n";
+          if (test == Case::Unknown)
+            out << "func.call @unknown() : () -> ()\n";
+          if (test == Case::ExtraReader)
+            out << "%extra = wafer.tile.copy %snapshot : " << dst << " -> "
+                << dst << "\n";
+          out << "memref.copy %snapshot, %dest : " << dst << " to " << dst
+              << "\n} } wafer.tile.yield } return } }";
+          auto module =
+              mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+          ASSERT_TRUE(module) << text;
+          ASSERT_TRUE(mlir::succeeded(optimizeStorageForTest(*module)));
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          const bool fused = test == Case::Direct || test == Case::Independent;
+          unsigned layouts = 0, publications = 0;
+          module->walk([&](LayoutMaterializeOp) { ++layouts; });
+          module->walk([&](MoveCopyIntoOp op) {
+            ++publications;
+            EXPECT_NE(op.getSource().getType(), op.getDest().getType());
+            EXPECT_TRUE(op->getParentOfType<mlir::scf::IfOp>());
+          });
+          EXPECT_EQ(layouts, fused ? 0u : 1u);
+          EXPECT_EQ(publications, fused ? 1u : 0u);
+          if (!fused)
+            continue;
+          TileRegionOp region;
+          module->walk([&](TileRegionOp op) { region = op; });
+          TileRegionToInstrLoweringSession session(*context);
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+          unsigned moves = 0;
+          region.walk([&](InstrGatherScatterOp op) {
+            ++moves;
+            EXPECT_EQ(mlir::cast<mlir::MemRefType>(op.getSource().getType())
+                          .getElementType(),
+                      mlir::cast<mlir::MemRefType>(op.getDest().getType())
+                          .getElementType());
+          });
+          EXPECT_GT(moves, 0u);
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+          EXPECT_TRUE(mlir::succeeded(
+              planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+        }
+}
+
+TEST(StorageOptimizationTest, PrivateSnapshotForwardingKeepsSeparateGemmPsum) {
+  for (auto dtype : {"f16", "bf16"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (bool extraReader : {false, true}) {
+        SCOPED_TRACE(::testing::Message()
+                     << dtype << '/' << extent << '/' << extraReader);
+        auto context = createContext();
+        std::string lhs = "memref<1x" + std::to_string(extent) + "x16x" +
+                          dtype + ", #wafer.memory<spm, ncx>>";
+        std::string rhs = "memref<1x16x128x" + std::string(dtype) +
+                          ", #wafer.memory<spm, ncx>>";
+        std::string accum = "memref<1x" + std::to_string(extent) +
+                            "x128xf32, #wafer.memory<spm, ncx>>";
+        std::string tensor = "memref<1x" + std::to_string(extent) +
+                             "x128xf32, #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main() { wafer.tile.region() -> () {\n"
+               "%a = memref.alloc() : "
+            << lhs << "\n%b = memref.alloc() : " << rhs
+            << "\n%d = memref.alloc() : " << tensor
+            << "\n%p = wafer.tile.materialize_layout %d : " << tensor << " -> "
+            << accum << "\n%view = memref.cast %p : " << accum << " to "
+            << accum << "\n%r = wafer.tile.gemm %a, %b psum(%view : " << accum
+            << ")"
+               " {batch_count = 1 : i64, lhs_batch_dims = array<i64: 0>, "
+               "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+               "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : i64, "
+               "rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+               "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : ("
+            << lhs << ", " << rhs << ") -> " << accum
+            << "\nwafer.tile.copy_into %r into %p : " << accum << " into "
+            << accum
+            << "\n%layout = wafer.tile.materialize_layout %p : " << accum
+            << " -> " << tensor << "\nmemref.copy %layout, %d : " << tensor
+            << " to " << tensor << '\n';
+        if (extraReader)
+          out << "%observe = wafer.tile.copy %view : " << accum << " -> "
+              << accum << '\n';
+        out << "wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(optimizeStorageForTest(*module)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        unsigned copies = 0;
+        module->walk([&](MoveCopyIntoOp) { ++copies; });
+        EXPECT_EQ(copies, extraReader ? 2u : 1u);
+        TileRegionOp region;
+        module->walk([&](TileRegionOp op) { region = op; });
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        unsigned gemms = 0;
+        region.walk([&](InstrGemmOp op) {
+          ++gemms;
+          EXPECT_NE(op.getDest(), op.getPsum());
+        });
+        EXPECT_EQ(gemms, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+        EXPECT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+      }
+}
+
+TEST(StorageOptimizationTest, ElementwisePublicationPreservesOldDestination) {
+  enum class Case {
+    Direct,
+    Independent,
+    OldRead,
+    OldWrite,
+    AliasInput,
+    ExtraRead,
+    Free,
+    Unknown,
+    InvariantState,
+    SwappedState,
+    YieldLayout,
+    PermutedOutput,
+    InitializedTemp
+  };
+  for (auto dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (auto test :
+           {Case::Direct, Case::Independent, Case::OldRead, Case::OldWrite,
+            Case::AliasInput, Case::ExtraRead, Case::Free, Case::Unknown,
+            Case::InvariantState, Case::SwappedState, Case::YieldLayout,
+            Case::PermutedOutput, Case::InitializedTemp}) {
+        SCOPED_TRACE(::testing::Message() << dtype << '/' << extent << '/'
+                                          << static_cast<int>(test));
+        auto context = createContext();
+        const std::string shape = test == Case::PermutedOutput
+                                      ? "1x" + std::to_string(extent) + "x128x"
+                                      : "1x1x" + std::to_string(extent) + "x";
+        const std::string tmp =
+            "memref<" + shape + dtype + ", #wafer.memory<spm, ncx>>";
+        const std::string dst =
+            "memref<" + shape + dtype + ", #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func private @unknown()\nfunc.func @main(%n: "
+               "index) {\n"
+               "wafer.tile.region(%n : index) -> () { ^bb0(%bound: index):\n"
+               "%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : "
+               "index\n"
+               "%zero = arith.constant 0.0 : "
+            << dtype
+            << "\n"
+               "%initial = memref.alloc() : "
+            << dst << "\n%other = memref.alloc() : " << dst
+            << "\n"
+               "%states:2 = scf.for %iv = %c0 to %bound step %c1 "
+               "iter_args(%d = %initial, %q = %other) -> ("
+            << dst << ", " << dst << ") {\n";
+        if (test == Case::InitializedTemp)
+          out << "%t = wafer.tile.materialize_layout %d : " << dst << " -> "
+              << tmp << "\n";
+        else
+          out << "%t = memref.alloc() : " << tmp << "\n";
+        out << "%x = memref.alloc() : "
+            << (test == Case::InitializedTemp ? tmp : dst)
+            << "\n"
+               "%alias = memref.cast %d : "
+            << dst << " to " << dst
+            << "\n"
+               "wafer.tile.elementwise_into <add> %"
+            << (test == Case::AliasInput        ? "alias"
+                : test == Case::InitializedTemp ? "t"
+                                                : "d")
+            << ", %x into %t : " << (test == Case::InitializedTemp ? tmp : dst)
+            << ", " << (test == Case::InitializedTemp ? tmp : dst) << " into "
+            << tmp << "\n";
+        if (test == Case::Independent)
+          out << "wafer.tile.fill %x, %zero : " << dst << ", " << dtype << "\n";
+        if (test == Case::InvariantState || test == Case::SwappedState)
+          out << "wafer.tile.fill %q, %zero : " << dst << ", " << dtype << "\n";
+        if (test == Case::OldRead)
+          out << "%old = wafer.tile.copy %alias : " << dst << " -> " << dst
+              << "\n";
+        if (test == Case::OldWrite)
+          out << "wafer.tile.fill %alias, %zero : " << dst << ", " << dtype
+              << "\n";
+        if (test == Case::Free)
+          out << "memref.dealloc %d : " << dst << "\n";
+        if (test == Case::Unknown)
+          out << "func.call @unknown() : () -> ()\n";
+        out << "%layout = wafer.tile.materialize_layout %t : " << tmp << " -> "
+            << dst << "\n";
+        if (test != Case::YieldLayout)
+          out << "memref.copy %layout, %d : " << dst << " to " << dst << "\n";
+        if (test == Case::ExtraRead)
+          out << "%extra = wafer.tile.copy %t : " << tmp << " -> " << tmp
+              << "\n";
+        out << "scf.yield "
+            << (test == Case::SwappedState  ? "%q, %d"
+                : test == Case::YieldLayout ? "%layout, %q"
+                                            : "%d, %q")
+            << " : " << dst << ", " << dst
+            << "\n} wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(optimizeStorageForTest(*module)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        const bool fused = test == Case::Direct || test == Case::Independent ||
+                           test == Case::InvariantState ||
+                           test == Case::YieldLayout ||
+                           test == Case::InitializedTemp;
+        unsigned copies = 0;
+        module->walk([&](MoveCopyIntoOp) { ++copies; });
+        EXPECT_EQ(copies, fused ? 0u : 1u);
+        module->walk([&](ComputeElementwiseIntoOp op) {
+          auto loop = op->getParentOfType<mlir::scf::ForOp>();
+          EXPECT_EQ(op.getDest() == loop.getRegionIterArgs().front(), fused);
+          if (test == Case::InitializedTemp && extent != 1024) {
+            EXPECT_NE(op.getDest(), op.getInputs().front());
+          }
+        });
+        if (!fused)
+          continue;
+        TileRegionOp region;
+        module->walk([&](TileRegionOp op) { region = op; });
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        unsigned updates = 0;
+        region.walk([&](InstrElementwiseOp op) {
+          ++updates;
+          auto loop = op->getParentOfType<mlir::scf::ForOp>();
+          EXPECT_EQ(op.getDest(), loop.getRegionIterArgs().front());
+        });
+        EXPECT_EQ(updates, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+        EXPECT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+      }
+}
+
 } // namespace

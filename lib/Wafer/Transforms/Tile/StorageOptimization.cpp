@@ -78,7 +78,7 @@ struct CompleteCopy {
   mlir::Value dest;
 };
 
-static std::optional<CompleteCopy> getCompleteCopy(mlir::Operation *operation) {
+static std::optional<CompleteCopy> getLogicalCopy(mlir::Operation *operation) {
   CompleteCopy copy;
   if (auto into = mlir::dyn_cast_or_null<MoveCopyIntoOp>(operation))
     copy = {operation, into.getSource(), into.getDest()};
@@ -87,8 +87,19 @@ static std::optional<CompleteCopy> getCompleteCopy(mlir::Operation *operation) {
     copy = {operation, memref.getSource(), memref.getTarget()};
   else
     return std::nullopt;
-  if (copy.source.getType() != copy.dest.getType() ||
-      !isWaferSPMMemRefType(copy.dest.getType()))
+  auto source = mlir::dyn_cast<mlir::MemRefType>(copy.source.getType());
+  auto dest = mlir::dyn_cast<mlir::MemRefType>(copy.dest.getType());
+  if (!source || !dest || !source.hasStaticShape() ||
+      source.getShape() != dest.getShape() ||
+      source.getElementType() != dest.getElementType() ||
+      !isWaferSPMMemRefType(source) || !isWaferSPMMemRefType(dest))
+    return std::nullopt;
+  return copy;
+}
+
+static std::optional<CompleteCopy> getCompleteCopy(mlir::Operation *operation) {
+  auto copy = getLogicalCopy(operation);
+  if (!copy || copy->source.getType() != copy->dest.getType())
     return std::nullopt;
   return copy;
 }
@@ -97,13 +108,18 @@ static std::optional<CompleteCopy> getCompleteCopy(mlir::Operation *operation) {
 // Only its overwritten contents may disappear: after this write, the next
 // copy must be its sole observer, including through pre-existing aliases.
 static bool isPrivateCopyIntermediate(
-    const CompleteCopy &write, const CompleteCopy &read,
+    mlir::OpOperand &write, mlir::OpOperand &read,
     const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
-  auto allocation = write.dest.getDefiningOp<mlir::memref::AllocOp>();
-  if (!allocation || allocation->getBlock() != write.operation->getBlock() ||
+  auto *allocation = write.get().getDefiningOp();
+  auto allocationEffects =
+      mlir::dyn_cast_or_null<mlir::MemoryEffectOpInterface>(allocation);
+  if (!allocationEffects ||
+      !allocationEffects.getEffectOnValue<mlir::MemoryEffects::Allocate>(
+          write.get()) ||
+      allocation->getBlock() != write.getOwner()->getBlock() ||
       pipelineOperations.contains(allocation))
     return false;
-  llvm::SmallVector<mlir::Value> pending{write.dest};
+  llvm::SmallVector<mlir::Value> pending{write.get()};
   llvm::DenseSet<mlir::Value> visited;
   while (!pending.empty()) {
     mlir::Value alias = pending.pop_back_val();
@@ -111,12 +127,18 @@ static bool isPrivateCopyIntermediate(
       continue;
     for (mlir::OpOperand &use : alias.getUses()) {
       mlir::Operation *user = use.getOwner();
-      if (alias == write.dest &&
-          ((user == write.operation && use.getOperandNumber() == 1) ||
-           (user == read.operation && use.getOperandNumber() == 0)))
+      if (&use == &write || &use == &read)
         continue;
-      if (user->getBlock() != write.operation->getBlock() ||
-          !user->isBeforeInBlock(write.operation) || user->getNumRegions() ||
+      // Inputs of the same pointwise writer read the old contents. Retaining
+      // those inputs while forwarding only its destination preserves that
+      // snapshot, even when padding prevents initial-read forwarding.
+      if (user == write.getOwner())
+        if (auto elementwise = mlir::dyn_cast<ComputeElementwiseIntoOp>(user))
+          if (elementwise.getKind() != ComputeElementwiseKind::Select &&
+              use.getOperandNumber() < elementwise.getInputs().size())
+            continue;
+      if (user->getBlock() != write.getOwner()->getBlock() ||
+          !user->isBeforeInBlock(write.getOwner()) || user->getNumRegions() ||
           pipelineOperations.contains(user))
         return false;
       if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
@@ -186,7 +208,8 @@ static void eliminateGemmWritebacks(
                getCompleteCopy(copies.back().operation->getNextNode())) {
       if (following->source != copies.back().dest ||
           pipelineOperations.contains(following->operation) ||
-          !isPrivateCopyIntermediate(copies.back(), *following,
+          !isPrivateCopyIntermediate(copies.back().operation->getOpOperand(1),
+                                     following->operation->getOpOperand(0),
                                      pipelineOperations))
         break;
       copies.push_back(*following);
@@ -238,6 +261,183 @@ static void eliminateGemmWritebacks(
     for (auto view : llvm::reverse(views))
       rewriter.eraseOp(view);
     rewriter.eraseOp(gemm);
+  }
+}
+
+// Effects are checked explicitly: LocalAliasAnalysis::getModRef ignores Free.
+// Descend only through operations that delegate their effects to their regions.
+static bool hasNoInterveningAccess(mlir::Operation *start, mlir::Operation *end,
+                                   mlir::Value storage, bool allowReads,
+                                   mlir::AliasAnalysis &aliases) {
+  for (auto *operation = start->getNextNode(); operation != end;
+       operation = operation->getNextNode()) {
+    auto walked = operation->walk([&](mlir::Operation *current) {
+      if (current->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())
+        return mlir::WalkResult::advance();
+      auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(current);
+      if (!interface)
+        return mlir::WalkResult::interrupt();
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
+      interface.getEffects(effects);
+      for (const auto &effect : effects) {
+        if (mlir::isa<mlir::MemoryEffects::Allocate>(effect.getEffect()) ||
+            (allowReads &&
+             mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect())))
+          continue;
+        if (!effect.getValue()) {
+          if (mlir::isa<WaferTileDataflowOpInterface>(current) &&
+              effect.getResource() != mlir::SideEffects::DefaultResource::get())
+            continue;
+          return mlir::WalkResult::interrupt();
+        }
+        if (!aliases.alias(effect.getValue(), storage).isNo())
+          return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (walked.wasInterrupted())
+      return false;
+  }
+  return true;
+}
+
+static bool canCopy(mlir::Value source, mlir::Value dest) {
+  auto sourceType = mlir::cast<mlir::MemRefType>(source.getType());
+  auto destType = mlir::cast<mlir::MemRefType>(dest.getType());
+  auto identity = analysis::IndexRelation::identity(destType.getShape());
+  return identity.isExact() &&
+         mlir::succeeded(analysis::TransferRealizability::proveGatherScatter(
+             sourceType, destType, *identity.get()));
+}
+
+// A materialized layout is a snapshot. Delay its read only when the source
+// remains unchanged, and retain the original final destination write point.
+static void fuseLayoutPublications(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  llvm::SmallVector<LayoutMaterializeOp> layouts;
+  module.walk([&](LayoutMaterializeOp op) { layouts.push_back(op); });
+  for (auto layout : layouts) {
+    if (!layout.getResult().hasOneUse() || pipelineOperations.contains(layout))
+      continue;
+    auto copy = getCompleteCopy(*layout.getResult().user_begin());
+    if (!copy || copy->source != layout.getResult() ||
+        copy->operation->getBlock() != layout->getBlock() ||
+        !layout->isBeforeInBlock(copy->operation) ||
+        pipelineOperations.contains(copy->operation))
+      continue;
+    {
+      mlir::AliasAnalysis aliases(module);
+      if (!aliases.alias(layout.getSource(), copy->dest).isNo() ||
+          !hasNoInterveningAccess(layout, copy->operation, layout.getSource(),
+                                  /*allowReads=*/true, aliases) ||
+          !canCopy(layout.getSource(), copy->dest))
+        continue;
+    }
+    rewriter.setInsertionPoint(copy->operation);
+    rewriter.create<MoveCopyIntoOp>(copy->operation->getLoc(),
+                                    layout.getSource(), copy->dest);
+    rewriter.eraseOp(copy->operation);
+    rewriter.eraseOp(layout);
+  }
+}
+
+// Preserve reads of the old private contents, including GEMM psum. Forward
+// only the new snapshot to its immediate consumer; never merge GEMM storage.
+static void forwardPrivateCopySnapshots(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  llvm::SmallVector<mlir::Operation *> copies;
+  module.walk([&](mlir::Operation *operation) {
+    if (getCompleteCopy(operation))
+      copies.push_back(operation);
+  });
+  // A rewrite erases the following copy too. Reverse traversal keeps every
+  // not-yet-visited operation alive without retaining a stale walk iterator.
+  for (auto *operation : llvm::reverse(copies)) {
+    auto write = getCompleteCopy(operation);
+    if (!write || pipelineOperations.contains(operation))
+      continue;
+    auto read = getLogicalCopy(operation->getNextNode());
+    if (!read || read->source != write->dest ||
+        pipelineOperations.contains(read->operation) ||
+        !isPrivateCopyIntermediate(operation->getOpOperand(1),
+                                   read->operation->getOpOperand(0),
+                                   pipelineOperations))
+      continue;
+    {
+      mlir::AliasAnalysis aliases(module);
+      if (!aliases.alias(write->source, write->dest).isNo() ||
+          !aliases.alias(write->source, read->dest).isNo() ||
+          !canCopy(write->source, read->dest))
+        continue;
+    }
+    rewriter.setInsertionPoint(read->operation);
+    rewriter.create<MoveCopyIntoOp>(read->operation->getLoc(), write->source,
+                                    read->dest);
+    rewriter.eraseOp(read->operation);
+    rewriter.eraseOp(operation);
+  }
+}
+
+// Destination forwarding can advance a write only past operations that do
+// not observe or mutate the destination. Different encodings are accepted
+// only when the physical traversal is exactly the same.
+static void forwardElementwisePublications(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  llvm::SmallVector<ComputeElementwiseIntoOp> writers;
+  module.walk([&](ComputeElementwiseIntoOp op) { writers.push_back(op); });
+  for (auto writer : writers) {
+    if (writer.getKind() == ComputeElementwiseKind::Select ||
+        pipelineOperations.contains(writer))
+      continue;
+    for (auto &use : llvm::make_early_inc_range(writer.getDest().getUses())) {
+      auto copy = getLogicalCopy(use.getOwner());
+      if (!copy || use.getOperandNumber() != 0 ||
+          copy->operation->getBlock() != writer->getBlock() ||
+          !writer->isBeforeInBlock(copy->operation) ||
+          pipelineOperations.contains(copy->operation) ||
+          !isPrivateCopyIntermediate(writer.getDestMutable(), use,
+                                     pipelineOperations))
+        continue;
+      {
+        mlir::DominanceInfo dominance(module);
+        mlir::AliasAnalysis aliases(module);
+        if (!dominance.dominates(copy->dest, writer) ||
+            !hasNoInterveningAccess(writer, copy->operation, copy->dest,
+                                    /*allowReads=*/false, aliases))
+          continue;
+        auto sourceType = mlir::cast<mlir::MemRefType>(copy->source.getType());
+        auto destType = mlir::cast<mlir::MemRefType>(copy->dest.getType());
+        auto identity = analysis::IndexRelation::identity(destType.getShape());
+        if (!identity.isExact() ||
+            mlir::failed(
+                analysis::TransferRealizability::provePhysicalTraversal(
+                    sourceType, destType, destType.getShape(), *identity.get(),
+                    *identity.get())))
+          continue;
+        auto maps = writer.getIndexingMapsAttr();
+        bool safe = true;
+        for (auto [index, input] : llvm::enumerate(writer.getInputs())) {
+          if (!mlir::isa<mlir::MemRefType>(input.getType()))
+            continue;
+          if (input == copy->dest &&
+              (!maps || mlir::cast<mlir::AffineMapAttr>(maps[index])
+                            .getValue()
+                            .isIdentity()))
+            continue;
+          if (!aliases.alias(input, copy->dest).isNo())
+            safe = false;
+        }
+        if (!safe)
+          continue;
+      }
+      rewriter.modifyOpInPlace(
+          writer, [&] { writer.getDestMutable().set(copy->dest); });
+      rewriter.eraseOp(copy->operation);
+      break;
+    }
   }
 }
 
@@ -549,8 +749,17 @@ optimizeStorage(mlir::ModuleOp module, mlir::IRRewriter &rewriter,
   eliminatePrivatePointwisePublications(module, rewriter, pipelineOperations);
   eliminateElementwiseWritebacks(module, rewriter, pipelineOperations);
   reuseElementwiseInputs(module, rewriter, pipelineOperations);
+  // Forward initial reads first: a writer that still reads its private
+  // destination cannot publish directly into the original source storage.
   eliminateUnusedStorageInitialization(module, rewriter, pipelineOperations);
-  return materializeLoopCarriedDestinations(module, rewriter);
+  // Resolve existing loop destinations before matching their publication
+  // copies. A yielded layout result has no copy until this materialization.
+  if (mlir::failed(materializeLoopCarriedDestinations(module, rewriter)))
+    return mlir::failure();
+  fuseLayoutPublications(module, rewriter, pipelineOperations);
+  forwardPrivateCopySnapshots(module, rewriter, pipelineOperations);
+  forwardElementwisePublications(module, rewriter, pipelineOperations);
+  return mlir::verify(module);
 }
 
 } // namespace wafer::compiler::detail

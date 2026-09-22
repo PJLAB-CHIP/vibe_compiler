@@ -19,7 +19,7 @@
 ## 当前调度
 
 最新接续：用户要求优先完成已有部分实现，再开展尚未实现的优化，继续归board-testing。
-尾块、输出融合、累加器方向及causal分段均已完成本轮验收；职责分拆也已通过行为保持验收，当前处理剩余状态发布复制。
+尾块、输出融合、累加器方向及causal分段均已完成本轮验收；职责分拆与残余状态发布复制也已验收，当前接通用流水。
 下表是唯一当前执行顺序，取代下文历史检查点中的先后安排；具体步骤与证据见
 [性能计划](plans/board-workload-matrix.md#已有改动的收尾与接续)及[流水计划](plans/tile-loop-pipelining.md#6-提交及接续顺序)。
 
@@ -29,8 +29,8 @@
 | 2 | 累加器方向：已完成当前版本对照与取舍，采用KQ score及常规累加器；仅允许不改变元素次序的自动state重排 | 主机、fresh no-card及实卡证据已归档；继续causal分段 |
 | 3 | causal全可见前缀/边界拆分：已完成，含动态起点、完成证明和Q准备复用；主块/尾块实卡健康 | 证据已归档；串行性能持平，作为通用流水输入 |
 | 4 | ExecutionStructure职责分拆：已完成，五个职责文件/API及测试迁移；代表Tile/Instr/LLVM逐字节不变 | 主机、fresh no-card、头文件与canonical/no-op证据已归档；接残余存储优化 |
-| 5 | 剩余状态发布复制：正在按actual source snapshot、目的旧值及alias处理layout/完整copy/逐元素发布链；既有优化沿用 | 只处理current IR中可证明合法且有收益依据的残余复制，记录实际保留原因，完成后再引入流水 |
-| 6 | 通用流水与K/V重叠：新设计尚未实施 | 同一实现闭合动态/条件/rotation/completion/SPM及driver，复用第3步输入；完成fresh no-card、实卡与最终性能验收 |
+| 5 | 剩余状态发布复制：已完成，通用layout/snapshot/逐元素发布消除；必要m旧值与GEMM psum/result保持独立 | 主机、fresh no-card及主块/1031尾块实卡通过；证据在性能计划，作为串行/流水共同输入 |
+| 6 | 通用流水与K/V重叠：当前实施项，动态/条件扩展尚未完成 | 同一实现闭合动态/条件/rotation/completion/SPM及driver，复用第3、5步输入；完成fresh no-card、实卡与最终性能验收 |
 
 已通过验收的Explp、GEMM复制链、等字节序行copy和初始化读取转交沿用已有实现及证据，不重新排成待实现项。
 第6步后接回板测矩阵剩余配置；head/tile搜索仍后置。稳定流水合同见10号第9节，源码owner见18号。

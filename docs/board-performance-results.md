@@ -16,6 +16,23 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-22：消除私有状态结果的重复发布
+
+BF16 `[1,28,2048,128]` 新包三次无采集、无插桩为 **4.088 / 4.145 / 4.076ms**，
+中位数4.088ms；上一版4.252ms，本轮观察下降约3.9%。同boot/runtime和输入配置，未重跑历史包。
+7,340,032个输出无超阈值差异，数值指标与上一版相同；10752字节guard、16 Tile完成、厂商退出及日志均健康。
+1031尾块单次 **1.206ms**，65,984个输出及19456字节guard通过。
+
+当前IR中，GEMM result先复制到private psum，再layout到临时，最后发布；行sum同样多一次发布。
+通用规则保留早期psum读取，直接从新result向最终目标作必要layout转换；物理遍历相同的逐元素结果直接写最终目标。
+规则检查source快照、别名、目的旧值读取和真实布局，不读取attention/head/shape标记。
+发布匹配必须在初始化读取转交及loop destination物化之后；过早匹配时，yield的layout尚无显式copy。
+最终每Tile静态GS从44降至38，terminal join仍为一处。m的旧值仍参与alpha及独立MaskMove，相关复制保留。
+
+24项相关unit、36项lit、canonical增量/no-op及两项fresh no-card通过；机制覆盖三种浮点dtype、
+1024/1025/1031、非attention计算、条件写入、alias/free/unknown、额外reader、padding和loop state交换。
+这只是存储优化收益，不包含动态流水；本中间包未新增独立profile。见[本轮证据](data/board-performance/attention-storage-publication-20260922.json)。
+
 ## 2026-09-22：causal全可见前缀与边界分段
 
 BF16 `[1,28,2048,128]` 新包三次无采集、无设备插桩为 **4.252 / 4.300 / 4.192ms**，

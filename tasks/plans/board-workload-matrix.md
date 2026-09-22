@@ -97,7 +97,19 @@ profile另列Primary及各引擎/指令热点，不混成一个数。当前恢�
 | 输出恢复搬运融合 | 本轮主机、fresh no-card、普通实卡及profile通过，静态GS每Tile 15→14 | 已完成；最终小颗粒输出置换仍在，接方向取舍 |
 | 累加器方向 | 本轮常规方向三次4.314/4.223/4.233ms，全量数值及guard通过；正式IR与实验逐字节一致 | 已完成；采用KQ score与常规累加器，只有unit轴移动保持自动重排；见[证据](../../docs/data/board-performance/attention-state-orientation-20260922.json) |
 | causal全可见前缀 | 本轮主机、fresh no-card及主块/1031尾块实卡通过；主块4.252/4.300/4.192ms，尾块1.335ms，重复Q准备已消除 | 已完成；串行性能与前版持平，通用流水仍待实现；见[证据](../../docs/data/board-performance/attention-causal-prefix-20260922.json) |
-| 行状态复制 | 等字节序copy、初始化读取转交均已提交并通过实卡；发布复制已有通用实现，但目标残余不一定符合其条件 | 保留已完成结果；职责分拆后只复查残余的实际alias/use/effect，说明可消除项或必须保留的原因，再让流水消费相同优化结果 |
+| 行状态复制 | 等字节序copy、初始化读取转交及残余发布链均已完成实卡；A/l多余发布消除，m必要快照保持 | 已完成；主块4.088/4.145/4.076ms，1031尾块1.206ms，数值/guard及日志健康；[证据](../../docs/data/board-performance/attention-storage-publication-20260922.json) |
+
+**残余发布复制实施**：本轮实际IR中，A的GEMM结果先写回psum临时，再layout到临时、最后发布；
+可以保留GEMM独立result/psum，合并为一次直接layout发布。l的逐元素结果与最终行state物理遍历相同，
+在旧值最后读取后可直接写入。m的旧值参与alpha，MaskMove还需要独立可修改值，不能统一合并。
+按[10号发布链合同](../10-compute-movement.md#已确定布局后的状态发布链)实现通用snapshot/alias规则，
+已完成通用实现及验收。关键顺序是先转交初始化读取、物化当前loop destination，再匹配发布copy；
+不增加状态名称/shape或自定义loop alias推断。padding妨碍初始化转交时保留独立读取快照，仅转交writer目标。
+三组新增机制测试覆盖F16/BF16/F32、1024/1025/1031及source/alias写入、条件、free、unknown、额外reader、
+不同布局与交换loop state；24项相关unit和36项lit、canonical增量/no-op、主块与尾块fresh source/package/no-card通过。
+16 Tile静态GS均44→38，每Tile保留一个terminal join；GEMM psum/result仍独立。
+三次无采集主块中位数4.088ms，相对上一版4.252ms本轮下降约3.9%；全量输出指标相同。
+尾块65,984个输出及19456字节guard通过，单次时间不外推稳定收益。本中间版本未新增profile，最终流水版本另行归因。
 
 **causal分段验收**：Analysis、Transforms、Driver完整unit suite及77项相关lit实际通过，无skip；
 最终canonical增量及随后Ninja no-op通过。覆盖BQ/BK为192/128、256/128、256/256，query offset为0/37，

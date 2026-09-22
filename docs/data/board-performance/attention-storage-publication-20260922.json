@@ -1,0 +1,431 @@
+{
+  "date": "2026-09-22",
+  "scope": "通用私有结果发布链优化；不包含动态流水",
+  "compiler_sha256": "e26b0ab286b98d665f45d4c5f28ae326cee8963bc70ee5b6187831f8fa4703bd",
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "runtime_library_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "artifacts": "/data/vibe_compiler-validation/attention-closure-20260922",
+  "measurements": {
+    "publication-ready": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4088000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4145000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4076000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      }
+    ],
+    "publication-ready_prepare_resources": "\tCommand being timed: \"/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python -B /home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py --case attention-prefill-28-heads-2048 --dtype bfloat16 --seed 20260922 --wafer-compile /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile --wafer-run /home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run --work-dir /data/vibe_compiler-validation/attention-closure-20260922/publication-ready-prepared --dump-compiler-ir /data/vibe_compiler-validation/attention-closure-20260922/publication-ready-ir --optimization-policy search --memory-guards --device-timing --compile-timing --expected-runtime-version 1400 --expected-device-name /dev/accel/dev-0 --expected-pci-bus-id 0000:3b:00.0 --expected-tile-count 16 --expected-runtime-library-sha256 3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c --completion-timeout-ms 60000 --board-diagnose-tool /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose --no-card\"\n\tUser time (seconds): 357.33\n\tSystem time (seconds): 26.00\n\tPercent of CPU this job got: 199%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 3:12.43\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1378292\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 201\n\tMinor (reclaiming a frame) page faults: 6737629\n\tVoluntary context switches: 69025\n\tInvoluntary context switches: 1503\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 157208\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+    "publication-ready_instruction_sites": [
+      {
+        "tile": "tile_00000",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00001",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00002",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00003",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00004",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00005",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00006",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00007",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00008",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00009",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00010",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00011",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00012",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00013",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00014",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00015",
+        "gather_scatter": 38,
+        "ncc_join": 1
+      }
+    ],
+    "publication-ready-tail": [
+      {
+        "audit": {
+          "case": "attention-prefill-tail-1031",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "bae36497598936e097a98810062520c6f44fdc0c22b9939167668af46e3ed734",
+          "comparison_passed": true,
+          "memory_guard_bytes": 19456,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "a1ae96c6aa73ba2145d196792400bfb793601ec619e0e06b06a9e938e20e25db",
+            "card_00_user_input_1.bf16.raw": "da0bbaca66ec4c24804afd8a579730ed8dcb005b21c42d3059a7589d23581e90",
+            "card_00_user_input_2.bf16.raw": "50760732f684a00af54b840d9df76045fd5b95df47eefa5f049329f9373d42db"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                1031,
+                64
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65984,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999979316708467,
+              "relative_l2_error": 0.002039950444697165,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 5.53878649938707e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1206000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      }
+    ],
+    "publication-ready-tail_prepare_resources": "\tCommand being timed: \"/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python -B /home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py --case attention-prefill-tail-1031 --dtype bfloat16 --seed 20260922 --wafer-compile /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile --wafer-run /home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run --work-dir /data/vibe_compiler-validation/attention-closure-20260922/publication-ready-tail-prepared --dump-compiler-ir /data/vibe_compiler-validation/attention-closure-20260922/publication-ready-tail-ir --optimization-policy search --memory-guards --device-timing --compile-timing --expected-runtime-version 1400 --expected-device-name /dev/accel/dev-0 --expected-pci-bus-id 0000:3b:00.0 --expected-tile-count 16 --expected-runtime-library-sha256 3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c --completion-timeout-ms 60000 --board-diagnose-tool /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose --no-card\"\n\tUser time (seconds): 333.79\n\tSystem time (seconds): 114.76\n\tPercent of CPU this job got: 131%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 5:41.69\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 15714804\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 17\n\tMinor (reclaiming a frame) page faults: 46663425\n\tVoluntary context switches: 71875\n\tInvoluntary context switches: 1515\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 4748784\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+    "publication-ready-tail_instruction_sites": [
+      {
+        "tile": "tile_00000",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00001",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00002",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00003",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00004",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00005",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00006",
+        "gather_scatter": 27,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00007",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00008",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00009",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00010",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00011",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00012",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00013",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00014",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      },
+      {
+        "tile": "tile_00015",
+        "gather_scatter": 12,
+        "ncc_join": 1
+      }
+    ]
+  },
+  "host_validation": {
+    "unit": "24 tests / 5 suites passed; publication-padding-unit.log",
+    "lit": "36 passed; 272 excluded by explicit filter, no skip; publication-ready-lit.log",
+    "canonical_build": "publication-padding-final-build.log; prior production compilation in publication-padding-build.log",
+    "noop": "publication-ready-noop.log",
+    "matrix": "3 new parameterized mechanism tests, 1024/1025/1031, F16/BF16/F32, non-attention movement/elementwise/GEMM; source snapshot, conditional write, alias, free, unknown, extra reader, physical permutation, invariant/swapped loop states, padded initialized temporary; positive cases reach Instr/completion/SPM",
+    "intermediate_failure": "Host-only adjacent-operation walk invalidation fixed by collecting writer operations before erasing sibling copies. No device launch used the failed intermediate."
+  },
+  "actual_ir": {
+    "main_gs_sites_per_tile_before": 44,
+    "main_gs_sites_per_tile_after": 38,
+    "main_ncc_join_sites_per_tile": 1,
+    "removed": "Each full/boundary body removes two 131072-byte accumulator copy sites and one 1024-byte row-sum publication site. Required NCx/Tensor conversion remains; GEMM psum/result remain distinct.",
+    "retained": "Old row-max is still read for alpha; MaskMove requires independent writable storage.",
+    "root_cause": "Publication matching must follow initial-read forwarding and actual loop-destination materialization. No custom invariant-root recovery is needed; use pinned standard alias analysis."
+  },
+  "comparison": {
+    "previous_record": "attention-causal-prefix-20260922.json",
+    "previous_median_ms": 4.252,
+    "current_median_ms": 4.088,
+    "observed_reduction_percent": 3.8570084666039444,
+    "scope": "Same workload, seed, runtime/boot and ordinary timing; historical package not rerun. No independent profile on this intermediate package; final pipeline validation owns new profile."
+  }
+}
