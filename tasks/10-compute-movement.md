@@ -303,6 +303,18 @@ current operand/result geometry证明implicit pad/unpad均为零时准入；非�
 low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的canonical H/W与X/Y关系打包到existing typed
 `wafer.instr.conv`，不重新判断卷积类别或猜测geometry。
 
+### 合成输出方向与物理布局搬运
+
+输入为布局已选定的current Tile IR。`tile.transpose`表达logical permutation及源、目标各自的physical encoding；
+两端必须都是SPM、dtype相同、rank/shape符合permutation，不要求encoding相同。
+ExecutionStructure将单use的`transpose → materialize_layout`合成一次transpose，保留原transpose位置的source读取；
+最终结果类型直接取layout consumer。中间结果有其它observer或任一操作属于已物化pipeline时不融合。
+输出仍是同一个Tile transpose，下游唯一MovementLowering合成logical relation与两端physical relation，发GS descriptor；
+实际destination及scratch重新进入owner/SPM/completion分析。不存在原生transpose调用，也不改变算术、dtype或输出顺序。
+该阶段只融合selected-layout的物理搬运，不在上层pure graph旁新增等价探索，不声称消除必须的元素置换。
+完成覆盖包含rank3、1024/1025/1031、FP16/BF16/F32、Cx/NCx/Tensor、单use/额外observer、
+逐地址exact coverage及真实Instr下游；目标包另外验证输出与总耗时。
+
 ### Elementwise 与 convert
 
 Tensor→blocked的连续channel GS快路径必须检查映射到destination channel的source stride为1。
@@ -405,6 +417,29 @@ proof将current logical indexing relation与两端physical ordinal合成，检�
 RHS在其最后一次重复读取前不得被覆盖，不能直接继承一次性VV读取的重叠假设。
 没有新增buffer时不凭空增加allocation、join或wait；消除broadcast buffer后由同一actual IR重新计算owner、lifetime、completion和SPM。
 无法匹配当前关系与非法Loop参数分别保持“未命中优化”和typed target failure，不把二者混成capacity反馈。
+
+非完整分组的具体物化：
+
+- 同一proof按当前blocked物理布局、输入projected permutation与连续广播轴生成互不重叠的物理区间，
+  用encoding-owned physical pieces逐区间核对logical→physical→RHS关系，所有logical destination恰好覆盖一次。
+  先证明矩形完全位于同一piece且不跨`logicalTilePeriods`边界，再核对起点与各非退化轴的精确步进；
+  在已证明的仿射域内，常数项和各轴系数确定整个映射，不是采样推断。复用既有物理piece边界合同，
+  不为每个固定矩形构造含existential变量的Presburger等价查询；复杂度随矩形数和rank增长，不随元素数增长。
+  相邻64元素RHS组只有在source/destination都连续且重复次数相等时才合并为Loop；batch gap不跨越。
+- 每个区间在conversion中立即物化为原allocation上的实际metadata view。
+  使用标准`memref.memory_space_cast`在同一SPM地址域显式转换encoding标记，紧接`memref.reinterpret_cast`
+  指定物理offset/count；这不是logical layout转换，不以cast替代任何未证明的搬运。尾部物理宽度由encoding给出，
+  普通VuV使用该宽度；若有效RHS不足一组，仅创建最多64元素的紧凑临时量，先定义padding、再复制有效RHS，
+  不创建整块广播buffer。原RHS每个有效元素只按原dtype读取，padding不冒充额外逻辑输入。
+- source/destination非零或动态base的处理服从memref view合同；本规则首轮仅接受静态identity storage type，
+  其它仍走原有合法movement。原地lhs更新可用；跨区间RHS或partial lhs alias不能证明安全时不拆分。
+  division仍只做一次紧凑Recip，再按相同区间Mul，不改变算术图。
+- 方法采用[MLIR strip-mining](https://mlir.llvm.org/doxygen/LoopUtils_8cpp.html)的主块/余块拆分，
+  [memref view](https://mlir.llvm.org/docs/Dialects/MemRef/)表达实际alias；pinned源码确认offset、size及stride语义。
+  这里物化current Tile计算的访问区间，不建立跨stage的buffer或schedule旁路。
+- 覆盖：F16/BF16/F32、rank3/4、广播轴1024/1025/1031、channel 256/257/263/289/319，多batch及gap，
+  Sub/Mul和同族Add/Max/Min/Div；不同组/lane合法值的全量数值、exact物理地址覆盖、Instr/SPM/target consumer，
+  并覆盖反向关系、真实置换、alias及未支持geometry的原路径。目标2048完整组不能代签这些尾组。
 
 ### Reduce 与 fill
 

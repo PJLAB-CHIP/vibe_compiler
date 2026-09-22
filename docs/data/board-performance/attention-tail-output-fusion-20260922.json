@@ -1,0 +1,308 @@
+{
+  "work_item": "board-testing",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bf16",
+  "shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "status": "fresh no-card, ordinary board, tail board and independent profile passed",
+  "device_elapsed_ms": [
+    4.424,
+    4.401,
+    4.368
+  ],
+  "median_device_elapsed_ms": 4.401,
+  "previous_median_ms": 4.461,
+  "timing_limit": "Small overlapping sample ranges do not establish a stable speedup.",
+  "ordinary_samples": [
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "d209a535264ec2dbb5145b436121ef97fc3c86317b36a1660de15567bce33b89",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4424000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "d209a535264ec2dbb5145b436121ef97fc3c86317b36a1660de15567bce33b89",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4401000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "d209a535264ec2dbb5145b436121ef97fc3c86317b36a1660de15567bce33b89",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4368000"
+      ]
+    }
+  ],
+  "tail_samples": [
+    {
+      "case": "attention-prefill-tail-1031",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "de79aec5ece925fcf916739232d2abaffb2b9baa6c1ee40bf4a4ab2c6aafe1f9",
+      "comparison_passed": true,
+      "memory_guard_bytes": 19456,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "a1ae96c6aa73ba2145d196792400bfb793601ec619e0e06b06a9e938e20e25db",
+        "card_00_user_input_1.bf16.raw": "da0bbaca66ec4c24804afd8a579730ed8dcb005b21c42d3059a7589d23581e90",
+        "card_00_user_input_2.bf16.raw": "50760732f684a00af54b840d9df76045fd5b95df47eefa5f049329f9373d42db"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            1,
+            1031,
+            64
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65984,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999979316708467,
+          "relative_l2_error": 0.002039950444697165,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 5.53878649938707e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=1335000"
+      ]
+    }
+  ],
+  "tail_device_elapsed_ms": 1.335,
+  "tail_witness": "actual [1,1,64,65] accumulator: 64-wide grouped main and four-lane padded tail; only one valid RHS scalar copied to tail scratch",
+  "static_gather_scatter_per_tile": {
+    "before": 15,
+    "after": 14,
+    "tiles": 16
+  },
+  "remaining_output_permutation": {
+    "element_bytes": 2,
+    "elements_per_query_tile": 32768,
+    "query_tiles_per_busy_tile": 16
+  },
+  "profile": {
+    "primary_ms": 4.334,
+    "events_expected": 53968,
+    "events_actual": 53968,
+    "valid": true,
+    "busy_tile": 4,
+    "engine_ns": {
+      "ct": 1089529,
+      "ne": 363400,
+      "rdma": 373135,
+      "wdma": 30429,
+      "tdma": 1407268
+    },
+    "engine_limit": "Engine activity overlaps; NCC per-site PMU attribution ambiguous."
+  },
+  "host": {
+    "unit_suites": [
+      "IR",
+      "Analysis",
+      "Conversion",
+      "Transforms"
+    ],
+    "unit_all_passed": true,
+    "related_lit_passed": 59,
+    "skipped": 0,
+    "canonical_full_incremental": true,
+    "second_build_noop": true,
+    "slice_geometry_combinations": 180,
+    "arithmetic_execution_combinations": 42,
+    "rhs_alias_snapshot_extents": [
+      1024,
+      1025,
+      1031
+    ]
+  },
+  "proof_acceleration": {
+    "root_cause": "Presburger equality introduced quantified physical ordinal composition per rectangular slice.",
+    "change": "Prove an entire rectangle affine using encoding piece/period bounds; compare its exact basis strides.",
+    "calls_before": 2805,
+    "calls_after": 2805,
+    "cumulative_cpu_ms_before": 687839.625,
+    "cumulative_cpu_ms_after": 319.655,
+    "prepare_wall_seconds_before": 444.21,
+    "prepare_wall_seconds_after": 244.47,
+    "max_rss_kib_before": 3055864,
+    "max_rss_kib_after": 3156472,
+    "final_device_output_comparison": {
+      "instruction": {
+        "byte_identical": [
+          "tile_00000.mlir",
+          "tile_00001.mlir",
+          "tile_00002.mlir",
+          "tile_00003.mlir",
+          "tile_00004.mlir",
+          "tile_00005.mlir",
+          "tile_00006.mlir",
+          "tile_00007.mlir",
+          "tile_00008.mlir",
+          "tile_00009.mlir",
+          "tile_00010.mlir",
+          "tile_00011.mlir",
+          "tile_00012.mlir",
+          "tile_00013.mlir",
+          "tile_00014.mlir",
+          "tile_00015.mlir"
+        ],
+        "different": []
+      },
+      "target-llvm": {
+        "byte_identical": [
+          "tile_00000.ll",
+          "tile_00001.ll",
+          "tile_00002.ll",
+          "tile_00003.ll",
+          "tile_00004.ll",
+          "tile_00005.ll",
+          "tile_00006.ll",
+          "tile_00007.ll",
+          "tile_00008.ll",
+          "tile_00009.ll",
+          "tile_00010.ll",
+          "tile_00011.ll",
+          "tile_00012.ll",
+          "tile_00013.ll",
+          "tile_00014.ll",
+          "tile_00015.ll"
+        ],
+        "different": []
+      }
+    },
+    "qualification": "Host proof replacement emits identical final Instr/LLVM for all 16 Tiles. Board runs used freshly prepared pre-acceleration package."
+  },
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "board_compiler_sha256": "baed88dd9d2f8406ed2e09b6110cee5bc726571083e6b1f6114efc6ca964cfcb",
+  "final_host_compiler_sha256": "1e29cee39055f5d7ae5d41e9362a23e90c68c80d2b2bd5e8dc5336bbbd826ca8",
+  "root_causes": [
+    "Grouped unit-vector proof previously required complete units and excluded physical tails/bank gaps.",
+    "Logical output permutation and following physical layout conversion materialized separate buffers."
+  ],
+  "scope": "No numeric dtype/arithmetic changes, native transpose, runtime timeout/reset, or speculative memory legality."
+}

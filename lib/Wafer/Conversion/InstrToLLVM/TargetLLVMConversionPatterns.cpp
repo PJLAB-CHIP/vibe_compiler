@@ -376,6 +376,25 @@ struct TargetSubViewOpLowering
   }
 };
 
+struct TargetMemorySpaceCastOpLowering
+    : public mlir::OpConversionPattern<mlir::memref::MemorySpaceCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::memref::MemorySpaceCastOp castOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto source =
+        mlir::dyn_cast<mlir::MemRefType>(castOp.getSource().getType());
+    auto dest = mlir::dyn_cast<mlir::MemRefType>(castOp.getType());
+    if (!source || !dest || !isWaferSPMMemRefType(source) ||
+        !isWaferSPMMemRefType(dest))
+      return rewriter.notifyMatchFailure(
+          castOp, "only address-preserving SPM encoding casts are supported");
+    rewriter.replaceOp(castOp, adaptor.getSource());
+    return mlir::success();
+  }
+};
+
 struct TargetReinterpretCastOpLowering
     : public mlir::OpConversionPattern<mlir::memref::ReinterpretCastOp> {
   using mlir::OpConversionPattern<
@@ -567,12 +586,12 @@ struct TargetDeallocOpLowering
 void populateTargetLLVMStructureConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
     int64_t defaultDDRArenaArgumentIndex) {
-  patterns
-      .add<TargetFuncOpLowering, TargetCallOpLowering, TargetReturnOpLowering,
-           TargetSubViewOpLowering, TargetReinterpretCastOpLowering,
-           TargetCollapseShapeOpLowering, TargetExpandShapeOpLowering,
-           TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
-          converter, &converter.getContext());
+  patterns.add<TargetFuncOpLowering, TargetCallOpLowering,
+               TargetReturnOpLowering, TargetSubViewOpLowering,
+               TargetReinterpretCastOpLowering, TargetMemorySpaceCastOpLowering,
+               TargetCollapseShapeOpLowering, TargetExpandShapeOpLowering,
+               TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
+      converter, &converter.getContext());
   patterns.add<TargetAllocOpLowering>(converter, &converter.getContext(),
                                       defaultDDRArenaArgumentIndex);
 }

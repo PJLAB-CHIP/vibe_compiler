@@ -573,3 +573,11 @@ i32取0/1，并与`rhs_unit_elements`互斥。CRT直接发射VS；decoder/numeri
 用户input/output等common端口的相互一致性、card-shared资源按ID一致性、manifest/payload的逐项验证保持原合同。
 TileMajor/TileRow均沿已有variable-row地址计算与argument-row acquire，没有新ABI或运行时格式。
 覆盖1024/1025/1031主块/tail的不同常量集合、两种行ABI、非法常量绑定及fresh source→package/model/no-card。
+
+### SPM物理区间的标准view
+
+TileToInstr已证明的分组主块/尾组通过同一SPM内的`memref.memory_space_cast`及紧随的
+`memref.reinterpret_cast`表达。前者保持地址、shape、dtype与MLIR stride布局，仅切换Wafer encoding标记；
+后者显式给出物理区间，alias/lifetime/SPM仍跟随原allocation。Target lowering对同一SPM域的cast转交原地址，
+不发搬运；SPM与DDR之间的cast不支持，不能绕过实际DMA。逻辑布局转换仍由其exact relation及movement拥有。
+该路径与其它标准view一起进入同一production/named conversion；完整组、尾组、gap、dtype和实际地址边界由10号矩阵验证。

@@ -67,6 +67,194 @@ mlir::FailureOr<int64_t> TransferRealizability::proveGroupedUnitVectorBroadcast(
   return group;
 }
 
+// The encoding's piece/period contract proves that this entire rectangle is
+// affine. Its origin and basis coefficients then determine every address;
+// evaluating those coefficients is an exact proof, not element sampling.
+static bool
+hasPhysicalRectangleStrides(const WaferStaticPhysicalOffsetCalculator &offsets,
+                            llvm::ArrayRef<WaferPhysicalLayoutPiece> pieces,
+                            llvm::ArrayRef<int64_t> lower,
+                            llvm::ArrayRef<int64_t> shape,
+                            llvm::ArrayRef<int64_t> expectedByteStrides) {
+  bool affine = llvm::any_of(pieces, [&](const auto &piece) {
+    for (unsigned axis = 0; axis < lower.size(); ++axis) {
+      int64_t begin = piece.logicalLowerBounds[axis];
+      int64_t end = piece.logicalUpperBounds[axis];
+      int64_t period = piece.logicalTilePeriods[axis];
+      if (lower[axis] < begin || lower[axis] >= end || shape[axis] <= 0 ||
+          shape[axis] > end - lower[axis])
+        return false;
+      if (period && (lower[axis] - begin) / period !=
+                        (lower[axis] - begin + shape[axis] - 1) / period)
+        return false;
+    }
+    return true;
+  });
+  if (!affine)
+    return false;
+  auto origin = offsets.getByteOffset(lower);
+  if (!origin)
+    return false;
+  llvm::SmallVector<int64_t> next(lower);
+  for (unsigned axis = 0; axis < lower.size(); ++axis) {
+    if (shape[axis] == 1)
+      continue;
+    ++next[axis];
+    auto step = offsets.getByteOffset(next);
+    --next[axis];
+    if (!step || *step - *origin != expectedByteStrides[axis])
+      return false;
+  }
+  return true;
+}
+
+mlir::FailureOr<llvm::SmallVector<UnitVectorBroadcastSlice>>
+TransferRealizability::proveUnitVectorBroadcastSlices(
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    mlir::AffineMap destinationToSource) {
+  wafer::support::ScopedCompileTimingSpan timing(
+      "analysis", "proveUnitVectorBroadcastSlices", "total");
+  auto sourceOffsets = WaferStaticPhysicalOffsetCalculator::create(sourceType);
+  auto destOffsets = WaferStaticPhysicalOffsetCalculator::create(destType);
+  auto info = computeWaferPhysicalTensorInfo(destType);
+  if (!sourceOffsets || !destOffsets || !info ||
+      !sourceType.getLayout().isIdentity() ||
+      !destType.getLayout().isIdentity() || destType.getRank() < 2 ||
+      sourceType.getRank() < 1 ||
+      sourceType.getElementType() != destType.getElementType() ||
+      !mlir::isa<mlir::FloatType>(sourceType.getElementType()) ||
+      (info->layout != MemLayout::NCx && info->layout != MemLayout::Cx) ||
+      info->cBlock != 64 || info->physicalElements <= 0 ||
+      info->physicalElements > std::numeric_limits<uint32_t>::max() ||
+      !destinationToSource || !destinationToSource.isProjectedPermutation() ||
+      destinationToSource.getNumDims() != destType.getRank() ||
+      destinationToSource.getNumResults() != sourceType.getRank() ||
+      sourceType.getShape().back() != destType.getShape().back() ||
+      destinationToSource.getResults().back() !=
+          mlir::getAffineDimExpr(destType.getRank() - 1, destType.getContext()))
+    return mlir::failure();
+
+  auto sourcePieces =
+      getWaferMemoryAttr(sourceType).getPhysicalLayoutPieces(sourceType);
+  auto destPieces =
+      getWaferMemoryAttr(destType).getPhysicalLayoutPieces(destType);
+  if (mlir::failed(sourcePieces) || mlir::failed(destPieces))
+    return mlir::failure();
+
+  // Only the consecutive broadcast suffix can become one repeated unit.
+  // Other axes remain explicit intervals; NCx outer slices retain bank gaps.
+  int64_t suffixBegin = destType.getRank() - 1;
+  int64_t minimumAxis = info->layout == MemLayout::NCx ? 1 : 0;
+  int64_t repetitions = 1;
+  while (suffixBegin > minimumAxis) {
+    int64_t axis = suffixBegin - 1;
+    if (destType.getDimSize(axis) != 1 &&
+        llvm::is_contained(destinationToSource.getResults(),
+                           mlir::getAffineDimExpr(axis, destType.getContext())))
+      break;
+    repetitions *= destType.getDimSize(axis);
+    --suffixBegin;
+  }
+  if (repetitions <= 1)
+    return mlir::failure();
+  int64_t prefixCount = 1;
+  for (int64_t axis = 0; axis < suffixBegin; ++axis)
+    prefixCount *= destType.getDimSize(axis);
+  // A compiler-work bound, not a tensor or SPM capacity limit. The existing
+  // mapped movement remains available when this decomposition is too large.
+  IndexRelationLimits limits;
+  const int64_t blocks = info->cxBlocks + (info->tailC != 0);
+  if (prefixCount <= 0 ||
+      prefixCount > static_cast<int64_t>(limits.maxRectangularPieces) / blocks)
+    return mlir::failure();
+
+  llvm::SmallVector<UnitVectorBroadcastSlice> slices;
+  int64_t coveredElements = 0;
+  const int64_t channels = destType.getShape().back();
+  for (int64_t prefix = 0; prefix < prefixCount; ++prefix) {
+    llvm::SmallVector<int64_t> coordinates(destType.getRank(), 0);
+    int64_t remaining = prefix;
+    for (int64_t axis = suffixBegin; axis-- > 0;) {
+      coordinates[axis] = remaining % destType.getDimSize(axis);
+      remaining /= destType.getDimSize(axis);
+    }
+    for (int64_t block = 0; block < blocks; ++block) {
+      coordinates.back() = block * 64;
+      llvm::SmallVector<int64_t> sourceCoordinates;
+      for (auto expression : destinationToSource.getResults())
+        sourceCoordinates.push_back(
+            coordinates[mlir::cast<mlir::AffineDimExpr>(expression)
+                            .getPosition()]);
+      auto src = sourceOffsets->getByteOffset(sourceCoordinates);
+      auto dst = destOffsets->getByteOffset(coordinates);
+      if (!src || !dst)
+        return mlir::failure();
+      int64_t valid = std::min(int64_t(64), channels - block * 64);
+      int64_t unit = block < info->cxBlocks ? 64 : info->tailC;
+      const int64_t sourceOffset = *src / info->elementBytes;
+      const int64_t destOffset = *dst / info->elementBytes;
+      if (sourceOffset + valid > sourceOffsets->getInfo().physicalElements ||
+          destOffset + repetitions * unit > info->physicalElements)
+        return mlir::failure();
+      llvm::SmallVector<int64_t> localShape(destType.getShape());
+      for (int64_t axis = 0; axis < suffixBegin; ++axis)
+        localShape[axis] = 1;
+      localShape.back() = valid;
+      llvm::SmallVector<int64_t> destStrides(destType.getRank(), 0);
+      destStrides.back() = info->elementBytes;
+      int64_t stride = unit * info->elementBytes;
+      for (int64_t axis = destType.getRank() - 1; axis-- > suffixBegin;) {
+        destStrides[axis] = stride;
+        stride *= destType.getDimSize(axis);
+      }
+      llvm::SmallVector<int64_t> sourceShape;
+      for (auto expression : destinationToSource.getResults())
+        sourceShape.push_back(
+            localShape[mlir::cast<mlir::AffineDimExpr>(expression)
+                           .getPosition()]);
+      llvm::SmallVector<int64_t> sourceStrides(sourceType.getRank(), 0);
+      sourceStrides.back() = info->elementBytes;
+      if (!hasPhysicalRectangleStrides(*sourceOffsets, *sourcePieces,
+                                       sourceCoordinates, sourceShape,
+                                       sourceStrides) ||
+          !hasPhysicalRectangleStrides(*destOffsets, *destPieces, coordinates,
+                                       localShape, destStrides))
+        return mlir::failure();
+      coveredElements += repetitions * valid;
+      slices.push_back(
+          {sourceOffset, valid, destOffset, repetitions * unit, unit, 0});
+    }
+  }
+  llvm::sort(slices, [](const auto &lhs, const auto &rhs) {
+    return lhs.destOffset < rhs.destOffset;
+  });
+  llvm::SmallVector<UnitVectorBroadcastSlice> merged;
+  for (const auto &slice : slices) {
+    if (!merged.empty()) {
+      auto &previous = merged.back();
+      if (previous.destOffset + previous.destElements > slice.destOffset)
+        return mlir::failure();
+      if (previous.unitElements == 64 && slice.unitElements == 64 &&
+          previous.sourceElements % 64 == 0 && slice.sourceElements == 64 &&
+          previous.destOffset + previous.destElements == slice.destOffset &&
+          previous.sourceOffset + previous.sourceElements ==
+              slice.sourceOffset) {
+        previous.groupElements = repetitions * 64;
+        previous.destElements += slice.destElements;
+        previous.sourceElements += slice.sourceElements;
+        continue;
+      }
+    }
+    merged.push_back(slice);
+  }
+
+  // The rectangles enumerate every prefix once, partition the channel axis,
+  // and cover the complete broadcast suffix. Physical spans are disjoint.
+  if (coveredElements != destType.getNumElements())
+    return mlir::failure();
+  return merged;
+}
+
 namespace {
 
 static mlir::LogicalResult

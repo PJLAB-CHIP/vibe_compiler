@@ -112,6 +112,10 @@ def Wafer_MoveReshapeOp : Wafer_MoveOp<"tile.reshape_copy"> {
 
 def Wafer_MoveTransposeOp : Wafer_MoveOp<"tile.transpose"> {
   let summary = "tile-local explicit transpose movement";
+  let description = [{
+    Copies the logical permutation between independently encoded SPM buffers.
+    Source and result preserve dtype; their physical layouts may differ.
+  }];
   let arguments = (ins
     Arg<Wafer_AnySPMMemRef, "", [MemRead]>:$source,
     DenseI64ArrayAttr:$permutation

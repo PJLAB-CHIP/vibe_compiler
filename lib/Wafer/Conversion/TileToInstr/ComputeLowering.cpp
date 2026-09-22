@@ -5,6 +5,7 @@
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/Tx81InstructionLimits.h"
 
+#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -396,12 +397,94 @@ getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
                                      loweredPredicateFill, constant, selected};
 }
 
+// The memory-space cast only changes the SPM encoding label. The following
+// reinterpret_cast explicitly establishes a physical interval; no logical
+// elementwise consumer observes the intermediate encoding cast.
+static mlir::Value createPhysicalInterval(mlir::PatternRewriter &rewriter,
+                                          mlir::Location loc,
+                                          mlir::Value source, int64_t offset,
+                                          int64_t count) {
+  auto type = mlir::cast<mlir::MemRefType>(source.getType());
+  auto memory = MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                                MemLayout::Tensor);
+  if (type.getMemorySpace() != memory) {
+    auto tensor = mlir::MemRefType::get(type.getShape(), type.getElementType(),
+                                        type.getLayout(), memory);
+    source =
+        rewriter.create<mlir::memref::MemorySpaceCastOp>(loc, tensor, source);
+  }
+  auto interval = mlir::MemRefType::get(
+      {count}, type.getElementType(),
+      mlir::StridedLayoutAttr::get(rewriter.getContext(), offset, {1}), memory);
+  return rewriter.create<mlir::memref::ReinterpretCastOp>(
+      loc, interval, source, offset, llvm::ArrayRef<int64_t>{count},
+      llvm::ArrayRef<int64_t>{1});
+}
+
+static mlir::LogicalResult
+emitUnitVectorSlices(mlir::Operation *owner, InstrElementwiseKindAttr kind,
+                     mlir::ValueRange inputs, mlir::Value dest,
+                     llvm::ArrayRef<analysis::UnitVectorBroadcastSlice> slices,
+                     mlir::PatternRewriter &rewriter,
+                     TileRegionToInstrBufferRecorder *recorder) {
+  auto loc = owner->getLoc();
+  auto type = mlir::cast<mlir::MemRefType>(dest.getType());
+  auto memory = MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                                MemLayout::Tensor);
+  auto record = [&](mlir::Operation *operation) {
+    if (recorder)
+      recorder->recordLoweredOperation(owner, operation);
+  };
+  for (const auto &slice : slices) {
+    mlir::Value lhs = createPhysicalInterval(
+        rewriter, loc, inputs[0], slice.destOffset, slice.destElements);
+    mlir::Value rhs = createPhysicalInterval(
+        rewriter, loc, inputs[1], slice.sourceOffset, slice.sourceElements);
+    mlir::Value output = createPhysicalInterval(
+        rewriter, loc, dest, slice.destOffset, slice.destElements);
+    if (slice.sourceElements < slice.unitElements) {
+      auto unitType =
+          mlir::MemRefType::get({slice.unitElements}, type.getElementType(),
+                                mlir::MemRefLayoutAttrInterface{}, memory);
+      auto unit = createDestAlloc(loc, unitType, rewriter, owner, recorder);
+      if (mlir::failed(unit))
+        return mlir::failure();
+      auto zero = rewriter.create<mlir::arith::ConstantOp>(
+          loc, rewriter.getFloatAttr(type.getElementType(), 0));
+      record(rewriter.create<InstrFillOp>(
+          loc, *unit, zero.getResult(),
+          FillDomainAttr::get(rewriter.getContext(),
+                              FillDomain::PhysicalFootprint),
+          getDefaultNCCWorkerAttr(rewriter)));
+      int64_t bytes = slice.sourceElements * type.getElementTypeBitWidth() / 8;
+      MovementDescriptorPair copy;
+      copy.source.byteCount = copy.dest.byteCount = bytes;
+      copy.source.innerBytes = copy.dest.innerBytes = bytes;
+      copy.source.strides = copy.dest.strides = {0, 0, 0};
+      copy.source.iterations = copy.dest.iterations = {1, 1, 1};
+      if (mlir::failed(emitGatherScatterDescriptorPlan(
+              rewriter, loc, owner, rhs, *unit, {copy}, recorder)))
+        return mlir::failure();
+      rhs = *unit;
+    }
+    auto compute = rewriter.create<InstrElementwiseOp>(
+        loc, kind, mlir::ValueRange{lhs, rhs}, output,
+        getDefaultNCCWorkerAttr(rewriter));
+    compute.setRhsUnitElements(slice.unitElements);
+    if (slice.groupElements)
+      compute.setRhsGroupElements(slice.groupElements);
+    record(compute);
+  }
+  return mlir::success();
+}
+
 // Division has one target implementation: hardware reciprocal then multiply.
 // Keep the reciprocal separate from dest so into forms may alias either input.
 static mlir::LogicalResult emitReciprocalProduct(
     mlir::Operation *owner, mlir::ValueRange inputs, mlir::Value dest,
     mlir::PatternRewriter &rewriter, TileRegionToInstrBufferRecorder *recorder,
-    int64_t rhsUnitElements = 0, int64_t rhsGroupElements = 0) {
+    int64_t rhsUnitElements = 0, int64_t rhsGroupElements = 0,
+    llvm::ArrayRef<analysis::UnitVectorBroadcastSlice> slices = {}) {
   auto type = mlir::cast<mlir::MemRefType>(inputs[1].getType());
   auto scratchType = mlir::MemRefType::get(
       type.getShape(), type.getElementType(), mlir::MemRefLayoutAttrInterface{},
@@ -416,6 +499,16 @@ static mlir::LogicalResult emitReciprocalProduct(
                                     InstrElementwiseKind::Recip),
       mlir::ValueRange{inputs[1]}, *reciprocal,
       getDefaultNCCWorkerAttr(rewriter));
+  if (!slices.empty()) {
+    if (recorder)
+      recorder->recordLoweredOperation(owner, recip);
+    return emitUnitVectorSlices(
+        owner,
+        InstrElementwiseKindAttr::get(rewriter.getContext(),
+                                      InstrElementwiseKind::Mul),
+        mlir::ValueRange{inputs[0], *reciprocal}, dest, slices, rewriter,
+        recorder);
+  }
   auto multiply = rewriter.create<InstrElementwiseOp>(
       owner->getLoc(),
       InstrElementwiseKindAttr::get(rewriter.getContext(),
@@ -566,6 +659,7 @@ public:
     std::optional<unsigned> unitInput;
     int64_t rhsUnitElements = 0;
     int64_t rhsGroupElements = 0;
+    llvm::SmallVector<analysis::UnitVectorBroadcastSlice> broadcastSlices;
     if (indexingMaps) {
       if (indexingMaps.size() != op.getInputs().size() + 1)
         return failPattern(
@@ -689,6 +783,27 @@ public:
             rhsGroupElements = *group;
             inputRewrites.push_back(std::move(inputRewrite));
             continue;
+          }
+          // Splitting must not turn a one-shot read into cross-interval reuse
+          // of a destination alias. The ordinary mapped path remains valid.
+          bool aliasesSafe = true;
+          if constexpr (std::is_same_v<OpTy, ComputeElementwiseIntoOp>) {
+            mlir::AliasAnalysis aliases(op->getParentOp());
+            mlir::Value other = op.getInputs()[1 - index];
+            aliasesSafe =
+                aliases.alias(input, output).isNo() &&
+                (other == output || aliases.alias(other, output).isNo());
+          }
+          if (aliasesSafe) {
+            auto slices =
+                analysis::TransferRealizability::proveUnitVectorBroadcastSlices(
+                    sourceType, resultType, inputMap);
+            if (mlir::succeeded(slices)) {
+              unitInput = index;
+              broadcastSlices = std::move(*slices);
+              inputRewrites.push_back(std::move(inputRewrite));
+              continue;
+            }
           }
         }
       }
@@ -899,9 +1014,17 @@ public:
     }
 
     if (op.getKind() == ComputeElementwiseKind::Div) {
-      if (mlir::failed(emitReciprocalProduct(op, inputs, *dest, rewriter,
-                                             bufferRecorder, rhsUnitElements,
-                                             rhsGroupElements)))
+      if (mlir::failed(emitReciprocalProduct(
+              op, inputs, *dest, rewriter, bufferRecorder, rhsUnitElements,
+              rhsGroupElements, broadcastSlices)))
+        return mlir::failure();
+      retireSource(op, *dest, rewriter);
+      return mlir::success();
+    }
+    if (!broadcastSlices.empty()) {
+      if (mlir::failed(emitUnitVectorSlices(op, instrKind, inputs, *dest,
+                                            broadcastSlices, rewriter,
+                                            bufferRecorder)))
         return mlir::failure();
       retireSource(op, *dest, rewriter);
       return mlir::success();

@@ -1520,6 +1520,106 @@ TEST(PhysicalAccessRelationTest, GroupedBroadcastUsesActualBlockedTraversal) {
 }
 
 TEST(PhysicalAccessRelationTest,
+     SplitBroadcastCoversPhysicalTailsAndBatchGaps) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+  auto ncx = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                    wafer::MemLayout::NCx);
+  auto cx = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                   wafer::MemLayout::Cx);
+  auto tensor = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::Tensor);
+  auto b = mlir::getAffineDimExpr(0, &context);
+  auto q = mlir::getAffineDimExpr(3, &context);
+  auto map = mlir::AffineMap::get(4, 0, {b, q}, &context);
+  for (mlir::Type dtype : {mlir::Type(mlir::Float16Type::get(&context)),
+                           mlir::Type(mlir::BFloat16Type::get(&context)),
+                           mlir::Type(mlir::Float32Type::get(&context))})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (int64_t channels : {256, 257, 263, 289, 319})
+        for (auto sourceMemory : {tensor, ncx})
+          for (auto destMemory : {ncx, cx}) {
+            SCOPED_TRACE(::testing::Message()
+                         << dtype.getIntOrFloatBitWidth() << '/' << extent
+                         << '/' << channels << '/'
+                         << unsigned(sourceMemory.getLayout()) << '/'
+                         << unsigned(destMemory.getLayout()));
+            auto source = mlir::MemRefType::get(
+                {2, channels}, dtype, mlir::MemRefLayoutAttrInterface{},
+                sourceMemory);
+            auto dest = mlir::MemRefType::get({2, 1, extent, channels}, dtype,
+                                              mlir::MemRefLayoutAttrInterface{},
+                                              destMemory);
+            auto slices = TransferRealizability::proveUnitVectorBroadcastSlices(
+                source, dest, map);
+            ASSERT_TRUE(mlir::succeeded(slices));
+            auto sourceOffsets =
+                wafer::WaferStaticPhysicalOffsetCalculator::create(source);
+            auto destOffsets =
+                wafer::WaferStaticPhysicalOffsetCalculator::create(dest);
+            ASSERT_TRUE(sourceOffsets && destOffsets);
+            int64_t elementBytes = dtype.getIntOrFloatBitWidth() / 8;
+            int64_t previousEnd = 0;
+            unsigned loops = 0, tails = 0;
+            for (const auto &slice : *slices) {
+              EXPECT_GE(slice.destOffset, previousEnd);
+              previousEnd = slice.destOffset + slice.destElements;
+              EXPECT_LE(previousEnd, destOffsets->getInfo().physicalElements);
+              if (slice.groupElements) {
+                ++loops;
+                EXPECT_EQ(slice.unitElements, 64);
+                EXPECT_EQ(slice.destElements * 64,
+                          slice.sourceElements * slice.groupElements);
+              }
+              if (slice.sourceElements < slice.unitElements) {
+                ++tails;
+                EXPECT_EQ(slice.sourceElements, channels % 64);
+                EXPECT_LE(slice.unitElements, 64);
+              }
+            }
+            if (destMemory == ncx)
+              EXPECT_GT(loops, 0u);
+            else
+              EXPECT_EQ(loops, 0u);
+            EXPECT_EQ(tails, channels % 64 ? 2u : 0u);
+            // Enumerate the logical output as an independent address oracle;
+            // production proof is symbolic and never enumerates its elements.
+            for (int64_t batch = 0; batch < 2; ++batch)
+              for (int64_t channel = 0; channel < channels; ++channel) {
+                int64_t expected =
+                    *sourceOffsets->getByteOffset({batch, channel}) /
+                    elementBytes;
+                for (int64_t row = 0; row < extent; ++row) {
+                  int64_t offset =
+                      *destOffsets->getByteOffset({batch, 0, row, channel}) /
+                      elementBytes;
+                  unsigned matches = 0;
+                  for (const auto &slice : *slices) {
+                    if (offset < slice.destOffset ||
+                        offset >= slice.destOffset + slice.destElements)
+                      continue;
+                    ++matches;
+                    int64_t local = offset - slice.destOffset;
+                    int64_t actual =
+                        slice.sourceOffset + local % slice.unitElements;
+                    if (slice.groupElements)
+                      actual += local / slice.groupElements * 64;
+                    ASSERT_EQ(actual, expected);
+                  }
+                  ASSERT_EQ(matches, 1u);
+                }
+              }
+            auto reverse =
+                mlir::AffineMap::get(4, 0, {b, channels - 1 - q}, &context);
+            EXPECT_TRUE(mlir::failed(
+                TransferRealizability::proveUnitVectorBroadcastSlices(
+                    source, dest, reverse)));
+          }
+}
+
+TEST(PhysicalAccessRelationTest,
      ProvesBlockedReshapeEquivalenceWithoutElementEnumeration) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);

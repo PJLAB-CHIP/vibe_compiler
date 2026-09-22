@@ -10,6 +10,17 @@
 
 namespace wafer::analysis {
 
+/// One proven, contiguous physical broadcast interval, consumed immediately
+/// when materializing actual views. Counts and offsets are in typed elements.
+struct UnitVectorBroadcastSlice {
+  int64_t sourceOffset = 0;
+  int64_t sourceElements = 0;
+  int64_t destOffset = 0;
+  int64_t destElements = 0;
+  int64_t unitElements = 0;
+  int64_t groupElements = 0;
+};
+
 /// Exact, invocation-local proofs over the current source/destination types,
 /// logical relation, and physical encoding interfaces. The proof is consumed
 /// immediately by a rewrite; no route report, descriptor cache, or accepted
@@ -56,6 +67,14 @@ public:
   proveGroupedUnitVectorBroadcast(mlir::MemRefType sourceType,
                                   mlir::MemRefType destType,
                                   const IndexRelation &destinationToSource);
+
+  /// Split a blocked traversal into exact complete groups and bounded tails.
+  /// A short source slice is packed into one defined physical unit by the
+  /// consumer. Never infer storage legality from these transformation choices.
+  static mlir::FailureOr<llvm::SmallVector<UnitVectorBroadcastSlice>>
+  proveUnitVectorBroadcastSlices(mlir::MemRefType sourceType,
+                                 mlir::MemRefType destType,
+                                 mlir::AffineMap destinationToSource);
 
   static mlir::LogicalResult proveMetadataView(mlir::MemRefType sourceType,
                                                mlir::MemRefType destType,

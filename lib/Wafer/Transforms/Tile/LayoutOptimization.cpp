@@ -1564,9 +1564,12 @@ public:
                                mlir::AffineMap map,
                                const analysis::IndexRelation &sourceRelation) {
     return lookup(groupedUnitBroadcasts, {source, dest, map}, [&] {
-      return mlir::succeeded(
-          analysis::TransferRealizability::proveGroupedUnitVectorBroadcast(
-              source, dest, sourceRelation));
+      return mlir::succeeded(analysis::TransferRealizability::
+                                 proveGroupedUnitVectorBroadcast(
+                                     source, dest, sourceRelation)) ||
+             mlir::succeeded(
+                 analysis::TransferRealizability::
+                     proveUnitVectorBroadcastSlices(source, dest, map));
     });
   }
 

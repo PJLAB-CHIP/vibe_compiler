@@ -143,6 +143,70 @@ std::string print(mlir::Operation *operation) {
 }
 
 TEST(ExecutionStructureMaterializationTest,
+     TransposeFusesPrivateLayoutConsumer) {
+  for (llvm::StringRef dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (bool observer : {false, true}) {
+        auto context = createContext();
+        auto source =
+            llvm::formatv("memref<2x128x{0}x{1}, #wafer.memory<spm, cx>>",
+                          extent, dtype)
+                .str();
+        auto intermediate =
+            llvm::formatv("memref<2x{0}x128x{1}, #wafer.memory<spm, cx>>",
+                          extent, dtype)
+                .str();
+        auto output =
+            llvm::formatv("memref<2x{0}x128x{1}, #wafer.memory<spm, tensor>>",
+                          extent, dtype)
+                .str();
+        auto ddr =
+            llvm::formatv("memref<2x{0}x128x{1}, #wafer.memory<ddr, tensor>>",
+                          extent, dtype)
+                .str();
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main(%out: " << ddr << ") {\n"
+            << "wafer.tile.region(%out : " << ddr
+            << ") -> () {\n^bb0(%ddr: " << ddr << "):\n"
+            << "%source = memref.alloc() : " << source << "\n"
+            << "%transpose = wafer.tile.transpose %source {permutation = "
+               "array<i64: 0, 2, 1>} : "
+            << source << " -> " << intermediate << "\n"
+            << "%layout = wafer.tile.materialize_layout %transpose : "
+            << intermediate << " -> " << output << "\n";
+        if (observer)
+          out << "wafer.tile.store %transpose, %ddr : " << intermediate
+              << " -> " << ddr << "\n";
+        out << "wafer.tile.store %layout, %ddr : " << output << " -> " << ddr
+            << "\nwafer.tile.yield\n}\nreturn\n}}\n";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        auto prepared = prepareTileExecutionStructure(*module, {});
+        ASSERT_TRUE(prepared.succeeded());
+        auto result = materializeExecutionStructure(
+            std::move(module), std::move(*prepared.prepared));
+        ASSERT_TRUE(result.succeeded()) << result.failure->detail;
+        unsigned layouts = 0, transposes = 0;
+        result.materialized->module->walk(
+            [&](LayoutMaterializeOp) { ++layouts; });
+        result.materialized->module->walk([&](MoveTransposeOp op) {
+          ++transposes;
+          EXPECT_EQ(getWaferMemoryAttr(
+                        mlir::cast<mlir::MemRefType>(op.getResult().getType()))
+                        .getLayout(),
+                    observer ? MemLayout::Cx : MemLayout::Tensor);
+          EXPECT_EQ(op.getPermutation(), llvm::ArrayRef<int64_t>({0, 2, 1}));
+        });
+        EXPECT_EQ(transposes, 1u);
+        EXPECT_EQ(layouts, observer ? 1u : 0u);
+        ASSERT_TRUE(
+            mlir::succeeded(mlir::verify(*result.materialized->module)));
+      }
+}
+
+TEST(ExecutionStructureMaterializationTest,
      CurrentOperationBindingsProduceExactSCFPhases) {
   for (uint64_t extent : {uint64_t{1024}, uint64_t{1025}, uint64_t{1031}}) {
     SCOPED_TRACE(extent);

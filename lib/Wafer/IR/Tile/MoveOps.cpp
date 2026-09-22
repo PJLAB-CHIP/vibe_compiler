@@ -190,10 +190,10 @@ mlir::LogicalResult MoveTransposeOp::verify() {
       mlir::failed(getSPMBufferTensor(getOperation(), getResult().getType(),
                                       "transpose result", resultTensor)))
     return mlir::failure();
-  if (mlir::failed(verifySameElementLayoutAndSpace(
-          getOperation(), getSource().getType(), sourceTensor,
-          getResult().getType(), resultTensor, "transpose")))
-    return mlir::failure();
+  // A logical permutation and a physical encoding conversion compose into
+  // one explicit movement. Both endpoints were already checked to be SPM.
+  if (sourceTensor.getElementType() != resultTensor.getElementType())
+    return emitOpError("transpose element types must match");
 
   llvm::ArrayRef<int64_t> permutation = getPermutationAttr().asArrayRef();
   if (resultTensor.getRank() != sourceTensor.getRank())

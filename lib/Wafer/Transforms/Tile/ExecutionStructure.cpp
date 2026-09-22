@@ -576,6 +576,27 @@ static bool isPrivateCopyIntermediate(
   return true;
 }
 
+static void fuseTransposeLayoutMovements(
+    mlir::ModuleOp module, mlir::IRRewriter &rewriter,
+    const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
+  llvm::SmallVector<LayoutMaterializeOp> layouts;
+  module.walk([&](LayoutMaterializeOp layout) { layouts.push_back(layout); });
+  for (auto layout : layouts) {
+    auto transpose = layout.getSource().getDefiningOp<MoveTransposeOp>();
+    if (!transpose || !transpose.getResult().hasOneUse() ||
+        transpose->getBlock() != layout->getBlock() ||
+        pipelineOperations.contains(transpose) ||
+        pipelineOperations.contains(layout))
+      continue;
+    rewriter.setInsertionPoint(transpose);
+    auto fused = rewriter.create<MoveTransposeOp>(
+        transpose.getLoc(), layout.getResult().getType(), transpose.getSource(),
+        transpose.getPermutationAttr());
+    rewriter.replaceOp(layout, fused.getResult());
+    rewriter.eraseOp(transpose);
+  }
+}
+
 static void eliminateGemmWritebacks(
     mlir::ModuleOp module, mlir::IRRewriter &rewriter,
     const llvm::DenseSet<mlir::Operation *> &pipelineOperations) {
@@ -1162,6 +1183,7 @@ materializeExecutionStructure(mlir::OwningOpRef<mlir::ModuleOp> module,
     for (const MaterializedExecutionOperation &operation : pipeline.operations)
       pipelineOperations.insert(operation.operation);
   preservePrivateScalarBroadcasts(*module, rewriter, pipelineOperations);
+  fuseTransposeLayoutMovements(*module, rewriter, pipelineOperations);
   eliminateGemmWritebacks(*module, rewriter, pipelineOperations);
   eliminatePrivatePointwisePublications(*module, rewriter, pipelineOperations);
   eliminateElementwiseWritebacks(*module, rewriter, pipelineOperations);

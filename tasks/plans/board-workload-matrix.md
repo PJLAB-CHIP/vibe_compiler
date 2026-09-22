@@ -84,13 +84,17 @@ profile另列Primary及各引擎/指令热点，不混成一个数。当前恢�
 
 ##### 已有改动的收尾与接续
 
-本轮排期核对了工作区diff、既有提交与测试日志。下面列出接续时可沿用的证据和缺口；
-只更新文档，没有追加源码、构建或实卡结果。已实现、主机通过及实卡通过分别记录，不能用“未闭合”统称为未实现。
+2026-09-22接续已完成尾块与融合收尾，后续顺序以progress顶部为准。
+本轮主机四个unit suite、59项lit、canonical全量增量/no-op通过；当前2048新包普通实卡三次
+4.424/4.401/4.368ms，真实1031尾块1.335ms，均通过数值、guard与正常退出。
+独立profile完整53968事件，TDMA约1.407ms、CT约1.090ms，不按单site作精确归因。
+矩形证明加速后最终16 Tile Instr/LLVM逐字节不变，完整证据见
+[尾块与融合记录](../../docs/data/board-performance/attention-tail-output-fusion-20260922.json)。
 
 | 已有改动 | 已取得的实现与验证证据 | 收尾动作 |
 | --- | --- | --- |
-| VuVLoop主块/尾组 | 未提交的`proveUnitVectorBroadcastSlices`及TileToInstr区间物化；`SplitBroadcastCoversPhysicalTailsAndBatchGaps`、`SplitBroadcastExecutesTailsAndBatchGaps`和broadcast-tail lit通过 | 按10/14号补齐未覆盖分支与受影响回归，完成canonical增量/no-op及产品集成验证；整除的2048目标不代签尾组覆盖 |
-| 输出恢复搬运融合 | 未提交的`fuseTransposeLayoutMovements`；`TransposeFusesPrivateLayoutConsumer`、`PermutedPhysicalMovementsCopyExactSourceBytes`通过；融合版本fresh no-card退出0，明确没有设备执行 | 复审与tail共享的改动，补齐当前版本检查后上板验证数值、guard、正常退出和实际搬运/总耗时，再提交 |
+| VuVLoop主块/尾组 | 本轮主机、actual SPM/TargetLLVM及1031真实尾组实卡通过 | 已完成；沿用矩形分段证明和短尾物化 |
+| 输出恢复搬运融合 | 本轮主机、fresh no-card、普通实卡及profile通过，静态GS每Tile 15→14 | 已完成；最终小颗粒输出置换仍在，接方向取舍 |
 | 累加器方向 | 整链转置已有实现及实卡数值证据；此前输出小颗粒GS造成的回退已有记录 | 接输出融合后的实际指令、搬运成本及必要实测，按05/10号完成采用方向的取舍，不把转置实现重新列为待开发 |
 | causal全可见前缀 | `AttentionVisibility.cpp`已有`splitFullyVisiblePrefix`草稿和05号合同补充；尚无该草稿的构建、回归或产品证据 | 方向取舍后补齐原迭代网格、空/单/多步、边界与state接续验证，沿普通串行产品路径完成验收及提交；不依赖先实现通用流水 |
 | 行状态复制 | 等字节序copy、初始化读取转交均已提交并通过实卡；发布复制已有通用实现，但目标残余不一定符合其条件 | 保留已完成结果；职责分拆后只复查残余的实际alias/use/effect，说明可消除项或必须保留的原因，再让流水消费相同优化结果 |
