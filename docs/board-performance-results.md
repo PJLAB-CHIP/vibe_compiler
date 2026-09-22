@@ -19,6 +19,62 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-22：全矩阵数值回归与4096 GEMM性能复核
+
+本轮75项既定实卡配置覆盖79个step配置，每步三次，共237次普通运行，全部通过原完整输出比较、
+独立guard及厂商正常清理，执行窗口无timeout/fatal。两步decode继续使用本轮第一步实际KV回读。
+六项probability-rounding和四项sliding-window主机配置也完成原完整TargetModel比较及no-card。
+[完整矩阵](data/board-performance/board-regression-20260922.json)逐项保存三次计时、数值、source/package与工具身份。
+五项核心保护的重新构包与首轮实卡包逐byte相同；修复后的七项使用后一批compiler重新构包和实卡。
+这是按实际影响与各批次身份登记的资格，不声称75项都用最后一次compiler重新执行，也不代表性能门槛全部满足。
+
+本轮修复两处生产回归及一处测试调用合同：Q2的Tile-local不可变binding由各entry独立解析，
+外部端口仍要求全卡一致；逐元素目标转交后，新mapped operand scratch不再继承目标subview的offset/parent stride，
+所有分支仍先证明physical traversal；包含ExpLp的既有model测试显式选择17号managed-reference及原后端预算。
+后者不改变设备指令、dtype或容差，formal仍拒绝不支持的指令。
+31项TileToInstr lit、Transforms/Driver完整单测、runner单测、canonical完整增量和Ninja no-op通过。
+
+用户要求重点核对4096³ GEMM。输入均为`[1,4096,4096]`、seed=20260803、search 8/42，
+历史与本轮input raw SHA及完整数值门槛一致。下表均为普通stream-event三次中位数；历史只读记录，未执行历史package。
+
+| dtype | 9月19日无guard记录 | 本轮带guard | 本轮同包关闭guard | 无guard相对历史 |
+| --- | ---: | ---: | ---: | ---: |
+| FP16 | 6.824 ms | 7.414 ms | 7.065 ms（7.232/6.996/7.065） | +3.53% |
+| BF16 | 6.853 ms | 7.271 ms | 7.042 ms（7.042/7.034/7.084） | +2.76% |
+
+guard初始化和检查在计时区间之外，不能称为计时内检查耗时；它同时改变输入、输出和状态区的DDR偏移及分配总大小。
+随后在同一profile包上作开关对照，完整Trace均为28,322/28,322 events，Primary为7.397/7.071ms：
+
+| 每Tile engine活动最大值 | guard开启 | guard关闭 |
+| --- | ---: | ---: |
+| CT | 0.066459 ms | 0.066465 ms |
+| NE | 1.186520 ms | 1.186518 ms |
+| RDMA（Tile 0） | 2.680996 ms | 2.452191 ms |
+| WDMA | 0.080856 ms | 0.069986 ms |
+| TDMA | 1.210355 ms | 1.210401 ms |
+
+这把guard相关的主要活动增量定位到DDR读取一侧，尚未证明具体DDR bank映射或冲突机制。
+PMU是另一轮Trace的活动量，不能与Primary相加或用0.229ms精确分摊普通耗时差。
+每次profile的原始证据另存快照，避免下一次采集替换package中的current记录。
+
+再从本轮source生成只关闭固定参数特化的诊断包，16份Instr和target LLVM与生产包逐byte相同，
+CRT源码、SDK、分块、SPM和同步不变。完成fresh no-card后，关闭guard、无profile，交替执行三组普通对照：
+
+| 版本 | 三次时间 | 中位数 |
+| --- | --- | ---: |
+| 当前生产实现 | 7.154/7.023/7.024 ms | 7.024 ms |
+| 仅关闭固定参数特化 | 7.251/7.034/7.117 ms | 7.117 ms |
+
+六次完整比较及正常生命周期通过，输出文件逐byte相同；关闭特化未改善GEMM性能。
+实验改动已撤回，正式compiler两个二进制SHA恢复一致，canonical完整增量及随后Ninja no-op通过，无生产开关残留。
+静态对照也确认M256/K512/N512计算分块和循环界不变，没有新增同步；独立storage消除改变了SPM地址，
+静态指令减少不能单独证明总时间改善。
+
+现有证据解释了测量条件差异，并排除了固定参数特化在本次对照中造成回退；
+**相对历史仍有约2.5%～3.5%的性能差距，根因未锁定，性能保护未闭合。**
+历史与本轮boot不同，没有证据将剩余差距归为频率、cache、板卡状态或随机波动；也不能称已恢复历史性能。
+全部普通样本、profile快照摘要和单变量包身份见[GEMM复核证据](data/board-performance/gemm4096-regression-20260922.json)。
+
 ## 2026-09-22：固定指令参数准备
 
 BF16 `[1,28,2048,128]`，本轮普通无采集、无设备插桩的三次实卡为

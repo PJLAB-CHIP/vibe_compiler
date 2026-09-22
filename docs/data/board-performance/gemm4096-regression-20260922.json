@@ -1,0 +1,1897 @@
+{
+  "scope": "4096 cubed GEMM performance investigation; no historical package execution",
+  "history_identity": {
+    "compiler_sha256": "467c96e6314535db22b4901398684183357aeea8850d85ea4010716b012da0df",
+    "runner_sha256": "65006e766992dafc96b010f3774a77800ee538e8b7b52865234886ce498dcbf9",
+    "boot_id": "44927d74-2a8a-4fcd-9c51-3fdc5191f092",
+    "seed": 20260803,
+    "runtime_api": 1400,
+    "sdk": "5.7.0.0524.01",
+    "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+    "standard": {
+      "width": 8,
+      "trials": 42
+    },
+    "timing": "ordinary tx-stream-events; three current standard samples per case; fresh actual continuation"
+  },
+  "comparison": [
+    {
+      "dtype": "bfloat16",
+      "historical_ms": [
+        6.876,
+        6.853,
+        6.784
+      ],
+      "historical_median_ms": 6.853,
+      "historical_guards": false,
+      "current_guarded_ms": [
+        7.271,
+        7.26,
+        7.353
+      ],
+      "current_guarded_median_ms": 7.271,
+      "current_unguarded_ms": [
+        7.042,
+        7.034,
+        7.084
+      ],
+      "current_unguarded_median_ms": 7.042,
+      "identical_inputs_and_thresholds": true,
+      "unguarded_audits": [
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+          "comparison_passed": true,
+          "memory_guard_bytes": null,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+            "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 1.0,
+              "cosine_similarity": 0.9999999873937028,
+              "relative_l2_error": 0.00015884460990067264,
+              "elementwise_mismatches": 1310,
+              "mean_abs_error": 0.00024054590936373188
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=7042000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+          "comparison_passed": true,
+          "memory_guard_bytes": null,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+            "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 1.0,
+              "cosine_similarity": 0.9999999873937028,
+              "relative_l2_error": 0.00015884460990067264,
+              "elementwise_mismatches": 1310,
+              "mean_abs_error": 0.00024054590936373188
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=7034000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+          "comparison_passed": true,
+          "memory_guard_bytes": null,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+            "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 1.0,
+              "cosine_similarity": 0.9999999873937028,
+              "relative_l2_error": 0.00015884460990067264,
+              "elementwise_mismatches": 1310,
+              "mean_abs_error": 0.00024054590936373188
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=7084000"
+          ]
+        }
+      ],
+      "current_package": {
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "manifest.json": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+        "modules/module_00000.so": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305"
+      }
+    },
+    {
+      "dtype": "float16",
+      "historical_ms": [
+        6.824,
+        6.805,
+        6.87
+      ],
+      "historical_median_ms": 6.824,
+      "historical_guards": false,
+      "current_guarded_ms": [
+        7.546,
+        7.414,
+        7.374
+      ],
+      "current_guarded_median_ms": 7.414,
+      "current_unguarded_ms": [
+        7.232,
+        6.996,
+        7.065
+      ],
+      "current_unguarded_median_ms": 7.065,
+      "identical_inputs_and_thresholds": true,
+      "unguarded_audits": [
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+          "comparison_passed": true,
+          "memory_guard_bytes": null,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+            "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 16777216,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980989868,
+              "relative_l2_error": 6.18928546096879e-05,
+              "elementwise_mismatches": 29626,
+              "mean_abs_error": 0.00030439076586930014
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=7232000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+          "comparison_passed": true,
+          "memory_guard_bytes": null,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+            "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 16777216,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980989868,
+              "relative_l2_error": 6.18928546096879e-05,
+              "elementwise_mismatches": 29626,
+              "mean_abs_error": 0.00030439076586930014
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6996000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k4096-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+          "comparison_passed": true,
+          "memory_guard_bytes": null,
+          "comparison": {
+            "rtol": 0.001,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.f16.raw": "e5be5c2e2bedac495dc686de4244c9e11021087fa99262213c5036e9cf9aff67",
+            "card_00_user_input_1.f16.raw": "fa425bf9de1d88d13efdfb748c0132b13dc6618c2fc1c51615c8f4e0aeb6a469"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.float16",
+              "elements": 16777216,
+              "max_abs_error": 0.25,
+              "cosine_similarity": 0.9999999980989868,
+              "relative_l2_error": 6.18928546096879e-05,
+              "elementwise_mismatches": 29626,
+              "mean_abs_error": 0.00030439076586930014
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=7065000"
+          ]
+        }
+      ],
+      "current_package": {
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "manifest.json": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+        "modules/module_00000.so": "403da6e98f10079cbc3860e86ba4d65cf00b6ac8952f8f0051a99b3dd96a77b8"
+      }
+    }
+  ],
+  "profile_guard_comparison": {
+    "no-guard": {
+      "primary": {
+        "completion_observation_fraction": 0.0013153634205578157,
+        "completion_observation_resolution_ns": 9786,
+        "device_elapsed_ns": 7071000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 7439769,
+        "host_non_submit_envelope_ns": 7276661,
+        "host_submit_ns": 163108,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "engine_active": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 66251.25,
+            "engine": "CT",
+            "maximum_per_tile_ns": 66465,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 66235,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1060020
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 1186497.4375,
+            "engine": "NE",
+            "maximum_per_tile_ns": 1186518,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 1186496,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 18983959
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 931872.5,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 2452191,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 764876,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 14909960
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 62833.3125,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 69986,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 58596,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1005333
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 1206951.0625,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 1210401,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 1206720,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 19311217
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 3454405.5625,
+          "maximum_per_tile_total_work_ns": 4978326,
+          "minimum_per_tile_total_work_ns": 3294315,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 55270489
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      },
+      "capture": {
+        "captured_events": 28322,
+        "full_execution": true,
+        "scope": "full-execution",
+        "total_events": 28322
+      },
+      "validity": {
+        "clock_alignment": false,
+        "cost_accounting": true,
+        "environment": true,
+        "full_trace": true,
+        "host_completion_resolution": true,
+        "measurement_basis": true,
+        "output_equivalence": true,
+        "pmu": true,
+        "pmu_restore": true,
+        "profile_instrumentation": true,
+        "program_contract": true,
+        "semantic_correctness": null,
+        "trace": true
+      },
+      "numeric": {
+        "comparison_passed": true,
+        "comparison": {
+          "rtol": 0.016,
+          "atol": 1e-05,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "outputs": [
+          {
+            "cosine_similarity": 0.9999999873937028,
+            "relative_l2_error": 0.00015884460990067264,
+            "elementwise_mismatches": 1310,
+            "mean_abs_error": 0.00024054590936373188,
+            "max_abs_error": 1.0
+          }
+        ],
+        "profile_run": "/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-prepared/package/package.profile/runs/run-2e79a5-1ee7b5",
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=7071000"
+        ],
+        "guards": false,
+        "profile_snapshot": "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-bf16-profile-no-guard/profile-evidence"
+      }
+    },
+    "with-guard": {
+      "primary": {
+        "completion_observation_fraction": 0.002097461381175284,
+        "completion_observation_resolution_ns": 16584,
+        "device_elapsed_ns": 7397000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 7906701,
+        "host_non_submit_envelope_ns": 7716845,
+        "host_submit_ns": 189856,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "engine_active": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 66250.6875,
+            "engine": "CT",
+            "maximum_per_tile_ns": 66459,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 66232,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1060011
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 1186497.8125,
+            "engine": "NE",
+            "maximum_per_tile_ns": 1186520,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 1186496,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 18983965
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 974378.5625,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 2680996,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 817380,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 15590057
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 66063.375,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 80856,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 54168,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 1057014
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 1206948.0,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 1210355,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 1206720,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 19311168
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 3500138.4375,
+          "maximum_per_tile_total_work_ns": 5196770,
+          "minimum_per_tile_total_work_ns": 3335342,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 56002215
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      },
+      "capture": {
+        "captured_events": 28322,
+        "full_execution": true,
+        "scope": "full-execution",
+        "total_events": 28322
+      },
+      "validity": {
+        "clock_alignment": false,
+        "cost_accounting": true,
+        "environment": true,
+        "full_trace": true,
+        "host_completion_resolution": true,
+        "measurement_basis": true,
+        "output_equivalence": true,
+        "pmu": true,
+        "pmu_restore": true,
+        "profile_instrumentation": true,
+        "program_contract": true,
+        "semantic_correctness": null,
+        "trace": true
+      },
+      "numeric": {
+        "profile_snapshot": "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-bf16-profile-with-guard/profile-evidence",
+        "comparison_passed": true,
+        "comparison": {
+          "rtol": 0.016,
+          "atol": 1e-05,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "outputs": [
+          {
+            "cosine_similarity": 0.9999999873937028,
+            "relative_l2_error": 0.00015884460990067264,
+            "elementwise_mismatches": 1310,
+            "mean_abs_error": 0.00024054590936373188,
+            "max_abs_error": 1.0
+          }
+        ],
+        "profile_run": "/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-prepared/package/package.profile/runs/run-6b2b74-38deaf",
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=7397000"
+        ],
+        "guards": true
+      }
+    }
+  },
+  "fixed_argument_control": {
+    "preparation": {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--input-program-dir",
+        "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-no-fixed-prepared/source-program",
+        "--output-dir",
+        "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-no-fixed-prepared/package",
+        "--num-partitions=1",
+        "--optimization-policy=search",
+        "--search-mode=standard",
+        "--search-width=8",
+        "--search-trials=42",
+        "--compile-timing",
+        "--dump-compiler-ir",
+        "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-no-fixed-prepared/compiler-ir"
+      ],
+      "compiler_sha256": "5237069d4b34d231f55d36a1d2a1a064df4d112184093252efbc3675ede7fc75",
+      "modified_source_sha256": "488710566e2be182111df38eb96a22277bc167af67738be072ca3fd6b0d64d00",
+      "production_source_sha256": "a816db74e01fdc8e1319df1298c764e2b0b82b72df8c883e62f04b664e4e3833"
+    },
+    "ready": {
+      "same_instruction_and_target_llvm": true,
+      "no_card_passed": true,
+      "package_sha256": {
+        "manifest.json": "cadf35fd7eee9caa3b461e0a01f78fc78ab5a6838ba34cfeebcc9b1b7b16d8cd",
+        "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "modules/module_00000.so": "ed4b5420a331380fe056b45443425dfd9d8408bf6b4d3b2fd7e052168dfa3d39"
+      }
+    },
+    "samples": [
+      {
+        "variant": "production",
+        "pair": 1,
+        "device_ms": 7.154,
+        "comparison_passed": true,
+        "output_sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71",
+        "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+        "elf_sha256": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305",
+        "diagnostics": {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/board-regression-package-20260922/gemm-current-ordinary-prepared/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-fixed-comparison/01-production/output.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 810234,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      },
+      {
+        "variant": "without_fixed_arguments",
+        "pair": 1,
+        "device_ms": 7.251,
+        "comparison_passed": true,
+        "output_sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71",
+        "manifest_sha256": "cadf35fd7eee9caa3b461e0a01f78fc78ab5a6838ba34cfeebcc9b1b7b16d8cd",
+        "elf_sha256": "ed4b5420a331380fe056b45443425dfd9d8408bf6b4d3b2fd7e052168dfa3d39",
+        "diagnostics": {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-no-fixed-prepared/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-fixed-comparison/01-without_fixed_arguments/output.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 810329,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      },
+      {
+        "variant": "production",
+        "pair": 2,
+        "device_ms": 7.023,
+        "comparison_passed": true,
+        "output_sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71",
+        "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+        "elf_sha256": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305",
+        "diagnostics": {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/board-regression-package-20260922/gemm-current-ordinary-prepared/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-fixed-comparison/02-production/output.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 810385,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      },
+      {
+        "variant": "without_fixed_arguments",
+        "pair": 2,
+        "device_ms": 7.034,
+        "comparison_passed": true,
+        "output_sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71",
+        "manifest_sha256": "cadf35fd7eee9caa3b461e0a01f78fc78ab5a6838ba34cfeebcc9b1b7b16d8cd",
+        "elf_sha256": "ed4b5420a331380fe056b45443425dfd9d8408bf6b4d3b2fd7e052168dfa3d39",
+        "diagnostics": {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-no-fixed-prepared/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-fixed-comparison/02-without_fixed_arguments/output.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 810443,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      },
+      {
+        "variant": "production",
+        "pair": 3,
+        "device_ms": 7.024,
+        "comparison_passed": true,
+        "output_sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71",
+        "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+        "elf_sha256": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305",
+        "diagnostics": {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/board-regression-package-20260922/gemm-current-ordinary-prepared/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-fixed-comparison/03-production/output.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 810507,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      },
+      {
+        "variant": "without_fixed_arguments",
+        "pair": 3,
+        "device_ms": 7.117,
+        "comparison_passed": true,
+        "output_sha256": "cfa5312be1383623d380df6f6708c018f62c7f5934482cc71889a423ebd48d71",
+        "manifest_sha256": "cadf35fd7eee9caa3b461e0a01f78fc78ab5a6838ba34cfeebcc9b1b7b16d8cd",
+        "elf_sha256": "ed4b5420a331380fe056b45443425dfd9d8408bf6b4d3b2fd7e052168dfa3d39",
+        "diagnostics": {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-no-fixed-prepared/package",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/board-regression-scratch-20260922/gemm-fixed-comparison/03-without_fixed_arguments/output.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/board-regression-package-20260922/gemm-profile-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 810581,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      }
+    ],
+    "production_restored": true,
+    "restored_compiler_sha256": {
+      "build/bin/wafer-compile": "264e89d871d031ae029abe1924d53689991159be6b1de714cfa25b8e14ffb0fd",
+      "build/bin/wafer-compile-test": "30ab18a02dc18ddded6ced63c50208662233db66c16c6322f0db988949c91aee"
+    },
+    "full_build_log": "/data/vibe_compiler-validation/board-regression-scratch-20260922/restore-build.log",
+    "noop_log": "/data/vibe_compiler-validation/board-regression-scratch-20260922/restore-noop.log"
+  },
+  "static_comparison": {
+    "historical": [
+      {
+        "tile": 0,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_ncc_join": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_direct_dte_wait": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %12, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %12, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 1,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 2,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 3,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 4,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 5,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 6,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 7,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 8,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 9,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 10,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 11,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 12,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 3,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 2,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2686976, i64 1638400, i64 2162688, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1114112, i64 589824, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 13,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 14,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 15,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_gather_scatter": 7,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1638400, i64 2424832, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      }
+    ],
+    "current": [
+      {
+        "tile": 0,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 4,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_ncc_join": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_direct_dte_wait": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %12, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %12, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 1,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 2,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 3,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 4,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 5,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 6,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 7,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 8,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 9,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 10,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 11,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 12,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 3,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 2,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 2162688, i64 1114112, i64 1638400, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1114112, i64 589824, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 13,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 14,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      },
+      {
+        "tile": 15,
+        "static_calls": {
+          "wafer_tx81_direct_dte_begin_after_prepare": 1,
+          "wafer_tx81_memset": 1,
+          "wafer_tx81_rdma": 2,
+          "wafer_tx81_gather_scatter": 6,
+          "wafer_tx81_ncc_join": 4,
+          "wafer_tx81_direct_dte_recv_prepare": 2,
+          "wafer_tx81_direct_dte_wait": 4,
+          "wafer_tx81_gemm": 2,
+          "wafer_tx81_direct_dte_send_prepare": 2,
+          "wafer_tx81_direct_dte_send_issue": 2,
+          "wafer_tx81_wdma": 1,
+          "wafer_tx81_direct_dte_finish": 1
+        },
+        "gemm_calls": [
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 5, i32 5, i32 0)",
+          "call void @wafer_tx81_gemm(i64 1638400, i64 1114112, i64 1900544, i64 %13, i32 256, i32 512, i32 512, i32 1, i32 3, i32 3, i32 5, i32 0)"
+        ],
+        "loop_bounds": [
+          "4096",
+          "3584"
+        ],
+        "loop_steps": [
+          "512",
+          "512"
+        ]
+      }
+    ],
+    "conclusion": "M256 K512 N512 GEMM calls and loop bounds unchanged. Static calls only; do not infer runtime counts from this inventory. SPM addresses change after independent allocation elimination."
+  },
+  "conclusions": [
+    "Guard initialization/readback is outside the timed kernel interval; the policy changes DDR allocation offsets and sizes.",
+    "Paired profile preserves CT/NE/TDMA activity while Tile 0 RDMA is about 0.229 ms longer with guards. It does not establish the DDR bank mapping or permit additive Primary attribution.",
+    "Disabling fixed arguments leaves Instr and target LLVM byte-identical and does not improve measured ordinary GEMM: production 7.024 ms median vs control 7.117 ms; all six output files byte-identical.",
+    "The remaining roughly 2.5–3.5% gap against historical ordinary medians is unresolved. Historical and current boots differ; no cross-boot hardware/cache/frequency cause has been established.",
+    "No production optimization change is retained from these diagnostic experiments."
+  ]
+}

@@ -25,7 +25,18 @@
 本轮发现并修复Q2 decode打包回归：Package writer错误要求各Tile的不可变binding集合完全相同；
 已按15号只对外部端口检查全卡一致性，保留原typed不可变数据join。双dtype fresh构包/no-card及各三次实卡通过，
 直接主机门禁、canonical/no-op通过，见[证据](../docs/data/board-performance/package-entry-local-bindings-20260922.json)。
-其余既定case仍在接续，不以这两项通过代签整个矩阵。
+后续发现既有混合卷积、完整LM及sigmoid的回归：目标转交到subview后，mapped operand临时分配错误继承view布局。
+共同根因已复现并按10号修复，七项原配置的fresh构包/no-card及各三次实卡通过；同时补齐16号model调用者的显式numeric policy及预算。
+历史通过记录与引入路径见板测计划，不将这些回归解释为新增case或硬件限制。
+本轮75项既定配置、79个step配置、237次普通实卡均通过原完整数值、guard及正常清理，未出现timeout/fatal；
+六项probability-rounding及四项sliding-window主机model完整输出通过。
+各批次保留实际source/package/compiler身份，不声称全部由最后一次编译器重跑；
+[验收证据](../docs/data/board-performance/board-regression-20260922.json)记录完整矩阵。
+用户随后要求优先检查4096³ GEMM：历史6.824/6.853ms与本轮带guard的7.414/7.271ms不能直接按同条件比较；
+关闭guard的FP16/BF16中位数仍为7.065/7.042ms；随后BF16交替对照生产版7.024ms、关闭固定参数特化7.117ms，
+该项CPU优化未造成可观察回退。guard对应主要活动增量在RDMA，剩余历史性能差距未锁定，继续作为本项优先问题；
+详情见[复核记录](../docs/board-performance-results.md#2026-09-22全矩阵数值回归与4096-gemm性能复核)。当前只完成数值矩阵，
+不签性能保护通过，不改变后置的完整LM S1024/1025、deep搜索和三轮调优边界。
 
 最新接续：用户要求优先完成已有部分实现，再开展尚未实现的优化，继续归board-testing。
 尾块、输出融合、累加器方向、causal分段、职责分拆、残余状态发布、通用流水及循环累加器布局均已完成各自验收。
@@ -277,7 +288,7 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；当前版本受影响的其它配置及全矩阵保护仍未闭合。旧68项计数属于此前检查点，不能直接当作当前待测数量，须按已验收版本与实际影响核对。早期fill独立状态与其它历史卡死不由本轮代签。完整LM S1024/1025、搜索性能回归/deep收益及三轮模型调优仍未完成；原最好可复现目标不重置。 | `tasks/plans/board-workload-matrix.md` |
+| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；本轮75项既定配置的完整数值、guard及237次普通实卡已闭合，十项主机model通过；各批次身份见本轮矩阵。4096³ GEMM同条件历史性能差距仍未闭合，不能签性能保护通过。旧68项计数属于此前检查点，不作当前待测数量。早期fill独立状态与其它历史卡死不由本轮代签。完整LM S1024/1025、搜索性能回归/deep收益及三轮模型调优仍未完成；原最好可复现目标不重置。 | `tasks/plans/board-workload-matrix.md` |
 | 3 | `production-host-readiness` | `queued` | Q53 / 16 | 已有通用通信/target transport实现、board-testing修复后的current compiler、frontend、interface、package/runtime | 按现版本重签完整source/IR/package/oracle/runner/no-card/SystemC矩阵；历史主纵向与smoke不代签current模型资格。不再等待独立通信开发项；真实板测由board-testing拥有，本项不运行设备 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-production-choice` | `done` | 06、13、16 | layout-resolved、structured-to-Tile complete AllGather current IR；feasibility已闭合的aggregate-buffer和range-aware completion | search将Ring与recursive doubling分别物化为candidate-owned actual IR并经MiniMalloc/target/cost比较；baseline和native路径不变；4/16-Tile、1024/1025/1031、eligible/ineligible/capacity与actual-cost selection矩阵fresh通过；不新增collective op、shadow plan或板端结论 | `tasks/plans/physical-dataflow-synthesis.md` |

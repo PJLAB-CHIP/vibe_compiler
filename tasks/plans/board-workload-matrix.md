@@ -13,15 +13,47 @@
 | ViT 1024/1025、GQA、原普通/长cache两步decode与Q2 decode | 原完整module及全部端口；decode第二步消费本轮实际KV，旧prefix exact |
 | causal主/尾块、原4K两组heads、非causal/additive/padding/有效KV/全屏蔽/滑窗 | 原注册shape/dtype；整除/非整除、多Tile及边界语义，完整结果 |
 | 标准算子、通信、组合计算及其余原保护模型 | 原dtype/shape；F32仅保留既有division的F32格式覆盖，不扩大为F32模型 |
-| 六项probability-rounding主机配置 | 1024/1025/1031×FP16/BF16；当前source→TargetModel全输出及guard no-card，不计为实卡 |
+| 六项probability-rounding及四项sliding-window主机配置 | 前者1024/1025/1031×FP16/BF16，后者双dtype×none/search；当前source→TargetModel全输出及guard no-card，不计为实卡 |
 
-按现有注册清单核对共75项待重签实卡配置，另有六项主机配置；不是沿用历史“剩余68项”的计数。
+按现有注册清单核对共75项实卡配置，另有十项主机配置；不是沿用历史“剩余68项”的计数。
 已有当前BF16 2048主块三次及1031尾块单次证据保留，不代签其它配置。原标准矩阵中的S16完整LM保留；
 独立S1024/1025完整LM、deep搜索、LocalConv搜索性能整改及新增attention优化仍后置。
 主机准备最多五个product并行：每个编译器内部最多16 Tile并行，并有独立XLA/PyTorch线程池，避免80核宿主过量竞争；
 实际设备始终单进程、逐case，逐次系统占用检查，默认关闭寄存器采集和profile。首个timeout/fatal立即停批，无自动重试/reset。
 保存source/package/tool摘要、每次完整比较和普通计时；已有健康耗时仅作历史记录对照，不运行历史包。
 host准备、实卡正确性和性能结论分别登记，编译失败、数值失败、设备异常及未解决的性能退化不算通过。
+
+本轮回归按原已通过case处理，不能归为新增覆盖或硬件限制：
+
+- Q2双dtype的Tile-local不可变binding打包限制已修复并重新实卡通过，证据见15号及progress。
+- 混合卷积双dtype、S16完整LM双dtype、sigmoid 1024/1025/1031共七项在主机编译时报非法allocation。
+  9月19日同case已有通过记录；后续`eb890940`的逐元素目标转交可以把destination换成动态subview，
+  下游mapped operand scratch错误继承该view的offset/parent stride。按10号修复独立storage类型，
+  包含uniform fill分支的physical traversal proof；原目标转交优化保留。独立复现、直接Instr回归与
+  “转交→Instr→SPM”测试已通过，原七项fresh source/no-card及各三次完整实卡已闭合。
+- 六项probability-rounding以及四项既有sliding-window主机model注册漏选Explp已支持的managed-reference。
+  按16/17号显式传递policy及原后端预算，十项完整model输出与no-card通过；formal仍保持typed unsupported，
+  不修改算术、容差或用fallback代替验证。
+
+这两处新修复均先完成直接主机门禁，再使用新构建补测；此前本轮健康结果保留各自准确的编译身份。
+75项、79个step配置、237次普通实卡现已全部通过完整数值、guard与正常退出，无timeout/fatal；
+31项TileToInstr lit、Transforms/Driver完整单测、runner单测及canonical/no-op通过。
+五项核心保护的第二轮完整package与首轮实卡包逐byte相同；七项scratch修复使用其后的新compiler单独补齐。
+全部身份与输出见[本轮矩阵](../../docs/data/board-performance/board-regression-20260922.json)。
+数值资格已闭合，性能单独判断；不由此签整个board-testing完成。
+
+用户要求优先核对4096³ GEMM性能。先比较相同seed、dtype、8/42搜索和普通stream-event口径，
+将历史无guard记录与本轮guard测量分开；当前同一包的guard开关对照保留原全量数值比较。
+profile只定位各Tile/engine活动与等待，不把活动量相加或Trace周期直接折成Primary时间。
+本轮已使用source生成关闭固定参数准备的单变量诊断包：输入仍为actual aggregate LLVM，
+临时跳过14号常量调用特化，保持Instr、布局、SPM、同步、CRT源码和SDK；输出只用于本次普通计时对照。
+不运行历史package，不留下生产开关或替代实现；三次交替对照须完整数值、正常生命周期及系统占用检查。
+实验结束恢复同一canonical build并确认生产工具身份；结果只能证明或排除这一因素，不能代签整个性能根因。
+实际16份Instr及target LLVM一致，三组交替普通对照的生产/关闭特化中位数为7.024/7.117ms，输出逐byte一致。
+实验代码已撤回，正式compiler SHA恢复且canonical/no-op通过；保留原固定参数准备。
+guard开关的独立profile将主要活动变化定位到Tile 0 RDMA，尚未证明具体DDR机制。
+相对历史仍约2.5%～3.5%的差距继续优先排查；不因已确认一部分原因就降低原性能保护要求。
+证据见[4096 GEMM复核](../../docs/board-performance-results.md#2026-09-22全矩阵数值回归与4096-gemm性能复核)。
 
 ## 当前执行约束（2026-09-20用户修正）
 
