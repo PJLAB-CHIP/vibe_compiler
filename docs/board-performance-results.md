@@ -16,6 +16,35 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-22：固定指令参数准备
+
+BF16 `[1,28,2048,128]`，本轮普通无采集、无设备插桩的三次实卡为
+**3.669 / 3.638 / 3.649ms**，中位数3.649ms。对照同boot、runtime、输入seed和容差下已有的
+3.852/3.845/3.878ms记录，中位数下降约 **5.3%**；未重跑历史package。
+7,340,032输出均无超阈值差异，cosine 0.9999981331、relative L2 0.00193234，
+三次10752字节guard、16 Tile完成、执行窗口日志和正常清理均健康。
+1031尾块单次 **1.212ms**，65,984输出无超阈值差异，19456字节guard和退出健康；不以单次样本宣称稳定尾块收益。
+
+根因是Instr中的固定参数跨过kernel/CRT的独立编译边界后，在CRT中仍作为动态实参处理。
+现在在actual aggregate LLVM完成profile插桩后，按registry中的NCC调用及actual i32常量形成共享构造函数；
+同一原callee和固定参数组只生成一次，所有i64及动态i32继续逐次传递。
+生成函数与唯一CRT source由原厂GCC一起编译，内联原CRT函数，让固定模式、格式换算和临时结构准备被常量传播简化。
+CT、NE、RDMA、WDMA、TDMA共用同一规则，不依赖attention或shape名称；DTE和同步入口保持原调用。
+没有改SDK packet编码、提交、发射后清零、同步、数值语义或函数表生命周期。
+
+主块最终ELF中有41个共享构造函数，整个ELF从130168字节降为94376字节；尾块有74个，ELF为83632字节。
+离线同参数GS构造函数的栈帧从256字节降为208字节，固定参数传递及保存寄存器减少；
+这不是CPU cycle或逐指令加速率测量。16份主块Instr及target LLVM与既有循环布局版本逐字节相同，
+变化发生在后续实际链接module与CRT编译。最终源码重新fresh构包的主块ELF与实测文件逐字节相同。
+
+主机8项component/public-link门禁、26项Tools及最终3项固定参数ABI oracle通过；
+配置CRT路径和编译失败的原子发布检查通过。普通/Count/Trace的fresh profile构包及no-card通过，
+包含1488个target call site；本轮未运行profile实卡。canonical完整增量构建及随后Ninja no-op通过。
+
+实现与验证边界见14号“固定指令参数准备”；样本、artifact身份、主机门禁和编译wall/RSS见
+[固定参数证据](data/board-performance/attention-fixed-arguments-20260922.json)。
+本轮确认的是CPU准备优化的端到端收益，没有据此推算CPU占比，也未声称全部packet构造开销已消除。
+
 ## 2026-09-22：C908缓存配置与计数器实测
 
 独立CPU探针经原device-link、ExecutablePackage和wafer-run执行一次16 Tile launch，

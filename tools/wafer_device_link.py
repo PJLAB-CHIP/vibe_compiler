@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import json
 import os
 import pathlib
 import re
@@ -223,7 +224,7 @@ def build_commands(
 
     compile_crt_cmd = [
         tx8_gcc,
-        str(wafer_crt_source),
+        str(args.crt_specialization_source or wafer_crt_source),
         "-O2",
         "-c",
         "-fPIC",
@@ -233,6 +234,7 @@ def build_commands(
         "-DCONFIG_NO_PLATFORM_HOOK_H",
         "-DUSING_RISCV",
         f"-I{wafer_crt_include_dir}",
+        f"-I{wafer_crt_source.parent}",
         f"-I{wafer_include_dir}",
         f"-I{tx8_include_dir}",
         f"-mcpu={args.crt_mcpu}",
@@ -242,6 +244,13 @@ def build_commands(
     ]
     if args.profile_capture in {"count", "trace"}:
         compile_crt_cmd.insert(-2, "-DWAFER_TX81_PROFILE_TRACE_CRT=1")
+    if args.crt_specialization_source:
+        # This is a C preprocessor string literal passed as one argv entry;
+        # no shell interprets the configured source path.
+        compile_crt_cmd.insert(
+            -2, "-DWAFER_CRT_SOURCE="
+            + json.dumps(str(wafer_crt_source.resolve()), ensure_ascii=False)
+        )
 
     normalize_crt_cmds: list[list[str]] = []
     if not args.keep_riscv_attributes:
@@ -337,6 +346,10 @@ def validate_execute_inputs(
     wafer_crt_source = pathlib.Path(args.wafer_crt_source)
     if not wafer_crt_source.is_file():
         fail(f"Wafer CRT source does not exist: {wafer_crt_source}")
+    if args.crt_specialization_source and not pathlib.Path(
+        args.crt_specialization_source
+    ).is_file():
+        fail(f"Specialized CRT source does not exist: {args.crt_specialization_source}")
     wafer_crt_include_dir = pathlib.Path(args.wafer_crt_include_dir)
     if not wafer_crt_include_dir.is_dir():
         fail(f"Wafer CRT include dir does not exist: {wafer_crt_include_dir}")
@@ -615,6 +628,7 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--crt-object-output")
+    parser.add_argument("--crt-specialization-source", help=argparse.SUPPRESS)
     parser.add_argument(
         "--keep-riscv-attributes",
         action="store_true",

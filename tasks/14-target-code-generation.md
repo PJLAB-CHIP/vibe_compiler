@@ -554,6 +554,37 @@ kernel对象、厂商CRT对象及最终ELF，直接消费者为原ExecutablePack
 候选评估完成须记录主机门禁、fresh no-card、普通实卡和取舍；采用新实现另须canonical/no-op及最终尾块资格。
 退化或未确认收益的候选不进入生产。本项不修改search CPU先验，不宣称已测得纯CPU时间或达到硬件极限。
 
+### 固定指令参数准备
+
+输入为已验证并完成可选profile插桩的actual aggregate LLVM module及唯一CRT source。
+当前职责是在device link前，将普通NCC指令调用的actual i32常量参数交给原厂GCC作局部常量特化；
+输出是同一staging事务中的改写LLVM及生成C source，直接消费者为原device-link的kernel/CRT编译和ELF验证。
+用户入口仍为wafer-compile及原package/profile入口，TargetCall逻辑ABI、SDK调用和runtime协议保持。
+
+方法比较：[LLVM IPSCCP/function specialization](https://llvm.org/docs/Passes.html#ipsccp-interprocedural-sparse-conditional-constant-propagation)
+和[GCC IPA常量传播](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html)均通过已知实参简化被调函数；
+当前kernel与CRT分开编译阻断此传播。只读descriptor能缩短参数列表，但其字段对单独编译CRT仍是运行时load，
+不自动消除dtype转换、模式分支和临时结构；本项先生成共享的固定参数构造函数，由原GCC优化现有CRT实现。
+不重试已退化的全CRT LLVM编译，不手写SDK packet字段，不创建跨调用可变packet缓存。
+
+通用规则：仅消费registry声明的普通NCC issue call及actual ConstantInt i32操作数；所有i64操作数和动态i32均保留为参数。
+按原callee、固定参数位置和值复用一个隐藏构造函数，不按shape名、attention名、Tile序号或地址特判。
+生成函数在同一translation unit调用唯一CRT实现并固定这些常量，GCC内联该调用；SDK builder/issuer仍负责原有工作。
+因此仅承诺常量参数准备与分支简化，不能宣称已经消除SDK清零。动态参数、所有worker及tail保持原值和调用顺序；
+同步、Direct DTE和地址映射入口不属于普通packet准备。本变换不改变Instr、SPM、dtype、运算次序或completion。
+生成C和LLVM引用在本次链接事务内共同拥有，失败随staging销毁；最终ELF只保留实际使用的内部构造函数。
+profile的site采集先于这一目标实现变换，普通与profile均执行同一固定参数准备规则。
+
+完成条件：actual IR前后verified，生成C原厂交叉编译，逐参数及packet语义验证，fresh主块/尾块no-card；
+普通BF16主块重复实卡比较，采用后尾块实卡闭合。记录调用参数数、构造函数数、实际汇编、代码体积、wall/RSS和数值/guard；
+无净收益则撤回实验实现，保存证据，不引入默认关闭的第二条实现。
+
+| 输入等价类 | 结构及拒绝覆盖 | exact输出和下游见证 |
+| --- | --- | --- |
+| registry中CT/NE/RDMA/WDMA/TDMA各指令族；有界ABI oracle使用1024/1025/1031参数组 | 固定/部分动态i32、动态和常量i64、0/1/2 worker、重复与不同常量组 | 非固定实参逐位不变、相同组共享、不跨组混用；生成C实际调用原callee |
+| 同步调用、无固定参数调用、注册签名错误 | 前两者不变；签名不符在修改前明确失败 | LLVM verifier、host捕获原callee与全部实参、device ELF及required-symbol闭合 |
+| 真实rank至少3的普通/Count/Trace产品、多Tile、多block与remainder | 同一转换，无新增issue或join；生成C编译失败不发布 | 真实source→package/no-card；BF16 2048及1031原reference、guard、正常退出和计时 |
+
 ## 独立目标对象编译
 
 输入为已经生成的target LLVM IR、现行CRT source和确定的device-link命令；输出仍为同一staging事务中的input object、CRT object及最终模块。

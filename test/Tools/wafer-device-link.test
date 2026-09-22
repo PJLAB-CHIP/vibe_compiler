@@ -1,4 +1,14 @@
 # RUN: %python %S/wafer_device_link_parallel_test.py %wafer_src_root/tools/wafer_device_link.py
+# RUN: %python -c 'from pathlib import Path; import shutil; root=Path("%t.crt source"); root.mkdir(exist_ok=True); shutil.copyfile("%wafer_src_root/runtime/crt/src/wafer_tx81_crt.c", root / "configured.c"); Path("%t.fixed.c").write_text("#include WAFER_CRT_SOURCE\n")'
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll --output %t.fixed.so \
+# RUN:   --wafer-crt-source "%t.crt source/configured.c" --crt-specialization-source %t.fixed.c
+# RUN: %python -c 'from pathlib import Path; Path("%t.fixed-failed.so").write_bytes(b"previous-output"); Path("%t.fixed-bad.c").write_text("#error deliberate_specialization_failure\n")'
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll --output %t.fixed-failed.so \
+# RUN:   --crt-specialization-source %t.fixed-bad.c 2>&1 | FileCheck %s --check-prefix=FIXED-FAILURE
+# RUN: %python -c 'from pathlib import Path; p=Path("%t.fixed-failed.so"); assert p.read_bytes()==b"previous-output"; assert not p.with_suffix(".o").exists(); assert not list(p.parent.glob(f".{p.name}.staging-*"))'
+# FIXED-FAILURE: deliberate_specialization_failure
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll \
 # RUN:   --output %t.kernel.so \

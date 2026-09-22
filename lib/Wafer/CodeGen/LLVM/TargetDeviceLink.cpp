@@ -47,6 +47,7 @@ llvm::Error writeTargetLLVMIR(const llvm::Module &module,
 llvm::Error runDeviceLink(const TargetToolchain &toolchain,
                           llvm::StringRef llvmIR, llvm::StringRef module,
                           llvm::StringRef object, llvm::StringRef crtObject,
+                          llvm::StringRef crtSpecialization,
                           const RuntimeLaunchContract &runtimeLaunchContract,
                           ProfileCaptureKind profileCapture) {
   std::string python = toolchain.getPythonExecutable().str();
@@ -60,6 +61,7 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
   std::string moduleStorage = module.str();
   std::string objectStorage = object.str();
   std::string crtObjectStorage = crtObject.str();
+  std::string crtSpecializationStorage = crtSpecialization.str();
   std::string loaderABI = "tx8-kcore-loader";
   const KernelRuntimeLaunchContract &kernel = runtimeLaunchContract.getKernel();
   if (kernel.form == KernelLaunchForm::Grid)
@@ -88,6 +90,8 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
       objectStorage,
       "--crt-object-output",
       crtObjectStorage,
+      "--crt-specialization-source",
+      crtSpecializationStorage,
       "--loader-abi",
       loaderABI};
   std::string captureStorage;

@@ -208,6 +208,12 @@ verifyTargetLLVMModule(const llvm::Module &module, CardId expectedCardId,
 
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
+/// Consumes fixed i32 arguments in actual ordinary NCC calls and returns the
+/// C implementation of their hidden specialized callees. Both outputs belong
+/// to the current device-link staging transaction; the original Tile modules
+/// and the canonical TargetCall ABI remain unchanged.
+llvm::Expected<std::string> specializeTargetCalls(llvm::Module &module);
+
 /// Imports the complete Tile domain into one context, scopes every
 /// supported definition by launch slot, links it, and creates ordered exports.
 llvm::Expected<OwnedTargetLLVMModule>
@@ -215,7 +221,7 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules);
 llvm::Error
 runDeviceLink(const TargetToolchain &toolchain, llvm::StringRef llvmIR,
               llvm::StringRef module, llvm::StringRef object,
-              llvm::StringRef crtObject,
+              llvm::StringRef crtObject, llvm::StringRef crtSpecialization,
               const RuntimeLaunchContract &runtimeLaunchContract,
               ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Expected<TargetModuleReadback>

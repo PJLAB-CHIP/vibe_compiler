@@ -3,6 +3,7 @@ add_mlir_library(WaferCodeGen
   ProgramElementTypeConversion.cpp
   LLVM/CompileDeviceExecutableLLVMModules.cpp
   LLVM/TargetABIPreparation.cpp
+  LLVM/TargetCallSpecialization.cpp
   LLVM/TargetDeviceLink.cpp
   LLVM/TargetInstrumentation.cpp
   LLVM/TargetKernelAggregate.cpp

@@ -1,0 +1,498 @@
+{
+  "date": "2026-09-22",
+  "scope": "通用NCC固定i32实参特化，原厂GCC优化唯一CRT构造代码；保留SDK编码/提交/清零",
+  "baseline_commit": "7395c355",
+  "source_parent_commit": "5b972acc",
+  "adopted": true,
+  "baseline_samples_ms": [
+    3.852,
+    3.845,
+    3.878
+  ],
+  "samples_ms": [
+    3.669,
+    3.638,
+    3.649
+  ],
+  "median_ms": 3.649,
+  "median_reduction_percent": 5.269989615784004,
+  "historical_packages_rerun": false,
+  "runtime_library_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "artifact_directory": "/data/vibe_compiler-validation/cpu-fixed-args-20260922",
+  "main_elf_bytes": 94376,
+  "main_elf_sha256": "1f87ea33ea764406caf9dd9bf1ffaf61db584f1731ecc39771c84e939763ac6a",
+  "baseline_elf_bytes": 130168,
+  "main_fixed_functions": 41,
+  "tail_elf_bytes": 83632,
+  "tail_fixed_functions": 74,
+  "final_fresh_package_elf_byte_identical_to_measured": true,
+  "upstream_ir_comparison": {
+    "instruction": {
+      "files": 16,
+      "all_identical_to_baseline": true
+    },
+    "target-llvm": {
+      "files": 16,
+      "all_identical_to_baseline": true
+    }
+  },
+  "measurements": [
+    {
+      "audit": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=3669000"
+        ]
+      },
+      "health": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/cpu-fixed-args-20260922/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 631659,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "measurement": {
+        "host_register_capture": false,
+        "device_profile": false,
+        "device_timing": true
+      }
+    },
+    {
+      "audit": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=3638000"
+        ]
+      },
+      "health": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/cpu-fixed-args-20260922/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 631747,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "measurement": {
+        "host_register_capture": false,
+        "device_profile": false,
+        "device_timing": true
+      }
+    },
+    {
+      "audit": {
+        "case": "attention-prefill-28-heads-2048",
+        "step": 1,
+        "policy": "search",
+        "search_mode": null,
+        "search_width": null,
+        "search_trials": null,
+        "manifest_sha256": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+        "comparison_passed": true,
+        "memory_guard_bytes": 10752,
+        "comparison": {
+          "rtol": 0.006,
+          "atol": 0.008,
+          "equal_nan": false,
+          "min_cosine": 0.9999,
+          "max_relative_l2": 0.01
+        },
+        "inputs": {
+          "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+          "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+          "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+        },
+        "outputs": [
+          {
+            "shape": [
+              1,
+              28,
+              2048,
+              128
+            ],
+            "dtype": "torch.bfloat16",
+            "elements": 7340032,
+            "max_abs_error": 0.015625,
+            "cosine_similarity": 0.9999981330706693,
+            "relative_l2_error": 0.0019323393761810942,
+            "elementwise_mismatches": 0,
+            "mean_abs_error": 3.965543557693617e-05
+          }
+        ],
+        "timing": [
+          "board_timing: kind=tx-stream-events device_elapsed_ns=3649000"
+        ]
+      },
+      "health": {
+        "command": [
+          "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+          "--package-dir",
+          "/data/vibe_compiler-validation/cpu-fixed-args-20260922/prepared/package",
+          "--memory-guards",
+          "--device-timing",
+          "--board",
+          "--device-id",
+          "0",
+          "--expected-runtime-version",
+          "1400",
+          "--expected-device-name",
+          "/dev/accel/dev-0",
+          "--expected-pci-bus-id",
+          "0000:3b:00.0",
+          "--expected-tile-count",
+          "16",
+          "--expected-runtime-library-sha256",
+          "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+          "--completion-timeout-ms",
+          "60000",
+          "--output",
+          "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_output_0.capture.bf16.raw",
+          "--resource",
+          "2=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_0.bf16.raw",
+          "--resource",
+          "1=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_1.bf16.raw",
+          "--resource",
+          "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/board/raw/card_00_user_input_2.bf16.raw"
+        ],
+        "host_register_capture": false,
+        "device": "/dev/accel/dev-0",
+        "pci_bus_id": "0000:3b:00.0",
+        "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+        "driver": "F64164C6460FEE30EBF66E2",
+        "problems": [],
+        "pid": 631799,
+        "returncode": 0,
+        "launched": true,
+        "alarms": [],
+        "passed": true
+      },
+      "measurement": {
+        "host_register_capture": false,
+        "device_profile": false,
+        "device_timing": true
+      }
+    }
+  ],
+  "tail_measurement": {
+    "audit": {
+      "case": "attention-prefill-tail-1031",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "3e171926ea4c00fff8bee4c6eb446b902c304c0b48822b34dfa86d241727e6d1",
+      "comparison_passed": true,
+      "memory_guard_bytes": 19456,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "a1ae96c6aa73ba2145d196792400bfb793601ec619e0e06b06a9e938e20e25db",
+        "card_00_user_input_1.bf16.raw": "da0bbaca66ec4c24804afd8a579730ed8dcb005b21c42d3059a7589d23581e90",
+        "card_00_user_input_2.bf16.raw": "50760732f684a00af54b840d9df76045fd5b95df47eefa5f049329f9373d42db"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            1,
+            1031,
+            64
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 65984,
+          "max_abs_error": 0.0078125,
+          "cosine_similarity": 0.9999979316708467,
+          "relative_l2_error": 0.002039950444697165,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 5.53878649938707e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=1212000"
+      ]
+    },
+    "health": {
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--package-dir",
+        "/data/vibe_compiler-validation/cpu-fixed-args-20260922/tail-prepared/package",
+        "--memory-guards",
+        "--device-timing",
+        "--board",
+        "--device-id",
+        "0",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--output",
+        "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/tail-board/raw/card_00_output_0.capture.bf16.raw",
+        "--resource",
+        "2=/data/vibe_compiler-validation/cpu-fixed-args-20260922/tail-board/raw/card_00_user_input_0.bf16.raw",
+        "--resource",
+        "1=/data/vibe_compiler-validation/cpu-fixed-args-20260922/tail-board/raw/card_00_user_input_1.bf16.raw",
+        "--resource",
+        "0=/data/vibe_compiler-validation/cpu-fixed-args-20260922/tail-board/raw/card_00_user_input_2.bf16.raw"
+      ],
+      "host_register_capture": false,
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "problems": [],
+      "pid": 635341,
+      "returncode": 0,
+      "launched": true,
+      "alarms": [],
+      "passed": true
+    },
+    "measurement": {
+      "host_register_capture": false,
+      "device_profile": false,
+      "device_timing": true
+    }
+  },
+  "preparation": {
+    "main": {
+      "wall_time": "2:21.60",
+      "max_rss_kib": 893188
+    },
+    "tail": {
+      "wall_time": "5:59.63",
+      "max_rss_kib": 15712312
+    },
+    "final": {
+      "wall_time": "2:30.40",
+      "max_rss_kib": 893040
+    },
+    "profile": {
+      "wall_time": "2:30.78",
+      "max_rss_kib": 893316
+    }
+  },
+  "limits": [
+    "总耗时收益不等于纯CPU cycle测量",
+    "tail只有一个样本，不宣称稳定尾块加速",
+    "固定参数准备未删除SDK清零或改变硬件指令流",
+    "没有改变上游TargetCall逻辑ABI；转换只作用于实际链接module"
+  ],
+  "artifact_sha256": {
+    "prepare-invocation.json": "c1d14e1ba75575a7b4e724a2450843d7937aaa6e7e74d5abe4d9601310eb57e8",
+    "final-prepare-invocation.json": "baafbd1ed2ba463b0b8297b3fd70070439ed47d68845107891ed34e3a0f34a93",
+    "tail-prepare-invocation.json": "15ffd03ed0d9b8897f223766426fc4698e7e80b3eb050c141898dab6f1f7d51e",
+    "prepare.log": "5d63580341dba49ab3ec91e14ff1f4b5a79971d5cb7fbfca91a63b11346d1d88",
+    "tail-prepare.log": "9364a28bfd7312fbd7a696a10285b96693f2f637f66dd233b690607f4ed07300",
+    "final-prepare.log": "13694eb71be2be5c3fe1d160f1942fc88da31412ed7002e49ce547d70be21544",
+    "board.log": "8ff949f238aab3d1e3c2438402b21a1ac1c55f75510ec6c0c8bd972b450072a7",
+    "tail-board.log": "ed2e3e4ab61aec36961b9ed45b4262b86ccfe74b2be7184bfa4c00c498c58dcd",
+    "module.asm": "07f16fe6a4d1a3c3e022f738203f56d3b8c207f2b07d5295a2214b4399350416",
+    "ctest.log": "0d7084f9ad1a79ef5f79f89d05ec2b4498512241090b6ebe3f52abde748b1ab7",
+    "lit-tools.log": "9ae27ca3352c88e527a12ad0c5483d220e6ecb1412825a0f44374d17bc39bd9d",
+    "abi-oracle-final.log": "cb5e19622f28e8ae55a490aef3acdc25eb8d630c4706b5a1490ae9dab33aec92",
+    "lit-link-final.log": "a244e3b498e5badb666c70dd01e491617d296663d397950e3df8ce98c41e3300",
+    "build-closure.log": "056793ceb4b4acb75ce4b31704fb5b2a8a9f4c8e58dd948a16d20c9ea0ce1126",
+    "build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+    "profile-prepare-invocation.json": "7d966ef6e29940a71782a27e63a198918955d107c673336b580150e927e5b6dd",
+    "profile-prepare.log": "4b4b451b46ad55e2d2c2ba0bb1aeeb3f36e471bb7f62c6fa3b744b76569cc2b5",
+    "profile-prepare-time.txt": "fef5c1fb3cf0d53df88f5f1d28a05bc9a025858befe728a4c3f9dd0eb460ae1a",
+    "profile-prepared/package/package/manifest.json": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+    "profile-prepared/package/package/modules/module_00000.so": "1f87ea33ea764406caf9dd9bf1ffaf61db584f1731ecc39771c84e939763ac6a",
+    "profile-prepared/package/package.profile/captures/count/manifest.json": "5c5a12d34048385ec7a46fcd686642cf69036d6a820d11510dd1a2ac9e235cac",
+    "profile-prepared/package/package.profile/captures/count/modules/module_00000.so": "0e565b64c6e0d3e1208213c74edae866cff262669606d417d80760c9b9919ac0",
+    "profile-prepared/package/package.profile/captures/trace/manifest.json": "00337b945305eb930334b772243b956c3884f5c9bfe1f36c8367f775b441491c",
+    "profile-prepared/package/package.profile/captures/trace/modules/module_00000.so": "0e565b64c6e0d3e1208213c74edae866cff262669606d417d80760c9b9919ac0"
+  },
+  "source_sha256": {
+    "lib/Wafer/CodeGen/LLVM/TargetCallSpecialization.cpp": "a816db74e01fdc8e1319df1298c764e2b0b82b72df8c883e62f04b664e4e3833",
+    "tools/wafer_device_link.py": "052c0ce118b1c3e9c5c9715a833d47423ecc1bac038b30274e93c1a8aeeac335"
+  },
+  "host_validation": {
+    "ctest": {
+      "passed": 8,
+      "failed": 0,
+      "wall_seconds": 930.0
+    },
+    "tools_lit": {
+      "passed": 26,
+      "failed": 0
+    },
+    "final_abi_oracle": {
+      "passed": 3,
+      "failed": 0
+    },
+    "final_device_link_lit": {
+      "passed": 1,
+      "failed": 0
+    },
+    "canonical_incremental_build": "passed",
+    "second_build": "ninja no work to do",
+    "source_and_ir_organization": "passed"
+  },
+  "profile_preparation": {
+    "fresh_no_card": "passed",
+    "captures": [
+      "count",
+      "trace"
+    ],
+    "target_call_sites": 1488,
+    "board_execution": false
+  }
+}

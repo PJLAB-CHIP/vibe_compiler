@@ -289,7 +289,7 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
   };
 
   auto linkAndReadback =
-      [&](const llvm::Module &source, llvm::StringRef entrySymbol,
+      [&](llvm::Module &source, llvm::StringRef entrySymbol,
           llvm::ArrayRef<TileEntryArgument> slots, LaunchSlotId launchSlotId,
           llvm::StringRef workStem, llvm::StringRef modulePath,
           llvm::ArrayRef<VerifiedTargetExport> exports,
@@ -301,6 +301,22 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
     llvm::sys::path::append(objectPath, workStem + ".o");
     llvm::SmallString<256> crtObjectPath(workDirectory);
     llvm::sys::path::append(crtObjectPath, workStem + ".wafer_crt.o");
+    llvm::SmallString<256> crtSourcePath(workDirectory);
+    llvm::sys::path::append(crtSourcePath, workStem + ".wafer_crt.c");
+    auto crtSource = detail::specializeTargetCalls(source);
+    if (!crtSource)
+      return crtSource.takeError();
+    std::error_code sourceError;
+    llvm::raw_fd_ostream crtOutput(crtSourcePath, sourceError,
+                                  llvm::sys::fs::OF_Text);
+    if (sourceError)
+      return llvm::createStringError(sourceError,
+                                     "failed to open specialized CRT source");
+    crtOutput << *crtSource;
+    crtOutput.close();
+    if (crtOutput.has_error())
+      return llvm::createStringError(llvm::errc::io_error,
+                                     "failed to write specialized CRT source");
     (void)entrySymbol;
     (void)slots;
     (void)launchSlotId;
@@ -309,6 +325,7 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
       return std::move(writeError);
     if (llvm::Error error = detail::runDeviceLink(
             toolchain, llvmIRPath, modulePath, objectPath, crtObjectPath,
+            crtSourcePath,
             runtimeLaunchContract, profileCapture))
       return std::move(error);
     llvm::Expected<detail::TargetModuleReadback> readback =

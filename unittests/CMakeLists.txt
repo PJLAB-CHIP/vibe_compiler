@@ -165,6 +165,7 @@ wafer_add_component_unit_test(WaferCodeGenUnitTests
   SOURCES
     CodeGen/LLVM/TargetABIPreparationTest.cpp
     CodeGen/LLVM/TargetCodeGenTest.cpp
+    CodeGen/LLVM/TargetCallSpecializationTest.cpp
     CodeGen/LLVM/TargetIdentityTest.cpp
   LINK_LIBS
     WaferCodeGen
