@@ -5,12 +5,15 @@
 #include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <numeric>
 #include <optional>
 #include <string>
 
@@ -32,9 +35,16 @@ protected:
   TileRegionToInstrBufferRecorder *bufferRecorder = nullptr;
 };
 
+struct MovementOffsetTerm {
+  mlir::Value value;
+  int64_t numerator = 0;
+  int64_t denominator = 1;
+};
+
 struct MovementEndpoint {
   mlir::Value base;
   analysis::IndexRelation viewToBase;
+  llvm::SmallVector<MovementOffsetTerm, 4> dynamicOffsets;
 
   mlir::MemRefType getType() const {
     return mlir::cast<mlir::MemRefType>(base.getType());
@@ -76,6 +86,139 @@ resolveStaticMovementEndpoint(mlir::Value value) {
   return MovementEndpoint{value, std::move(*relation.relation)};
 }
 
+// A blocked window uses the allocation's coordinate system, including its
+// global block stride. Separate proven dynamic translations from the static
+// relation; descriptors remain rooted in the actual allocation.
+mlir::FailureOr<MovementEndpoint>
+resolveBlockedMovementEndpoint(mlir::Value value) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type)
+    return mlir::failure();
+  auto relation = analysis::IndexRelation::identity(type.getShape());
+  struct LogicalTerm {
+    unsigned axis;
+    mlir::Value value;
+    int64_t factor;
+  };
+  llvm::SmallVector<LogicalTerm, 4> terms;
+  while (auto subview = value.getDefiningOp<mlir::memref::SubViewOp>()) {
+    auto sourceType = subview.getSourceType();
+    auto dropped = subview.getDroppedDims();
+    llvm::SmallVector<int64_t> shape, offsets, strides;
+    llvm::SmallVector<unsigned> sourceAxes;
+    unsigned resultAxis = 0;
+    for (unsigned axis = 0; axis < dropped.size(); ++axis) {
+      if (dropped.test(axis))
+        shape.push_back(1);
+      else {
+        sourceAxes.push_back(axis);
+        shape.push_back(subview.getType().getDimSize(resultAxis++));
+      }
+    }
+    for (mlir::OpFoldResult stride : subview.getMixedStrides()) {
+      auto constant = mlir::getConstantIntValue(stride);
+      if (!constant || *constant <= 0)
+        return mlir::failure();
+      strides.push_back(*constant);
+    }
+    for (LogicalTerm &term : terms) {
+      term.axis = sourceAxes[term.axis];
+      if (llvm::MulOverflow(term.factor, strides[term.axis], term.factor))
+        return mlir::failure();
+    }
+    for (auto [axis, offset] : llvm::enumerate(subview.getMixedOffsets())) {
+      if (auto constant = mlir::getConstantIntValue(offset))
+        offsets.push_back(*constant);
+      else {
+        offsets.push_back(0);
+        terms.push_back(
+            {static_cast<unsigned>(axis), mlir::cast<mlir::Value>(offset), 1});
+      }
+    }
+    auto expand = analysis::IndexRelation::staticReshape(
+        subview.getType().getShape(), shape);
+    auto slice = analysis::IndexRelation::staticSlice(
+        shape, sourceType.getShape(), offsets, strides);
+    if (!relation.isExact() || !expand.isExact() || !slice.isExact())
+      return mlir::failure();
+    auto step = expand.get()->compose(*slice.get());
+    if (!step.isExact())
+      return mlir::failure();
+    relation = relation.get()->compose(*step.get());
+    value = subview.getSource();
+  }
+  if (!relation.isExact())
+    return mlir::failure();
+  auto rootType = mlir::cast<mlir::MemRefType>(value.getType());
+  MovementEndpoint endpoint{value, std::move(*relation.relation), {}};
+  if (terms.empty())
+    return endpoint;
+  auto calculator = WaferStaticPhysicalOffsetCalculator::create(rootType);
+  if (!calculator)
+    return mlir::failure();
+  const auto &geometry = calculator->getInfo();
+  // Full blocks have one translation for every touched C block. A retained
+  // narrow C tail has a different row stride and needs a piecewise route.
+  if (geometry.tailC || geometry.bitPackedElement || geometry.cBlock <= 0)
+    return mlir::failure();
+  llvm::SmallVector<int64_t> origin(rootType.getRank(), 0);
+  auto base = calculator->getByteOffset(origin);
+  if (!base)
+    return mlir::failure();
+  for (const LogicalTerm &term : terms) {
+    const bool channel = term.axis + 1 == rootType.getRank();
+    int64_t quantum = channel ? geometry.cBlock : 1;
+    if (rootType.getDimSize(term.axis) <= quantum) {
+      auto range = memory_planning::detail::evaluateNonNegativeStaticIndexRange(
+          term.value);
+      if (!range.succeeded() || (!range.range.empty && range.range.max != 0))
+        return mlir::failure();
+      continue;
+    }
+    origin[term.axis] = quantum;
+    auto translated = calculator->getByteOffset(origin);
+    origin[term.axis] = 0;
+    if (!translated || *translated < *base)
+      return mlir::failure();
+    int64_t common = std::gcd(quantum, term.factor);
+    int64_t denominator = quantum / common;
+    if (denominator != 1) {
+      auto remainder = memory_planning::detail::getKnownIndexRemainder(
+          term.value, denominator);
+      if (!remainder || *remainder)
+        return mlir::failure();
+    }
+    int64_t numerator;
+    if (llvm::MulOverflow(*translated - *base, term.factor / common, numerator))
+      return mlir::failure();
+    endpoint.dynamicOffsets.push_back({term.value, numerator, denominator});
+  }
+  return endpoint;
+}
+
+mlir::Value materializeEndpointOffset(mlir::PatternRewriter &rewriter,
+                                      mlir::Location loc,
+                                      const MovementEndpoint &endpoint) {
+  mlir::Value result;
+  for (const MovementOffsetTerm &term : endpoint.dynamicOffsets) {
+    auto value = term.value;
+    if (term.denominator != 1) {
+      auto divisor =
+          rewriter.create<mlir::arith::ConstantIndexOp>(loc, term.denominator);
+      value = rewriter.create<mlir::arith::DivUIOp>(loc, value, divisor);
+    }
+    if (term.numerator != 1) {
+      auto stride =
+          rewriter.create<mlir::arith::ConstantIndexOp>(loc, term.numerator);
+      value = rewriter.create<mlir::arith::MulIOp>(loc, value, stride);
+    }
+    result = result ? rewriter.create<mlir::arith::AddIOp>(loc, result, value)
+                          .getResult()
+                    : value;
+  }
+  return result;
+}
+
 // Preserve an existing standard endpoint whose dynamic base address is carried
 // by its current SSA view. Static and blocked subviews use the common relation.
 mlir::FailureOr<MovementEndpoint> resolveMovementEndpoint(mlir::Value value) {
@@ -93,6 +236,9 @@ mlir::FailureOr<MovementEndpoint> resolveMovementEndpoint(mlir::Value value) {
       return mlir::failure();
     return MovementEndpoint{value, std::move(*identity.relation)};
   }
+  if (memory && (memory.getLayout() == MemLayout::Cx ||
+                 memory.getLayout() == MemLayout::NCx))
+    return resolveBlockedMovementEndpoint(value);
   return resolveStaticMovementEndpoint(value);
 }
 
@@ -235,6 +381,45 @@ static bool requiresPackedReadMaterialization(mlir::Value source) {
               analysis::TransferRealizability::provePackedByteRows(type)));
 }
 
+static bool hasBlockedDDRLayout(mlir::Value value) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  auto memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
+  return memory && memory.getSpace() == MemorySpace::DDR &&
+         (memory.getLayout() == MemLayout::Cx ||
+          memory.getLayout() == MemLayout::NCx);
+}
+
+static mlir::LogicalResult
+lowerBlockedDDRMovement(mlir::Operation *op, mlir::Value sourceValue,
+                        mlir::Value destValue, MovementEngine engine,
+                        mlir::PatternRewriter &rewriter,
+                        MovementDescriptorCache &cache) {
+  auto source = resolveMovementEndpoint(sourceValue);
+  auto dest = resolveMovementEndpoint(destValue);
+  if (mlir::failed(source) || mlir::failed(dest))
+    return failPattern(rewriter, op,
+                       "blocked DDR movement requires an exact current view "
+                       "and dynamic translation");
+  auto shape = mlir::cast<mlir::MemRefType>(destValue.getType()).getShape();
+  auto descriptors = cache.getOrCreate(
+      rewriter, op, source->getType(), dest->getType(), shape,
+      source->viewToBase, dest->viewToBase, engine, "blocked DDR movement");
+  if (mlir::failed(descriptors))
+    return mlir::failure();
+  auto srcOffset = materializeEndpointOffset(rewriter, op->getLoc(), *source);
+  auto dstOffset = materializeEndpointOffset(rewriter, op->getLoc(), *dest);
+  if (engine == MovementEngine::RDMA)
+    createMappedRDMADescriptors(rewriter, op->getLoc(), source->base,
+                                dest->base, **descriptors, srcOffset,
+                                dstOffset);
+  else
+    createMappedWDMADescriptors(rewriter, op->getLoc(), source->base,
+                                dest->base, **descriptors, srcOffset,
+                                dstOffset);
+  rewriter.eraseOp(op);
+  return mlir::success();
+}
+
 class TileLoadLowering : public mlir::OpRewritePattern<StorageLoadOp> {
 public:
   TileLoadLowering(mlir::MLIRContext *context,
@@ -247,6 +432,10 @@ public:
   matchAndRewrite(StorageLoadOp op,
                   mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
+    if (hasBlockedDDRLayout(op.getSource()))
+      return lowerBlockedDDRMovement(op, op.getSource(), op.getDest(),
+                                     MovementEngine::RDMA, rewriter,
+                                     *descriptorCache);
     auto sourceType = mlir::cast<mlir::MemRefType>(op.getSource().getType());
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     analysis::IndexRelationResult relation =
@@ -316,6 +505,10 @@ public:
   matchAndRewrite(StorageStoreOp op,
                   mlir::PatternRewriter &rewriter) const final {
     ScopedLoweringPatternTiming timing(op.getOperation());
+    if (hasBlockedDDRLayout(op.getDest()))
+      return lowerBlockedDDRMovement(op, op.getSource(), op.getDest(),
+                                     MovementEngine::WDMA, rewriter,
+                                     *descriptorCache);
     auto sourceType = mlir::cast<mlir::MemRefType>(op.getSource().getType());
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     analysis::IndexRelationResult relation =
@@ -360,8 +553,9 @@ public:
               "tile.store");
       if (mlir::failed(descriptors))
         return mlir::failure();
-      createMappedWDMADescriptors(rewriter, op.getLoc(), descriptorSource,
-                                  op.getDest(), **descriptors);
+      createMappedWDMADescriptors(
+          rewriter, op.getLoc(), descriptorSource, op.getDest(), **descriptors,
+          materializeEndpointOffset(rewriter, op.getLoc(), *source));
     }
 
     rewriter.eraseOp(op);
@@ -584,7 +778,9 @@ public:
     } else {
       if (mlir::failed(emitGatherScatterDescriptorPlan(
               rewriter, op.getLoc(), op, source->base, descriptorDest,
-              **descriptors, bufferRecorder)))
+              **descriptors, bufferRecorder, {},
+              materializeEndpointOffset(rewriter, op.getLoc(), *source),
+              materializeEndpointOffset(rewriter, op.getLoc(), *destination))))
         return mlir::failure();
     }
     rewriter.eraseOp(op);
@@ -687,9 +883,12 @@ public:
             MovementEngine::RDMA, "memref.copy RDMA");
         if (mlir::failed(descriptors))
           return mlir::failure();
-        for (InstrRDMAOp lowered :
-             createMappedRDMADescriptors(rewriter, op.getLoc(), source->base,
-                                         destination->base, **descriptors))
+        for (InstrRDMAOp lowered : createMappedRDMADescriptors(
+                 rewriter, op.getLoc(), source->base, destination->base,
+                 **descriptors,
+                 materializeEndpointOffset(rewriter, op.getLoc(), *source),
+                 materializeEndpointOffset(rewriter, op.getLoc(),
+                                           *destination)))
           record(lowered);
       }
     } else if (sourceMemory.getSpace() == MemorySpace::SPM &&
@@ -711,9 +910,12 @@ public:
             MovementEngine::WDMA, "memref.copy WDMA");
         if (mlir::failed(descriptors))
           return mlir::failure();
-        for (InstrWDMAOp lowered :
-             createMappedWDMADescriptors(rewriter, op.getLoc(), source->base,
-                                         destination->base, **descriptors))
+        for (InstrWDMAOp lowered : createMappedWDMADescriptors(
+                 rewriter, op.getLoc(), source->base, destination->base,
+                 **descriptors,
+                 materializeEndpointOffset(rewriter, op.getLoc(), *source),
+                 materializeEndpointOffset(rewriter, op.getLoc(),
+                                           *destination)))
           record(lowered);
       }
     } else if (sourceMemory.getSpace() == MemorySpace::SPM &&
@@ -735,7 +937,9 @@ public:
         return mlir::failure();
       if (mlir::failed(emitGatherScatterDescriptorPlan(
               rewriter, op.getLoc(), op, source->base, destination->base,
-              **descriptors, bufferRecorder)))
+              **descriptors, bufferRecorder, {},
+              materializeEndpointOffset(rewriter, op.getLoc(), *source),
+              materializeEndpointOffset(rewriter, op.getLoc(), *destination))))
         return mlir::failure();
     } else if (sourceMemory.getSpace() == MemorySpace::DDR &&
                destMemory.getSpace() == MemorySpace::DDR) {
@@ -754,16 +958,22 @@ public:
           MovementEngine::WDMA, "memref.copy DDR staging write");
       if (mlir::failed(readDescriptors) || mlir::failed(writeDescriptors))
         return mlir::failure();
+      auto sourceOffset =
+          materializeEndpointOffset(rewriter, op.getLoc(), *source);
+      auto destOffset =
+          materializeEndpointOffset(rewriter, op.getLoc(), *destination);
       auto emitStagedCopy = [&](mlir::Value source, mlir::Value dest) {
         mlir::FailureOr<mlir::Value> staging = createDestAlloc(
             op.getLoc(), stagingType, rewriter, op, bufferRecorder);
         if (mlir::failed(staging))
           return mlir::failure();
         for (InstrRDMAOp lowered : createMappedRDMADescriptors(
-                 rewriter, op.getLoc(), source, *staging, **readDescriptors))
+                 rewriter, op.getLoc(), source, *staging, **readDescriptors,
+                 sourceOffset))
           record(lowered);
-        for (InstrWDMAOp lowered : createMappedWDMADescriptors(
-                 rewriter, op.getLoc(), *staging, dest, **writeDescriptors))
+        for (InstrWDMAOp lowered :
+             createMappedWDMADescriptors(rewriter, op.getLoc(), *staging, dest,
+                                         **writeDescriptors, {}, destOffset))
           record(lowered);
         return mlir::success();
       };

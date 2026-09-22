@@ -43,6 +43,22 @@
 
 namespace wafer::target_llvm_detail {
 
+mlir::FailureOr<mlir::Value>
+FunctionLowering::addDynamicByteOffset(mlir::Operation *op, mlir::Value address,
+                                       mlir::Value offset) {
+  if (!offset)
+    return address;
+  auto converted = convertedValues.find(offset);
+  if (converted == convertedValues.end() ||
+      !converted->second.getType().isInteger(64))
+    return op->emitError()
+           << "target_llvm_lowering_failure: dynamic movement byte offset "
+              "did not lower to i64";
+  return builder
+      .create<mlir::LLVM::AddOp>(op->getLoc(), address, converted->second)
+      .getResult();
+}
+
 mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
   llvm::SmallVector<mlir::Value, 12> args;
   mlir::FailureOr<AddressValue> source =
@@ -59,8 +75,14 @@ mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
       getDataFormatCode(op, op.getDest(), "rdma dest");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
-  args.push_back(materializeAddress(op.getLoc(), *source));
-  args.push_back(materializeAddress(op.getLoc(), *dest));
+  auto sourceAddress = addDynamicByteOffset(
+      op, materializeAddress(op.getLoc(), *source), op.getSrcOffsetValue());
+  auto destAddress = addDynamicByteOffset(
+      op, materializeAddress(op.getLoc(), *dest), op.getDstOffsetValue());
+  if (mlir::failed(sourceAddress) || mlir::failed(destAddress))
+    return mlir::failure();
+  args.push_back(*sourceAddress);
+  args.push_back(*destAddress);
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getByteCountAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getInnerBytesAttr()));
   appendArrayI32(op.getLoc(), args, op.getSrcStrides());
@@ -87,8 +109,14 @@ mlir::LogicalResult FunctionLowering::lowerWDMA(InstrWDMAOp op) {
       getDataFormatCode(op, op.getSource(), "wdma source");
   if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
     return mlir::failure();
-  args.push_back(materializeAddress(op.getLoc(), *source));
-  args.push_back(materializeAddress(op.getLoc(), *dest));
+  auto sourceAddress = addDynamicByteOffset(
+      op, materializeAddress(op.getLoc(), *source), op.getSrcOffsetValue());
+  auto destAddress = addDynamicByteOffset(
+      op, materializeAddress(op.getLoc(), *dest), op.getDstOffsetValue());
+  if (mlir::failed(sourceAddress) || mlir::failed(destAddress))
+    return mlir::failure();
+  args.push_back(*sourceAddress);
+  args.push_back(*destAddress);
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getByteCountAttr()));
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getInnerBytesAttr()));
   appendArrayI32(op.getLoc(), args, op.getDstStrides());
@@ -114,25 +142,10 @@ FunctionLowering::lowerGatherScatter(InstrGatherScatterOp op) {
   if (mlir::failed(source) || mlir::failed(dest))
     return mlir::failure();
 
-  auto addDynamicOffset =
-      [&](mlir::Value address,
-          mlir::Value offset) -> mlir::FailureOr<mlir::Value> {
-    if (!offset)
-      return address;
-    auto converted = convertedValues.find(offset);
-    if (converted == convertedValues.end() ||
-        !converted->second.getType().isInteger(64))
-      return op.emitError()
-             << "target_llvm_lowering_failure: dynamic gather/scatter byte "
-                "offset did not lower to i64";
-    return builder
-        .create<mlir::LLVM::AddOp>(op.getLoc(), address, converted->second)
-        .getResult();
-  };
-  mlir::FailureOr<mlir::Value> sourceAddress = addDynamicOffset(
-      materializeAddress(op.getLoc(), *source), op.getSrcOffsetValue());
-  mlir::FailureOr<mlir::Value> destAddress = addDynamicOffset(
-      materializeAddress(op.getLoc(), *dest), op.getDstOffsetValue());
+  mlir::FailureOr<mlir::Value> sourceAddress = addDynamicByteOffset(
+      op, materializeAddress(op.getLoc(), *source), op.getSrcOffsetValue());
+  mlir::FailureOr<mlir::Value> destAddress = addDynamicByteOffset(
+      op, materializeAddress(op.getLoc(), *dest), op.getDstOffsetValue());
   if (mlir::failed(sourceAddress) || mlir::failed(destAddress))
     return mlir::failure();
 

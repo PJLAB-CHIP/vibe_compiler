@@ -198,6 +198,7 @@ relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
 | destination与copy复用 | `Transforms/Tile/StorageOptimization.cpp` | fresh use/alias/effect；初始化证明复用StorageInitialization |
 | 已选layout下的搬运合成 | `Transforms/Tile/MovementFusion.cpp` | current permutation及physical relation；不选择流水stage |
 | 搬运位置调整 | 现有`Transforms/Tile/PhysicalMovementPlacement.cpp` | 当前不变性与effect证明 |
+| blocked DDR boundary view 的 root 保留 | `Transforms/Tile/PhysicalBoundaryViews.cpp` | 显式 root binding 与原 subview SSA；不分配或搬运数据 |
 | 阶段编排与失败传播 | 现有`Driver/CurrentIRExecutablePipeline.cpp` | 同一candidate owner；不内嵌leaf算法 |
 
 上述Tile文件由同一`WaferTileTransforms`显式注册；不为拆文件创建新library或每个helper一个public API。

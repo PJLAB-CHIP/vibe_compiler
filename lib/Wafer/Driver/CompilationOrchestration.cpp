@@ -730,7 +730,7 @@ mlir::LogicalResult runCompilationTransaction(
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
             failAfterPackageLaunchSlot, deviceExecutable, targetLLVMModules,
             programData, tensorResolver, irTrace, stages, profileIdentity,
-            qualification)))
+            qualification, options.getExternalLayout())))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
@@ -738,7 +738,7 @@ mlir::LogicalResult runCompilationTransaction(
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
                  failAfterPackageLaunchSlot, deviceExecutable,
                  targetLLVMModules, programData, tensorResolver, irTrace,
-                 stages, qualification))) {
+                 stages, qualification, options.getExternalLayout()))) {
     return mlir::failure();
   }
   if (timingSession) {

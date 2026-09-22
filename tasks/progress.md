@@ -18,6 +18,13 @@
 
 ## 当前调度
 
+2026-09-23用户追加直接 NCx DDR 输入/输出测量：M=N4096/K1024 BF16 GEMM 与 2048、28-head BF16 causal attention。
+仍归 `board-testing`；08 号外部物理布局和 15 号 caller 编解码已接通，两项 fresh 构包/no-card及各三次实卡通过。
+此前 source reshape/permute 包装未完成构包，已停止，未执行设备测试；不作为直接 NCx 实现或性能结果。
+默认 Tensor 路径及既有数值策略保持。指定 NCx I/O 数值、guard和清理已签发，但中位数均慢于已有 Tensor 记录；
+内部转换、复用和搜索策略差异仍存在，不签 NCx 性能优化完成。本轮主机回归、canonical/no-op及指定测量已完成；详情见
+[NCx实测](../docs/board-performance-results.md#2026-09-23直接-ncx-ddr-输入输出测量)。
+
 2026-09-23用户追加M=N4096、K1024 GEMM性能测量：BF16、batch1、standard 8/42的fresh产品及guard no-card通过；
 三次普通实卡3.489/3.583/3.495ms，中位数3.495ms，完整相似度、guard及厂商清理健康，
 见[记录](../docs/board-performance-results.md#2026-09-23mn4096k1024-gemm测量)。本次指定测量已完成，未扩大优化范围。

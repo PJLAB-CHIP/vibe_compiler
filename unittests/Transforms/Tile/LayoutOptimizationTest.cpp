@@ -1434,6 +1434,60 @@ TEST_F(LayoutOptimizationTest, DynamicTileCostDoesNotBecomeAnImpossibleLayout) {
   }
 }
 
+TEST_F(LayoutOptimizationTest, BlockedDDRBoundaryPreservesRootAndSubview) {
+  for (int64_t rows : {1024, 1025, 1031}) {
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    out << "module { func.func @entry(%root: memref<2x" << rows + 4
+        << "x256xbf16, #wafer.memory<ddr, ncx>>) {\n"
+        << "%v = memref.subview %root[0, 2, 64] [2, " << rows
+        << ", 128] [1, 1, 1] : memref<2x" << rows + 4
+        << "x256xbf16, #wafer.memory<ddr, ncx>> to memref<2x" << rows
+        << "x128xbf16, strided<[" << (rows + 4) * 256
+        << ", 256, 1], offset: 576>, #wafer.memory<ddr, ncx>>\n"
+        << "wafer.tile.region(%v : memref<2x" << rows << "x128xbf16, strided<["
+        << (rows + 4) * 256
+        << ", 256, 1], offset: 576>, #wafer.memory<ddr, ncx>>) -> () {\n"
+        << "^bb0(%input: memref<2x" << rows << "x128xbf16, strided<["
+        << (rows + 4) * 256
+        << ", 256, 1], offset: 576>, #wafer.memory<ddr, ncx>>):\n"
+        << "%local = memref.alloc() : memref<2x" << rows
+        << "x128xbf16, #wafer.memory<spm, tensor>>\n"
+        << "wafer.tile.load %input into %local : memref<2x" << rows
+        << "x128xbf16, strided<[" << (rows + 4) * 256
+        << ", 256, 1], offset: 576>, #wafer.memory<ddr, ncx>> into memref<2x"
+        << rows << "x128xbf16, #wafer.memory<spm, tensor>>\n"
+        << "wafer.tile.yield\n}\nreturn\n}}";
+    auto module = parse(text);
+    ASSERT_TRUE(module);
+    materializeBlockedDDRBoundaryViews(*module);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    TileRegionOp region;
+    module->walk([&](TileRegionOp op) { region = op; });
+    ASSERT_EQ(region.getInputs().size(), 1u);
+    auto input = mlir::cast<mlir::MemRefType>(region.getInputs()[0].getType());
+    EXPECT_EQ(input.getShape(), (llvm::ArrayRef<int64_t>{2, rows + 4, 256}));
+    EXPECT_TRUE(input.getLayout().isIdentity());
+    EXPECT_EQ(countOps<mlir::memref::SubViewOp>(*module), 1u);
+    region.walk([&](StorageLoadOp load) {
+      auto view = load.getSource().getDefiningOp<mlir::memref::SubViewOp>();
+      ASSERT_TRUE(view);
+      EXPECT_EQ(view->getParentOp(), region.getOperation());
+      EXPECT_EQ(view.getSource(), region.getBody().front().getArgument(0));
+      EXPECT_EQ(view.getStaticOffsets(), (llvm::ArrayRef<int64_t>{0, 2, 64}));
+    });
+    TileRegionToInstrLoweringSession session(*context);
+    ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    EXPECT_EQ(countOps<StorageLoadOp>(*module), 0u);
+    EXPECT_EQ(countOps<InstrRDMAOp>(*module), 1u);
+    module->walk([&](InstrRDMAOp move) {
+      EXPECT_EQ(move.getSrcOffset().value_or(-1), (rows + 4) * 128 + 256);
+      EXPECT_EQ(move.getByteCount(), uint64_t(2 * rows * 128 * 2));
+    });
+  }
+}
+
 TEST_F(LayoutOptimizationTest,
        RankFiveAndSixCurrentValuesBufferizeWithoutShapeSpecialCases) {
   struct Case {

@@ -19,6 +19,7 @@ class Wafer_InstrDMAOp<string mnemonic, list<Trait> traits>
 }
 
 def Wafer_InstrRDMAOp : Wafer_InstrDMAOp<"instr.rdma", [
+    AttrSizedOperandSegments,
     MemoryEffects<[MemRead<Wafer_DDRResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
@@ -27,6 +28,8 @@ def Wafer_InstrRDMAOp : Wafer_InstrDMAOp<"instr.rdma", [
   let arguments = (ins
     Arg<AnyMemRef, "", [MemRead]>:$source,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    Optional<Index>:$src_offset_value,
+    Optional<Index>:$dst_offset_value,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
     OptionalAttr<I64Attr>:$src_offset,
@@ -37,10 +40,14 @@ def Wafer_InstrRDMAOp : Wafer_InstrDMAOp<"instr.rdma", [
                       "::wafer::NCCWorker::Worker0">:$worker
   );
   let assemblyFormat =
-      "$source `to` $dest attr-dict `:` type($source) `to` type($dest)";
+      "$source `to` $dest "
+      "(`src_offset_value` `(` $src_offset_value^ `)`)? "
+      "(`dst_offset_value` `(` $dst_offset_value^ `)`)? "
+      "attr-dict `:` type($source) `to` type($dest)";
 }
 
 def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
+    AttrSizedOperandSegments,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_DDRResource>,
                    MemWrite<Wafer_MovementResource>]>
@@ -49,6 +56,8 @@ def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
   let arguments = (ins
     Arg<AnyMemRef, "", [MemRead]>:$source,
     Arg<AnyMemRef, "", [MemWrite]>:$dest,
+    Optional<Index>:$src_offset_value,
+    Optional<Index>:$dst_offset_value,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
     OptionalAttr<I64Attr>:$src_offset,
@@ -59,7 +68,10 @@ def Wafer_InstrWDMAOp : Wafer_InstrDMAOp<"instr.wdma", [
                       "::wafer::NCCWorker::Worker0">:$worker
   );
   let assemblyFormat =
-      "$source `to` $dest attr-dict `:` type($source) `to` type($dest)";
+      "$source `to` $dest "
+      "(`src_offset_value` `(` $src_offset_value^ `)`)? "
+      "(`dst_offset_value` `(` $dst_offset_value^ `)`)? "
+      "attr-dict `:` type($source) `to` type($dest)";
 }
 
 def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [

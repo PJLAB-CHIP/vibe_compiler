@@ -560,7 +560,8 @@ InstrRDMAOp createRDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                        mlir::Value source, mlir::Value dest,
                        const MovementDescriptor &descriptor) {
   return rewriter.create<InstrRDMAOp>(
-      loc, source, dest, descriptor.byteCount, descriptor.innerBytes,
+      loc, source, dest, mlir::Value{}, mlir::Value{}, descriptor.byteCount,
+      descriptor.innerBytes,
       /*src_offset=*/mlir::IntegerAttr{},
       /*dst_offset=*/mlir::IntegerAttr{}, descriptor.strides,
       descriptor.iterations);
@@ -570,7 +571,8 @@ InstrWDMAOp createWDMA(mlir::PatternRewriter &rewriter, mlir::Location loc,
                        mlir::Value source, mlir::Value dest,
                        const MovementDescriptor &descriptor) {
   return rewriter.create<InstrWDMAOp>(
-      loc, source, dest, descriptor.byteCount, descriptor.innerBytes,
+      loc, source, dest, mlir::Value{}, mlir::Value{}, descriptor.byteCount,
+      descriptor.innerBytes,
       /*src_offset=*/mlir::IntegerAttr{},
       /*dst_offset=*/mlir::IntegerAttr{}, descriptor.strides,
       descriptor.iterations);
@@ -1038,9 +1040,23 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
               coordinate, iterationShape[iterationDim], logicalDim,
               logicalExtent, pieces, boundaries[iterationDim]))
         return false;
+      // A block-aligned subset has the same periodic axes as a whole value.
+      // Keep full repetitions inside one encoding piece; a retained tail is
+      // handled separately below. Requiring the complete source extent here
+      // used to expand an aligned subwindow into one command per row/block.
       bool direct = positivePeriods.size() == 1 && coordinate.multiplier == 1 &&
-                    coordinate.offset == 0 &&
-                    iterationShape[iterationDim] == logicalExtent;
+                    coordinate.offset >= 0 &&
+                    coordinate.offset % positivePeriods.front() == 0;
+      if (direct) {
+        int64_t period = positivePeriods.front();
+        int64_t fullEnd = coordinate.offset +
+                          (iterationShape[iterationDim] / period) * period;
+        for (const auto &piece : pieces)
+          for (int64_t boundary : {piece.logicalLowerBounds[logicalDim],
+                                   piece.logicalUpperBounds[logicalDim]})
+            if (coordinate.offset < boundary && boundary < fullEnd)
+              direct = false;
+      }
       DirectPeriodicDecomposition &decomposition = decompositions[iterationDim];
       if (!direct) {
         decomposition.requiresExplicitPartition = true;
@@ -1630,31 +1646,56 @@ mlir::LogicalResult emitGatherScatterDescriptorPlan(
   return mlir::success();
 }
 
+static mlir::Value combineMovementOffset(mlir::PatternRewriter &rewriter,
+                                         mlir::Location loc,
+                                         mlir::Value dynamic, int64_t fixed) {
+  if (!dynamic || !fixed)
+    return dynamic;
+  auto constant = rewriter.create<mlir::arith::ConstantIndexOp>(loc, fixed);
+  return rewriter.create<mlir::arith::AddIOp>(loc, dynamic, constant);
+}
+
 llvm::SmallVector<InstrRDMAOp, 4> createMappedRDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors,
+    mlir::Value dynamicSourceOffset, mlir::Value dynamicDestOffset) {
   llvm::SmallVector<InstrRDMAOp, 4> operations;
-  for (const MovementDescriptorPair &descriptor : descriptors)
+  for (const MovementDescriptorPair &descriptor : descriptors) {
+    auto src = combineMovementOffset(rewriter, loc, dynamicSourceOffset,
+                                     descriptor.source.byteOffset);
+    auto dst = combineMovementOffset(rewriter, loc, dynamicDestOffset,
+                                     descriptor.dest.byteOffset);
     operations.push_back(rewriter.create<InstrRDMAOp>(
-        loc, source, dest, descriptor.source.byteCount,
+        loc, source, dest, src, dst, descriptor.source.byteCount,
         descriptor.source.innerBytes,
-        rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
-        rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
+        src ? mlir::IntegerAttr{}
+            : rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
+        dst ? mlir::IntegerAttr{}
+            : rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
         descriptor.source.strides, descriptor.source.iterations));
+  }
   return operations;
 }
 
 llvm::SmallVector<InstrWDMAOp, 4> createMappedWDMADescriptors(
     mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
-    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors) {
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors,
+    mlir::Value dynamicSourceOffset, mlir::Value dynamicDestOffset) {
   llvm::SmallVector<InstrWDMAOp, 4> operations;
-  for (const MovementDescriptorPair &descriptor : descriptors)
+  for (const MovementDescriptorPair &descriptor : descriptors) {
+    auto src = combineMovementOffset(rewriter, loc, dynamicSourceOffset,
+                                     descriptor.source.byteOffset);
+    auto dst = combineMovementOffset(rewriter, loc, dynamicDestOffset,
+                                     descriptor.dest.byteOffset);
     operations.push_back(rewriter.create<InstrWDMAOp>(
-        loc, source, dest, descriptor.dest.byteCount,
+        loc, source, dest, src, dst, descriptor.dest.byteCount,
         descriptor.dest.innerBytes,
-        rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
-        rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
+        src ? mlir::IntegerAttr{}
+            : rewriter.getI64IntegerAttr(descriptor.source.byteOffset),
+        dst ? mlir::IntegerAttr{}
+            : rewriter.getI64IntegerAttr(descriptor.dest.byteOffset),
         descriptor.dest.strides, descriptor.dest.iterations));
+  }
   return operations;
 }
 

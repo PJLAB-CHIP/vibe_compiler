@@ -23,6 +23,7 @@ void printHelp() {
          "[--optimization-policy <search|none>] "
          "[--search-mode <standard|deep>] [--search-width <count>] "
          "[--search-trials <count>] "
+         "[--external-layout <tensor|ncx>] "
          "[--compile-timing] "
          "[--dump-compiler-ir <dir>] "
          "[--profile]\n"
@@ -187,6 +188,12 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         arg.starts_with("--optimization-policy=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
                            options.optimizationPolicy))
+        return false;
+      continue;
+    }
+    if (arg == "--external-layout" || arg.starts_with("--external-layout=")) {
+      if (parseValueOption(argc, argv, index, arg, "--external-layout",
+                           options.externalLayout))
         return false;
       continue;
     }

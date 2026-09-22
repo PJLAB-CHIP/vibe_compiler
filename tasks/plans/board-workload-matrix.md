@@ -1,5 +1,37 @@
 # 扩展板测矩阵与三轮性能调优
 
+## 直接 NCx DDR 输入输出测量（2026-09-23）
+
+指定输入为 BF16 M=N4096/K1024 GEMM（seed20260803）及 BF16 causal attention
+`[1,28,2048,128]`（seed20260922），均使用 standard search width8/trials42。
+逻辑 source、reference、dtype 和原比较门槛保持；通过正式 `--external-layout ncx` 物化 DDR entry encoding，
+caller 按 manifest 打包/解码。runtime 直接传输物理字节，不使用 source reshape/permute 包装。
+稳定边界见08/11/15/18号；不接续 Tensor 子集整改或重新开启 attention 性能优化。
+
+根因与处理：外部参数/输出原先固定 Tensor；blocked DDR 子窗口必须保留实际 root 的全局 stride；
+跨 isolated region 传入 root 并保留原 subview SSA；周期 descriptor 合成原先只识别完整值，现按 encoding piece
+和对齐 origin 处理实际 subset。RDMA/WDMA 动态 byte offset 显式进入 SSA，由 DDR planning 与 target range 验证。
+静态 packed BOOL 不需要 byte-offset calculator，保持其原 descriptor 资格路径。
+
+| 覆盖 | 本轮检查与直接下游 |
+| --- | --- |
+| rank3/rank4、FP16/BF16、1024/1025/1031 | NCx DDR→SPM→DDR 全部实际 byte address 对；无重叠、遗漏或 padding 误写 |
+| 非零静态窗口、循环行窗口、循环 C block、窄 C tail | 全局 block stride 与动态 offset；整块符号合成，真实 tail 保留；`BlockedDDRWindowsCopyExactPhysicalBytes` |
+| isolated region 子窗口 | 原 root 与 subview 保留，RDMA 地址/字节数 exact；`BlockedDDRBoundaryPreservesRootAndSubview` |
+| 动态 offset 的合法/越界/unknown | target 范围接受或明确失败；`DMAOffsetsRequireAnInBoundsPhysicalRange` |
+| host NCx 编解码 | 独立坐标 oracle、物理 bytes/padding、BF16/FP16 round trip 与 manifest 检查 |
+| 两个真实产品 | fresh source/reference/package、所有外部端口 NCx、guard no-card；随后单进程逐 case 三次实卡，完整数值/guard/清理及无插桩设备计时 |
+
+动态窄 C tail 的分段平移暂不支持；不将它描述为硬件限制，也不改变请求的外部 ABI。
+内部布局独立选择，NCx I/O 不代表中间 tensor 或所有布局转换都会消失。性能与既有 Tensor 健康记录比较时
+必须同时说明实际搜索策略差异，不重跑历史 package。实卡资格及结果以progress和本轮性能证据为准。
+
+本轮已完成两项各三次实卡，全部数值/guard/清理健康；性能均慢于原 Tensor 记录，具体样本和 actual IR 差异见
+[NCx测量](../../docs/board-performance-results.md#2026-09-23直接-ncx-ddr-输入输出测量)。
+主机11个 component unit suite、PyTorch caller 两组及 physical codec 通过；旧 layout verifier fixture 更新和静态 BOOL
+路径修复后，conversion 全45项及 lit 全310项复测通过，无 skip/unsupported；canonical完整增量与随后 Ninja no-op通过。
+指定 I/O 能力和测量闭合，NCx 内部转换及复用性能整改仍未完成，不自动启动该优化。
+
 ## Tensor子集物化整改与核心性能保护（2026-09-23）
 
 用户要求基于代码细化通用方案，并明确保护大GEMM及2048 attention性能。任务状态只看progress，

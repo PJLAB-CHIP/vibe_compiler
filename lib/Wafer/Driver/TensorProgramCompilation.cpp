@@ -85,12 +85,12 @@ llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot, ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace,
-    const CompilationQualification *qualification) {
+    CompilationIRTrace &irTrace, const CompilationQualification *qualification,
+    PhysicalTensorLayout externalLayout) {
   return compileTensorProgram<DeviceExecutable>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
       resolver,
-      [optimizations, qualification, &programData,
+      [optimizations, qualification, externalLayout, &programData,
        &irTrace](std::shared_ptr<mlir::MLIRContext> &context,
                  mlir::ModuleOp tensorModule,
                  frontend::FrontendProgramVerificationResult program,
@@ -98,7 +98,8 @@ llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
                  std::optional<int64_t> failAfterLaunchSlot) {
         return buildDeviceExecutableWithIRTrace(
             context, tensorModule, std::move(program), config, optimizations,
-            output, failAfterLaunchSlot, programData, irTrace, qualification);
+            output, failAfterLaunchSlot, programData, irTrace, qualification,
+            externalLayout);
       });
 }
 

@@ -53,6 +53,7 @@ struct MovementDescriptor {
   mlir::DenseI64ArrayAttr strides;
   mlir::DenseI64ArrayAttr iterations;
   llvm::StringRef role;
+  mlir::Value dynamicByteOffset;
 };
 
 struct DDRView {
@@ -860,6 +861,18 @@ collectDDRDescriptorDemand(mlir::Operation *op, mlir::Value ddrValue,
   mlir::FailureOr<int64_t> localEnd = getDescriptorLocalEnd(op, descriptor);
   if (mlir::failed(localEnd))
     return mlir::failure();
+  if (descriptor.dynamicByteOffset) {
+    auto range = memory_planning::evaluateNonNegativeStaticIndexRange(
+        descriptor.dynamicByteOffset, op);
+    if (!range.succeeded())
+      return op->emitError()
+             << "unsupported_ddr_offset: " << descriptor.role
+             << " dynamic byte offset requires a bounded nonnegative range";
+    if (!range.range.empty &&
+        !checkedAdd(*localEnd, range.range.max, *localEnd))
+      return op->emitError()
+             << "range_end_overflow: DDR dynamic access end overflows int64";
+  }
 
   mlir::FailureOr<llvm::SmallVector<DDRView, 2>> views = resolveDDRViews(
       op, ddrValue, descriptor, defaultAlignment, offsets, timeline, dataflow);
@@ -1207,7 +1220,8 @@ collectDDRDescriptorDemands(mlir::Operation *scope, int64_t defaultAlignment,
           rdma.getSrcOffsetAttr() ? rdma.getSrcOffsetAttr().getInt() : 0,
           rdma.getSrcStridesAttr(),
           rdma.getSrcIterationsAttr(),
-          "source"};
+          "source",
+          rdma.getSrcOffsetValue()};
       result = collectDDRDescriptorDemand(op, rdma.getSource(), descriptor,
                                           defaultAlignment, plannedOffsets,
                                           timeline, dataflow, summary);
@@ -1221,7 +1235,8 @@ collectDDRDescriptorDemands(mlir::Operation *scope, int64_t defaultAlignment,
           wdma.getDstOffsetAttr() ? wdma.getDstOffsetAttr().getInt() : 0,
           wdma.getDstStridesAttr(),
           wdma.getDstIterationsAttr(),
-          "dest"};
+          "dest",
+          wdma.getDstOffsetValue()};
       result = collectDDRDescriptorDemand(op, wdma.getDest(), descriptor,
                                           defaultAlignment, plannedOffsets,
                                           timeline, dataflow, summary);

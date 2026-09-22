@@ -366,8 +366,12 @@ mlir::LogicalResult InstrRDMAOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  if (static_cast<bool>(getSrcOffsetAttr()) !=
-      static_cast<bool>(getDstOffsetAttr()))
+  if ((getSrcOffsetAttr() && getSrcOffsetValue()) ||
+      (getDstOffsetAttr() && getDstOffsetValue()))
+    return emitOpError("each endpoint byte offset must use either its static "
+                       "attribute or its SSA value, not both");
+  if (static_cast<bool>(getSrcOffsetAttr() || getSrcOffsetValue()) !=
+      static_cast<bool>(getDstOffsetAttr() || getDstOffsetValue()))
     return emitOpError(
         "src_offset and dst_offset must either both be present for mapped "
         "DMA or both be absent for compact DMA");
@@ -403,8 +407,12 @@ mlir::LogicalResult InstrWDMAOp::verify() {
       mlir::failed(
           verifyDDRMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  if (static_cast<bool>(getSrcOffsetAttr()) !=
-      static_cast<bool>(getDstOffsetAttr()))
+  if ((getSrcOffsetAttr() && getSrcOffsetValue()) ||
+      (getDstOffsetAttr() && getDstOffsetValue()))
+    return emitOpError("each endpoint byte offset must use either its static "
+                       "attribute or its SSA value, not both");
+  if (static_cast<bool>(getSrcOffsetAttr() || getSrcOffsetValue()) !=
+      static_cast<bool>(getDstOffsetAttr() || getDstOffsetValue()))
     return emitOpError(
         "src_offset and dst_offset must either both be present for mapped "
         "DMA or both be absent for compact DMA");

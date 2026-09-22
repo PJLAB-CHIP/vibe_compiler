@@ -171,6 +171,10 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
 /// tensor/memref bridge remains, and no SPM root crosses a TileRegion.
 mlir::LogicalResult verifyPhysicalTileDataflow(mlir::ModuleOp module);
 
+/// Bind blocked DDR roots across isolated regions and retain their actual
+/// subview chains locally, so lowering sees global physical coordinates.
+void materializeBlockedDDRBoundaryViews(mlir::ModuleOp module);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_TRANSFORMS_TILE_BOUNDARYMOVEMENT_H

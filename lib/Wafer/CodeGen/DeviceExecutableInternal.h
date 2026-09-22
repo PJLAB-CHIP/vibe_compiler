@@ -7,6 +7,7 @@
 #include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/Driver/ProgramData/ProgramData.h"
 #include "Wafer/Support/OptimizationConfig.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -76,7 +77,8 @@ llvm::Expected<DeviceExecutable> buildDeviceExecutableWithIRTrace(
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProgramDataHandoff &programData, CompilationIRTrace &irTrace,
-    const CompilationQualification *qualification = nullptr);
+    const CompilationQualification *qualification = nullptr,
+    PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor);
 
 } // namespace detail
 } // namespace wafer::compiler

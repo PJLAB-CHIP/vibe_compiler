@@ -22,8 +22,8 @@ mlir::LogicalResult StorageLoadOp::verify() {
         "tile.load destination tensor type must match source tensor type");
   if (!hasWaferMemorySpace(getSource().getType(), MemorySpace::DDR))
     return emitOpError("tile.load source must use DDR memory space");
-  if (!hasWaferLayout(getSource().getType(), MemLayout::Tensor))
-    return emitOpError("tile.load source must use tensor layout");
+  if (!getWaferLayout(getSource().getType()))
+    return emitOpError("tile.load source must have a physical layout");
   if (!hasWaferMemorySpace(getDest().getType(), MemorySpace::SPM))
     return emitOpError("tile.load destination must use SPM memory space");
   std::optional<MemLayout> destLayout = getWaferLayout(getDest().getType());
@@ -59,8 +59,8 @@ mlir::LogicalResult StorageStoreOp::verify() {
         "writeback");
   if (!hasWaferMemorySpace(getDest().getType(), MemorySpace::DDR))
     return emitOpError("tile.store dest must use DDR memory space");
-  if (!hasWaferLayout(getDest().getType(), MemLayout::Tensor))
-    return emitOpError("tile.store dest must use tensor layout");
+  if (!getWaferLayout(getDest().getType()))
+    return emitOpError("tile.store dest must have a physical layout");
 
   return mlir::success();
 }

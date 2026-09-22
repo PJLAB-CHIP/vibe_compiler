@@ -188,6 +188,12 @@ current external port只有一个selected target descriptor。它没有TargetTen
 - core BoardRuntime只搬精确physical bytes，不根据name或logical shape猜layout；
 - input/output alias、tie和caller-owned device pointer current均不支持，出现即fail closed。
 
+`wafer-compile --external-layout ncx` 通过 08 号实际布局物化设置全部外部端口；默认是 `tensor`。
+PyTorch caller 依据最终 manifest 的 `layout/shape/dtype/bytes` 打包本轮逻辑输入，并按同一 descriptor 解码输出后
+使用原逻辑 reference 和数值策略比较。NCx 的 C block、窄 tail、每 N padding 均来自 physical codec 合同；
+padding 初始化为零，payload 长度必须等于 physical bytes。不能只改 manifest 或只改变参考输出的 flatten 顺序。
+Runtime 继续直接 H2D/D2H 这些字节，不执行布局转换；编译器内部布局由实际计算与搬运需求独立选择。
+
 ### 3.5 Modules与entries
 
 每个entry显式记录：

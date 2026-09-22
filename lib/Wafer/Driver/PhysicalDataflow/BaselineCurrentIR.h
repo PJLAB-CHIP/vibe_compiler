@@ -4,6 +4,7 @@
 #define WAFER_DRIVER_PHYSICALDATAFLOW_BASELINECURRENTIR_H
 
 #include "Wafer/Driver/CurrentIRExecutablePipeline.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 
 namespace wafer::compiler::detail {
@@ -18,6 +19,7 @@ struct CommunicationCandidateSelection {
 };
 
 struct BaselineCurrentIROptions {
+  PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor;
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   uint32_t maximumCapacityAttempts = 16;
   CurrentIRDownstreamOptions downstream;

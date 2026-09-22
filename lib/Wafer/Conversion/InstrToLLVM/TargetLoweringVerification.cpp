@@ -1093,45 +1093,46 @@ static mlir::LogicalResult verifyTargetInstructionFormat(mlir::Operation *op) {
       });
 }
 
-static mlir::LogicalResult verifyDynamicGatherScatterOffset(
-    InstrGatherScatterOp op, mlir::Value offset, mlir::MemRefType endpointType,
+static mlir::LogicalResult verifyDynamicMovementOffset(
+    mlir::Operation *op, mlir::Value offset, mlir::MemRefType endpointType,
     mlir::DenseI64ArrayAttr strides, mlir::DenseI64ArrayAttr iterations,
-    llvm::StringRef role) {
+    llvm::StringRef role, int64_t innerBytes) {
   if (!offset)
     return mlir::success();
   memory_planning::detail::StaticIndexRangeResult range =
       memory_planning::detail::evaluateNonNegativeStaticIndexRange(offset, op);
   if (!range.succeeded())
-    return op.emitError()
+    return op->emitError()
            << "unsupported_target_dynamic_offset: " << role
            << " offset requires a constant-bounded non-negative index "
               "expression";
   if (range.range.empty)
     return mlir::success();
 
-  int64_t relativeEnd = op.getInnerBytes();
+  int64_t relativeEnd = innerBytes;
   for (auto [stride, iteration] :
        llvm::zip_equal(strides.asArrayRef(), iterations.asArrayRef())) {
     int64_t span = 0;
     if (!checkedMul(stride, iteration - 1, span) ||
         !checkedAdd(relativeEnd, span, relativeEnd))
-      return op.emitError() << "target_address_overflow: " << role
-                            << " dynamic descriptor byte range overflows int64";
+      return op->emitError()
+             << "target_address_overflow: " << role
+             << " dynamic descriptor byte range overflows int64";
   }
   int64_t maximumEnd = 0;
   if (!checkedAdd(range.range.max, relativeEnd, maximumEnd))
-    return op.emitError() << "target_address_overflow: " << role
-                          << " dynamic descriptor end overflows int64";
+    return op->emitError() << "target_address_overflow: " << role
+                           << " dynamic descriptor end overflows int64";
   std::optional<WaferPhysicalTensorInfo> physical =
       computeWaferPhysicalTensorInfo(endpointType);
   if (!physical || physical->physicalBytes < 0 ||
       maximumEnd > physical->physicalBytes)
-    return op.emitError() << "target_geometry_mismatch: " << role
-                          << " dynamic descriptor byte range ["
-                          << range.range.min << ", " << maximumEnd
-                          << ") exceeds the physical buffer " << endpointType
-                          << " (bytes="
-                          << (physical ? physical->physicalBytes : -1) << ")";
+    return op->emitError() << "target_geometry_mismatch: " << role
+                           << " dynamic descriptor byte range ["
+                           << range.range.min << ", " << maximumEnd
+                           << ") exceeds the physical buffer " << endpointType
+                           << " (bytes="
+                           << (physical ? physical->physicalBytes : -1) << ")";
   return mlir::success();
 }
 
@@ -1146,14 +1147,39 @@ verifyTargetGatherScatter(InstrGatherScatterOp op) {
     return op.emitError()
            << "target_geometry_mismatch: gather/scatter endpoints must be "
               "memrefs";
-  if (mlir::failed(verifyDynamicGatherScatterOffset(
+  if (mlir::failed(verifyDynamicMovementOffset(
           op, op.getSrcOffsetValue(), sourceType, op.getSrcStridesAttr(),
-          op.getSrcIterationsAttr(), "source")) ||
-      mlir::failed(verifyDynamicGatherScatterOffset(
+          op.getSrcIterationsAttr(), "source", op.getInnerBytes())) ||
+      mlir::failed(verifyDynamicMovementOffset(
           op, op.getDstOffsetValue(), destType, op.getDstStridesAttr(),
-          op.getDstIterationsAttr(), "destination")))
+          op.getDstIterationsAttr(), "destination", op.getInnerBytes())))
     return mlir::failure();
   return mlir::success();
+}
+
+template <typename Op>
+static mlir::LogicalResult verifyTargetDMAOffsets(Op op) {
+  auto source = mlir::cast<mlir::MemRefType>(op.getSource().getType());
+  auto dest = mlir::cast<mlir::MemRefType>(op.getDest().getType());
+  auto zeros = mlir::DenseI64ArrayAttr::get(op.getContext(), {0, 0, 0});
+  auto ones = mlir::DenseI64ArrayAttr::get(op.getContext(), {1, 1, 1});
+  if constexpr (std::is_same_v<Op, InstrRDMAOp>) {
+    return mlir::success(
+        mlir::succeeded(verifyDynamicMovementOffset(
+            op, op.getSrcOffsetValue(), source, op.getSrcStridesAttr(),
+            op.getSrcIterationsAttr(), "source", op.getInnerBytes())) &&
+        mlir::succeeded(verifyDynamicMovementOffset(
+            op, op.getDstOffsetValue(), dest, zeros, ones, "destination",
+            op.getByteCount())));
+  } else {
+    return mlir::success(
+        mlir::succeeded(verifyDynamicMovementOffset(
+            op, op.getSrcOffsetValue(), source, zeros, ones, "source",
+            op.getByteCount())) &&
+        mlir::succeeded(verifyDynamicMovementOffset(
+            op, op.getDstOffsetValue(), dest, op.getDstStridesAttr(),
+            op.getDstIterationsAttr(), "destination", op.getInnerBytes())));
+  }
 }
 
 mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp) {
@@ -1161,7 +1187,11 @@ mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp) {
   moduleOp.walk([&](mlir::Operation *op) {
     if (!isWaferInstruction(op))
       return mlir::WalkResult::advance();
-    if ((mlir::isa<InstrGatherScatterOp>(op) &&
+    if ((mlir::isa<InstrRDMAOp>(op) &&
+         mlir::failed(verifyTargetDMAOffsets(mlir::cast<InstrRDMAOp>(op)))) ||
+        (mlir::isa<InstrWDMAOp>(op) &&
+         mlir::failed(verifyTargetDMAOffsets(mlir::cast<InstrWDMAOp>(op)))) ||
+        (mlir::isa<InstrGatherScatterOp>(op) &&
          mlir::failed(verifyTargetGatherScatter(
              mlir::cast<InstrGatherScatterOp>(op)))) ||
         mlir::failed(verifyNoSchemaFreeSemanticAttributes(op)) ||

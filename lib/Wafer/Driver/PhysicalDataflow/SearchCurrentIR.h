@@ -6,6 +6,7 @@
 #include "Wafer/Driver/CurrentIRExecutablePipeline.h"
 #include "Wafer/Driver/PhysicalDataflow/UnifiedSearch.h"
 #include "Wafer/Support/OptimizationConfig.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +17,7 @@
 namespace wafer::compiler::detail {
 
 struct SearchCurrentIROptions {
+  PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor;
   uint64_t layoutWorkLimit = UINT64_C(1048576);
   SearchLimits limits;
   SearchMode mode = SearchMode::Standard;

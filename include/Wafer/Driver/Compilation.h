@@ -5,6 +5,7 @@
 
 #include "Wafer/CodeGen/DeviceExecutable.h"
 #include "Wafer/Support/OptimizationConfig.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Errc.h"
@@ -59,20 +60,23 @@ class CompilationOptions {
 public:
   static CompilationOptions
   standard(OptimizationConfig optimizations = OptimizationConfig::none(),
-           CompilationTimingMode timing = CompilationTimingMode::Disabled) {
+           CompilationTimingMode timing = CompilationTimingMode::Disabled,
+           PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor) {
     return CompilationOptions(/*profileInstrumentation=*/false, optimizations,
-                              timing);
+                              timing, externalLayout);
   }
 
   static llvm::Expected<CompilationOptions>
   profile(const ExecutionConfig &executionConfig,
           OptimizationConfig optimizations = OptimizationConfig::none(),
-          CompilationTimingMode timing = CompilationTimingMode::Disabled);
+          CompilationTimingMode timing = CompilationTimingMode::Disabled,
+          PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor);
 
   bool shouldProduceProfileInstrumentation() const {
     return profileInstrumentation;
   }
   OptimizationConfig getOptimizationConfig() const { return optimizations; }
+  PhysicalTensorLayout getExternalLayout() const { return externalLayout; }
   bool shouldReportDetailedTiming() const {
     return timing == CompilationTimingMode::Detailed;
   }
@@ -80,13 +84,16 @@ public:
 private:
   explicit CompilationOptions(bool profileInstrumentation,
                               OptimizationConfig optimizations,
-                              CompilationTimingMode timing)
+                              CompilationTimingMode timing,
+                              PhysicalTensorLayout externalLayout)
       : profileInstrumentation(profileInstrumentation),
-        optimizations(optimizations), timing(timing) {}
+        optimizations(optimizations), timing(timing),
+        externalLayout(externalLayout) {}
 
   bool profileInstrumentation;
   OptimizationConfig optimizations;
   CompilationTimingMode timing;
+  PhysicalTensorLayout externalLayout;
 };
 
 /// Host-boundary classification of one compilation transaction failure.

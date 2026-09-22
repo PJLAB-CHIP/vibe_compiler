@@ -3995,6 +3995,7 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
   }
   relations.boundaryRelations.clear();
   relations.structuralOutputs.clear();
+  materializeBlockedDDRBoundaryViews(module);
   if (mlir::failed(foldGemmOutputConversions(module)))
     return fail(BoundaryMovementFailureKind::CompilerFailure,
                 "native GEMM output fusion produced invalid physical Tile IR");

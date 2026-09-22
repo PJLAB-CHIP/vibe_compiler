@@ -1425,6 +1425,260 @@ TEST(LowerInstrToTargetLLVMTest, PackedDmaCoversRowsAndPreservesAdjacentBytes) {
     }
 }
 
+TEST(LowerInstrToTargetLLVMTest, DMAOffsetsRequireAnInBoundsPhysicalRange) {
+  for (bool read : {false, true})
+    for (unsigned mode : {0u, 1u, 2u}) {
+      mlir::DialectRegistry registry;
+      registerTargetConversionDialects(registry);
+      mlir::MLIRContext context(registry);
+      context.loadAllAvailableDialects();
+      std::string ddr = "memref<1x1024x128xbf16, #wafer.memory<ddr, ncx>>";
+      std::string spm = "memref<1x1024x128xbf16, #wafer.memory<spm, tensor>>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { func.func @entry(%ddr: " << ddr
+          << ", %unknown: index) {\n"
+          << "%local = memref.alloc() {wafer.spm.offset = "
+             "#wafer.spm_offset<0>} : "
+          << spm << "\n%offset = arith.constant " << (mode == 1 ? 262144 : 128)
+          << " : index\n"
+          << "wafer.instr."
+          << (read ? "rdma %ddr to %local src" : "wdma %local to %ddr dst")
+          << "_offset_value(" << (mode == 2 ? "%unknown" : "%offset") << ") {"
+          << "byte_count = 256 : i64, inner_bytes = 128 : i64, "
+          << (read ? "dst" : "src") << "_offset = 0 : i64, "
+          << (read ? "src" : "dst") << "_strides = array<i64: 128, 0, 0>, "
+          << (read ? "src" : "dst")
+          << "_iterations = array<i64: 2, 1, 1>} : " << (read ? ddr : spm)
+          << " to " << (read ? spm : ddr) << "\nreturn\n}}";
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      std::string diagnostic;
+      mlir::ScopedDiagnosticHandler handler(&context, [&](mlir::Diagnostic &d) {
+        llvm::raw_string_ostream stream(diagnostic);
+        d.print(stream);
+        return mlir::success();
+      });
+      EXPECT_EQ(mlir::succeeded(
+                    wafer::target_llvm_detail::verifyTargetInstructionFormats(
+                        *module)),
+                mode == 0);
+      if (mode) {
+        EXPECT_NE(diagnostic.find(mode == 1
+                                      ? "target_geometry_mismatch"
+                                      : "unsupported_target_dynamic_offset"),
+                  std::string::npos)
+            << diagnostic;
+      }
+    }
+}
+
+TEST(LowerInstrToTargetLLVMTest, BlockedDDRWindowsCopyExactPhysicalBytes) {
+  for (int64_t rows : {1024, 1025, 1031})
+    for (bool bf16 : {false, true})
+      for (unsigned mode : {0u, 1u, 2u, 3u}) {
+        SCOPED_TRACE(
+            llvm::formatv("rows={0} bf16={1} mode={2}", rows, bf16, mode)
+                .str());
+        mlir::DialectRegistry registry;
+        registerTargetConversionDialects(registry);
+        mlir::MLIRContext context(registry);
+        context.loadAllAvailableDialects();
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+          module { func.func @entry() {
+            wafer.tile.region() -> () { wafer.tile.yield }
+            return
+          } })mlir",
+                                                              &context);
+        ASSERT_TRUE(module);
+        wafer::TileRegionOp region;
+        module->walk([&](wafer::TileRegionOp op) { region = op; });
+        auto function = region->getParentOfType<mlir::func::FuncOp>();
+        mlir::OpBuilder builder(region.getBody().front().getTerminator());
+        auto loc = region.getLoc();
+        auto element = bf16 ? builder.getBF16Type() : builder.getF16Type();
+        const int64_t channels = mode == 2 ? 131 : 384;
+        const int64_t width = mode == 2 ? 67 : mode == 3 ? 64 : 128;
+        llvm::SmallVector<int64_t> rootShape{2, rows + 4, channels};
+        if (mode == 1)
+          rootShape.insert(rootShape.begin() + 1, 1);
+        auto type = mlir::MemRefType::get(
+            rootShape, element, mlir::MemRefLayoutAttrInterface{},
+            wafer::MemoryAttr::get(&context, wafer::MemorySpace::DDR,
+                                   wafer::MemLayout::NCx));
+        llvm::SmallVector<mlir::Value> roots;
+        for (unsigned i = 0; i < 2; ++i) {
+          function.insertArgument(i, type, mlir::DictionaryAttr{}, loc);
+          region.getInputsMutable().append(function.getArgument(i));
+          roots.push_back(region.getBody().front().addArgument(type, loc));
+        }
+        auto emitWindow = [&](mlir::Value row, int64_t length,
+                              mlir::Value channel = {}) {
+          auto shape = rootShape;
+          shape[shape.size() - 2] = length;
+          shape.back() = width;
+          auto localType = mlir::MemRefType::get(
+              shape, element, mlir::MemRefLayoutAttrInterface{},
+              wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                     mode == 2 ? wafer::MemLayout::NCx
+                                               : wafer::MemLayout::Tensor));
+          auto local = builder.create<mlir::memref::AllocOp>(loc, localType);
+          llvm::SmallVector<mlir::OpFoldResult> offsets(
+              shape.size(), builder.getIndexAttr(0));
+          offsets[shape.size() - 2] = row;
+          offsets.back() = builder.getIndexAttr(64);
+          if (channel)
+            offsets.back() = channel;
+          llvm::SmallVector<mlir::OpFoldResult> sizes, strides;
+          for (int64_t extent : shape) {
+            sizes.push_back(builder.getIndexAttr(extent));
+            strides.push_back(builder.getIndexAttr(1));
+          }
+          auto src = builder.create<mlir::memref::SubViewOp>(
+              loc, roots[0], offsets, sizes, strides);
+          auto dst = builder.create<mlir::memref::SubViewOp>(
+              loc, roots[1], offsets, sizes, strides);
+          builder.create<wafer::StorageLoadOp>(loc, src, local);
+          builder.create<wafer::StorageStoreOp>(loc, local, dst);
+        };
+        if (mode == 3) {
+          auto row = builder.create<mlir::arith::ConstantIndexOp>(loc, 2);
+          auto begin = builder.create<mlir::arith::ConstantIndexOp>(loc, 64);
+          auto end = builder.create<mlir::arith::ConstantIndexOp>(loc, 192);
+          auto step = builder.create<mlir::arith::ConstantIndexOp>(loc, 64);
+          auto loop = builder.create<mlir::scf::ForOp>(loc, begin, end, step);
+          builder.setInsertionPointToStart(loop.getBody());
+          emitWindow(row, rows, loop.getInductionVar());
+        } else if (mode == 1) {
+          auto begin = builder.create<mlir::arith::ConstantIndexOp>(loc, 2);
+          auto end = builder.create<mlir::arith::ConstantIndexOp>(
+              loc, 2 + rows / 256 * 256);
+          auto step = builder.create<mlir::arith::ConstantIndexOp>(loc, 256);
+          auto loop = builder.create<mlir::scf::ForOp>(loc, begin, end, step);
+          builder.setInsertionPointToStart(loop.getBody());
+          emitWindow(loop.getInductionVar(), 256);
+          builder.setInsertionPointAfter(loop);
+          if (rows % 256)
+            emitWindow(end, rows % 256);
+        } else {
+          auto row = builder.create<mlir::arith::ConstantIndexOp>(loc, 2);
+          emitWindow(row, rows);
+        }
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        wafer::TileRegionToInstrLoweringSession session(context);
+        ASSERT_TRUE(
+            mlir::succeeded(wafer::convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        EXPECT_EQ(countOps<wafer::StorageLoadOp>(*module), 0u);
+        EXPECT_EQ(countOps<wafer::StorageStoreOp>(*module), 0u);
+        EXPECT_EQ(countOps<wafer::InstrGatherScatterOp>(*module), 0u);
+        // Full blocks stay symbolic. A narrow three-element tail has two
+        // padding bytes per SPM row: compact DMA cannot skip those bytes.
+        unsigned maxMoves = mode == 2 ? 2 * (rows + 1) : 8;
+        EXPECT_LE(countOps<wafer::InstrRDMAOp>(*module), maxMoves);
+        EXPECT_LE(countOps<wafer::InstrWDMAOp>(*module), maxMoves);
+        auto geometry = wafer::computeWaferPhysicalTensorInfo(type);
+        ASSERT_TRUE(geometry);
+        std::vector<int64_t> actual(geometry->physicalBytes, -1);
+        std::vector<int64_t> expected(actual.size(), -1);
+        llvm::DenseMap<mlir::Value, int64_t> values;
+        llvm::DenseMap<mlir::Value, std::vector<int64_t>> buffers;
+        std::function<void(mlir::Operation *)> run = [&](mlir::Operation *op) {
+          if (auto c = mlir::dyn_cast<mlir::arith::ConstantIndexOp>(op))
+            values[c] = c.value();
+          else if (auto add = mlir::dyn_cast<mlir::arith::AddIOp>(op))
+            values[add] = values.at(add.getLhs()) + values.at(add.getRhs());
+          else if (auto mul = mlir::dyn_cast<mlir::arith::MulIOp>(op))
+            values[mul] = values.at(mul.getLhs()) * values.at(mul.getRhs());
+          else if (auto div = mlir::dyn_cast<mlir::arith::DivUIOp>(op))
+            values[div] = values.at(div.getLhs()) / values.at(div.getRhs());
+          else if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(op)) {
+            auto info = wafer::computeWaferPhysicalTensorInfo(alloc.getType());
+            ASSERT_TRUE(info);
+            buffers[alloc] = std::vector<int64_t>(info->physicalBytes, -1);
+          } else if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+            for (int64_t i = values.at(loop.getLowerBound());
+                 i < values.at(loop.getUpperBound());
+                 i += values.at(loop.getStep())) {
+              values[loop.getInductionVar()] = i;
+              for (auto &nested : *loop.getBody())
+                run(&nested);
+            }
+          } else if (mlir::isa<wafer::InstrRDMAOp, wafer::InstrWDMAOp>(op)) {
+            auto execute = [&](auto move, bool read,
+                               llvm::ArrayRef<int64_t> counts,
+                               llvm::ArrayRef<int64_t> strides) {
+              auto offset = [&](bool source) {
+                auto dynamic = source ? move.getSrcOffsetValue()
+                                      : move.getDstOffsetValue();
+                auto fixed =
+                    source ? move.getSrcOffsetAttr() : move.getDstOffsetAttr();
+                return dynamic ? values.at(dynamic)
+                               : (fixed ? fixed.getInt() : 0);
+              };
+              EXPECT_EQ(read ? move.getSource() : move.getDest(),
+                        roots[read ? 0 : 1]);
+              auto buffer =
+                  buffers.find(read ? move.getDest() : move.getSource());
+              ASSERT_NE(buffer, buffers.end());
+              auto &local = buffer->second;
+              for (int64_t b = 0; b < int64_t(move.getByteCount()); ++b) {
+                int64_t n = b / move.getInnerBytes();
+                int64_t ddr = offset(read) + b % move.getInnerBytes();
+                for (unsigned axis = 0; axis < 3; ++axis) {
+                  ddr += n % counts[axis] * strides[axis];
+                  n /= counts[axis];
+                }
+                int64_t spm = offset(!read) + b;
+                ASSERT_GE(ddr, 0);
+                ASSERT_LT(ddr, int64_t(actual.size()));
+                ASSERT_GE(spm, 0);
+                ASSERT_LT(spm, int64_t(local.size()));
+                if (read) {
+                  ASSERT_EQ(local[spm], -1);
+                  local[spm] = ddr;
+                } else {
+                  ASSERT_NE(local[spm], -1);
+                  ASSERT_EQ(actual[ddr], -1);
+                  actual[ddr] = local[spm];
+                }
+              }
+            };
+            if (auto read = mlir::dyn_cast<wafer::InstrRDMAOp>(op))
+              execute(read, true, read.getSrcIterations(),
+                      read.getSrcStrides());
+            else {
+              auto write = mlir::cast<wafer::InstrWDMAOp>(op);
+              execute(write, false, write.getDstIterations(),
+                      write.getDstStrides());
+            }
+          } else {
+            for (auto &r : op->getRegions())
+              for (auto &block : r)
+                for (auto &nested : block)
+                  run(&nested);
+          }
+        };
+        run(*module);
+        auto calculator =
+            wafer::WaferStaticPhysicalOffsetCalculator::create(type);
+        ASSERT_TRUE(calculator);
+        for (int64_t batch = 0; batch < 2; ++batch)
+          for (int64_t row = 2; row < rows + 2; ++row)
+            for (int64_t c = 64; c < 64 + (mode == 3 ? 128 : width); ++c) {
+              llvm::SmallVector<int64_t> point{batch, row, c};
+              if (mode == 1)
+                point.insert(point.begin() + 1, 0);
+              auto offset = calculator->getByteOffset(point);
+              ASSERT_TRUE(offset);
+              expected[*offset] = *offset;
+              expected[*offset + 1] = *offset + 1;
+            }
+        EXPECT_EQ(actual, expected);
+      }
+}
+
 TEST(LowerInstrToTargetLLVMTest, CopySubviewEndpointsUseTheirBaseCoordinates) {
   for (int64_t extent : {1024, 1025, 1031})
     for (wafer::MemLayout layout :

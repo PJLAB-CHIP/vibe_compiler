@@ -64,17 +64,16 @@ CompilationRequest::create(llvm::StringRef sourceProgramDirectory,
   return CompilationRequest(sourceProgramDirectory, executionConfig);
 }
 
-llvm::Expected<CompilationOptions>
-CompilationOptions::profile(const ExecutionConfig &executionConfig,
-                            OptimizationConfig optimizations,
-                            CompilationTimingMode timing) {
+llvm::Expected<CompilationOptions> CompilationOptions::profile(
+    const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
+    CompilationTimingMode timing, PhysicalTensorLayout externalLayout) {
   if (executionConfig.getTileCount() != ExecutionConfig::kSingleCardTileCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile compilation requires a complete-card Tile kernel "
         "launch");
   return CompilationOptions(/*profileInstrumentation=*/true, optimizations,
-                            timing);
+                            timing, externalLayout);
 }
 
 llvm::Expected<CompilationResult> detail::compileProgramImpl(

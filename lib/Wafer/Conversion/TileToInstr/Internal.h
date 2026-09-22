@@ -208,14 +208,14 @@ mlir::LogicalResult emitGatherScatterDescriptorPlan(
     TileRegionToInstrBufferRecorder *bufferRecorder = nullptr,
     DDRResourceAttr ddrResource = {}, mlir::Value dynamicSourceOffset = {},
     mlir::Value dynamicDestOffset = {});
-llvm::SmallVector<InstrRDMAOp, 4>
-createMappedRDMADescriptors(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                            mlir::Value source, mlir::Value dest,
-                            llvm::ArrayRef<MovementDescriptorPair> descriptors);
-llvm::SmallVector<InstrWDMAOp, 4>
-createMappedWDMADescriptors(mlir::PatternRewriter &rewriter, mlir::Location loc,
-                            mlir::Value source, mlir::Value dest,
-                            llvm::ArrayRef<MovementDescriptorPair> descriptors);
+llvm::SmallVector<InstrRDMAOp, 4> createMappedRDMADescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors,
+    mlir::Value dynamicSourceOffset = {}, mlir::Value dynamicDestOffset = {});
+llvm::SmallVector<InstrWDMAOp, 4> createMappedWDMADescriptors(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, mlir::Value source,
+    mlir::Value dest, llvm::ArrayRef<MovementDescriptorPair> descriptors,
+    mlir::Value dynamicSourceOffset = {}, mlir::Value dynamicDestOffset = {});
 mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter, int64_t value);
 mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::PatternRewriter &rewriter,
                                              mlir::Operation *op,

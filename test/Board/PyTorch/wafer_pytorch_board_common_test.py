@@ -178,6 +178,36 @@ class PyTorchBoardCommonTest(unittest.TestCase):
                         board_runner.summarize_output_error(expected, expected)["max_abs_error"], 0,
                     )
 
+    def test_blocked_payloads_match_physical_coordinates_and_decode(self) -> None:
+        for shape in ((1, 1024, 128), (1, 1025, 131), (2, 3, 1031, 67)):
+            for dtype in (torch.float16, torch.bfloat16):
+                with self.subTest(shape=shape, dtype=dtype):
+                    expected = ((torch.arange(math.prod(shape)) % 113) - 56).to(dtype).reshape(shape)
+                    geometry = common.physical_codec.physical_layout(shape, "NCx", expected.element_size())
+                    physical = common.pack_tensor(expected, "ncx")
+                    self.assertEqual(physical.numel(), geometry.physical_elements)
+                    # Independent coordinate oracle covers rows, channel blocks,
+                    # narrow tails and the gap between outer slices.
+                    coordinates = [tuple(0 for _ in shape), tuple(d - 1 for d in shape)]
+                    for axis, extent in enumerate(shape):
+                        for coordinate in {0, min(63, extent - 1), min(64, extent - 1), extent - 1}:
+                            point = [d - 1 for d in shape]
+                            point[axis] = coordinate
+                            coordinates.append(tuple(point))
+                    for point in coordinates:
+                        index = common.physical_codec.physical_element_offset(geometry, point)
+                        self.assertEqual(physical[index].item(), expected[point].item())
+                    with tempfile.TemporaryDirectory() as directory:
+                        path = pathlib.Path(directory) / "ncx.raw"
+                        common.write_tensor_raw(path, expected, layout="ncx")
+                        self.assertEqual(path.stat().st_size, geometry.physical_bytes)
+                        decoded = common.read_tensor_raw(path, dtype=dtype, shape=shape, layout="ncx")
+                        torch.testing.assert_close(decoded, expected, rtol=0, atol=0)
+                        common.require_manifest_tensor(
+                            {"dtype": "bf16" if dtype == torch.bfloat16 else "f16",
+                             "shape": list(shape), "layout": "ncx", "bytes": geometry.physical_bytes},
+                            expected, context="NCx port")
+
     def test_round_trip_preserves_dtype(self) -> None:
         generator = torch.Generator(device="cpu").manual_seed(20260803)
         for dtype in (

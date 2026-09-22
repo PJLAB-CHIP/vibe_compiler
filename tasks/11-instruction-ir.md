@@ -96,6 +96,11 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   storage/buffer IR 层。
 - RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
   IR 外的调度计划自行恢复这些 view。Structural/layout/movement choice必须先由上游transformation显式变成actual DDR subview。
+- RDMA/WDMA 与 GS 一样，两个 endpoint 各自使用静态 byte offset 或 `index` SSA byte offset，不能同时指定。
+  blocked DDR 窗口保持 actual root encoding，动态平移由上游 subview 坐标证明；Instr 保留 root 和 byte offset SSA。
+  DDR range planning 与 target lowering 均验证动态 offset 的非负范围及 descriptor 最大 end，不能把缺少静态 attr 当作零偏移。
+  target address 通过同一 i64 byte-offset addition 发射，不修改 vendor DMA ABI。跨 Tile 复制读取须映射全部 offset operand；
+  现有只克隆静态 view 的 local-input alternative 不接收动态 offset，不能把 donor SSA 直接捕获到另一 Tile。
 - Compact DMA的SPM端必须在current memref strides下连续；仅layout标称Tensor不足以证明连续。
   RDMA的SPM destination与WDMA的SPM source均为顺序payload，strided SPM view必须进入既有mapped descriptor路径，
   不得丢弃其行间隔。覆盖1024/1025/1031、F16/BF16、动态base offset与load/store两个方向，逐字节核对实际descriptor的地址对。

@@ -232,6 +232,12 @@ getLayoutDomain(mlir::RankedTensorType type, bool externalBoundary) {
 
 static std::optional<MemLayout>
 getExplicitTensorAllocationLayout(mlir::Value value) {
+  if (auto bridge = value.getDefiningOp<mlir::bufferization::ToTensorOp>()) {
+    auto type = mlir::dyn_cast<mlir::MemRefType>(bridge.getMemref().getType());
+    auto memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
+    if (memory)
+      return memory.getLayout();
+  }
   auto result = mlir::dyn_cast<mlir::OpResult>(value);
   auto allocation = result ? mlir::dyn_cast<mlir::bufferization::AllocTensorOp>(
                                  result.getOwner())
@@ -1091,10 +1097,19 @@ preflightOutputPieces(StructuredMaterializationRelations &relations,
   return plans;
 }
 
-static mlir::LogicalResult materializeOutputDestinations(
-    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
-    llvm::SmallVectorImpl<OutputPiecePlan> &plans,
-    LayoutOptimizationStatistics &statistics, std::string &detail) {
+static mlir::LogicalResult
+materializeOutputDestinations(mlir::ModuleOp module,
+                              StructuredMaterializationRelations &relations,
+                              llvm::SmallVectorImpl<OutputPiecePlan> &plans,
+                              LayoutOptimizationStatistics &statistics,
+                              std::string &detail, MemLayout externalLayout) {
+  for (const OutputPiecePlan &plan : plans) {
+    auto type = getMemRefType(plan.fullType, MemorySpace::DDR, externalLayout);
+    if (!computeWaferPhysicalTensorInfo(type)) {
+      detail = "external output has no supported physical encoding";
+      return mlir::failure();
+    }
+  }
   llvm::SmallVector<
       std::pair<mlir::Operation *, llvm::SmallVector<unsigned, 2>>, 8>
       byRegion;
@@ -1173,7 +1188,7 @@ static mlir::LogicalResult materializeOutputDestinations(
       return mlir::failure();
     }
     mlir::MemRefType destinationType =
-        getMemRefType(plan.fullType, MemorySpace::DDR, MemLayout::Tensor);
+        getMemRefType(plan.fullType, MemorySpace::DDR, externalLayout);
     const unsigned argumentIndex = function.getNumArguments();
     function.insertArgument(argumentIndex, destinationType,
                             mlir::DictionaryAttr{}, piece.getLoc());
@@ -2311,7 +2326,8 @@ static void materializeConstantReads(mlir::ModuleOp module) {
 
 LayoutOptimizationResult
 prepareCurrentLayoutInput(mlir::ModuleOp module,
-                          StructuredMaterializationRelations &relations) {
+                          StructuredMaterializationRelations &relations,
+                          const ExternalBufferLayout &external) {
   LayoutOptimizationResult result;
   result.statistics.invocations = 1;
   if (!module) {
@@ -2407,6 +2423,62 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     result.detail = std::move(detail);
     return result;
   }
+  if (external.layout != PhysicalTensorLayout::Tensor &&
+      external.layout != PhysicalTensorLayout::NCx) {
+    result.status = ExactPBQPStatus::NoSolution;
+    result.detail = "external layout must be tensor or ncx";
+    return result;
+  }
+  if (external.layout == PhysicalTensorLayout::NCx) {
+    llvm::SmallVector<mlir::BlockArgument> inputs;
+    auto walk = module.walk([&](mlir::func::FuncOp function) {
+      if (function.isExternal())
+        return mlir::WalkResult::advance();
+      for (mlir::BlockArgument argument : function.getArguments()) {
+        auto binding = function.getArgAttrOfType<ProgramArgumentAttr>(
+            argument.getArgNumber(), kWaferProgramArgumentAttrName);
+        if (!binding ||
+            !llvm::is_contained(external.inputArguments, binding.getIndex()))
+          continue;
+        auto tensor =
+            mlir::dyn_cast<mlir::RankedTensorType>(argument.getType());
+        if (!tensor || tensor.getRank() < 3 || !tensor.hasStaticShape())
+          return mlir::WalkResult::interrupt();
+        auto type = getMemRefType(tensor, MemorySpace::DDR, MemLayout::NCx);
+        if (!computeWaferPhysicalTensorInfo(type))
+          return mlir::WalkResult::interrupt();
+        inputs.push_back(argument);
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (walk.wasInterrupted()) {
+      result.status = ExactPBQPStatus::NoSolution;
+      result.detail =
+          "ncx external input requires a supported static rank >= 3 tensor";
+      return result;
+    }
+    mlir::IRRewriter rewriter(module.getContext());
+    for (mlir::BlockArgument argument : inputs) {
+      auto function =
+          mlir::cast<mlir::func::FuncOp>(argument.getOwner()->getParentOp());
+      auto tensor = mlir::cast<mlir::RankedTensorType>(argument.getType());
+      auto type = getMemRefType(tensor, MemorySpace::DDR, MemLayout::NCx);
+      auto functionType = function.getFunctionType();
+      llvm::SmallVector<mlir::Type> types(functionType.getInputs());
+      types[argument.getArgNumber()] = type;
+      rewriter.modifyOpInPlace(function, [&] {
+        argument.setType(type);
+        function.setType(
+            rewriter.getFunctionType(types, functionType.getResults()));
+      });
+      rewriter.setInsertionPointToStart(argument.getOwner());
+      auto logical = rewriter.create<mlir::bufferization::ToTensorOp>(
+          argument.getLoc(), tensor, argument);
+      logical.setRestrict(true);
+      rewriter.replaceAllUsesExcept(argument, logical.getResult(), logical);
+      retargetRelationValue(relations, argument, logical.getResult());
+    }
+  }
   auto outputPlans = preflightOutputPieces(relations, detail);
   if (mlir::failed(outputPlans)) {
     result.status = ExactPBQPStatus::NoSolution;
@@ -2414,7 +2486,9 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
   if (mlir::failed(materializeOutputDestinations(
-          module, relations, *outputPlans, result.statistics, detail))) {
+          module, relations, *outputPlans, result.statistics, detail,
+          external.layout == PhysicalTensorLayout::NCx ? MemLayout::NCx
+                                                       : MemLayout::Tensor))) {
     result.detail = std::move(detail);
     return result;
   }
@@ -3400,11 +3474,10 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
   return result;
 }
 
-LayoutOptimizationResult
-resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
-                                  StructuredMaterializationRelations &relations,
-                                  uint64_t workLimit) {
-  auto prepared = prepareCurrentLayoutInput(module, relations);
+LayoutOptimizationResult resolveCurrentLayoutsAndBufferize(
+    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
+    uint64_t workLimit, const ExternalBufferLayout &external) {
+  auto prepared = prepareCurrentLayoutInput(module, relations, external);
   if (!prepared.succeeded())
     return prepared;
   auto queried = queryCurrentLayoutAssignment(module);

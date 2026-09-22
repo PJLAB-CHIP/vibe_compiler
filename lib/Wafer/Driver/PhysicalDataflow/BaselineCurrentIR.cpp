@@ -412,9 +412,14 @@ ExecutableCompilationResult compileBaselineCurrentIR(
               : ExecutableCompilationStatus::CompilerFailure,
           "baseline-attention-decomposition", attentionFailure.detail);
 
+    ExternalBufferLayout external;
+    external.layout = options.externalLayout;
+    for (const auto &input : program.distributedInputs)
+      external.inputArguments.push_back(input.index);
     LayoutOptimizationResult layout = timedStage("layout-bufferization", [&] {
       return resolveCurrentLayoutsAndBufferize(
-          *candidate->module, candidate->relations, options.layoutWorkLimit);
+          *candidate->module, candidate->relations, options.layoutWorkLimit,
+          external);
     });
     recordLayoutInstrumentation(layout.statistics);
     if (statistics) {

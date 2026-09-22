@@ -1,5 +1,6 @@
 add_mlir_library(WaferTileTransforms
   BoundaryMovement.cpp
+  PhysicalBoundaryViews.cpp
   BooleanReduction.cpp
   DistributedCollectiveMovement.cpp
   ElementwisePayloads.cpp

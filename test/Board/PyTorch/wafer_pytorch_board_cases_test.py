@@ -200,7 +200,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                             manifest[table] = [
                                 {"id": index + (10 if table == "outputs" else 0), "role_index": index,
                                  "dtype": dtype_names[tensor.dtype], "shape": list(tensor.shape),
-                                 "bytes": cases.common.tensor_nbytes(tensor)}
+                                 "bytes": cases.common.tensor_nbytes(tensor), "layout": "tensor"}
                                 for index, tensor in enumerate(tensors)
                             ]
                         package = root / "ports"
@@ -737,7 +737,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             case="attention-decode-kv-cache",
             dtype="float16",
             seed=17,
-            prepared_work_dir=None, search_mode=None, search_width=None, search_trials=None,
+            prepared_work_dir=None, search_mode=None, search_width=None, external_layout="tensor", search_trials=None,
             compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
             wafer_run=pathlib.Path("wafer-run"),
@@ -892,7 +892,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             ),
         )
         args = types.SimpleNamespace(
-            prepared_work_dir=None, search_mode=None, search_width=None, search_trials=None,
+            prepared_work_dir=None, search_mode=None, search_width=None, external_layout="tensor", search_trials=None,
             target_model=False,
             compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
@@ -1021,7 +1021,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 prepared_work_dir=None,
                 search_mode="deep" if policy == "search" else None,
                 search_width=16 if policy == "search" else None,
-                search_trials=126 if policy == "search" else None,
+                external_layout="tensor", search_trials=126 if policy == "search" else None,
                 compile_timeout_seconds=2400,
                 wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False,
                 profile=False, profile_trace_event_limit=None,
@@ -1089,7 +1089,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 cases.common.write_tensor_raw(path, tensor)
                 paths[index] = path
             actual = board_runner.read_single_card_continuation_outputs(
-                paths, expected
+                paths, expected, {paths[i]: cases.common.TensorCapture(t, "tensor")
+                                  for i, t in enumerate(expected)}
             )
         for actual_tensor, expected_tensor in zip(
             actual, expected, strict=True

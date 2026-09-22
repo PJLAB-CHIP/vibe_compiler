@@ -1,0 +1,1672 @@
+{
+  "date": "2026-09-23",
+  "scope": "指定 BF16 GEMM 与 attention 的直接 NCx DDR 外部输入输出测量",
+  "identity": {
+    "head": "b5931e17cf1e41bb1e49e7825589ed1ed3777386",
+    "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+    "driver": "see run diagnostics",
+    "timestamp": "2026-09-22T19:38:21.133319+00:00",
+    "tools": {
+      "build/bin/wafer-compile": "28a5341324f86cdd0f1b4d7b67e7605484682e9ba440d751eadabd03dbcb5b94",
+      "build/board-bin/wafer-run": "22e89cdb18e7b0356cd31324bdd4ec747a33047c40cce5a69d4d80a94c3fc0fa",
+      "build/bin/wafer-board-diagnose": "f4076d19d1fc88687bb6a674a40e4bcbd54ef0db4c12a9c3021fe3f9a28aa187",
+      "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/case.py": "52da7a059b490edfc0f1da8fdd7baa6946958836aff57ab1d5f60e32797a38f7"
+    }
+  },
+  "root": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923",
+  "implementation": "外部 NCx memref、root/subview 保留、RDMA/WDMA SSA byte offset、周期窗口 descriptor 与 caller 编解码；未修改 runtime ABI、数值或搜索预算。",
+  "cases": {
+    "gemm": {
+      "seed": 20260803,
+      "dtype": "bf16",
+      "external_layout": "ncx",
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "no_card_passed": true,
+      "device_elapsed_ms": [
+        13.322,
+        13.704,
+        13.731
+      ],
+      "median_ms": 13.704,
+      "input_ports": [
+        {
+          "id": 0,
+          "role_index": 1,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            1024,
+            4096
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            1024,
+            4096
+          ],
+          "bytes": 8388608,
+          "alignment": 256
+        },
+        {
+          "id": 1,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            4096,
+            1024
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            4096,
+            1024
+          ],
+          "bytes": 8388608,
+          "alignment": 256
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "bytes": 33554432,
+          "alignment": 256
+        }
+      ],
+      "numeric_audits": [
+        {
+          "case": "single-card-gemm-m4096-k1024-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "77d41f30a9b120f9b857f180e8fc3f3f6ca4715b27fe80e69dcf39f331d38487",
+          "comparison_passed": true,
+          "memory_guard_bytes": 9728,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+            "card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 0.5,
+              "cosine_similarity": 0.9999999973703549,
+              "relative_l2_error": 7.252768781293553e-05,
+              "elementwise_mismatches": 99,
+              "mean_abs_error": 2.4142965550311146e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=13322000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k1024-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "77d41f30a9b120f9b857f180e8fc3f3f6ca4715b27fe80e69dcf39f331d38487",
+          "comparison_passed": true,
+          "memory_guard_bytes": 9728,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+            "card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 0.5,
+              "cosine_similarity": 0.9999999973703549,
+              "relative_l2_error": 7.252768781293553e-05,
+              "elementwise_mismatches": 99,
+              "mean_abs_error": 2.4142965550311146e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=13704000"
+          ]
+        },
+        {
+          "case": "single-card-gemm-m4096-k1024-n4096",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "77d41f30a9b120f9b857f180e8fc3f3f6ca4715b27fe80e69dcf39f331d38487",
+          "comparison_passed": true,
+          "memory_guard_bytes": 9728,
+          "comparison": {
+            "rtol": 0.016,
+            "atol": 1e-05,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+            "card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                4096,
+                4096
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 16777216,
+              "max_abs_error": 0.5,
+              "cosine_similarity": 0.9999999973703549,
+              "relative_l2_error": 7.252768781293553e-05,
+              "elementwise_mismatches": 99,
+              "mean_abs_error": 2.4142965550311146e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=13731000"
+          ]
+        }
+      ],
+      "diagnostics": [
+        {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-verified-prepared/package",
+            "--memory-guards",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_output_0.capture.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 938010,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        },
+        {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-verified-prepared/package",
+            "--memory-guards",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_output_0.capture.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 938062,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        },
+        {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-verified-prepared/package",
+            "--memory-guards",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_output_0.capture.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board/raw/card_00_user_input_1.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 938385,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      ],
+      "prepare_command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/case.py",
+        "--case",
+        "single-card-gemm-m4096-k1024-n4096",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-verified-prepared",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--external-layout",
+        "ncx",
+        "--compile-timing",
+        "--memory-guards",
+        "--no-card"
+      ],
+      "board_command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/case.py",
+        "--case",
+        "single-card-gemm-m4096-k1024-n4096",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-board",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--memory-guards",
+        "--device-timing",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--board-diagnose-tool",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+        "--prepared-work-dir",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/gemm-verified-prepared",
+        "--repeat",
+        "3",
+        "--external-layout",
+        "ncx"
+      ],
+      "artifacts": {
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00000.mlir": "c098378c8382c6151e3ceeaa6c453f1db92e85901cff96e6896461f3d25fe8e8",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00001.mlir": "405bf1ecb08c12a8882758607b11fb41129ba1a056e53945a86c6bf73f0d4ad6",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00002.mlir": "cfbcfc6e5634ae9b3bbba8822c005251314de1bcc428ca62afec9db8689f0fb7",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00003.mlir": "7be6f3abbea86bdd9190b0b0a3b3220663d73a4be95d4d057d57ac0ce5f43b78",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00004.mlir": "245c2fb501e7682453f890ad9aabdc7ab092938b8d6ee6ed73ad8710f67b7bc0",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00005.mlir": "bdab22e788086e3bf50994abff0456e20f2b78a7167aa7b55b890949e7d79f0d",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00006.mlir": "df4df0081d6e9ded692a0f6121283fcd4a5b1bfdab38a46ce308535ea61e0000",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00007.mlir": "a10cb42b515ae75e24c082052398f87747035b2ebe58883036a087c4ffdd9c95",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00008.mlir": "71ceac683be19638236407c047ab45fbbc574bd88c2d0d91fdd73a27584512dc",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00009.mlir": "3b28da4112aac2312e39f4adf56348248edcc91d4234c17ece5c1375b8a2c1be",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00010.mlir": "b5f43eb28338c07a43e9e4aaba53e584d406361bec8700c7cae825afc60ac63b",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00011.mlir": "4d418cc429e1dd1a8dcd508322eb3d362a8001337cb3bff318afe000dcbaa9a5",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00012.mlir": "e30131dae6c46eaaad83a441e25646c8005563248e24f210dee4cd4dcfa2c70f",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00013.mlir": "9752b26ea2fb53ad66390052d52dec44783e91975982a95c9325d32347e98589",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00014.mlir": "d0f46fbad698b34e63481a908f177472fcbb2243031dda5925e8bd77da28ce95",
+        "gemm-verified-prepared/compiler-ir/instruction/tile_00015.mlir": "25f37d1d2e7a2ee61a48b8baf86501d3b78313c36da0690afed841970e904da4",
+        "gemm-verified-prepared/package/data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "gemm-verified-prepared/package/manifest.json": "77d41f30a9b120f9b857f180e8fc3f3f6ca4715b27fe80e69dcf39f331d38487",
+        "gemm-verified-prepared/package/modules/module_00000.so": "75e7dcc3f6633d20b3427bd9b79612761065da8366f3ae62bfac33b3d24b509c",
+        "gemm-verified-prepared/raw/card_00_output_0.expected.bf16.raw": "ff7c76669ef8a2cbf062f339072131d14c38a976b8f2cedd79409b53124f3788",
+        "gemm-verified-prepared/raw/card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+        "gemm-verified-prepared/raw/card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a",
+        "gemm-verified-prepared/source-program/functions/forward.meta": "b006855889d46e968f30ad2560364bef8fb468986f364ce61d4c6bcc783aeda9",
+        "gemm-verified-prepared/source-program/functions/forward.stablehlo.bc": "cee24baa5c5c5d4c075b0dcd6196b5ada530ef947f25fc932e119517b7f58abc",
+        "gemm-board.log": "af7b88718d2895efd64d0f82b3c7907122a606f1063eae88e9da59f32b8c5427",
+        "gemm-board/diagnostics-01/occupancy.json": "243670f7a9a5470c3c69c741b05da98b3a3d3f87cb7646b6e0172294d1630043",
+        "gemm-board/diagnostics-01/run.json": "1e9a900849846494438e057d2a580abe63bc75c071f03a239e1f0a5617c80ad3",
+        "gemm-board/diagnostics-02/occupancy.json": "243670f7a9a5470c3c69c741b05da98b3a3d3f87cb7646b6e0172294d1630043",
+        "gemm-board/diagnostics-02/run.json": "1da59bff53baa302e5e4889b253ccd6354b6a046b83025deeca43f26e4bf7bf1",
+        "gemm-board/diagnostics-03/occupancy.json": "243670f7a9a5470c3c69c741b05da98b3a3d3f87cb7646b6e0172294d1630043",
+        "gemm-board/diagnostics-03/run.json": "24ad3152967a1d6259777ff565f8882f70ac421cd8d6cbd197dc817207bd21f3",
+        "gemm-board/diagnostics-01/firmware.log": "9e3be0aed1930f3bf2a90fa48f301597722e907c5f7b85de3d4b62ab10f4aa7c",
+        "gemm-board/diagnostics-01/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+        "gemm-board/diagnostics-01/runner.log": "30c07cb079f67dfbbb27effb887c1dc00c5f8028271c4a62fbf1679f52290d7b",
+        "gemm-board/diagnostics-02/firmware.log": "a3dfa0c2b9982eb55db8fd87b40aaa396c1765a3b89c9767d0399d6381844fd1",
+        "gemm-board/diagnostics-02/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+        "gemm-board/diagnostics-02/runner.log": "13524756a07c9c4313151d93c5d213560363d6dd4e203096097ecf394ebe6721",
+        "gemm-board/diagnostics-03/firmware.log": "96fe8437cd3a06969e48aea5aa4fc34f9edd593d58d4cea291d4bc4e4a7b56c1",
+        "gemm-board/diagnostics-03/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+        "gemm-board/diagnostics-03/runner.log": "09c11b4db0d382640e0baa2f5c6339df84ed3db338f9a072638a13c454f64ecc"
+      }
+    },
+    "attention": {
+      "seed": 20260922,
+      "dtype": "bf16",
+      "external_layout": "ncx",
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "no_card_passed": true,
+      "device_elapsed_ms": [
+        12.715,
+        12.302,
+        12.592
+      ],
+      "median_ms": 12.592,
+      "input_ports": [
+        {
+          "id": 0,
+          "role_index": 2,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        },
+        {
+          "id": 1,
+          "role_index": 1,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        },
+        {
+          "id": 2,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        }
+      ],
+      "numeric_audits": [
+        {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "8f6986964cc3ecfa840e9dbadce3a3aa27309633b7b3eb802efd5e4ca6d468d8",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+            "card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+            "card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=12715000"
+          ]
+        },
+        {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "8f6986964cc3ecfa840e9dbadce3a3aa27309633b7b3eb802efd5e4ca6d468d8",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+            "card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+            "card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=12302000"
+          ]
+        },
+        {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": "standard",
+          "search_width": 8,
+          "search_trials": 42,
+          "manifest_sha256": "8f6986964cc3ecfa840e9dbadce3a3aa27309633b7b3eb802efd5e4ca6d468d8",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+            "card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+            "card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=12592000"
+          ]
+        }
+      ],
+      "diagnostics": [
+        {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-verified-prepared/package",
+            "--memory-guards",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_output_0.capture.bf16.raw",
+            "--resource",
+            "2=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_1.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_2.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 939762,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        },
+        {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-verified-prepared/package",
+            "--memory-guards",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_output_0.capture.bf16.raw",
+            "--resource",
+            "2=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_1.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_2.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 939810,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        },
+        {
+          "command": [
+            "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+            "--package-dir",
+            "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-verified-prepared/package",
+            "--memory-guards",
+            "--device-timing",
+            "--board",
+            "--device-id",
+            "0",
+            "--expected-runtime-version",
+            "1400",
+            "--expected-device-name",
+            "/dev/accel/dev-0",
+            "--expected-pci-bus-id",
+            "0000:3b:00.0",
+            "--expected-tile-count",
+            "16",
+            "--expected-runtime-library-sha256",
+            "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+            "--completion-timeout-ms",
+            "60000",
+            "--output",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_output_0.capture.bf16.raw",
+            "--resource",
+            "2=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_0.bf16.raw",
+            "--resource",
+            "1=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_1.bf16.raw",
+            "--resource",
+            "0=/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board/raw/card_00_user_input_2.bf16.raw"
+          ],
+          "host_register_capture": false,
+          "device": "/dev/accel/dev-0",
+          "pci_bus_id": "0000:3b:00.0",
+          "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+          "driver": "F64164C6460FEE30EBF66E2",
+          "problems": [],
+          "pid": 939873,
+          "returncode": 0,
+          "launched": true,
+          "alarms": [],
+          "passed": true
+        }
+      ],
+      "prepare_command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/case.py",
+        "--case",
+        "attention-prefill-28-heads-2048",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260922",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-verified-prepared",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--external-layout",
+        "ncx",
+        "--compile-timing",
+        "--memory-guards",
+        "--no-card"
+      ],
+      "board_command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/case.py",
+        "--case",
+        "attention-prefill-28-heads-2048",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260922",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-board",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--memory-guards",
+        "--device-timing",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--board-diagnose-tool",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+        "--prepared-work-dir",
+        "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/attention-verified-prepared",
+        "--repeat",
+        "3",
+        "--external-layout",
+        "ncx"
+      ],
+      "artifacts": {
+        "attention-verified-prepared/compiler-ir/instruction/tile_00000.mlir": "a68007de2e4cf0315cfe633864760ef527ae4ccbd56da820b9bfddaa47c2ddc5",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00001.mlir": "c863d65beee7b84343a33eb548d58695fe9ad27573c714bb22bff73d169d3d4f",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00002.mlir": "c6ae81996dcbd91a9d192d0329daf78515d5686d8c9072534435cce534241d41",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00003.mlir": "141605d783faa3b62c4d45be643099c978f620e7a1e09715cec5a813403eb16d",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00004.mlir": "ecf2364c403bf84edbc4893db6668261a20b07ec3a41115bf24d01ef061df34e",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00005.mlir": "c2f78c22f49477e0f0b761f0e89bcfff6d63f63572be7119cb07f74ed2345cf4",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00006.mlir": "4925cf824f5f2520773fc598f29d7e27674e4e14bf63a5b2420722d32778ac9d",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00007.mlir": "670a4ed8908c6ef7a935f5e82bec1bc62108026d1bb8e66216ce99e56ad64399",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00008.mlir": "a247ee708563e4bf89d6cc3cdb7ab7cb32c5f17ad913a78f01061b4077cdd4fc",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00009.mlir": "c215bb8790bcef4b61a4451e0b99ca4492431accd1296f836c92482755c9d9cb",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00010.mlir": "b81085f04c534e6ce9397b188798892c957c09561bf38ab73c9d4e4e5e81e1fb",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00011.mlir": "8052347664c6c65a518d0b816839cfcc0c21f4e3a1339782fa17d985383c0c73",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00012.mlir": "3f10c143c38f1c0a6a014dcdeb9a3961b71734c04ef0fe126f051c9a920301d0",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00013.mlir": "67adc8ac46069d893ae06504601ce89d22627dec4a839690ee1c8c54284977fd",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00014.mlir": "c3114bea9856d7566e16c25fa670bbf047ab8fa781c47182c90ec8494070cb69",
+        "attention-verified-prepared/compiler-ir/instruction/tile_00015.mlir": "d94e967c9de251dc89ebb5ef971c204428163352e962d9a311c17dee8418697a",
+        "attention-verified-prepared/package/data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+        "attention-verified-prepared/package/manifest.json": "8f6986964cc3ecfa840e9dbadce3a3aa27309633b7b3eb802efd5e4ca6d468d8",
+        "attention-verified-prepared/package/modules/module_00000.so": "5affce0ca31aab59e42739a5aa6ba7ee07b667f2e48174e84e74fa5505d3858d",
+        "attention-verified-prepared/raw/card_00_output_0.expected.bf16.raw": "d65d2469a07e81999f19e7e2d20dde377150348125b13533b1cde8cbe4858eff",
+        "attention-verified-prepared/raw/card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+        "attention-verified-prepared/raw/card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+        "attention-verified-prepared/raw/card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd",
+        "attention-verified-prepared/source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "attention-verified-prepared/source-program/constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+        "attention-verified-prepared/source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "attention-verified-prepared/source-program/functions/forward.meta": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+        "attention-verified-prepared/source-program/functions/forward.stablehlo.bc": "0eebf1e15f9fe1e2c09d3e23ae0a9ea9aa1b7abd684f3645a7b069a653e96223",
+        "attention-board.log": "34840e5aafc7f6bd2d530e6afecd381f13edd05fc870c8e859b78fa2aad5670e",
+        "attention-board/diagnostics-01/occupancy.json": "243670f7a9a5470c3c69c741b05da98b3a3d3f87cb7646b6e0172294d1630043",
+        "attention-board/diagnostics-01/run.json": "f7e582ffdecb7524c5deccce662d7f6221a5e65df800efaa3810daa588e43f4a",
+        "attention-board/diagnostics-02/occupancy.json": "243670f7a9a5470c3c69c741b05da98b3a3d3f87cb7646b6e0172294d1630043",
+        "attention-board/diagnostics-02/run.json": "feb15791110a58f02c18ed7e3dc5e5bda341bef086014fd549e631ee13e293aa",
+        "attention-board/diagnostics-03/occupancy.json": "243670f7a9a5470c3c69c741b05da98b3a3d3f87cb7646b6e0172294d1630043",
+        "attention-board/diagnostics-03/run.json": "ad54b9a8b4597069b0883e4b0052739574b4caf01f79301dcc5a09e8eb6fc58f",
+        "attention-board/diagnostics-01/firmware.log": "eb728d1106116bf11fa59d6d36eae2b4cc2ce51c0004d233d012068c9e3e8478",
+        "attention-board/diagnostics-01/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+        "attention-board/diagnostics-01/runner.log": "2049c4112d3bc76eeb3c4cf0ab75c502898214e034c27f5818539bc402d2dfc6",
+        "attention-board/diagnostics-02/firmware.log": "dedbe3f3733160c5f7d56d353d0d1684da9170af0e57fa5d41d40642b48db4c0",
+        "attention-board/diagnostics-02/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+        "attention-board/diagnostics-02/runner.log": "68031b49efe6cb10b35755b112538931b9754d37d5e2221a9766f2be11922a5d",
+        "attention-board/diagnostics-03/firmware.log": "9390cf4f9f04e352d99b22575702874d3300b68703ab40872fe62dd1435b27be",
+        "attention-board/diagnostics-03/kernel.log": "19c4e28b2f54ea8f217db4e622b0a5c758efa7b77ce2dc0394b6d159568c0b2e",
+        "attention-board/diagnostics-03/runner.log": "5a9b467e153fc5309ff2e4eb379c29f85c2ce9f38bf08980e210e991a989ced4"
+      }
+    }
+  },
+  "gemm_actual_ir_comparison": {
+    "tensor_baseline": {
+      "dynamic_calls": {
+        "rdma": 80,
+        "fill": 128,
+        "gather_scatter": 3072,
+        "gemm": 1024,
+        "ncc_join": 1921,
+        "dte_send": 960,
+        "dte_wait": 1920,
+        "wdma": 128,
+        "dte_recv": 960
+      },
+      "dynamic_payload_bytes": {
+        "rdma": 16777216,
+        "gather_scatter": 704643072,
+        "dte_send": 125829120,
+        "wdma": 33554432,
+        "dte_recv": 125829120
+      },
+      "tiles": [
+        {
+          "tile": "tile_00000",
+          "calls": {
+            "rdma": 65,
+            "fill": 8,
+            "gather_scatter": 192,
+            "gemm": 64,
+            "ncc_join": 64,
+            "dte_send": 64,
+            "dte_wait": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 8912896,
+            "gather_scatter": 44040192,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00001",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00002",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00003",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00004",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00005",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00006",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00007",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00008",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00009",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00010",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00011",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00012",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 65,
+            "dte_recv": 64,
+            "dte_wait": 64,
+            "gemm": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00013",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00014",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00015",
+          "calls": {
+            "rdma": 1,
+            "fill": 8,
+            "gather_scatter": 192,
+            "ncc_join": 128,
+            "dte_recv": 64,
+            "dte_wait": 128,
+            "gemm": 64,
+            "dte_send": 64,
+            "wdma": 8
+          },
+          "bytes": {
+            "rdma": 524288,
+            "gather_scatter": 44040192,
+            "dte_recv": 8388608,
+            "dte_send": 8388608,
+            "wdma": 2097152
+          }
+        }
+      ]
+    },
+    "ncx_current": {
+      "dynamic_calls": {
+        "fill": 64,
+        "rdma": 512,
+        "gather_scatter": 768,
+        "gemm": 256,
+        "wdma": 64,
+        "ncc_join": 16
+      },
+      "dynamic_payload_bytes": {
+        "rdma": 167772160,
+        "gather_scatter": 402653184,
+        "wdma": 33554432
+      },
+      "tiles": [
+        {
+          "tile": "tile_00000",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00001",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00002",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00003",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00004",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00005",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00006",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00007",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00008",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00009",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00010",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00011",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00012",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00013",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00014",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        },
+        {
+          "tile": "tile_00015",
+          "calls": {
+            "fill": 4,
+            "rdma": 32,
+            "gather_scatter": 48,
+            "gemm": 16,
+            "wdma": 4,
+            "ncc_join": 1
+          },
+          "bytes": {
+            "rdma": 10485760,
+            "gather_scatter": 25165824,
+            "wdma": 2097152
+          }
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "NCx 外部 IO 已通过指定实卡；内部仍有 Tensor↔NCx 转换。",
+    "动态窄 C tail 分段平移未实现，明确拒绝；这不是硬件不支持的结论。",
+    "新策略与历史 Tensor 策略不同，耗时差不能只归因于物理布局；本轮未采 profile。",
+    "本轮未运行历史 package；历史结果只作有条件比较。"
+  ],
+  "host_validation": {
+    "canonical_incremental": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/wafer-ncx-build-10.log",
+    "canonical_incremental_passed": true,
+    "subsequent_ninja_noop": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/wafer-ncx-build-noop.log",
+    "subsequent_ninja_noop_passed": true,
+    "initial_component_gates": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/wafer-ncx-host-gates.log",
+    "initial_failures": [
+      "旧 DDR Tensor-only verifier fixture，已更新为真实规模 NCx/NTensor 接受测试。",
+      "静态 packed BOOL 在新增 byte-offset calculator 处提前失败，已将 calculator 限制到动态地址路径。"
+    ],
+    "final_affected_gates": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/wafer-ncx-final-conversion-lit.log",
+    "final_conversion_and_lit_passed": true,
+    "ncx_exact_byte_and_dynamic_range_leaves": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/wafer-ncx-conversion-final-leaves.log",
+    "boundary_root_leaf": "/data/vibe_compiler-validation/direct-ncx-ddr-20260923/wafer-ncx-boundary-test-2.log",
+    "driver_suite_pending": false,
+    "driver_suite_passed": true,
+    "all_affected_gates_passed_after_fixes": true,
+    "validation_scope": "11 component suites 和 3 组 caller/codec 本轮构建实际执行；最后静态 BOOL 修复后重跑 conversion 全45项、lit 全310项，并重新生成两项实卡包。未将此前两项失败算通过。",
+    "logs_sha256": {
+      "wafer-ncx-build-10.log": "cd6df44a6df494e1a34cb9a8e66c7178eb925406c13411da651442ce204b10aa",
+      "wafer-ncx-build-noop.log": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e",
+      "wafer-ncx-host-gates.log": "2fd6f8cc2cdf46f1a83507a8fd22813f8e2458fa3f7495d5d0fdd3d2385827b7",
+      "wafer-ncx-conversion-final-leaves.log": "6a14b1248e19b28b8412855b2fd2ad05b47292535fa6d67e40c35b682b1bb8c0",
+      "wafer-ncx-final-conversion-lit.log": "6e684f4f6d665ec0e2660a93ec9b236bfdcecdb93a1d8bd8b106ce34f3407160",
+      "wafer-ncx-boundary-test-2.log": "f03e34e20afe5c40f9bfda0cace8a79166b5cbcb8dd71cd0e0da9602c2f3bfdc"
+    }
+  },
+  "baselines": {
+    "gemm": {
+      "median_ms": 3.495,
+      "evidence": "gemm-m4096-k1024-n4096-20260923.json"
+    },
+    "attention": {
+      "median_ms": 3.649,
+      "evidence": "board-performance-results.md#2026-09-22固定指令参数准备"
+    }
+  },
+  "source_file_sha256": {
+    "include/Wafer/Driver/Compilation.h": "4e3305e689da0159b4e06dbecedac42fecb91de6dedc382e4bf72eb5481391f6",
+    "include/Wafer/IR/Instr/InstructionOps.td": "ccac068d46bb3ae3c984c773b832a52a0a0349d032b74264883ded27fbba524e",
+    "lib/Wafer/CodeGen/DeviceExecutableInternal.h": "ef9fc20ea199db7c1a26e7e4789f316a98bb767db27c30f88fb5aef09f1b91fb",
+    "lib/Wafer/Conversion/InstrToLLVM/LowerInstrToTargetLLVMInternal.h": "e29bd1d1204950840ae87862cc67ccdf6b4ce9953cb7d0d6b706ab2b02495a4a",
+    "lib/Wafer/Conversion/InstrToLLVM/MovementTargetCallLowering.cpp": "d76177fc7865066bf3806a148ad7982aa5045206f72e2f691bc2b581016ecf71",
+    "lib/Wafer/Conversion/InstrToLLVM/TargetLoweringVerification.cpp": "adb6b73377359649f485ca85fcaea097d0a0c66e16891e396e12507c5a26bafe",
+    "lib/Wafer/Conversion/TileToInstr/Internal.h": "3d26237bc842924d32f9086408796754cc03157529025716858c04dc750d95a3",
+    "lib/Wafer/Conversion/TileToInstr/MovementLowering.cpp": "0211b96eaad35882d55952a581664e0af56bdaffc6093583b359ec73f10a3670",
+    "lib/Wafer/Conversion/TileToInstr/MovementSupport.cpp": "2ab6f36e7beae945e18a585a396160c5fa3aa6b1a3a538b78befe829cd84cf9d",
+    "lib/Wafer/Driver/Compilation.cpp": "5c3c3f4e27df2548d143723d8acebe38e22421f4ffb1848897c54f53cc86946d",
+    "lib/Wafer/Driver/CompilationInternal.h": "40543eb13d841b64818cbc7e9690f8f6590405281ac148fc0003dbb12280f50d",
+    "lib/Wafer/Driver/CompilationOrchestration.cpp": "d286b58c9653377b598de7bba55555950de5d9e7da195f41a1c7cd361a338d94",
+    "lib/Wafer/Driver/DeviceExecutableConstruction.cpp": "349df0aff21f130493488116636ebbe5b94d96bf450c6a043419c1dd16765313",
+    "lib/Wafer/Driver/PackageAssembly.cpp": "63a17a4c4c06ed3dac2ba91796a813a0c2ea509ad14e21b552560a763ec27e8f",
+    "lib/Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.cpp": "8fce31fbd471609934efb681630443cc50a3415175cd823fc84136783a340174",
+    "lib/Wafer/Driver/PhysicalDataflow/BaselineCurrentIR.h": "7ef7d94e523a52b1f009cb82d03354d4800a9510fa4945d2a6ec9ead22546574",
+    "lib/Wafer/Driver/PhysicalDataflow/SearchCurrentIR.cpp": "063a96ed2bdbd27b739bb80e4d6af8b2d43438e12ec10cfb30b9b25aa6b5b702",
+    "lib/Wafer/Driver/PhysicalDataflow/SearchCurrentIR.h": "987a5fde58d6f72c278f57a5746d4ba4f247d1f497469be8665405e3c62a2865",
+    "lib/Wafer/Driver/TensorProgramCompilation.cpp": "45659734803e9f1dee81bff8b0acf49885cc2c28ae894563bd4df64ea92f5e11",
+    "lib/Wafer/IR/Instr/MovementOps.cpp": "86a84fdb090258255c5b1b5937974c7ead1739d0fc0c0ea489e6d1ccd40093ca",
+    "lib/Wafer/IR/Tile/StorageOps.cpp": "1b22012490703270ed053fdcce20f5e4a7570af83e31215bdad2c96490825e64",
+    "lib/Wafer/Transforms/Instr/CommunicationConstruction.cpp": "0b83741de80598f2c88c02f0baea5590924002576fea6680151814c91913f95b",
+    "lib/Wafer/Transforms/Instr/PlanDDRMemory.cpp": "ec58039032bc3cd0db973799a400242c5398bdbf71d97c26ea8be5c72f0f2edd",
+    "lib/Wafer/Transforms/Tile/BoundaryMovement.cpp": "d45759dd83e742a5af848f3f10da1bbc6e47a9ec0541be4c3530538ad377d9e1",
+    "lib/Wafer/Transforms/Tile/BoundaryMovement.h": "142cc3f6eec2d80e7c6e86c618a25fb67d3abce59a10518f5606ac0e75b87570",
+    "lib/Wafer/Transforms/Tile/CMakeLists.txt": "f966edc28748be74154ca4caa8536d7641bf02b3d19fa02a01176104c1be0a29",
+    "lib/Wafer/Transforms/Tile/LayoutOptimization.cpp": "0779998561ccab61ae132725850613d422b1b62bd45af359ddef92ac1aa7ce4a",
+    "lib/Wafer/Transforms/Tile/LayoutOptimization.h": "78c6696c5aa54ccb565e00947f27b320aaf8c5f43428bf6a88540826e848bc86",
+    "lib/Wafer/Transforms/Tile/PhysicalBoundaryViews.cpp": "58beec00e8ecc67d2ad691e1ff1adf9ddeb0a821b9327eaa3ae82a2bd6c23db1",
+    "test/Board/PyTorch/wafer_board_pytorch_test.py": "3c7b1a27c9f1a52110f499c9e8f46e81939500f65820f1e4178ff0019f199b3a",
+    "test/Board/PyTorch/wafer_pytorch_board_cases_test.py": "80a666e444b94e518cda390ad4a4e85cad45cd50b122a14e41f4a6c4bea7434f",
+    "test/Board/PyTorch/wafer_pytorch_board_common.py": "38832380cfa365d27b95ffe534a909bc4269ff3d4324b82e26ec5d5cfc277882",
+    "test/Board/PyTorch/wafer_pytorch_board_common_test.py": "c6af2b0d8f5a68b3693c0d92314c5882130ed61eebffe78a1689bc817afcec72",
+    "test/Dialect/Wafer/Tile/Storage/storage-store-layout.mlir": "11ef0f83c4b31d48bacc62ea23ade5f136d31b81df5d55ed9ca2e50449f6b1b5",
+    "tools/wafer-compile/DriverInternal.h": "3f8753c0e05e2a9288f5dcbdd038e2771913992c862ad6bd9615d0bd74d75696",
+    "tools/wafer-compile/DriverOptions.cpp": "6118a237c52b149b9362a46e4a0f5eabc89b9a7ab3149b2bac8b514f04d93dec",
+    "tools/wafer-compile/wafer-compile.cpp": "1afecf7009ed026483a82afa81acfb23d49843d4f9903b22f07df5771a94c51f",
+    "unittests/Conversion/InstrToLLVM/LowerInstrToLLVMTest.cpp": "4abab8c543dc98304d05d1e4cc6f757ab8cc77a8a86380db6866b91150e9a349",
+    "unittests/Transforms/Tile/LayoutOptimizationTest.cpp": "6f7931dc4ec5984f1f229322d2e7fff2598ee198d87c53fba1b4263aed2b8048"
+  }
+}

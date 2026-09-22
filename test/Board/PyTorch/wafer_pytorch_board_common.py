@@ -7,9 +7,13 @@ import ctypes
 import dataclasses
 import math
 import pathlib
+import sys
 from collections.abc import Sequence
 
 import torch
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "Support"))
+import wafer_physical_tensor_codec as physical_codec
 
 
 MANIFEST_DTYPES = {
@@ -173,9 +177,64 @@ def tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
     return raw
 
 
-def write_tensor_raw(path: pathlib.Path, tensor: torch.Tensor) -> None:
+@dataclasses.dataclass(frozen=True)
+class TensorCapture:
+    expected: torch.Tensor
+    layout: str
+
+
+def physical_storage_elements(shape: Sequence[int], dtype: torch.dtype,
+                              layout: str) -> int:
+    if layout in ("tensor", "ntensor"):
+        return math.prod(shape)
+    names = {"cx": "Cx", "ncx": "NCx"}
+    if layout not in names or dtype == torch.bool:
+        raise RuntimeError(f"unsupported board payload layout/dtype: {layout}/{dtype}")
+    return physical_codec.physical_layout(shape, names[layout], element_bytes(dtype)).physical_elements
+
+
+def pack_tensor(tensor: torch.Tensor, layout: str) -> torch.Tensor:
+    tensor = require_cpu_contiguous(tensor, context="physical payload")
+    if layout in ("tensor", "ntensor"):
+        return tensor
+    physical_storage_elements(tensor.shape, tensor.dtype, layout)
+    geometry = physical_codec.physical_layout(
+        tensor.shape, {"cx": "Cx", "ncx": "NCx"}[layout], tensor.element_size())
+    batches = tensor.shape[0] if layout == "ncx" else 1
+    rows = geometry.hw_elements if layout == "ncx" else geometry.outer_elements
+    padded = torch.zeros((batches, rows, geometry.aligned_c), dtype=tensor.dtype)
+    padded[:, :, :tensor.shape[-1]] = tensor.reshape(batches, rows, tensor.shape[-1])
+    full_c = geometry.full_blocks * geometry.c_block
+    blocks = padded[:, :, :full_c].reshape(
+        batches, rows, geometry.full_blocks, geometry.c_block).transpose(1, 2)
+    storage = torch.zeros((batches, geometry.batch_elements), dtype=tensor.dtype)
+    storage[:, :rows * full_c] = blocks.reshape(batches, -1)
+    if geometry.tail_width:
+        storage[:, rows * full_c:rows * geometry.aligned_c] = padded[:, :, full_c:].reshape(batches, -1)
+    return storage.flatten()
+
+
+def unpack_tensor(storage: torch.Tensor, shape: Sequence[int], layout: str) -> torch.Tensor:
+    if layout in ("tensor", "ntensor"):
+        return storage.reshape(tuple(shape))
+    physical_storage_elements(shape, storage.dtype, layout)
+    geometry = physical_codec.physical_layout(
+        shape, {"cx": "Cx", "ncx": "NCx"}[layout], storage.element_size())
+    batches = shape[0] if layout == "ncx" else 1
+    rows = geometry.hw_elements if layout == "ncx" else geometry.outer_elements
+    storage = storage.reshape(batches, geometry.batch_elements)
+    full_c = geometry.full_blocks * geometry.c_block
+    values = torch.empty((batches, rows, geometry.aligned_c), dtype=storage.dtype)
+    values[:, :, :full_c] = storage[:, :rows * full_c].reshape(
+        batches, geometry.full_blocks, rows, geometry.c_block).transpose(1, 2).reshape(batches, rows, full_c)
+    if geometry.tail_width:
+        values[:, :, full_c:] = storage[:, rows * full_c:rows * geometry.aligned_c].reshape(batches, rows, geometry.tail_width)
+    return values[:, :, :shape[-1]].contiguous().reshape(tuple(shape))
+
+
+def write_tensor_raw(path: pathlib.Path, tensor: torch.Tensor, *, layout: str = "tensor") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(tensor_raw_bytes(tensor))
+    path.write_bytes(tensor_raw_bytes(pack_tensor(tensor, layout)))
 
 
 def read_tensor_raw(
@@ -183,12 +242,13 @@ def read_tensor_raw(
     *,
     dtype: torch.dtype,
     shape: Sequence[int],
+    layout: str = "tensor",
 ) -> torch.Tensor:
     normalized_shape = tuple(int(dim) for dim in shape)
     if any(dim < 0 for dim in normalized_shape):
         raise RuntimeError(f"raw tensor shape must be static: {normalized_shape}")
     raw = path.read_bytes()
-    count = math.prod(normalized_shape)
+    count = physical_storage_elements(normalized_shape, dtype, layout)
     expected_bytes = (count + 7) // 8 if dtype == torch.bool else count * element_bytes(dtype)
     if len(raw) != expected_bytes:
         raise RuntimeError(
@@ -202,9 +262,8 @@ def read_tensor_raw(
         packed = torch.frombuffer(bytearray(raw), dtype=torch.uint8)
         values = ((packed[:, None] >> torch.arange(8)) & 1).flatten()[:count]
         return values.to(torch.bool).reshape(normalized_shape)
-    return torch.frombuffer(bytearray(raw), dtype=dtype).clone().reshape(
-        normalized_shape
-    )
+    storage = torch.frombuffer(bytearray(raw), dtype=dtype).clone()
+    return unpack_tensor(storage, normalized_shape, layout)
 
 
 def assert_tensor_matches(
@@ -265,9 +324,10 @@ def assert_raw_capture_matches(
     *,
     policy: ComparisonPolicy = PYTORCH_DEFAULT,
     context: str,
+    layout: str = "tensor",
 ) -> None:
     expected = require_cpu_contiguous(expected, context=f"{context} expected")
-    actual = read_tensor_raw(path, dtype=expected.dtype, shape=expected.shape)
+    actual = read_tensor_raw(path, dtype=expected.dtype, shape=expected.shape, layout=layout)
     assert_tensor_matches(actual, expected, policy=policy, context=context)
 
 
@@ -291,7 +351,11 @@ def require_manifest_tensor(
             f"{context} does not match manifest: tensor="
             f"{tuple(tensor.shape)}/{tensor.dtype} manifest={shape}/{dtype}"
         )
-    expected_bytes = tensor_nbytes(tensor)
+    layout = record.get("layout")
+    if not isinstance(layout, str):
+        raise RuntimeError(f"{context} manifest port requires physical layout")
+    elements = physical_storage_elements(shape, dtype, layout)
+    expected_bytes = (elements + 7) // 8 if dtype == torch.bool else elements * element_bytes(dtype)
     if record.get("bytes") != expected_bytes:
         raise RuntimeError(
             f"{context} manifest byte count mismatch: "

@@ -44,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
+    parser.add_argument("--external-layout", choices=("tensor", "ncx"),
+                        default="tensor")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-trace-event-limit", type=int)
     parser.add_argument("--device-timing", action="store_true")
@@ -452,7 +454,7 @@ def prepare_runtime_payloads(
     expected_outputs: tuple[torch.Tensor, ...],
 ) -> tuple[
     list[str],
-    dict[pathlib.Path, torch.Tensor],
+    dict[pathlib.Path, common.TensorCapture],
     set[int],
     dict[int, pathlib.Path],
 ]:
@@ -482,7 +484,7 @@ def prepare_runtime_payloads(
     raw = work_dir / "raw"
     raw.mkdir()
     arguments: list[str] = []
-    captures: dict[pathlib.Path, torch.Tensor] = {}
+    captures: dict[pathlib.Path, common.TensorCapture] = {}
     result_capture_paths: dict[int, pathlib.Path] = {}
     for key, record in sorted(ports.items()):
         role, index = key
@@ -498,17 +500,18 @@ def prepare_runtime_payloads(
             input_path = raw / (
                 f"card_00_{role}_{index}.{manifest_dtype}.raw"
             )
-            common.write_tensor_raw(input_path, tensor)
+            common.write_tensor_raw(input_path, tensor, layout=record["layout"])
             arguments.extend(["--resource", f"{port_id}={input_path}"])
             continue
         capture_path = raw / (
             f"card_00_output_{index}.capture.{manifest_dtype}.raw"
         )
         common.write_tensor_raw(
-            raw / f"card_00_output_{index}.expected.{manifest_dtype}.raw", tensor
+            raw / f"card_00_output_{index}.expected.{manifest_dtype}.raw", tensor,
+            layout=record["layout"]
         )
         arguments.extend(["--output", f"{port_id}={capture_path}"])
-        captures[capture_path] = tensor
+        captures[capture_path] = common.TensorCapture(tensor, record["layout"])
         result_capture_paths[index] = capture_path
     if len(captures) != len(output_ids):
         raise RuntimeError("PyTorch output captures are not all-and-only")
@@ -518,6 +521,7 @@ def prepare_runtime_payloads(
 def read_single_card_continuation_outputs(
     result_capture_paths: dict[int, pathlib.Path],
     expected_outputs: tuple[torch.Tensor, ...],
+    captures: dict[pathlib.Path, common.TensorCapture],
 ) -> tuple[torch.Tensor, ...]:
     expected_keys = set(range(len(expected_outputs)))
     if set(result_capture_paths) != expected_keys:
@@ -530,6 +534,7 @@ def read_single_card_continuation_outputs(
             result_capture_paths[index],
             dtype=expected.dtype,
             shape=expected.shape,
+            layout=captures[result_capture_paths[index]].layout,
         )
         for index, expected in enumerate(expected_outputs)
     )
@@ -562,7 +567,7 @@ def verify_board(
     stdout: str,
     case: board_cases.PyTorchBoardCase,
     output_ids: set[int],
-    captures: dict[pathlib.Path, torch.Tensor],
+    captures: dict[pathlib.Path, common.TensorCapture],
 ) -> None:
     required = {
         "board_stage: launch",
@@ -580,10 +585,11 @@ def verify_board(
     )
     if len(matches) != len(output_ids) or {int(value) for value in matches} != output_ids:
         raise RuntimeError("board output did not capture every PyTorch output")
-    for capture, expected in captures.items():
+    for capture, specification in captures.items():
         common.assert_raw_capture_matches(
             capture,
-            expected,
+            specification.expected,
+            layout=specification.layout,
             policy=case.comparison_policy,
             context=f"{case.name} {capture.name}",
         )
@@ -1149,7 +1155,7 @@ def prepare_case_step(
 ) -> tuple[
     tuple[torch.Tensor, ...],
     list[str],
-    dict[pathlib.Path, torch.Tensor],
+    dict[pathlib.Path, common.TensorCapture],
     set[int],
     dict[int, pathlib.Path],
 ]:
@@ -1192,7 +1198,7 @@ def prepare_case_step(
             compile_command.extend(
                 ["--dump-compiler-ir", str(dump_compiler_ir)]
             )
-        for option in ("search_mode", "search_width", "search_trials"):
+        for option in ("search_mode", "search_width", "search_trials", "external_layout"):
             value = getattr(args, option)
             if value is not None:
                 compile_command.extend(["--" + option.replace("_", "-"), str(value)])
@@ -1548,7 +1554,7 @@ def main() -> int:
                     captures,
                 )
                 actual_outputs = read_single_card_continuation_outputs(
-                    result_capture_paths, expected_outputs
+                    result_capture_paths, expected_outputs, captures
                 )
                 if current_case.validate_actual_outputs is not None:
                     current_case.validate_actual_outputs(actual_outputs)

@@ -61,6 +61,44 @@ pinned `LocalAliasAnalysis::getModRef`把递归effect容器视作ModAndRef且跳
 
 ## 2. 终态原则与所有权
 
+### 外部物理布局的显式选择
+
+输入为已完成逻辑分块的 candidate-owned Tensor IR，以及调用者对外部 input/output 的物理布局选择。
+默认仍为 Tensor；显式 NCx 请求不改变逻辑 shape、dtype、算术或分块预算。布局准备在同一 candidate 内将
+实际 input 参数物化为带 DDR encoding 的 memref，通过标准 `bufferization.to_tensor restrict` 接回原逻辑值；
+实际 output destination 使用同一请求的 encoding。随后 layout query、One-Shot、boundary movement、Instr、
+completion 和 SPM 继续消费这份 IR。请求本身不是 buffer、alias、地址或合法性的事实源。
+
+DDR 保存目标物理字节；blocked subset 必须由实际 root encoding、subview 坐标及 stride 计算地址与搬运，
+不能把 NCx subview 的逻辑 row-major offset 当成物理 offset，也不能把 root 的全局 block stride 换成局部 shape 的 stride。
+动态窗口的物理平移须证明；不能证明的形状或动态取模明确拒绝，不能静默退成 Tensor ABI。
+跨 isolated TileRegion 的 blocked DDR view 必须显式传入实际 root，并在 region 内用原 SSA offset/size/stride
+重建 subview；仅传局部 strided memref type 会丢失 root 的全局 block stride，不能作为物理地址依据。
+当前动态平移支持无窄 C tail 的 root：行/批次平移按 root encoding，C 平移须证明为 C block 的整数倍。
+静态窗口可包含 C tail；动态窄 C tail 的分段平移尚未实现，明确拒绝，不解释为硬件不支持。
+RDMA/WDMA 的动态 byte offset 与已有 GS offset 使用相同的 SSA、范围验证及 target address 合同。
+host-visible descriptor 来自最终 entry type，直接下游是 15 号 package 和 caller 的物理编码适配。
+
+周期搬运的 symbolic decomposition 同时适用于完整值和按周期对齐的实际 subset。原实现额外要求
+`offset=0 && extent=full_extent`，使合法局部 NCx 窗口退化成按行、按 C block 枚举大量指令。
+统一规则为单位 affine projection、origin 是 encoding 周期的倍数、全部完整重复不跨 encoding piece；
+余数单独处理。证明来自实际 relation 与 encoding piece，适用于 RDMA、WDMA 和 GS，不扩大 descriptor 字段或预算。
+
+本项不新增 source reshape/permute 包装、runtime 转置、硬件原生 transpose 或第二条编译路径。
+完成条件为指定 GEMM/attention 的全部外部端口确为 NCx，fresh no-card 和实卡数值、guard、清理通过，
+报告普通设备耗时及实际残余转换；不能仅以 CLI 接受布局选项或 manifest 改名签完成。
+
+| 覆盖 | exact 输出 / 失败边界 | 直接下游 witness |
+| --- | --- | --- |
+| rank3/rank4、FP16/BF16、1024 与 1025/1031，多 Tile、多窗口及 tail | 全局 NCx 坐标和每个局部窗口 all-and-only 字节覆盖，输出解码等于逻辑 reference | layout → RDMA/WDMA → target/model |
+| 动态行/块 origin、静态非零 origin、跨 C block | 使用全局 block stride；动态地址范围可验证 | Instr SSA offset、target address 和数值 |
+| 无法证明的动态 blocked 窗口、非法布局/dtype/shape | 明确失败，不修改为其它外部 ABI | verifier-valid 拒绝及无 package 发布 |
+| 默认 Tensor 调用 | 原 ABI 和正式编译行为保持 | 既有主机产品回归 |
+| M=N4096/K1024 BF16 GEMM、[1,28,2048,128] BF16 causal attention | input/output descriptors 与实际 payload 同为 NCx，完整数值/guard | fresh package、no-card、逐 case 实卡及普通计时 |
+
+标准 buffer 边界采用 [MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/#tensor--buffer-boundary) 的
+`to_tensor`/`materialize_in_destination`；API 以 pinned LLVM 的 Bufferization 实现为准。
+
 - 当前IR是shape、dtype、indexing、view、memory space、encoding、allocation root、movement和effect的唯一事实源。
 - `IndexRelation`是可失效、可重算的analysis value，不是attr、独立dialect、cache key或package字段。
 - encoding行为属于承载它的attr/type interface；consumer不能各自复制block/tail/padding公式。

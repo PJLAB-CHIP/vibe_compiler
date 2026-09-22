@@ -112,6 +112,9 @@ struct FunctionLowering {
                       llvm::ArrayRef<int64_t> values);
   mlir::FailureOr<AddressValue>
   addStaticOffset(mlir::Operation *op, AddressValue address, int64_t offset);
+  mlir::FailureOr<mlir::Value> addDynamicByteOffset(mlir::Operation *op,
+                                                    mlir::Value address,
+                                                    mlir::Value offset);
   mlir::Value materializeAddress(mlir::Location loc, AddressValue address);
   mlir::FailureOr<AddressValue>
   resolveAddress(mlir::Operation *op, mlir::Value value, llvm::StringRef role);

@@ -7,6 +7,7 @@
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/PhysicalTensor/PhysicalLayout.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 
@@ -18,6 +19,13 @@
 #include <vector>
 
 namespace wafer::compiler::detail {
+
+/// Invocation choice, consumed when actual DDR entry buffers are created.
+/// Argument indices refer to existing typed ProgramArgument bindings.
+struct ExternalBufferLayout {
+  PhysicalTensorLayout layout = PhysicalTensorLayout::Tensor;
+  llvm::SmallVector<int64_t, 4> inputArguments;
+};
 
 struct LayoutOptimizationStatistics {
   uint64_t invocations = 0;
@@ -124,7 +132,8 @@ private:
 
 LayoutOptimizationResult
 prepareCurrentLayoutInput(mlir::ModuleOp module,
-                          StructuredMaterializationRelations &relations);
+                          StructuredMaterializationRelations &relations,
+                          const ExternalBufferLayout &external = {});
 /// Reads the prepared tensor IR. Operations that would introduce unmodeled
 /// compute during bufferization must be materialized before this query.
 LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module);
@@ -143,7 +152,8 @@ LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp module);
 LayoutOptimizationResult
 resolveCurrentLayoutsAndBufferize(mlir::ModuleOp module,
                                   StructuredMaterializationRelations &relations,
-                                  uint64_t workLimit = UINT64_C(1048576));
+                                  uint64_t workLimit = UINT64_C(1048576),
+                                  const ExternalBufferLayout &external = {});
 
 /// Checks the stable output boundary of the transformation.  Function tensor
 /// boundaries and executable tensor semantics must be gone; tensor values may

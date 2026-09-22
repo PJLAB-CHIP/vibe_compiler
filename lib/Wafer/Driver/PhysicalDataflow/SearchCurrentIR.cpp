@@ -1367,8 +1367,12 @@ private:
                         ? ExecutableCompilationStatus::UnsupportedFailure
                         : ExecutableCompilationStatus::CompilerFailure,
                     "search-attention-decomposition", attentionFailure.detail);
-      auto prepared =
-          prepareCurrentLayoutInput(*candidate->module, candidate->relations);
+      ExternalBufferLayout external;
+      external.layout = options.externalLayout;
+      for (const auto &input : program.distributedInputs)
+        external.inputArguments.push_back(input.index);
+      auto prepared = prepareCurrentLayoutInput(*candidate->module,
+                                                candidate->relations, external);
       prepared.statistics.invocations = 0;
       recordLayoutInstrumentation(prepared.statistics);
       if (!prepared.succeeded())

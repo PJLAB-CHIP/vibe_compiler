@@ -19,6 +19,37 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-23：直接 NCx DDR 输入输出测量
+
+通过正式 `--external-layout ncx` 编译，全部外部 input/output 的 actual DDR encoding、manifest 和本轮 payload
+均为 NCx。source 逻辑 shape、BF16 dtype、原 reference/容差及 standard search width8/trials42 保持。
+两项均重新生成 source/reference/package 并通过 guard no-card，随后各三次普通实卡；无 Host 寄存器采集和设备插桩。
+
+| BF16 case | 三次 device elapsed（ms） | 中位数（ms） | 已有 Tensor I/O 中位数（ms） |
+| --- | --- | ---: | ---: |
+| M=N4096、K1024、batch1 GEMM | 13.322 / 13.704 / 13.731 | 13.704 | 3.495 |
+| causal attention `[1,28,2048,128]` | 12.715 / 12.302 / 12.592 | 12.592 | 3.649 |
+
+六次完整输出、guard、16 Tile completion 和厂商正常清理均通过，运行窗口无 timeout/fatal。
+GEMM 全部16,777,216个元素的 cosine 0.99999999737、relative L2 0.000072528，原逐点门槛超差99个，
+按既有相似度合同通过；attention 全部7,340,032个元素逐点超差0个、relative L2 0.00193234。
+各次 guard 分别检查9728和10752字节。所有 launch 前均有系统占用检查；未重跑历史包。
+
+**功能已通过本轮指定实卡，性能没有收益。** NCx 外部端口没有自动消除内部 Tensor↔NCx 转换。
+当前 GEMM winner 按 N 切16份，每Tile N256、temporal M1024/K256；原 Tensor winner 按 M 切16份，
+每Tile M256、temporal N512/K128，保留 A 全K复用及 B 的单次 DDR 读取和 DTE 分发。
+按两份 actual Instr 的固定循环界统计，NCx winner 全卡 RDMA payload 为160 MiB，原 Tensor winner 为16 MiB；
+RDMA 发射512对80次，新策略没有 DTE 分发。与此同时 GS payload 从672降至384 MiB，GEMM发射从1024降至256次，
+说明只比较总指令数或搬运总字节数不能说明设备总耗时。
+
+attention 的 NCx DDR 窗口仍先读入局部 Tensor，再为内部 consumer 转换；当前64 KiB窗口使用128-byte inner transfer、
+全局 C block stride 为7,340,032字节。上述实际读写和策略差异已确认；未做本轮 profile，不能为各项分配耗时，
+不能将全部变慢归到 NCx 硬件布局。默认 Tensor 路径仍保留；消除这些内部转换及让 NCx 获得同等复用资格尚未完成。
+
+通用修复包括保留 blocked DDR root/subview、周期对齐子窗口的 symbolic descriptor、动态 DMA byte offset 和 caller 编解码。
+静态/动态窗口、1024/1025/1031尾部及范围拒绝检查见实施计划。实测样本、输入/包/工具身份、完整比较和 actual IR 工作量见
+[NCx DDR 实测证据](data/board-performance/direct-ncx-ddr-20260923.json)。本轮签发指定 I/O 能力和测量，不签发 NCx 性能优化完成。
+
 ## 2026-09-23：M=N4096、K1024 GEMM测量
 
 用户指定`M=N=4096、K=1024`，本次使用BF16、batch=1、seed20260803及16 Tile，

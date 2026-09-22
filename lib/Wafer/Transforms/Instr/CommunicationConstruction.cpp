@@ -346,7 +346,8 @@ restoreLocalInput(const Packet &packet,
     return false;
   auto load = soleInputLoad(packet.source);
   if (!load || load.getByteCount() != static_cast<uint64_t>(packet.bytes) ||
-      load.getDstOffset().value_or(0) != 0)
+      load.getDstOffset().value_or(0) != 0 || load.getSrcOffsetValue() ||
+      load.getDstOffsetValue())
     return false;
   auto origin = inputOrigin(load.getSource());
   if (!origin)
@@ -486,8 +487,8 @@ Outcome useDDRPacket(const Packet &packet,
   else
     rewriter.setInsertionPointToStart(packet.sender->getBlock());
   rewriter.create<InstrWDMAOp>(
-      packet.sender->getLoc(), packet.source, dest,
-      rewriter.getI64IntegerAttr(packet.bytes),
+      packet.sender->getLoc(), packet.source, dest, mlir::Value{},
+      mlir::Value{}, rewriter.getI64IntegerAttr(packet.bytes),
       rewriter.getI64IntegerAttr(packet.bytes),
       rewriter.getI64IntegerAttr(packet.sourceOffset),
       rewriter.getI64IntegerAttr(0), stride, iterations,
@@ -501,7 +502,7 @@ Outcome useDDRPacket(const Packet &packet,
                   "communication receiver has no current access cut");
     rewriter.setInsertionPoint(consumer);
     rewriter.create<InstrRDMAOp>(
-        recv.getLoc(), source, recv.getBuffer(),
+        recv.getLoc(), source, recv.getBuffer(), mlir::Value{}, mlir::Value{},
         rewriter.getI64IntegerAttr(packet.pieceBytes),
         rewriter.getI64IntegerAttr(packet.pieceBytes),
         rewriter.getI64IntegerAttr(receiver.packetOffset),

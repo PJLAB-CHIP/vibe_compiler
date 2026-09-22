@@ -833,7 +833,8 @@ mlir::LogicalResult stageTargetPackage(
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
-    const CompilationQualification *qualification) {
+    const CompilationQualification *qualification,
+    PhysicalTensorLayout externalLayout) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
@@ -841,7 +842,8 @@ mlir::LogicalResult stageTargetPackage(
   llvm::Expected<DeviceExecutable> compiledDeviceExecutable =
       compileTensorProgramToDeviceExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot, programData, resolver, irTrace, qualification);
+          failAfterLaunchSlot, programData, resolver, irTrace, qualification,
+          externalLayout);
   if (!compiledDeviceExecutable) {
     llvm::consumeError(compiledDeviceExecutable.takeError());
     return mlir::failure();
@@ -880,7 +882,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
     ProfileInstrumentationIdentity &profileIdentity,
-    const CompilationQualification *qualification) {
+    const CompilationQualification *qualification,
+    PhysicalTensorLayout externalLayout) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");
@@ -888,7 +891,8 @@ mlir::LogicalResult stageProfileTargetPackages(
   llvm::Expected<DeviceExecutable> compiled =
       compileTensorProgramToDeviceExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot, programData, resolver, irTrace, qualification);
+          failAfterLaunchSlot, programData, resolver, irTrace, qualification,
+          externalLayout);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());
     return mlir::failure();

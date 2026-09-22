@@ -166,16 +166,26 @@ int main(int argc, char **argv) {
       parseOptimizationConfig(options);
   if (!optimizationConfig)
     return 1;
+  auto externalLayout = wafer::PhysicalTensorLayout::Tensor;
+  if (options.externalLayout) {
+    if (*options.externalLayout == "ncx")
+      externalLayout = wafer::PhysicalTensorLayout::NCx;
+    else if (*options.externalLayout != "tensor") {
+      llvm::errs()
+          << "wafer-compile: --external-layout requires tensor or ncx\n";
+      return 1;
+    }
+  }
   const auto timingMode =
       options.compileTiming ? wafer::compiler::CompilationTimingMode::Detailed
                             : wafer::compiler::CompilationTimingMode::Disabled;
   wafer::compiler::CompilationOptions compilationOptions =
       wafer::compiler::CompilationOptions::standard(*optimizationConfig,
-                                                    timingMode);
+                                                    timingMode, externalLayout);
   if (options.profile) {
     llvm::Expected<wafer::compiler::CompilationOptions> profileOptions =
         wafer::compiler::CompilationOptions::profile(
-            *executionConfig, *optimizationConfig, timingMode);
+            *executionConfig, *optimizationConfig, timingMode, externalLayout);
     if (!profileOptions) {
       llvm::errs() << "wafer-compile: "
                    << llvm::toString(profileOptions.takeError()) << "\n";

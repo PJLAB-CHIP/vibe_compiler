@@ -136,7 +136,8 @@ llvm::Expected<DeviceExecutable> compileTensorProgramToDeviceExecutable(
     std::optional<int64_t> failAfterLaunchSlot, ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace,
-    const CompilationQualification *qualification = nullptr);
+    const CompilationQualification *qualification = nullptr,
+    PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -150,7 +151,8 @@ mlir::LogicalResult stageTargetPackage(
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
-    const CompilationQualification *qualification = nullptr);
+    const CompilationQualification *qualification = nullptr,
+    PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -165,7 +167,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     const frontend::ProgramPayloadResolver &resolver,
     CompilationIRTrace &irTrace, CompilationStageTracker &stages,
     ProfileInstrumentationIdentity &profileIdentity,
-    const CompilationQualification *qualification = nullptr);
+    const CompilationQualification *qualification = nullptr,
+    PhysicalTensorLayout externalLayout = PhysicalTensorLayout::Tensor);
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputDirectory,
