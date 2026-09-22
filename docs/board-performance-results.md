@@ -16,6 +16,31 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-22：C908缓存配置与计数器实测
+
+独立CPU探针经原device-link、ExecutablePackage和wafer-run执行一次16 Tile launch，
+没有发CT/TDMA等计算命令，没有修改cache、预取或PMU配置；仅为发布CPU写出的快照执行缓存维护。
+本轮fresh no-card、实际ELF检查和系统级占用检查通过，16 Tile完成、16384字节快照、exact整数结果、
+保留字与512字节外部guard均通过，执行窗口没有fatal/timeout，正常清理退出。
+这是有界寄存器诊断，不是attention性能测试，也不是模型编译资格验证。
+
+| 读数（全部16 Tile一致） | 本轮可以确定的含义 |
+| --- | --- |
+| `MHCR=0x1ff` | SDK定义的IE、DE、WA、WB、RS、BPE、BTB、IBPE、WBR均置位；I/D cache、写回/写分配和相关预测已开启 |
+| `MHINT=0xa4000`、`MCCR2=0x42000a` | 保留实际原值；当前C908固件源码只确认MHINT bit19用于ECC，不借用其它核的字段定义解释剩余配置 |
+| `MCOUNTINHIBIT=0` | 未观察到计数禁止；4096次整数循环的cycle差为41067–41294，instret差均为20489，证明基础计数可读且推进 |
+| `MHPMEVENT3..31=0`、`MHPMCOUNTER3..31=0` | 未取得已选择cache miss/stall事件的证据；零值不代表cache miss为零，也不能证明硬件不支持这些计数 |
+
+字段依据为当前SDK的`core_rv64.h`和`csi_rv64_gcc.h`，ECC依据为C908 `cpuport_smp.c`。
+这些属于当前runtime与核身份下的`board-observed`事实，完整身份、逐Tile结果及artifact摘要见
+[缓存采集证据](data/board-performance/c908-cache-snapshot-20260922.json)。
+`MCOUNTEREN=0`不妨碍本次机器模式下读取计数；`SATP=0`及记录的代码/栈地址不能证明相应内存的cacheable属性。
+整数循环的cycle/instret也不能代表attention的CPI或CPU占比。
+
+本次未发现cache enable遗漏，未取得新的性能收益；据此停止这一轮配置试探，不修改固件默认值。
+本芯片的预取字段、L1/L2容量、地址缓存属性及miss/stall事件编码仍为`unknown`；
+若后续取得对应核版本的事件定义，再配置计数并测实际attention。本次结果没有排除缓存瓶颈。
+
 ## 2026-09-22：RISC-V CPU候选评估
 
 本轮只评估普通Kcore CPU控制程序，BF16 `[1,28,2048,128]`；关闭Host寄存器采集和设备trace。
@@ -49,7 +74,7 @@ CRT入口另清零一次；这是后续减少构造工作的切入点，但不�
 用户随后提出cache配置方向。对发行Kcore binary与SDK ELF的静态核对确认，`SystemInit`在D-cache关闭时
 执行`MHCR |= 0x1fe`，在I-cache关闭时执行`MHCR |= 1`；SDK字段覆盖cache enable、写回、写分配及分支预测。
 发现的`MHINT`显式初始化是ECC bit19，不能据此推断其它bit的当前值，也不能证明预取开关状态。
-实际CSR、L1/L2容量、预取字段和代码/栈地址属性仍待确认；本轮没有改缓存寄存器。
+该静态调查当时未取得实际CSR；后续有界实测见上一节。L1/L2容量、预取字段和代码/栈地址属性仍未确认；没有改缓存配置。
 基线整个`.text`为111342字节，但其中`entry`合并16个Tile的分支，不能把整包大小当单核热点工作集。
 进一步判断应按单Tile实际路径统计热代码，并结合C908 CPU的miss/stall计数；当前NPU引擎PMU不提供这项证据。
 

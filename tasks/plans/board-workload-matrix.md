@@ -15,10 +15,26 @@
 实验阶段26项Tools、Driver/CodeGen/Runtime/Target等门禁通过；最终全部撤回后核对源码身份和canonical/no-op。
 这轮完成的是四个候选的评估，CPU性能收益未闭合，不声明CPU已优化完。
 
-用户随后提出C908 cache配置方向，优先核对当前核的MHCR/MHINT、代码与栈的cacheable属性、
-单Tile热点代码工作集及CPU miss/stall计数。固件初始化已设置cache/写回/写分配/预测，
-不能把“打开cache”当作尚未实现的优化；实际CSR、容量及预取设置仍unknown，不写猜测配置。
-本项的静态证据与限制见同一性能记录。SDK packet构造调查接在该核对之后。
+用户随后提出C908 cache配置方向，并同意先做一次有界配置/计数器核对；
+若没有配置遗漏或可解释的miss/stall证据，就收束这条调查，不扩成固件调参。
+本项的静态证据与实测限制见同一性能记录。SDK packet构造调查仍为后续CPU优化方向。
+
+本次有界采集合同：输入为当前SDK CSR定义、独立诊断C/LLVM entry及唯一输出端口；由原device-link生成ELF，
+原ExecutablePackage/no-card/wafer-run完成16 Tile launch与回读。输出为每Tile 1024字节配置/计数快照，
+直接消费者为离线字段解码、完整保留区/guard检查及本性能记录；不声称从模型source编译到CPU探针。
+只读取SDK已定义的MHCR/MHINT/MCCR2、核身份、counter enable/inhibit、HPM selector/counter；
+不写cache/预取/PMU配置。机器模式以既有mxstatus字段先确认，非机器模式返回明确未采集标记。
+用有界整数循环和前后cycle/instret验证计数可用性，不将探针周期当attention热点。
+覆盖16个Tile的唯一输出区、固定magic/Tile id、整数循环exact结果、保留字与外部guard；
+fresh no-card、实际ELF CSR读写扫描和占用检查通过后仅launch一次，异常停止。
+若计数未配置或没有本芯片事件编码证据，明确缺失miss/stall证据，不猜映射或扩大为固件修改。
+
+本轮采集已完成：fresh no-card和实际ELF扫描通过，一次16 Tile实卡全部返回，exact结果、保留字、
+512字节guard和执行窗口日志健康。全部Tile的MHCR为0x1ff，cache/写回/写分配/相关预测已开启；
+cycle/instret能够推进，但29个HPM选择器及计数值均为0，不能由此取得miss/stall数据。
+本轮未改配置，未发现cache enable遗漏；有界核对收束，不宣称缓存无瓶颈或CPU优化完成。
+容量、预取字段、代码/栈缓存属性和attention热代码工作集仍未闭合；后续如需深入，先补本核事件定义。
+逐Tile身份与结果见[缓存配置实测](../../docs/board-performance-results.md#2026-09-22c908缓存配置与计数器实测)。
 
 随后核对SDK builder与issuer对packet的字段读写，区分每次变化的地址与循环不变量。
 已确认GS packet为128字节，CRT发射前清零，SDK `__execute_td`发射后又清零；直接缓存同一packet不能保留配置。
