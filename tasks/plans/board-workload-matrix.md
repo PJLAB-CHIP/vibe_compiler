@@ -2,6 +2,11 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+2026-09-22用户确认本轮BF16 2048 attention优化收束，截止实现`57061f10`；
+过程、收益与未采用方案已整理为[attention优化复盘](../../docs/attention-optimization-retrospective.md)。
+其它维度切分与mask负载均衡作为后续方向暂缓，本计划的历史待办不构成自动继续授权。
+这次收束不等于整份板测矩阵完成，当前状态仍以progress为准。
+
 ### RISC-V CPU指令准备优化
 
 用户授权优化普通程序CPU开销，trace不纳入目标；归board-testing，合同与覆盖见14号。

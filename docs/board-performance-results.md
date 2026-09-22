@@ -4,6 +4,9 @@
 [`tasks/progress.md`](../tasks/progress.md)及其current plan中维护；本文不以局部收益代签模型或板测任务完成。
 后续每次优化追加独立记录，保留前后版本身份，不覆盖旧测量。
 
+2026-09-20至22日attention专项的过程、累计结果与最终取舍见
+[attention优化复盘](attention-optimization-retrospective.md)；各次测量仍以下面的独立记录及其JSON为依据。
+
 每条记录包含：输入shape/dtype与功能范围、运行条件与样本数、profile热点、current-IR根因、通用修改及作用边界、
 前后耗时与正确性、artifact身份、尚不能推出的结论。未上板或只有编译结果的方案记录在实施计划中，不填入性能收益。
 
