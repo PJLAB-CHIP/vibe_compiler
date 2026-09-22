@@ -18,6 +18,15 @@
 
 ## 当前调度
 
+2026-09-22用户授权接续剩余实卡case。仍归`board-testing`，先重签LLaMA block两种dtype及三项大GEMM，
+再完成ViT、GQA、普通/长cache两步decode、mask和其它受通用修改影响的既定配置。
+仅使用当前构建的新source/reference/package；已验收且实现未变的2048 BF16主块与1031 BF16尾块保留有效记录。
+本轮不重启独立长序列LM、deep搜索或已收束的attention优化；具体清单及结果见现有板测计划。
+本轮发现并修复Q2 decode打包回归：Package writer错误要求各Tile的不可变binding集合完全相同；
+已按15号只对外部端口检查全卡一致性，保留原typed不可变数据join。双dtype fresh构包/no-card及各三次实卡通过，
+直接主机门禁、canonical/no-op通过，见[证据](../docs/data/board-performance/package-entry-local-bindings-20260922.json)。
+其余既定case仍在接续，不以这两项通过代签整个矩阵。
+
 最新接续：用户要求优先完成已有部分实现，再开展尚未实现的优化，继续归board-testing。
 尾块、输出融合、累加器方向、causal分段、职责分拆、残余状态发布、通用流水及循环累加器布局均已完成各自验收。
 用户随后授权优先优化RISC-V CPU指令准备/发射开销；四个早期候选无收益并撤回，cache配置调查收束；

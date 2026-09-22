@@ -245,16 +245,21 @@ buildManifest(const DeviceExecutable &deviceExecutable,
     return fail(diagnostics,
                 "package launch-slot domain is not dense and complete");
 
-  const std::vector<ProgramResourceBinding> &sharedProgramBindings =
-      tilesByLaunchSlot.front()->getProgramBindings();
+  // Only caller-visible ports are common to every Tile. Selected literals
+  // and live immutable inputs are entry-local; the join below resolves them
+  // through this Tile's binding and the owned ProgramTensorId data range.
+  auto isExternalPort = [](const ProgramResourceBinding &binding) {
+    return binding.role == ProgramResourceRole::UserInput ||
+           binding.role == ProgramResourceRole::Output;
+  };
+  auto sharedProgramBindings = llvm::make_filter_range(
+      tilesByLaunchSlot.front()->getProgramBindings(), isExternalPort);
   for (const TileExecutable *tile : tilesByLaunchSlot) {
-    const std::vector<ProgramResourceBinding> &bindings =
-        tile->getProgramBindings();
-    if (bindings.size() != sharedProgramBindings.size() ||
-        !std::equal(bindings.begin(), bindings.end(),
-                    sharedProgramBindings.begin(), haveSameProgramBinding))
+    auto bindings =
+        llvm::make_filter_range(tile->getProgramBindings(), isExternalPort);
+    if (!llvm::equal(bindings, sharedProgramBindings, haveSameProgramBinding))
       return fail(diagnostics, "Tile module boundaries do not agree on the "
-                               "typed card-shared resource domain");
+                               "typed external port domain");
   }
 
   PackageAssembly assembly(

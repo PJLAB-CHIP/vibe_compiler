@@ -345,7 +345,8 @@ makeProfileRuntimeLaunchModules(
 
 static llvm::Expected<wafer::compiler::DeviceExecutable>
 makeProfileDeviceExecutable(const wafer::RuntimeLaunchContract &launch,
-                            wafer::TransportContract transport) {
+                            wafer::TransportContract transport,
+                            bool mismatchedExternalShape = false) {
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
@@ -372,6 +373,8 @@ makeProfileDeviceExecutable(const wafer::RuntimeLaunchContract &launch,
     binding.slice.offsets = {0};
     binding.slice.sizes = {4};
     binding.slice.strides = {1};
+    if (mismatchedExternalShape && tileId == 7)
+      binding.globalShape = {8};
     tiles.push_back(
         wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
             wafer::CardId(0), wafer::TileId(tileId),
@@ -396,7 +399,10 @@ TEST(TargetCodeGenTest, PublicVerifiedModuleCannotBeForgedOrDefaulted) {
 // canonical ids after the deterministic placement, rewrite every entry
 // reference, materialize each representation exactly once through the
 // shared physical codec (Cx block padding is canonical zero) and satisfy
-// the strict canonical-layout verification.
+// the strict canonical-layout verification. Odd Tiles do not consume bias;
+// their binding lists and dense entry rows therefore have different lengths.
+// Tiny payloads are a bounded byte/codec oracle; the production Q2 decode
+// regression exercises rank-4, length-1026 source-to-package coverage.
 TEST(TargetCodeGenTest,
      TwoSelectedRepresentationsRemapCanonicalIdsAndPadPhysically) {
   llvm::Expected<wafer::compiler::TargetToolchain> toolchain =
@@ -530,6 +536,11 @@ TEST(TargetCodeGenTest,
           llvm::cantFail(wafer::TargetTensorMaterializationAction::create(
               wafer::LogicalFormat::F32, wafer::LogicalFormat::F32,
               /*parameter=*/std::nullopt));
+    if (tile % 2 != 0) {
+      slots.erase(slots.begin());
+      for (auto [ordinal, slot] : llvm::enumerate(slots))
+        slot.ordinal = ordinal;
+    }
     slots.push_back(makeProfilerSlot(
         slots.size(), wafer::compiler::detail::ProfileCaptureKind::Count));
     auto context = std::make_unique<llvm::LLVMContext>();
@@ -603,14 +614,17 @@ TEST(TargetCodeGenTest,
       binding.slice.strides.assign(shape.size(), 1);
       return binding;
     };
+    std::vector<wafer::compiler::ProgramResourceBinding> bindings = {
+        makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 0, 0,
+                    wafer::ProgramElementType::F32, {4})};
+    if (tile % 2 == 0)
+      bindings.push_back(
+          makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
+                      wafer::ProgramElementType::F16, {2}));
     tiles.push_back(
         wafer::compiler::DeviceExecutableBuilder::makeTileExecutable(
             wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
-            std::move(module), "main",
-            {makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 0, 0,
-                         wafer::ProgramElementType::F32, {4}),
-             makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
-                         wafer::ProgramElementType::F16, {2})},
+            std::move(module), "main", std::move(bindings),
             wafer::TransportContract::None));
   }
   llvm::Expected<wafer::compiler::DeviceExecutable> executable =
@@ -660,12 +674,14 @@ TEST(TargetCodeGenTest,
   const uint64_t expectedReferences[3] = {0, 2, 1};
   for (const wafer::runtime::PackageEntrypointRecord &entry :
        manifest.entries) {
-    ASSERT_EQ(entry.arguments.size(), 4u);
-    for (size_t ordinal = 0; ordinal < 3; ++ordinal) {
+    const size_t firstReference = entry.tileId.getValue() % 2;
+    ASSERT_EQ(entry.arguments.size(), 4u - firstReference);
+    for (size_t ordinal = 0; ordinal < 3 - firstReference; ++ordinal) {
       const auto *argument = std::get_if<wafer::runtime::TargetTensorArgument>(
           &entry.arguments[ordinal].reference);
       ASSERT_NE(argument, nullptr);
-      EXPECT_EQ(argument->tensor.getValue(), expectedReferences[ordinal]);
+      EXPECT_EQ(argument->tensor.getValue(),
+                expectedReferences[ordinal + firstReference]);
     }
   }
 
@@ -1920,6 +1936,22 @@ TEST(TargetCodeGenTest,
                                               diagnostics, std::nullopt);
     ASSERT_TRUE(static_cast<bool>(package))
         << diagnosticsStorage << llvm::toString(package.takeError());
+    // Unlike immutable entry-local inputs, caller-visible port declarations
+    // must still agree, including logical global shape (not just bytes).
+    auto inconsistentExecutable = makeProfileDeviceExecutable(
+        launch, scenario.transport, /*mismatchedExternalShape=*/true);
+    ASSERT_TRUE(static_cast<bool>(inconsistentExecutable))
+        << llvm::toString(inconsistentExecutable.takeError());
+    auto rejected = wafer::compiler::detail::writePackage(
+        sourceDirectory, *inconsistentExecutable, *targetModules,
+        pathInDirectory(temporaryDirectory,
+                        (llvm::Twine("inconsistent-") +
+                         wafer::stringifyKernelLaunchForm(scenario.form))
+                            .str()),
+        diagnostics, std::nullopt);
+    ASSERT_FALSE(static_cast<bool>(rejected));
+    EXPECT_NE(llvm::toString(rejected.takeError()).find("external port domain"),
+              std::string::npos);
     const wafer::runtime::PackageManifest &manifest = package->getManifest();
     EXPECT_EQ(manifest.launch, launch);
     EXPECT_EQ(manifest.cardCount, 1);

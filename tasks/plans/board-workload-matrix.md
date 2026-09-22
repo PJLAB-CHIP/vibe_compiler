@@ -1,5 +1,28 @@
 # 扩展板测矩阵与三轮性能调优
 
+## Attention收束后的当前版本板测接续（2026-09-22）
+
+用户授权完成剩余既定实卡case。输入为现有注册case、原dtype/shape/seed和当前编译器，
+经唯一PyTorch runner重新导出source、合法输入和独立reference，完成production search、package及guard no-card；
+直接下游为原wafer-run和全量数值/guard/生命周期检查。当前CRT固定参数准备影响全部普通NCC指令族，
+因此原标准保护矩阵及attention分支均须重签；已通过同一实现的BF16 1031尾块不重复运行。
+
+| 顺序/覆盖 | 本轮证据与边界 |
+| --- | --- |
+| LLaMA block FP16/BF16、4096³ GEMM FP16/BF16、4097³ GEMM FP16 | 五项优先；原全输出、guard与三次普通计时 |
+| ViT 1024/1025、GQA、原普通/长cache两步decode与Q2 decode | 原完整module及全部端口；decode第二步消费本轮实际KV，旧prefix exact |
+| causal主/尾块、原4K两组heads、非causal/additive/padding/有效KV/全屏蔽/滑窗 | 原注册shape/dtype；整除/非整除、多Tile及边界语义，完整结果 |
+| 标准算子、通信、组合计算及其余原保护模型 | 原dtype/shape；F32仅保留既有division的F32格式覆盖，不扩大为F32模型 |
+| 六项probability-rounding主机配置 | 1024/1025/1031×FP16/BF16；当前source→TargetModel全输出及guard no-card，不计为实卡 |
+
+按现有注册清单核对共75项待重签实卡配置，另有六项主机配置；不是沿用历史“剩余68项”的计数。
+已有当前BF16 2048主块三次及1031尾块单次证据保留，不代签其它配置。原标准矩阵中的S16完整LM保留；
+独立S1024/1025完整LM、deep搜索、LocalConv搜索性能整改及新增attention优化仍后置。
+主机准备最多五个product并行：每个编译器内部最多16 Tile并行，并有独立XLA/PyTorch线程池，避免80核宿主过量竞争；
+实际设备始终单进程、逐case，逐次系统占用检查，默认关闭寄存器采集和profile。首个timeout/fatal立即停批，无自动重试/reset。
+保存source/package/tool摘要、每次完整比较和普通计时；已有健康耗时仅作历史记录对照，不运行历史包。
+host准备、实卡正确性和性能结论分别登记，编译失败、数值失败、设备异常及未解决的性能退化不算通过。
+
 ## 当前执行约束（2026-09-20用户修正）
 
 2026-09-22用户确认本轮BF16 2048 attention优化收束，截止实现`57061f10`；

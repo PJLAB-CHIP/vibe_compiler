@@ -2016,6 +2016,15 @@
 - 防复发：真实规模稀疏fanout检查无关Tile零binding、参与者exact coverage；不同长度行检查offset与invalidate字节数；
   shared descriptor冲突、额外或缺失ready binding拒绝。Package仅为资源分配一次，板测以完整PyTorch输出确认地址链。
 
+## 不同Tile的不可变输入集合不能按整张binding表比较
+
+- 根因：Target ABI已经允许各entry消费不同literal并删除未使用常量，Package writer仍要求各Tile的完整
+  ProgramResourceBinding列表相等，合法主块/尾块在target lowering和link成功后才被拒绝。
+- 修复：全卡相等检查只覆盖caller-visible input/output；不可变数据按各entry的binding解析ProgramTensorId，
+  复用现有ProgramDataHandoff、descriptor与payload join，不补造常量槽或按其它Tile的ordinal归因。
+- 防复发：不同entry常量集合、同源多representation和完整physical bytes共同覆盖；外部端口global shape冲突仍拒绝。
+  真实rank4、长度1026的双dtype decode经source/package/no-card与全量实卡通过，不能只测试aggregate LLVM接受不同参数行。
+
 ## 首个容量证据足以拒绝，但不足以高效指导多区域搜索
 
 - 根因：唯一allocator遇到单独超大allocation或第一个超容量clique就返回，使同一actual conflict graph中已经存在的其它冲突

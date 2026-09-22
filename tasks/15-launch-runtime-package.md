@@ -137,6 +137,22 @@ TargetTensorRecord:
 
 ### 3.3 Program data
 
+Package组装按当前Tile entry的typed binding解析不可变参数/常量，不要求16个Tile的完整
+`ProgramResourceBinding`列表相同。主块与尾块实际生成的literal可以不同，未使用的常量可以没有入口槽。
+全卡相等检查只覆盖外部input/output的完整typed边界；不可变数据沿每entry的resource index找到
+ProgramTensorId，再经唯一ProgramDataHandoff与selected descriptor合并。共享identity的dtype、shape、slice
+仍须一致；不按其它Tile的ordinal或表长度推断identity，也不补造未使用的常量槽。
+
+本项修复的是14号已允许不同TargetTensor集合后，Package writer仍比较完整binding表的遗漏；
+输入、输出和直接下游沿第1节，既有可成功组装的package内容不改变，不改设备代码、数值、搜索或runtime ABI。
+
+| 覆盖输入/结构分支 | exact输出、拒绝与直接下游 |
+| --- | --- |
+| 不同Tile消费不同不可变数据集合，同一数据有Tensor/Cx两种表示 | 16份entry按各自dense ordinal引用正确TargetTensor；只materialize一次各representation，完整bytes及padding exact；小payload用于有界codec oracle |
+| 外部input/output的global/local shape、dtype、slice或identity冲突 | 原全卡边界检查拒绝，不因不可变数据列表不同而放宽外部端口合同 |
+| 当前rank4 Q2 decode，past1024/新2，FP16/BF16 | 原source→search→ExecutablePackage→guard no-card及全输出实卡；不能以改shape、预算或绕过writer替代 |
+| 1024/1025/1031的既有main/tail配置 | 由当前板测矩阵真实生产包消费；记录受影响配置，已有合法包无字段/字节变化时保留其有效数值证据 |
+
 `program_data`只有一个current record：
 
 ```text
