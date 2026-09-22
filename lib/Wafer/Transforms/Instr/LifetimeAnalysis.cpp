@@ -2885,16 +2885,16 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
   // roots may use another worker without a completion edge. Canonical
   // rotating-buffer recurrence changes the SSA identity and may produce
   // a finite union of external allocation origins; actual overlapping issued
-  // ranges order, while disjoint slots require no dependency. Statically
-  // non-empty nested scf.for bodies are part of that same stream. Any observer,
-  // unknown effect, unwitnessed rootless storage, conditional/possibly-empty
-  // region or cross-worker conflict rejects this whole-stream proof.
+  // ranges order, while disjoint slots require no dependency. Nested scf.for
+  // bodies are part of the same potential stream: the zero-trip path retains
+  // pending state, and every issued operation on a taken path is checked.
+  // Unknown effects, unwitnessed storage and cross-worker conflicts reject
+  // this proof. A join still needs separate path coverage to complete state.
   std::function<bool(mlir::Block &)> provesStructuredOrderedStream;
   provesStructuredOrderedStream = [&](mlir::Block &block) {
     for (mlir::Operation &candidate : block.without_terminator()) {
       if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
-        if (!isStaticallyNonEmpty(nestedFor) ||
-            !provesStructuredOrderedStream(*nestedFor.getBody()))
+        if (!provesStructuredOrderedStream(*nestedFor.getBody()))
           return false;
         continue;
       }
@@ -3013,15 +3013,15 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
     if (candidateContract.kind == NCCCompletionKind::ParticipantJoin)
       continue;
 
-    if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
-      // A conditional static loop is not itself a memory observer. Its actual
+    if (mlir::isa<mlir::scf::ForOp>(candidate)) {
+      // A conditional loop is not itself a memory observer. Its actual
       // operations occur below with their path predicates; conflicting Kcore,
       // DTE or cross-worker accesses still reject the proof there. Requiring
       // this container on every path would turn a skipped disjoint initializer
       // into an artificial completion boundary.
-      if (isStaticallyNonEmpty(nestedFor))
-        continue;
-      return false;
+      // The zero-trip path keeps the pending issue; actual body effects are
+      // checked below. Do not count body joins as unconditional completion.
+      continue;
     }
     // Structured region containers do not independently observe memory. Their
     // nested operations are present in `nextIteration` with exact path
@@ -3307,10 +3307,6 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
     summarizeStructuredOrderedStream = [&](mlir::Block &block) {
       for (mlir::Operation &candidate : block.without_terminator()) {
         if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
-          if (!isStaticallyNonEmpty(nestedFor)) {
-            invalidateStructured();
-            return;
-          }
           summarizeStructuredOrderedStream(*nestedFor.getBody());
           continue;
         }
@@ -3434,11 +3430,8 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
         if (activeStates.empty())
           continue;
 
-        if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
-          if (!isStaticallyNonEmpty(nestedFor))
-            invalidateFallback(activeStates);
+        if (mlir::isa<mlir::scf::ForOp>(candidate))
           continue;
-        }
         // Region bodies are scanned separately with their timeline paths; the
         // containing op's recursive effect summary is not an extra observer.
         if (candidate->getNumRegions() != 0)

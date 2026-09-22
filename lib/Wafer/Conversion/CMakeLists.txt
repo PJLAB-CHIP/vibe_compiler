@@ -59,6 +59,7 @@ add_mlir_conversion_library(WaferInstrToLLVM
   WaferTileToInstr
   MLIRArithToLLVM
   MLIRArithDialect
+  MLIRArithTransforms
   MLIRAsyncDialect
   MLIRControlFlowDialect
   MLIRControlFlowToLLVM

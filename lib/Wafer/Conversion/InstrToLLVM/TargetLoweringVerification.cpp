@@ -344,8 +344,8 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
            << "unsupported_target_address: dynamic tensor subview "
               "offset #"
            << dynamicIndex
-           << " requires bounded non-negative scf.for limits, a constant lower "
-              "bound and a positive constant step";
+           << " requires bounded non-negative scf.for limits and a positive "
+              "constant step";
   case Failure::InvalidLoopBounds:
     return subviewOp.emitError()
            << "unsupported_target_address: dynamic tensor subview "
@@ -367,6 +367,11 @@ getStaticIndexRange(mlir::memref::SubViewOp subviewOp,
            << dynamicIndex
            << " unsigned division requires a non-negative dividend and "
               "a positive constant divisor";
+  case Failure::InvalidSignedDivision:
+    return subviewOp.emitError()
+           << "unsupported_target_address: dynamic tensor subview offset #"
+           << dynamicIndex
+           << " signed ceil division requires a positive constant divisor";
   case Failure::ArithmeticOverflow:
     return subviewOp.emitError()
            << "target_address_overflow: dynamic tensor subview offset #"

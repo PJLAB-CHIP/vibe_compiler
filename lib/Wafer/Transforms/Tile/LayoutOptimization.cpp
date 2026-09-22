@@ -1847,6 +1847,54 @@ static bool hasNoInterveningWrite(LayoutMaterializeOp prior,
   return true;
 }
 
+// Reuse a conversion that already executes after a structured region. Moving
+// this mandatory conversion earlier does not speculate a read on a zero-trip
+// or untaken path. Check the entire crossed region, including every iteration,
+// rather than treating a same-source SSA value as an immutable snapshot.
+static mlir::Operation *findEarlierPreparationPoint(
+    LayoutMaterializeOp nested, LayoutMaterializeOp mandatory,
+    mlir::DominanceInfo &dominance, mlir::AliasAnalysis &aliases) {
+  auto *anchor = mandatory->getBlock()->findAncestorOpInBlock(*nested);
+  if (!anchor || anchor == nested || !anchor->isBeforeInBlock(mandatory) ||
+      !dominance.properlyDominates(mandatory.getSource(), anchor))
+    return nullptr;
+  for (auto *parent = nested->getParentOp();; parent = parent->getParentOp()) {
+    if (!mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp>(parent))
+      return nullptr;
+    if (parent == anchor)
+      break;
+  }
+  for (auto *operation = anchor; operation != mandatory.getOperation();
+       operation = operation->getNextNode()) {
+    auto walked = operation->walk([&](mlir::Operation *current) {
+      if (current->hasTrait<mlir::OpTrait::HasRecursiveMemoryEffects>())
+        return mlir::WalkResult::advance();
+      auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(current);
+      if (!interface)
+        return mlir::WalkResult::interrupt();
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
+      interface.getEffects(effects);
+      for (const auto &effect : effects) {
+        if (!mlir::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
+                effect.getEffect()))
+          continue;
+        if (!effect.getValue()) {
+          if (mlir::isa<WaferTileDataflowOpInterface>(current) &&
+              effect.getResource() != mlir::SideEffects::DefaultResource::get())
+            continue;
+          return mlir::WalkResult::interrupt();
+        }
+        if (!aliases.alias(effect.getValue(), mandatory.getSource()).isNo())
+          return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (walked.wasInterrupted())
+      return nullptr;
+  }
+  return anchor;
+}
+
 static mlir::LogicalResult convertLayoutCopies(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     LayoutOptimizationStatistics &statistics, std::string &detail) {
@@ -2040,7 +2088,6 @@ void reuseReadOnlyLayoutMaterializations(
     LayoutOptimizationStatistics &statistics) {
   mlir::IRRewriter rewriter(root->getContext());
   // Close dead and exactly shareable layout materializations on current IR.
-  mlir::DominanceInfo dominance(root);
   llvm::DenseMap<std::pair<mlir::Value, mlir::Type>,
                  llvm::SmallVector<LayoutMaterializeOp, 2>>
       available;
@@ -2058,6 +2105,7 @@ void reuseReadOnlyLayoutMaterializations(
         std::make_pair(operation.getSource(), operation.getResult().getType());
     auto &owners = available[key];
     mlir::AliasAnalysis aliases(root);
+    mlir::DominanceInfo dominance(root);
     auto replacement = llvm::find_if(owners, [&](LayoutMaterializeOp prior) {
       return hasNoInterveningWrite(prior, operation, aliases) &&
              llvm::all_of(operation.getResult().getUses(),
@@ -2067,6 +2115,23 @@ void reuseReadOnlyLayoutMaterializations(
                           });
     });
     if (replacement == owners.end()) {
+      for (auto it = owners.begin(); it != owners.end();) {
+        // A successful move/erase invalidates the previous analysis epoch.
+        mlir::AliasAnalysis currentAliases(root);
+        mlir::DominanceInfo currentDominance(root);
+        auto *point = findEarlierPreparationPoint(
+            *it, operation, currentDominance, currentAliases);
+        if (!point) {
+          ++it;
+          continue;
+        }
+        rewriter.moveOpBefore(operation, point);
+        retargetRelationValue(relations, it->getResult(),
+                              operation.getResult());
+        rewriter.replaceOp(*it, operation.getResult());
+        it = owners.erase(it);
+        ++statistics.sharedMaterializationsReused;
+      }
       owners.push_back(operation);
       continue;
     }

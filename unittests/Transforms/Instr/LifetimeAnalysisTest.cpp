@@ -1433,7 +1433,86 @@ module {
 }
 
 TEST_F(LifetimeAnalysisTest,
-       NestedStaticLoopCrossWorkerConflictFailsClosed) {
+       PossiblyEmptyNestedLoopRetainsPendingWithoutInventingCompletion) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned mode : {0u, 1u, 2u}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << mode);
+      std::string text = R"mlir(
+module {
+  func.func @main(%upper: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %zero = arith.constant 0.0 : f16
+    %ddr = memref.alloc() : memref<1xEXTENTx64xf16, #wafer.memory<ddr, tensor>>
+    %spm = memref.alloc() : memref<1xEXTENTx64xf16, #wafer.memory<spm, tensor>>
+    scf.for %outer = %c0 to %c4 step %c1 {
+      scf.for %inner = %c0 to %upper step %c1 {
+        OPTIONAL
+      }
+      OBSERVER
+      wafer.instr.wdma %spm to %ddr
+          {byte_count = BYTES : i64, inner_bytes = BYTES : i64,
+           dst_iterations = array<i64: 1, 1, 1>, dst_strides = array<i64: 0, 0, 0>}
+          : memref<1xEXTENTx64xf16, #wafer.memory<spm, tensor>>
+         to memref<1xEXTENTx64xf16, #wafer.memory<ddr, tensor>>
+    }
+    wafer.instr.ncc_join [0, 1]
+    return
+  }
+}
+)mlir";
+      auto replace = [&](llvm::StringRef marker, llvm::StringRef replacement) {
+        size_t position;
+        while ((position = text.find(marker.str())) != std::string::npos)
+          text.replace(position, marker.size(), replacement.str());
+      };
+      replace("OPTIONAL", mode == 2 ? "wafer.instr.ncc_join [0]" : R"mlir(
+        wafer.instr.rdma %ddr to %spm
+          {byte_count = BYTES : i64, inner_bytes = BYTES : i64,
+           src_iterations = array<i64: 1, 1, 1>, src_strides = array<i64: 0, 0, 0>,
+           worker = #wafer.ncc_worker<WORKER>}
+          : memref<1xEXTENTx64xf16, #wafer.memory<ddr, tensor>>
+         to memref<1xEXTENTx64xf16, #wafer.memory<spm, tensor>>
+      )mlir");
+      replace("OBSERVER", mode == 2 ? R"mlir(
+        memref.store %zero, %spm[%c0, %c0, %c0]
+          : memref<1xEXTENTx64xf16, #wafer.memory<spm, tensor>>
+      )mlir"
+                                    : "");
+      replace("WORKER", mode == 1 ? "worker1" : "worker0");
+      replace("EXTENT", std::to_string(extent));
+      replace("BYTES", std::to_string(extent * 128));
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      auto function = getOnlyFunction(*module);
+      for (bool spm : {false, true}) {
+        auto timeline = StructuredTimeline::build(function);
+        ASSERT_TRUE(mlir::succeeded(timeline));
+        llvm::SmallVector<LifetimeDemand, 1> demands;
+        function.walk([&](mlir::memref::AllocOp allocation) {
+          if (wafer::isWaferSPMMemRefType(allocation.getType()) == spm)
+            demands.push_back({allocation, extent * 128, 256, 0});
+        });
+        LifetimeDataflow dataflow(*timeline, demands, [spm](mlir::Type type) {
+          return spm ? wafer::isWaferSPMMemRefType(type)
+                     : wafer::isWaferDDRMemRefType(type);
+        });
+        LocalCompletionTracker completion;
+        LifetimeFailure failure;
+        auto result = dataflow.run(function, &completion, &failure);
+        // The CPU observer in mode 2 conflicts only with the SPM read. The
+        // optional join must never be treated as guaranteed across zero trips.
+        bool expected = mode == 0 || (mode == 2 && !spm);
+        EXPECT_EQ(mlir::succeeded(result), expected);
+        if (!expected) {
+          EXPECT_NE(failure.origin, nullptr);
+        }
+      }
+    }
+}
+
+TEST_F(LifetimeAnalysisTest, NestedStaticLoopCrossWorkerConflictFailsClosed) {
   auto module = parse(R"mlir(
 module {
   func.func @main() {

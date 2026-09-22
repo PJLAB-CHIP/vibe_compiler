@@ -379,7 +379,7 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
   case Failure::DynamicLoopBounds:
     return anchor->emitError() << "unsupported_ddr_view: " << role
                                << " dynamic offset requires bounded scf.for "
-                                  "limits and a constant lower bound and step";
+                                  "limits and a positive constant step";
   case Failure::InvalidLoopBounds:
     return anchor->emitError()
            << "unsupported_ddr_view: " << role
@@ -393,6 +393,10 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
            << "unsupported_ddr_view: " << role
            << " unsigned-divide offset requires a nonnegative dividend and "
               "positive constant divisor";
+  case Failure::InvalidSignedDivision:
+    return anchor->emitError()
+           << "unsupported_ddr_view: " << role
+           << " signed ceil-divide offset requires a positive constant divisor";
   case Failure::ArithmeticOverflow:
     return anchor->emitError()
            << "range_end_overflow: dynamic DDR view offset expression "

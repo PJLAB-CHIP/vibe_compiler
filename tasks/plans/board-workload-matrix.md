@@ -96,8 +96,16 @@ profile另列Primary及各引擎/指令热点，不混成一个数。当前恢�
 | VuVLoop主块/尾组 | 本轮主机、actual SPM/TargetLLVM及1031真实尾组实卡通过 | 已完成；沿用矩形分段证明和短尾物化 |
 | 输出恢复搬运融合 | 本轮主机、fresh no-card、普通实卡及profile通过，静态GS每Tile 15→14 | 已完成；最终小颗粒输出置换仍在，接方向取舍 |
 | 累加器方向 | 本轮常规方向三次4.314/4.223/4.233ms，全量数值及guard通过；正式IR与实验逐字节一致 | 已完成；采用KQ score与常规累加器，只有unit轴移动保持自动重排；见[证据](../../docs/data/board-performance/attention-state-orientation-20260922.json) |
-| causal全可见前缀 | `AttentionVisibility.cpp`已有`splitFullyVisiblePrefix`草稿和05号合同补充；尚无该草稿的构建、回归或产品证据 | 方向取舍后补齐原迭代网格、空/单/多步、边界与state接续验证，沿普通串行产品路径完成验收及提交；不依赖先实现通用流水 |
+| causal全可见前缀 | 本轮主机、fresh no-card及主块/1031尾块实卡通过；主块4.252/4.300/4.192ms，尾块1.335ms，重复Q准备已消除 | 已完成；串行性能与前版持平，通用流水仍待实现；见[证据](../../docs/data/board-performance/attention-causal-prefix-20260922.json) |
 | 行状态复制 | 等字节序copy、初始化读取转交均已提交并通过实卡；发布复制已有通用实现，但目标残余不一定符合其条件 | 保留已完成结果；职责分拆后只复查残余的实际alias/use/effect，说明可消除项或必须保留的原因，再让流水消费相同优化结果 |
+
+**causal分段验收**：Analysis、Transforms、Driver完整unit suite及77项相关lit实际通过，无skip；
+最终canonical增量及随后Ninja no-op通过。覆盖BQ/BK为192/128、256/128、256/256，query offset为0/37，
+长度1024/1025/1031；额外非零lower/base逐迭代核对并集、顺序、无重叠及state接续。
+有界动态起点经DDR→TargetLLVM；可能为空的same-worker循环及cross-worker/CPU冲突由真实lifetime验证。
+只读布局复用覆盖零/一/多步、条件与source/alias写入、free、unknown和result写入拒绝，正例继续到Instr/completion/SPM。
+主块最终每Tile一次循环外模板读取、每query一次Q转换及一个terminal join；尾块全量输出与19456字节guard通过。
+两组输入/reference及package均为最终实现fresh生成，未重跑历史包。本步不签流水或整体性能任务完成。
 
 tail与融合可以使用同一当前BF16产品包作集成验证，分别保留主机机制证据；组合计时不声称单项收益。
 该包的no-card只证明对应编译版本的构包路径，不能代签后来加入的causal草稿或最终工作区状态；

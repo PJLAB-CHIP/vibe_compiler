@@ -612,6 +612,9 @@ causal边界的数值合同为`bias = invalid ? -inf : 0; score = score + bias`�
 
 静态causal边界在编译期用整数计算`invalid[r,c] = (k0+c > q0+r) || (k0+c >= e)`，其中`0 <= r < BQ`、`0 <= c < BK`。
 据此直接生成当前局部shape的最终`0/-inf` bias；位置计算使用整数，bias按score dtype存储。
+Host常量构造按每行的连续可见前缀追加0、剩余追加`-inf`；F32使用匹配的C++浮点存储，
+其它score格式保留APFloat。这里仅减少常量构造开销，模板集合、target dtype、逐bit内容与IR消费者不变。
+构造API以[pinned及官方DenseElementsAttr](https://mlir.llvm.org/doxygen/classmlir_1_1DenseElementsAttr.html)为准。
 不生成F32 `k−q`表再在每个边界块比较，也不通过`0/1 * -inf`生成bias。
 按实际shape、相对位置及有效域去重；只有模式与布局确实相同才能共享。对齐的等长causal各对角块复用一个模式；
 tail、错位和不等块长分别处理，不为每个head或query块复制等价常量。
@@ -638,6 +641,20 @@ MaskMove路径继续要求canonical 0/1 mask；不默认NPY bool已经是硬件p
 当score的DPS/last-use证明允许原地更新、两输入物理遍历匹配时，常规边界的mask应用为一条整块`AddVV`。
 全可见块省去causal bias和Add；有其它score观察者时按普通DPS规则保留必要复制。
 其它运算实际需要的同值fill继续使用`XorVV + AddVS`；causal改用Add不承担softmax实现的整体重写。
+
+循环分段的ceil-div边界仍由普通index SSA表达。pinned arith缺少`ceildivsi`的ValueBounds模型，
+在通用`IndexValueBounds`注册正整数常量除数的精确仿射ceil-div关系；动态/非正除数保持unknown，
+不制造范围。位置同余分析对常量倍乘保留步长网格，因此分段不把原有离散mask模式扩为逐元素偏移表。
+生成分段边界前，按current SSA的大小关系删除已被支配的min clamp；对嵌套min逐operand证明，
+不能假设query一定在valid域内。边界的模式集合须排除已证明不可达的全可见模式，否则会把单模板准备退回逐块动态读取。
+若delta在step上的余数由SSA证明为常量，round-up用该常量补齐后再取非负值；其余情况仍使用ceil-div。
+相邻端点的等价关系由此直接保留在普通index表达式中，供通用非空证明和模板准备hoist消费，
+不为attention跳过PhysicalMovementPlacement的effect、alias或非空要求。
+位置范围查询同时使用静态外层SCF的真实末次IV（`lower + floor((upper-lower-1)/step)*step`），
+不能仅使用`upper-1`虚构不存在的query尾位置。causal与valid两种模式分别检查；对齐主块的两者均为单一模式时，
+最终Instr模板RDMA必须位于query/KV循环之外。
+覆盖正/负被除数的独立scalar oracle，以及1024/1025/1031的实际分段到Instr产品路径；
+API按[Arith定义](https://mlir.llvm.org/docs/Dialects/ArithOps/#arithceildivsi-arithceildivsiop)及pinned ValueBounds源码确认。
 
 #### 通用指令规则与方案取舍
 
@@ -719,6 +736,15 @@ Pipeline position：
 
 指令条数、处理元素数、broadcast字节、实际allocation/SPM峰值分别统计，不能把元素数减少直接写成issue数或设备耗时同比下降。
 共享路径的普通Add/compare/select和原合法mask继续回归；输入使用合法有限Q/K/V，既有mask的`-inf`按其真实语义生成。
+
+**已选causal循环的全可见前缀**：在temporal materialization的同一visibility实现中，对已证明不可见迭代
+仅原样传递DPS state的循环，进一步按current query/key/validEnd位置拆分。设原key起点为`iv + base`、
+选定key块长为`BK`，全可见要求`iv + base + BK <= min(validEnd, queryStart + 1)`。
+将这个上界按原`lower + n * step`网格取首个不满足位置，并裁到原可见迭代域；得到相邻且不重叠的
+全可见前缀loop和边界loop。前者移除position mask，后者保持既有mask语义，三项state由前者结果接续到后者init。
+所有clone使用同一次IRMapping，源loop最终仍拥有原外部result；不重新读取不可见Q/K/V，也不改变KV顺序。
+全可见循环可以是空或一步，实际buffer/load流水由10号在physical Tile IR上处理；这里不分配双buffer或插同步。
+覆盖不同BQ/BK、query offset、1024/1025/1031及尾块，逐query核对两段key访问的并集、无重复、mask资格和state接续。
 
 ### 4.8 Attention展开方向与分组广播
 

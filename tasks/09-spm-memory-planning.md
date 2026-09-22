@@ -116,6 +116,12 @@ join/wait会更新pending state；region exit只要求仍访问其SPM roots的wo
 DTE token和NCC participant。共享generic async analysis不替代DTE
 origin/wait legality，也不能把DDR的selected TileModule set/external-root/resource-limit语义反向引入SPM。
 
+嵌套`scf.for`可能为空，不会单独破坏same-worker ordered stream：零次路径保留pending，一次或多次路径
+逐项检查实际effect、root及worker。仅在loop body内的join仍需证明其必经，不能拿可能不执行的join完成外部pending。
+此规则由shared lifetime backedge proof消费actual Instr，DDR/SPM gate保持同一语义；不增补loop-end drain。
+覆盖rank3、1024/1025/1031的动态内层循环，same-worker通过、cross-worker冲突拒绝、零次路径不能借用内层join，
+并用causal分段后的完整Instr→DDR/SPM→package作为直接下游witness。
+
 终态实现的dynamic ownership只接受由`func.func`、`scf.if`和`scf.for`结构化拥有的non-nested residency regions；
 一个entry可有一个或多个，typed opaque clobber和unknown region owner拒绝。若不同regions可能并发，其roots按真实coexistence
 联合规划，不能各自假设独占3 MiB。
@@ -188,6 +194,16 @@ offset facts只有作为complete passing candidate TileModule set的一部分才
 constant residency/storage、compiler-managed DDR `memref.alloc`、全局容量、largest contiguous range
 属于 DDR memory planning；movement/scheduler把 exact DDR byte footprint作为cost input。带宽只有qualified PMU事实存在后才能参与
 合法候选排序，不能反向改变range/capacity legality。
+
+DDR与target地址检查共用current SSA的静态范围分析。循环lower/upper可为有界动态值，step仍须为正的常量；
+区间只描述执行到body时的IV，不把可能为空的循环当成必然执行。非单值lower按所有可能起点求安全区间，
+仅当SSA余数证明成立时按step网格收紧终点，不能用区间两端对齐推断中间值对齐。
+正的常量除数的signed ceil-div保留负分子的正确舍入，算术溢出与未知边界保持typed failure。
+覆盖包含1024/1025/1031、非零起点、空/单/多步、可证/不可证余数及DDR→target实际地址检查。
+Instr→LLVM在同一次full conversion中调用pinned Arith的`populateCeilFloorDivExpandOpsPatterns`，
+随后由既有Arith→LLVM完成转换，不将ceil-div展开提前到地址证明之前。
+该API已与[官方Arith变换入口](https://mlir.llvm.org/doxygen/Dialect_2Arith_2Transforms_2Passes_8h.html)
+及仓库pinned源码核对；没有新增Wafer算术实现。
 
 ## 4. Instruction Storage Requirements
 

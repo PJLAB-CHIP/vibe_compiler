@@ -14,6 +14,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -265,6 +266,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   populateTargetInstructionConversionPatterns(
       converter, patterns, dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
+  mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
 
   mlir::ConversionTarget target(*moduleOp.getContext());

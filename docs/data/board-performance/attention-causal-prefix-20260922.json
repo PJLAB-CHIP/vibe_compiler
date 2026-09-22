@@ -1,0 +1,472 @@
+{
+  "date": "2026-09-22",
+  "scope": "causal 全可见前缀/边界串行分段；不包含 K/V 流水",
+  "compiler_sha256": "3be4677a782e1ff0d2609723cca4ee8ac577bc7b27f1aa31b3bdf5f973302c14",
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "runtime_library_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "artifacts": "/data/vibe_compiler-validation/attention-closure-20260922",
+  "measurements": {
+    "causal-closure": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "0429d276a6dd4d4615a5bea8f37bb89d13a276c8e89cb396d86ef93cd73dd40c",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4252000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "0429d276a6dd4d4615a5bea8f37bb89d13a276c8e89cb396d86ef93cd73dd40c",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4300000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "0429d276a6dd4d4615a5bea8f37bb89d13a276c8e89cb396d86ef93cd73dd40c",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4192000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      }
+    ],
+    "causal-closure_prepare_resources": "\tCommand being timed: \"/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python -B /home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py --case attention-prefill-28-heads-2048 --dtype bfloat16 --seed 20260922 --wafer-compile /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile --wafer-run /home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run --work-dir /data/vibe_compiler-validation/attention-closure-20260922/causal-closure-prepared --dump-compiler-ir /data/vibe_compiler-validation/attention-closure-20260922/causal-closure-ir --optimization-policy search --memory-guards --device-timing --compile-timing --expected-runtime-version 1400 --expected-device-name /dev/accel/dev-0 --expected-pci-bus-id 0000:3b:00.0 --expected-tile-count 16 --expected-runtime-library-sha256 3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c --completion-timeout-ms 60000 --board-diagnose-tool /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose --no-card\"\n\tUser time (seconds): 397.23\n\tSystem time (seconds): 26.18\n\tPercent of CPU this job got: 205%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 3:25.79\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 1372884\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 258\n\tMinor (reclaiming a frame) page faults: 6863317\n\tVoluntary context switches: 57300\n\tInvoluntary context switches: 1092\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 157456\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+    "causal-tail-closure": [
+      {
+        "audit": {
+          "case": "attention-prefill-tail-1031",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "bae36497598936e097a98810062520c6f44fdc0c22b9939167668af46e3ed734",
+          "comparison_passed": true,
+          "memory_guard_bytes": 19456,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "a1ae96c6aa73ba2145d196792400bfb793601ec619e0e06b06a9e938e20e25db",
+            "card_00_user_input_1.bf16.raw": "da0bbaca66ec4c24804afd8a579730ed8dcb005b21c42d3059a7589d23581e90",
+            "card_00_user_input_2.bf16.raw": "50760732f684a00af54b840d9df76045fd5b95df47eefa5f049329f9373d42db"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                1031,
+                64
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65984,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999979316708467,
+              "relative_l2_error": 0.002039950444697165,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 5.53878649938707e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1335000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        },
+        "measurement": {
+          "host_register_capture": false,
+          "device_profile": false,
+          "device_timing": true
+        }
+      }
+    ],
+    "causal-tail-closure_prepare_resources": "\tCommand being timed: \"/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python -B /home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py --case attention-prefill-tail-1031 --dtype bfloat16 --seed 20260922 --wafer-compile /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile --wafer-run /home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run --work-dir /data/vibe_compiler-validation/attention-closure-20260922/causal-tail-closure-prepared --dump-compiler-ir /data/vibe_compiler-validation/attention-closure-20260922/causal-tail-closure-ir --optimization-policy search --memory-guards --device-timing --compile-timing --expected-runtime-version 1400 --expected-device-name /dev/accel/dev-0 --expected-pci-bus-id 0000:3b:00.0 --expected-tile-count 16 --expected-runtime-library-sha256 3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c --completion-timeout-ms 60000 --board-diagnose-tool /home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose --no-card\"\n\tUser time (seconds): 342.29\n\tSystem time (seconds): 119.89\n\tPercent of CPU this job got: 131%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 5:51.15\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 15715156\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 21\n\tMinor (reclaiming a frame) page faults: 47631235\n\tVoluntary context switches: 63276\n\tInvoluntary context switches: 1673\n\tSwaps: 0\n\tFile system inputs: 0\n\tFile system outputs: 4748792\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n"
+  },
+  "ir_witness": [
+    {
+      "tile": "tile_00000",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00001",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00002",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00003",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00004",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00005",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00006",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00007",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00008",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00009",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00010",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00011",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00012",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00013",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00014",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    },
+    {
+      "tile": "tile_00015",
+      "actual_query_tile": 256,
+      "actual_key_tile": 256,
+      "template_reads": 1,
+      "template_read_before_all_loops": true,
+      "terminal_joins": 1,
+      "query_layout_preparations_per_query": 1,
+      "static_gather_scatter": 44
+    }
+  ],
+  "comparison": {
+    "current_median_ms": 4.252,
+    "previous_orientation_median_ms": 4.233,
+    "conclusion": "样本区间重叠，不宣称净提速；原串行回退已消除。",
+    "tail_ms": 1.335
+  },
+  "same_turn_diagnosis": [
+    {
+      "package": "causal-product",
+      "samples_ms": [
+        6.648,
+        6.515,
+        6.636
+      ],
+      "cause": "冗余 min、丢失网格/真实末次 IV 关系产生额外模板模式，阻碍模板准备外提。"
+    },
+    {
+      "package": "causal-hoist",
+      "samples_ms": [
+        6.534,
+        6.463,
+        6.616
+      ],
+      "cause": "尚未闭合真实末次 IV 与非空证明，名称不代表外提已经成功。"
+    },
+    {
+      "package": "causal-grid-final",
+      "samples_ms": [
+        4.74,
+        4.565,
+        4.494
+      ],
+      "cause": "模板已外提，Q 转换仍随全可见前缀重复。"
+    },
+    {
+      "package": "causal-closure",
+      "samples_ms": [
+        4.252,
+        4.3,
+        4.192
+      ],
+      "cause": "复用后续必经只读布局准备，并修正 movement placement 未发生 hoist 时漏调复用的入口。"
+    }
+  ],
+  "general_rules": [
+    "按原 induction grid 分段并以 SSA 接续 m/l/A，任意其它 mask 保留。",
+    "有界动态起点与正除数 signed ceil-div 经共用地址范围分析及 pinned Arith full conversion。",
+    "可能为空的嵌套循环不单独破坏 same-worker issue order；其 body join 不能代签零次路径完成。",
+    "布局复用检查 source 支配、只读 result、跨越区域 write/free/alias/unknown effect；不按 attention 名称匹配。"
+  ],
+  "limits": [
+    "没有本包独立 profile；不把旧 PMU 归为本包。",
+    "保持 dtype、算术顺序、容差和 native transpose 禁用。",
+    "尾块编译仍有大量不同模式构造，host 构造加速不等于设备提速。"
+  ],
+  "host": {
+    "analysis_suite_passed": true,
+    "transforms_suite_passed": true,
+    "driver_suite_passed": true,
+    "lit_passed": 77,
+    "unexpected_skips": 0,
+    "canonical_incremental": true,
+    "subsequent_noop": true,
+    "final_transforms_seconds": 561.7,
+    "final_driver_seconds": 974.78
+  }
+}

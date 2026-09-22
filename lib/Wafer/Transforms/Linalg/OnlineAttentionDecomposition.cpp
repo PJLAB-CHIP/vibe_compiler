@@ -6,6 +6,7 @@
 #include "AttentionVisibility.h"
 #include "OnlineAttentionStateOrientation.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Linalg/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
@@ -295,25 +296,53 @@ mlir::Value applyScoreRegion(const DecompositionDescriptor &descriptor,
         builder
             .getFloatAttr(scalarType, -std::numeric_limits<double>::infinity())
             .getValue();
-    llvm::SmallVector<llvm::APFloat> values;
     int64_t patterns = bias.causal.size() * bias.valid.size();
-    values.reserve(patterns * bias.queryExtent * bias.keyExtent);
-    for (int64_t c = 0; c < bias.causal.size(); ++c) {
-      int64_t diagonal = bias.causal.first + c * bias.causal.step;
-      for (int64_t v = 0; v < bias.valid.size(); ++v) {
-        int64_t valid = bias.valid.first + v * bias.valid.step;
-        for (int64_t q = 0; q < bias.queryExtent; ++q)
-          for (int64_t k = 0; k < bias.keyExtent; ++k)
-            values.push_back(k - q > diagonal || k >= valid ? negativeInfinity
-                                                            : zero);
-      }
-    }
+    support::ScopedCompileTimingSpan timing(
+        "normalization", "online-attention", "position-bias",
+        llvm::formatv("{0}x{1}; causal={2}:{3}:{4}; valid={5}:{6}:{7}",
+                      bias.queryExtent, bias.keyExtent, bias.causal.first,
+                      bias.causal.last, bias.causal.step, bias.valid.first,
+                      bias.valid.last, bias.valid.step)
+            .str());
+    support::addCompileCounter("online-attention", "position-bias-patterns",
+                               patterns);
+    support::addCompileCounter("online-attention", "position-bias-elements",
+                               patterns * bias.queryExtent * bias.keyExtent);
     llvm::SmallVector<int64_t> shape{bias.queryExtent, bias.keyExtent};
     if (patterns > 1)
       shape.insert(shape.begin(), patterns);
     auto templateType = mlir::RankedTensorType::get(shape, scalarType);
-    mlir::Value positionBias = builder.create<mlir::arith::ConstantOp>(
-        loc, mlir::DenseElementsAttr::get(templateType, values));
+    auto buildValues = [&](auto zero, auto negativeInfinity) {
+      using Scalar = decltype(zero);
+      llvm::SmallVector<Scalar> values;
+      values.reserve(patterns * bias.queryExtent * bias.keyExtent);
+      for (int64_t c = 0; c < bias.causal.size(); ++c) {
+        int64_t diagonal = bias.causal.first + c * bias.causal.step;
+        for (int64_t v = 0; v < bias.valid.size(); ++v) {
+          int64_t valid = bias.valid.first + v * bias.valid.step;
+          for (int64_t q = 0; q < bias.queryExtent; ++q) {
+            int64_t visible = diagonal >= bias.keyExtent - 1
+                                  ? bias.keyExtent
+                                  : (diagonal >= -q ? diagonal + q + 1 : 0);
+            visible = std::clamp(std::min(visible, valid), int64_t(0),
+                                 bias.keyExtent);
+            values.append(visible, zero);
+            values.append(bias.keyExtent - visible, negativeInfinity);
+          }
+        }
+      }
+      return mlir::DenseElementsAttr::get(templateType,
+                                          llvm::ArrayRef<Scalar>(values));
+    };
+    // Use the matching native host representation for IEEE F32 constants.
+    // The target dtype and every 0/-inf bit stay unchanged; avoid one APFloat
+    // object and conversion per element of a large compile-time template.
+    mlir::DenseElementsAttr elements =
+        scalarType.isF32()
+            ? buildValues(0.0f, -std::numeric_limits<float>::infinity())
+            : buildValues(zero, negativeInfinity);
+    mlir::Value positionBias =
+        builder.create<mlir::arith::ConstantOp>(loc, elements);
     if (patterns > 1) {
       // ProgramData owns the template collection. The only runtime tensor
       // demand is one actual BQ x BK slice; selection is scalar index math.

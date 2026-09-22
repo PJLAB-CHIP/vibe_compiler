@@ -17,7 +17,9 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
+#include <limits>
 #include <numeric>
 
 namespace wafer {
@@ -50,6 +52,24 @@ Congruence getCongruence(mlir::Value value) {
     int64_t modulus = std::gcd(lower.modulus, *step);
     return {positiveRemainder(lower.residue, modulus), modulus};
   }
+  if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>()) {
+    for (auto [scalar, other] :
+         {std::pair{multiply.getLhs(), multiply.getRhs()},
+          std::pair{multiply.getRhs(), multiply.getLhs()}}) {
+      auto factor = mlir::getConstantIntValue(scalar);
+      if (!factor)
+        continue;
+      auto input = getCongruence(other);
+      int64_t residue, modulus;
+      if (llvm::MulOverflow(input.residue, *factor, residue) ||
+          llvm::MulOverflow(input.modulus, *factor, modulus) ||
+          modulus == std::numeric_limits<int64_t>::min())
+        return {};
+      modulus = std::abs(modulus);
+      return {modulus ? positiveRemainder(residue, modulus) : residue, modulus};
+    }
+    return {};
+  }
   auto *definition = value.getDefiningOp();
   if (!mlir::isa_and_nonnull<mlir::arith::AddIOp, mlir::arith::SubIOp>(
           definition))
@@ -66,11 +86,37 @@ Congruence getCongruence(mlir::Value value) {
   return {modulus ? positiveRemainder(residue, modulus) : residue, modulus};
 }
 
+// Preserve the actual last iteration of a static position loop. The upstream
+// SCF model only bounds the IV by upper - 1, which invents tail positions when
+// the step is larger than one.
+bool addStaticIterationBounds(mlir::Value value, std::optional<int64_t> dim,
+                              mlir::ValueBoundsConstraintSet &bounds) {
+  if (dim)
+    return false;
+  auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+  auto loop =
+      argument
+          ? mlir::dyn_cast<mlir::scf::ForOp>(argument.getOwner()->getParentOp())
+          : mlir::scf::ForOp{};
+  if (!loop || value != loop.getInductionVar())
+    return false;
+  auto first = mlir::getConstantIntValue(loop.getLowerBound());
+  auto end = mlir::getConstantIntValue(loop.getUpperBound());
+  auto step = mlir::getConstantIntValue(loop.getStep());
+  // Attention positions are nonnegative. This also makes every
+  // subtraction/product below representable in signed int64.
+  if (!first || !end || !step || *first < 0 || *end <= *first || *step <= 0)
+    return false;
+  int64_t last = *first + ((*end - *first - 1) / *step) * *step;
+  bounds.bound(value) >= *first;
+  bounds.bound(value) <= last;
+  return true;
+}
+
 class PositionBounds : public mlir::ValueBoundsConstraintSet {
 public:
   explicit PositionBounds(mlir::Operation *use)
-      : ValueBoundsConstraintSet(use->getContext(),
-                                 [](auto, auto, auto &) { return false; }) {
+      : ValueBoundsConstraintSet(use->getContext(), addStaticIterationBounds) {
     for (auto *child = use; child->getParentOp(); child = child->getParentOp())
       if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(child->getParentOp()))
         addCondition(branch.getCondition(),
@@ -218,6 +264,13 @@ bool tightenVisibleLoop(mlir::RewriterBase &rewriter,
     rewriter.moveOpBefore(op, loop);
   rewriter.setInsertionPoint(loop);
   auto loc = tile.getLoc();
+  auto minimum = [&](mlir::Value lhs, mlir::Value rhs) -> mlir::Value {
+    if (proveAttentionPositionOrder(lhs, rhs))
+      return lhs;
+    if (proveAttentionPositionOrder(rhs, lhs))
+      return rhs;
+    return rewriter.createOrFold<mlir::arith::MinSIOp>(loc, lhs, rhs);
+  };
   mlir::Value end = tile.getPositions()[2];
   if (tile.getCausal()) {
     auto dimension = mlir::cast<mlir::AffineDimExpr>(
@@ -227,15 +280,101 @@ bool tightenVisibleLoop(mlir::RewriterBase &rewriter,
         loc, tile.getStaticLoopRanges()[dimension]);
     auto queryEnd = rewriter.createOrFold<mlir::arith::AddIOp>(
         loc, tile.getPositions()[0], extent);
-    end = rewriter.createOrFold<mlir::arith::MinSIOp>(loc, end, queryEnd);
+    end = minimum(end, queryEnd);
   }
   if (*base) {
     auto offset = rewriter.create<mlir::arith::ConstantIndexOp>(loc, *base);
     end = rewriter.createOrFold<mlir::arith::SubIOp>(loc, end, offset);
   }
-  auto upper = rewriter.createOrFold<mlir::arith::MinSIOp>(
-      loc, loop.getUpperBound(), end);
+  auto upper = minimum(loop.getUpperBound(), end);
   rewriter.modifyOpInPlace(loop, [&] { loop.setUpperBound(upper); });
+  return true;
+}
+
+// The source loop has already passed tightenVisibleLoop's carried-state and
+// effect checks. Split its exact induction grid, preserving recurrence order.
+static bool splitFullyVisiblePrefix(mlir::RewriterBase &rewriter,
+                                    LinalgExtOnlineAttentionOp tile) {
+  auto loop = mlir::cast<mlir::scf::ForOp>(tile->getParentOp());
+  if (!tile.getCausal())
+    return false;
+  auto base = mlir::ValueBoundsConstraintSet::computeConstantDelta(
+      tile.getPositions()[1], loop.getInductionVar());
+  if (mlir::failed(base))
+    return false;
+  auto keyAxis = mlir::cast<mlir::AffineDimExpr>(
+                     tile.getPositionMapAttr().getValue().getResult(1))
+                     .getPosition();
+  int64_t bias;
+  if (llvm::AddOverflow(*base, tile.getStaticLoopRanges()[keyAxis] - 1, bias))
+    return false;
+  mlir::OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(loop);
+  auto loc = loop.getLoc();
+  auto zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  auto one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
+  auto offset = rewriter.create<mlir::arith::ConstantIndexOp>(loc, bias);
+  auto firstQueryEnd = rewriter.createOrFold<mlir::arith::AddIOp>(
+      loc, tile.getPositions()[0], one);
+  // Remove dominated clamps before forming the rounded grid. The generic
+  // min bounds interface supplies upper inequalities, not the disjunction
+  // needed to recover a lower bound through a redundant nested minimum.
+  std::function<bool(mlir::Value, mlir::Value)> lessEqual =
+      [&](mlir::Value lhs, mlir::Value rhs) {
+        if (lhs == rhs)
+          return true;
+        if (auto minimum = rhs.getDefiningOp<mlir::arith::MinSIOp>())
+          return lessEqual(lhs, minimum.getLhs()) &&
+                 lessEqual(lhs, minimum.getRhs());
+        auto bounds = PositionBounds(tile).getDifference(lhs, rhs);
+        return bounds.second && *bounds.second <= 0;
+      };
+  auto minimum = [&](mlir::Value lhs, mlir::Value rhs) -> mlir::Value {
+    if (lessEqual(lhs, rhs))
+      return lhs;
+    if (lessEqual(rhs, lhs))
+      return rhs;
+    return rewriter.createOrFold<mlir::arith::MinSIOp>(loc, lhs, rhs);
+  };
+  auto limit = minimum(firstQueryEnd, tile.getPositions()[2]);
+  auto cutoff = rewriter.createOrFold<mlir::arith::SubIOp>(loc, limit, offset);
+  cutoff = minimum(cutoff, loop.getUpperBound());
+  auto delta = rewriter.createOrFold<mlir::arith::SubIOp>(loc, cutoff,
+                                                          loop.getLowerBound());
+  const int64_t step = *mlir::getConstantIntValue(loop.getStep());
+  auto grid = getCongruence(delta);
+  mlir::Value span;
+  if (grid.modulus % step == 0) {
+    // Round on the proven grid before clamping. ceil(max(x,0)/s)*s is
+    // max(x + (s - x%s)%s, 0) when the remainder is invariant. This also
+    // exposes equal adjacent boundaries to the ordinary nonempty-loop proof.
+    int64_t remainder = positiveRemainder(grid.residue, step);
+    auto adjustment = rewriter.create<mlir::arith::ConstantIndexOp>(
+        loc, remainder ? step - remainder : 0);
+    span = rewriter.createOrFold<mlir::arith::AddIOp>(loc, delta, adjustment);
+    if (!lessEqual(zero, span))
+      span = rewriter.createOrFold<mlir::arith::MaxSIOp>(loc, span, zero);
+  } else {
+    delta = rewriter.createOrFold<mlir::arith::MaxSIOp>(loc, delta, zero);
+    auto steps = rewriter.createOrFold<mlir::arith::CeilDivSIOp>(
+        loc, delta, loop.getStep());
+    span =
+        rewriter.createOrFold<mlir::arith::MulIOp>(loc, steps, loop.getStep());
+  }
+  auto boundary = rewriter.createOrFold<mlir::arith::AddIOp>(
+      loc, loop.getLowerBound(), span);
+  mlir::IRMapping mapping;
+  auto full = mlir::cast<mlir::scf::ForOp>(rewriter.clone(*loop, mapping));
+  full.setUpperBound(boundary);
+  auto fullTile = mlir::cast<LinalgExtOnlineAttentionOp>(
+      mapping.lookup(tile.getOperation()));
+  fullTile.getPositionsMutable().clear();
+  fullTile.setCausal(false);
+  fullTile.removePositionMapAttr();
+  rewriter.modifyOpInPlace(loop, [&] {
+    loop.setLowerBound(boundary);
+    loop.getInitArgsMutable().assign(full.getResults());
+  });
   return true;
 }
 
@@ -296,38 +435,18 @@ bool proveAttentionPositionOrder(mlir::Value lhs, mlir::Value rhs,
       mlir::AffineMap::get(2, 0,
                            mlir::getAffineDimExpr(1, lhs.getContext()) -
                                mlir::getAffineDimExpr(0, lhs.getContext()));
-  auto stop = [](mlir::Value value, std::optional<int64_t> dim,
-                 Bounds &bounds) {
-    if (dim)
-      return false;
-    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
-    auto loop = argument ? mlir::dyn_cast<mlir::scf::ForOp>(
-                               argument.getOwner()->getParentOp())
-                         : mlir::scf::ForOp{};
-    if (!loop || value != loop.getInductionVar())
-      return false;
-    auto first = mlir::getConstantIntValue(loop.getLowerBound());
-    auto end = mlir::getConstantIntValue(loop.getUpperBound());
-    auto step = mlir::getConstantIntValue(loop.getStep());
-    // Attention positions are nonnegative. This also makes every
-    // subtraction/product below representable in signed int64.
-    if (!first || !end || !step || *first < 0 || *end <= *first || *step <= 0)
-      return false;
-    int64_t last = *first + ((*end - *first - 1) / *step) * *step;
-    bounds.bound(value) >= *first;
-    bounds.bound(value) <= last;
-    return true;
-  };
+
   for (auto value : {lhs, rhs}) {
     auto bound = Bounds::computeConstantBound(mlir::presburger::BoundType::LB,
-                                              Bounds::Variable(value), stop);
+                                              Bounds::Variable(value),
+                                              addStaticIterationBounds);
     if (mlir::failed(bound) || *bound < 0)
       return false;
   }
   auto lower = Bounds::computeConstantBound(
       mlir::presburger::BoundType::LB,
       Bounds::Variable(difference, llvm::ArrayRef<mlir::Value>{lhs, rhs}),
-      stop);
+      addStaticIterationBounds);
   if (mlir::failed(lower))
     return false;
   auto left = getCongruence(lhs), right = getCongruence(rhs);
@@ -360,10 +479,13 @@ mlir::LogicalResult materializeAttentionVisibility(mlir::RewriterBase &rewriter,
         return tile.emitOpError(
             "visibility requires statically sized selected tiles");
   }
-  llvm::DenseSet<mlir::Operation *> visibleIterations;
+  llvm::DenseSet<mlir::Operation *> visibleIterations, boundaryIterations;
   for (auto tile : tiles)
-    if (tightenVisibleLoop(rewriter, tile))
+    if (tightenVisibleLoop(rewriter, tile)) {
+      if (splitFullyVisiblePrefix(rewriter, tile))
+        boundaryIterations.insert(tile);
       visibleIterations.insert(tile);
+    }
   for (auto tile : tiles) {
     mlir::OpBuilder::InsertionGuard insertionGuard(rewriter);
     rewriter.setInsertionPoint(tile);
@@ -394,18 +516,26 @@ mlir::LogicalResult materializeAttentionVisibility(mlir::RewriterBase &rewriter,
                                                         rhs);
     };
     auto visible = compare(mlir::arith::CmpIPredicate::ult, key, validEnd);
-    auto full = compare(mlir::arith::CmpIPredicate::ule, end(key, 1), validEnd);
+    const bool boundaryOnly = boundaryIterations.contains(tile);
+    mlir::Value full =
+        boundaryOnly
+            ? mlir::Value(
+                  rewriter.create<mlir::arith::ConstantIntOp>(loc, 0, 1))
+            : compare(mlir::arith::CmpIPredicate::ule, end(key, 1), validEnd);
     if (tile.getCausal()) {
       auto causalVisible =
           compare(mlir::arith::CmpIPredicate::ult, key, end(query, 0));
       visible = rewriter.createOrFold<mlir::arith::AndIOp>(loc, visible,
                                                            causalVisible);
-      auto one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
-      auto firstQueryEnd =
-          rewriter.createOrFold<mlir::arith::AddIOp>(loc, query, one);
-      auto causalFull =
-          compare(mlir::arith::CmpIPredicate::ule, end(key, 1), firstQueryEnd);
-      full = rewriter.createOrFold<mlir::arith::AndIOp>(loc, full, causalFull);
+      if (!boundaryOnly) {
+        auto one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
+        auto firstQueryEnd =
+            rewriter.createOrFold<mlir::arith::AddIOp>(loc, query, one);
+        auto causalFull = compare(mlir::arith::CmpIPredicate::ule, end(key, 1),
+                                  firstQueryEnd);
+        full =
+            rewriter.createOrFold<mlir::arith::AndIOp>(loc, full, causalFull);
+      }
     }
     if (visibleIterations.contains(tile))
       visible = rewriter.create<mlir::arith::ConstantIntOp>(loc, 1, 1);

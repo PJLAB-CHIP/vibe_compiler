@@ -82,6 +82,50 @@ TEST_F(StaticIndexRangeTest, SignedExtremaProvideOnlyProvenBounds) {
       BoundType::UB, Bounds::Variable(results[1]))));
 }
 
+// Scalar interface oracle; the real causal split below consumes these bounds
+// for rank-four payloads and passes them through decomposition/Instr lowering.
+TEST_F(StaticIndexRangeTest,
+       SignedCeilDivPreservesConstantPositiveDivisorBounds) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(llvm::formatv(R"mlir(
+      module {{
+        func.func @entry(%unknown: index, %dynamic: index) -> (index, index, index, index) {{
+          %positive = arith.constant {0} : index
+          %negative = arith.constant -{0} : index
+          %divisor = arith.constant 128 : index
+          %minus = arith.constant -128 : index
+          %lo = arith.maxsi %unknown, %positive : index
+          %hi = arith.minsi %unknown, %negative : index
+          %lower = arith.ceildivsi %lo, %divisor : index
+          %upper = arith.ceildivsi %hi, %divisor : index
+          %unsupported_sign = arith.ceildivsi %lo, %minus : index
+          %unsupported_dynamic = arith.ceildivsi %lo, %dynamic : index
+          return %lower, %upper, %unsupported_sign, %unsupported_dynamic : index, index, index, index
+        }
+      }
+    )mlir",
+                                                                        extent)
+                                                              .str(),
+                                                          &context);
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto results = function.front().getTerminator()->getOperands();
+    using Bounds = mlir::ValueBoundsConstraintSet;
+    using BoundType = mlir::presburger::BoundType;
+    auto lower = Bounds::computeConstantBound(BoundType::LB,
+                                              Bounds::Variable(results[0]));
+    auto upper = Bounds::computeConstantBound(
+        BoundType::UB, Bounds::Variable(results[1]), nullptr, true);
+    ASSERT_TRUE(mlir::succeeded(lower));
+    ASSERT_TRUE(mlir::succeeded(upper));
+    EXPECT_EQ(*lower, (extent + 127) / 128);
+    EXPECT_EQ(*upper, -(extent / 128));
+    for (auto result : results.drop_front(2))
+      EXPECT_TRUE(mlir::failed(Bounds::computeConstantBound(
+          BoundType::LB, Bounds::Variable(result))));
+  }
+}
+
 // Scalar range oracle; actual tensor loops are covered by attention and NCC
 // lifetime tests. Bounded upper limits must not imply a constant trip count.
 TEST_F(StaticIndexRangeTest, BoundedLoopUpperLimitsRetainExactReachableGrid) {
@@ -140,6 +184,66 @@ TEST_F(StaticIndexRangeTest, BoundedLoopUpperLimitsRetainExactReachableGrid) {
       EXPECT_EQ(range.range.max, (extent - 1) / 128);
     });
   }
+}
+
+// Scalar interval oracle; rank-three DDR/target witnesses exercise the same
+// lower-bound expressions in plan-ddr-memory-dynamic-loop.mlir.
+TEST_F(StaticIndexRangeTest, BoundedDynamicLowerPreservesOnlyProvenGrid) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t step : {3, 128})
+      for (bool aligned : {false, true}) {
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(
+            llvm::formatv(R"mlir(
+          module {{
+            func.func @entry(%unknown: index) {{
+              %zero = arith.constant 0 : index
+              %base = arith.constant 13 : index
+              %end = arith.constant {0} : index
+              %query_step = arith.constant 192 : index
+              %step = arith.constant {1} : index
+              scf.for %q = %zero to %end step %query_step {{
+                %rounded = arith.ceildivsi %q, %step : index
+                %grid = arith.muli %rounded, %step : index
+                %lower = arith.addi {2}, %base : index
+                scf.for %key = %lower to %end step %step {{ }
+                scf.for %unbounded = %unknown to %end step %step {{ }
+              }
+              return
+            }
+          }
+        )mlir",
+                          extent, step, aligned ? "%grid" : "%q")
+                .str(),
+            &context);
+        ASSERT_TRUE(module);
+        unsigned inner = 0;
+        module->walk([&](mlir::scf::ForOp loop) {
+          if (!loop->getParentOfType<mlir::scf::ForOp>())
+            return;
+          auto range =
+              evaluateNonNegativeStaticIndexRange(loop.getInductionVar());
+          if (inner++) {
+            EXPECT_EQ(range.failure,
+                      StaticIndexRangeFailureKind::DynamicLoopBounds);
+            return;
+          }
+          ASSERT_TRUE(range.succeeded());
+          EXPECT_FALSE(range.range.empty);
+          EXPECT_EQ(range.range.min, 13);
+          if (aligned && step == 128)
+            EXPECT_EQ(range.range.max, 13 + (extent - 14) / step * step);
+          else
+            EXPECT_EQ(range.range.max, extent - 1);
+          for (int64_t q = 0; q < extent; q += 192) {
+            int64_t lower = 13 + (aligned ? (q + step - 1) / step * step : q);
+            for (int64_t k = lower; k < extent; k += step) {
+              EXPECT_GE(k, range.range.min);
+              EXPECT_LE(k, range.range.max);
+            }
+          }
+        });
+        EXPECT_EQ(inner, 2u);
+      }
 }
 
 TEST_F(StaticIndexRangeTest, PackedAlignmentUsesEveryInductionValue) {

@@ -29,6 +29,7 @@ enum class StaticIndexRangeFailureKind {
   InvalidLoopBounds,
   NonSingletonMultiplication,
   InvalidUnsignedDivision,
+  InvalidSignedDivision,
   ArithmeticOverflow,
   NegativeRange,
 };
@@ -43,9 +44,10 @@ struct StaticIndexRangeResult {
 };
 
 /// Conservatively evaluates a non-negative index value from constants,
-/// bounded scf.for induction variables with constant lower bound and step,
+/// bounded scf.for induction variables with a positive constant step,
 /// checked addition/subtraction, multiplication with at least one singleton
-/// operand, unsigned division by a positive constant, signed min/max intervals,
+/// operand, unsigned division / signed ceil division by a positive constant,
+/// signed min/max intervals,
 /// and identity-preserving
 /// wafer.tile.region block/result edges.
 /// Fixed-width integer SSA and integer/index casts use InferIntRangeInterface

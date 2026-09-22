@@ -9,7 +9,8 @@ class DialectRegistry;
 
 namespace wafer::analysis {
 
-/// Add index min/max bounds missing from the pinned arith interface models.
+/// Add index extrema and constant-positive signed ceil-div bounds missing
+/// from the pinned arith interface models.
 void registerIndexValueBoundsModels(mlir::DialectRegistry &registry);
 
 } // namespace wafer::analysis

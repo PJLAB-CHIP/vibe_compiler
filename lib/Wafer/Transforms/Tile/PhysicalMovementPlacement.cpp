@@ -279,9 +279,13 @@ optimizePhysicalMovementPlacement(mlir::Operation *root,
     }
     moved += changed;
   }
-  if (moved) {
-    LayoutOptimizationStatistics statistics;
-    reuseReadOnlyLayoutMaterializations(root, relations, statistics);
+  // Earlier layout placement or boundary materialization may already expose
+  // the common preparation point. Reuse must not depend on this invocation
+  // having hoisted an unrelated copy first.
+  LayoutOptimizationStatistics statistics;
+  reuseReadOnlyLayoutMaterializations(root, relations, statistics);
+  if (moved || statistics.sharedMaterializationsReused ||
+      statistics.unusedMaterializationsErased) {
     rebuildCurrentBufferOwnerRelations(root, relations);
     if (mlir::failed(mlir::verify(root)) ||
         mlir::failed(checkStructuredBufferRelationsCurrent(root, relations)))

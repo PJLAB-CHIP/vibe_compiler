@@ -256,6 +256,8 @@ private:
       return evaluateMultiply(multiply);
     if (auto divide = value.getDefiningOp<mlir::arith::DivUIOp>())
       return evaluateUnsignedDivide(divide);
+    if (auto divide = value.getDefiningOp<mlir::arith::CeilDivSIOp>())
+      return evaluateSignedCeilDivide(divide);
     if (auto maximum = value.getDefiningOp<mlir::arith::MaxSIOp>())
       return evaluateSignedExtremum(maximum.getLhs(), maximum.getRhs(),
                                     /*takeMaximum=*/true);
@@ -350,7 +352,6 @@ private:
     if (!lowerRange.succeeded() || !upperRange.succeeded() ||
         !stepRange.succeeded() || lowerRange.range.empty ||
         upperRange.range.empty || stepRange.range.empty ||
-        lowerRange.range.min != lowerRange.range.max ||
         stepRange.range.min != stepRange.range.max)
       return failed(Failure::DynamicLoopBounds);
     int64_t lower = lowerRange.range.min;
@@ -360,6 +361,21 @@ private:
       return failed(Failure::InvalidLoopBounds);
     if (upper <= lower)
       return Result{StaticIndexRange{lower, lower, /*empty=*/true}};
+
+    if (lowerRange.range.min != lowerRange.range.max) {
+      int64_t maximum = upper - 1;
+      // The lower bound may vary between invocations. An interval alone does
+      // not prove a common induction grid; only an actual SSA congruence does.
+      if (auto residue = getKnownIndexRemainder(loop.getLowerBound(), step)) {
+        int64_t remainder = maximum % step;
+        int64_t expected = static_cast<int64_t>(*residue);
+        int64_t adjustment = remainder >= expected
+                                 ? remainder - expected
+                                 : step - (expected - remainder);
+        maximum -= adjustment;
+      }
+      return Result{StaticIndexRange{lower, maximum, maximum < lower}};
+    }
 
     const int64_t distance = upper - lower - 1;
     int64_t delta = 0;
@@ -481,6 +497,25 @@ private:
         StaticIndexRange{combine(operands->first.min, operands->second.min),
                          combine(operands->first.max, operands->second.max),
                          /*empty=*/false}};
+  }
+
+  Result evaluateSignedCeilDivide(mlir::arith::CeilDivSIOp divide) {
+    Failure failure = Failure::None;
+    auto operands = evaluateOperands(divide.getLhs(), divide.getRhs(), failure);
+    if (!operands)
+      return failed(failure);
+    if (operands->first.empty || operands->second.empty)
+      return Result{StaticIndexRange{0, 0, /*empty=*/true}};
+    if (operands->second.min != operands->second.max ||
+        operands->second.min <= 0)
+      return failed(Failure::InvalidSignedDivision);
+    int64_t divisor = operands->second.min;
+    auto ceil = [divisor](int64_t numerator) {
+      // Avoid the overflowing numerator + divisor - 1 formulation.
+      return numerator / divisor + (numerator % divisor > 0);
+    };
+    return Result{StaticIndexRange{ceil(operands->first.min),
+                                   ceil(operands->first.max), false}};
   }
 
   Result evaluateAffineApply(mlir::affine::AffineApplyOp apply) {

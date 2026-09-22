@@ -1540,6 +1540,102 @@ TEST_F(LayoutOptimizationTest,
   }
 }
 
+TEST_F(LayoutOptimizationTest,
+       MandatoryConversionReusesReadOnlyNestedPreparation) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef mutation :
+         {"none", "source", "alias", "free", "unknown", "result"}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << mutation.str());
+      std::string shape = "2x" + std::to_string(extent) + "x64xbf16";
+      std::string source = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+      std::string target = "memref<" + shape + ", #wafer.memory<spm, ncx>>";
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { ";
+      if (mutation == "unknown")
+        out << "func.func private @unknown(" << source << ") ";
+      out << "func.func @entry(%take: i1) { "
+          << "wafer.tile.region(%take : i1) -> () { ^bb0(%condition: i1): "
+          << "%c0 = arith.constant 0 : index %c1 = arith.constant 1 : index "
+          << "%step = arith.constant 512 : index "
+          << "%end = arith.constant " << extent << " : index "
+          << "%zero = arith.constant 0.0 : bf16 "
+          << "%source = memref.alloc() : " << source
+          << " %dest = memref.alloc() : " << target
+          << " wafer.tile.fill %source, %zero : " << source << ", bf16 "
+          << "scf.for %q = %c0 to %end step %step { "
+          << "%trips = arith.divui %q, %step : index "
+          << "scf.for %i = %c0 to %trips step %c1 { scf.if %condition { "
+          << "%early = wafer.tile.materialize_layout %source : " << source
+          << " -> " << target
+          << " wafer.tile.elementwise_into <add> %early, %early into "
+          << (mutation == "result" ? "%early" : "%dest") << " : " << target
+          << ", " << target << " into " << target << " } } ";
+      if (mutation == "source")
+        out << "memref.store %zero, %source[%c0,%c0,%c0] : " << source;
+      if (mutation == "alias") {
+        std::string alias = "memref<?x?x64xbf16, #wafer.memory<spm, tensor>>";
+        out << "%alias = memref.cast %source : " << source << " to " << alias
+            << " memref.store %zero, %alias[%c0,%c0,%c0] : " << alias;
+      }
+      if (mutation == "free")
+        out << "memref.dealloc %source : " << source;
+      if (mutation == "unknown")
+        out << "func.call @unknown(%source) : (" << source << ") -> ()";
+      out << " } %late = wafer.tile.materialize_layout %source : " << source
+          << " -> " << target
+          << " wafer.tile.elementwise_into <add> %late, %late into %dest : "
+          << target << ", " << target << " into " << target
+          << " wafer.tile.yield } return } }";
+      auto module = parse(text);
+      ASSERT_TRUE(module) << text;
+      std::string before;
+      llvm::raw_string_ostream beforeStream(before);
+      module->print(beforeStream);
+      StructuredMaterializationRelations relations;
+      auto placement = optimizePhysicalMovementPlacement(
+          *module, relations, LayoutMaterializationPlacement::LoopInvariant);
+      ASSERT_TRUE(mlir::succeeded(placement));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      if (mutation != "none") {
+        std::string after;
+        llvm::raw_string_ostream afterStream(after);
+        module->print(afterStream);
+        EXPECT_EQ(before, after);
+        continue;
+      }
+      ASSERT_EQ(countOps<LayoutMaterializeOp>(*module), 1u);
+      LayoutMaterializeOp conversion;
+      module->walk([&](LayoutMaterializeOp op) { conversion = op; });
+      EXPECT_FALSE(conversion->getParentOfType<mlir::scf::ForOp>());
+      EXPECT_FALSE(conversion->getParentOfType<mlir::scf::IfOp>());
+      EXPECT_EQ(std::distance(conversion.getResult().use_begin(),
+                              conversion.getResult().use_end()),
+                4);
+      // The scalar domain contains zero, one and (for the ragged extents) two
+      // inner iterations. Both branch outcomes share the mandatory snapshot.
+      unsigned iterations = 0;
+      for (int64_t q = 0; q < extent; q += 512)
+        iterations += q / 512;
+      EXPECT_EQ(iterations, extent == 1024 ? 1u : 3u);
+      TileRegionToInstrLoweringSession session(*context);
+      TileRegionOp region;
+      module->walk([&](TileRegionOp op) { region = op; });
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+      EXPECT_EQ(countOps<LayoutMaterializeOp>(*module), 0u);
+      EXPECT_GT(countOps<InstrGatherScatterOp>(*module), 0u);
+      EXPECT_EQ(countOps<InstrElementwiseOp>(*module), 2u);
+      module->walk([&](SyncNCCJoinOp join) {
+        EXPECT_FALSE(join->getParentOfType<mlir::scf::ForOp>());
+      });
+      TileMemoryPlanningFailure failure;
+      auto planned = planTileMemory(std::move(module), &failure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+    }
+}
+
 TEST_F(LayoutOptimizationTest, InterveningCurrentWritePreventsConversionReuse) {
   std::string text = makeSharedContractionSource(/*extent=*/1025);
   constexpr llvm::StringLiteral marker = "        %empty1";

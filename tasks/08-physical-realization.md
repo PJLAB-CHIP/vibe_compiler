@@ -37,6 +37,28 @@ Pipeline position:
   不需要search proposal即可验证和lower。
 ```
 
+### 1.1 跨结构化循环的只读布局准备复用
+
+输入是movement placement后的实际`LayoutMaterializeOp`及SCF/memref SSA。若循环/分支内的转换与其后
+同一父block必经的转换读取同一source、产生同一type，允许将后者移到前者的共同父operation之前，再共享结果。
+这解决可能为空的前缀循环反复转换不变输入的问题；不要求把空循环改为非空，也不凭未来转换或attention名称猜测复用。
+
+首次mutation前必须证明：source支配新位置；两个result只读且不逃逸；跨越的SCF及中间操作没有对source或alias的
+write/free和未知effect。递归effect容器检查实际body；不把其无独立地址的resource占用当source写入。
+只移动已经在同一父block执行的实际转换，空/条件路径不新增读取，任意source变化、结果写入、unknown effect均保留原操作。
+输出仍为同层实际layout movement，更新owner关系，直接消费者是Tile→Instr及fresh completion/SPM；不选择新layout、
+不引入缓冲轮转或同步。完成要求是复制执行次数下降、source快照保持、真实Instr/completion/SPM及产品包验收。
+
+与[MLIR LICM](https://mlir.llvm.org/doxygen/LoopInvariantCodeMotionUtils_8cpp_source.html)的纯操作外提比较：
+此处布局转换有真实读取和分配，不能套`isPure`；采用已有必经转换的提前与冗余消除，显式证明源内容不变。
+pinned `LocalAliasAnalysis::getModRef`把递归effect容器视作ModAndRef且跳过Free，因此本证明递归检查标准effect并单独覆盖Free。
+
+| 覆盖 | exact结果 | 直接下游witness |
+| --- | --- | --- |
+| rank3，1024/1025/1031，动态零/一/多步及条件只读use | 一份父block转换，同时供嵌套及后续consumer；零步不新增转换 | Tile→Instr、owner和完成/内存验证 |
+| source写入/alias写入/free/unknown，结果写入 | 不合并，不改变source快照与次数 | verifier-valid原IR保留 |
+| 真实causal两段串行输入 | Q转换不随前缀KV次数增长；模板准备及末尾join不回退 | fresh no-card、全量数值/guard、普通实卡耗时 |
+
 ## 2. 终态原则与所有权
 
 - 当前IR是shape、dtype、indexing、view、memory space、encoding、allocation root、movement和effect的唯一事实源。
