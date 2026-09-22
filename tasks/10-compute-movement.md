@@ -446,6 +446,9 @@ RHS在其最后一次重复读取前不得被覆盖，不能直接继承一次�
 `wafer.tile.reduce`只表示Tile-local reduction，保留kind、dimensions、init、input/result relation和evaluation-order
 约束。跨Tile reduction由13的Tile collective/peer protocol表达，不由local reduce op暗中访问其它Tile。
 `wafer.tile.fill`初始化既有destination，并以typed fill domain区分logical-valid或physical-footprint范围。
+StructuredToTile将布局自由的scalar fill写到已选择的destination：Tensor使用logical-valid；连续独立Cx/NCx allocation
+显式使用physical-footprint初始化完整编码范围及padding。Cx/NCx子视图、非连续或外部destination不拥有整个footprint，
+先填同布局私有allocation，再以MoveCopyInto发布logical元素，保持原alias及子视图外数据；新allocation进入当前owner/SPM路径。
 TileToInstr物化mapped elementwise输入时，若实际私有allocation仅由支配当前使用的fill写入、没有view/其它使用或逃逸，
 可直接在目标allocation上生成同值physical fill；不为这种同值铺块生成逐元素GatherScatter。
 支配关系包括循环外初始化到循环内使用，不要求同block；placement不改变此uniform事实。
@@ -747,6 +750,12 @@ psum与destination必须分离，低层不得自行选择复用。完成条件�
 
 ### 被完整覆盖的私有初始化
 
+同布局直接fill也参与这一规则，不依赖前面必须存在layout conversion。独立allocation的fill后，若首次真实使用是
+同block完整覆盖、没有旧内容读取的writer，可删除该fill；纯完整reshape不算内容观察。对于physical-footprint fill，
+只有目标没有padding/unused bits，或writer有相同物理覆盖证明时才可删除，不能用logical完整覆盖代替padding初始化。
+覆盖包含直接fill/转换后fill、GEMM独立或alias psum、提前reader、完整view和1024/1025/1031带padding形态；
+下游Instr、SPM及实际attention验证必须保留原读写和数值。
+
 - 输入：layout/bufferization和显式目标选择后的actual Tile IR。`tile.materialize_layout`已明确分配新结果并复制内容，
   后续fill、GEMM_into或copy_into具有完整目标写入语义；allocation、view、alias和effect均已物化。
 - 根因：layout选择将初始化与consumer分配到不同布局，物化内容复制；后续GEMM已证明无需psum并完整写入目标，
@@ -840,8 +849,8 @@ scalar和elementwise数值operation不增删、不重排；只改变已证明多
 
 ## 9. 循环流水与存储优化的职责边界
 
-本节规定职责分拆及通用流水的目标合同，实现顺序、当前差距和验收矩阵见
-[实施计划](plans/tile-loop-pipelining.md)。源码owner遵循18号，MLIR scope与失效规则遵循19号。
+本节规定职责分拆及通用流水的当前合同，已验收范围、限制及覆盖矩阵见
+[验收记录](archive/tile-loop-pipelining.md)。源码owner遵循18号，MLIR scope与失效规则遵循19号。
 LoopPipelining、LoadPipelining、RotatingBuffers、StorageOptimization及MovementFusion由driver按明确顺序组合，
 各自拥有public header；它们不是同名注册pass。旧万能入口不再保留。
 
@@ -884,6 +893,11 @@ layout/movement已闭合的actual Tile IR
 串行与流水比较须从相同的已优化输入分出，成功候选持有实际变换后的IR。搜索作用域跟随现有typed iteration coordinates；
 循环拆分须通过显式clone mapping更新当前选择的绑定，不按遍历序号或symbol恢复。
 
+Driver的共同准备入口`optimizeCurrentIRStorage`消费movement-closed physical Tile IR，依次调用既有scalar、
+movement fusion及storage实现，并立即重建buffer owner及验证。none/search和直接downstream测试都先调用它，
+再查询流水；`compileCurrentIRCandidateToExecutable`从该边界接续，不在选择之后再次进行存储改写。
+显式stage的低层调用者仍直接使用`prepareLoopPipelines/pipelineLoops`；production options不保存共同准备前的op引用。
+
 ### 通用循环和条件合同
 
 1. 消费`scf.for`的`lower/upper/step` SSA，不要求静态trip count、零起点或单位步长。
@@ -895,6 +909,8 @@ layout/movement已闭合的actual Tile IR
 3. stage选择读取current SSA和实际访问关系，分别证明同迭代依赖、loop-carried依赖及跨迭代RAW/WAR/WAW。
    地址依赖当前计算结果时，不把该读取提前；额外observer、部分覆盖或逃逸alias必须纳入证明。
    可证明不相交的subview和只读共享源不因根allocation相同而一律拒绝。
+   Wafer SPM与DDR是typed且不同的地址域；跨域访问直接NoAlias，不依赖通用MLIR alias能否解释Wafer memory-space attr。
+   同域不同layout不构成NoAlias证据，仍检查实际root、range和轮转生命周期。
 4. 不因body含region就整环拒绝。对`scf.if`先分类：循环不变条件只有可安全提前求值、保持state/effect时才可外提；
    迭代相关条件必须随对应迭代的stage一起搬动，conditional load不变成无条件load。
    分支结果从实际taken path接续，未执行分支不得制造可被读取的假数据。
@@ -914,6 +930,13 @@ prologue/epilogue及dynamic predication接口，具体实现以仓库pinned源�
 Wafer补充typed effects、buffer ownership和边界predicate，不另建attention专用pipeliner。
 static与dynamic形态共用stage/依赖验证；可证明成立的predicate直接消除，其余同条件操作按合法scope合并，
 避免机械地给每条计算套if。不能仅设置`supportDynamicLoops`就宣称闭合，还须验证短循环、yield初值及最后访问。
+
+动态域使用pinned helper的`supportDynamicLoops`及不剥离epilogue的模式；保留原kernel域，
+提前stage以实际下一轮存在条件执行。静态足够长的域继续使用既有peeled/finite-unroll路径。
+边界证明检查正step及stage偏移可表示；证明不足为不适用，不新增运行时数值输入检查。
+早期纯操作还须可安全推测；有effect的提前读取在共同stage scope内受条件控制。
+不能安全推测且有返回值的早期操作只有现有真实taken/initial结果可表达时才适用，不能制造占位memref。
+动态最后槽的选择在非空域内由原lower/upper/step计算；空域返回原slot0，避免对零次数作无符号减一。
 
 轮转槽由实际load destination及选择建立，每个新增allocation在创建时记录其typed owner。
 槽复用必须晚于该槽上一轮的最后读取/完成义务；循环后的observer引用实际最后一次产生的槽，

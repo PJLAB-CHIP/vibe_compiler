@@ -520,8 +520,8 @@ TEST_F(CapacityFeedbackTest,
     std::string text;
     llvm::raw_string_ostream out(text);
     out << "module { func.func @entry(%input: " << ddr
-        << " {wafer.program_argument = #wafer.program_argument<0>}, %output: "
-        << ddr << ") {\n"
+        << " {wafer.program_argument = #wafer.program_argument<0>}) {\n"
+        << "%output = memref.alloc() : " << ddr << "\n"
         << "\"wafer.tile.region\"(%input, %output) ({^bb0(%src: " << ddr
         << ", %dst: " << ddr << "):\n"
         << "%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : index\n"
@@ -536,7 +536,7 @@ TEST_F(CapacityFeedbackTest,
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations;
     rebuildCurrentBufferOwnerRelations(*module, relations);
-    ASSERT_TRUE(hasDistanceOneLoadPipeline(*module));
+    ASSERT_TRUE(queryDistanceOneLoadPipelines(*module).succeeded());
     auto pipelined =
         materializeDistanceOneLoadPipelines(std::move(module), relations);
     ASSERT_TRUE(pipelined.succeeded()) << pipelined.failure->detail;

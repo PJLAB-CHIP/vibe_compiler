@@ -1824,9 +1824,11 @@ TEST_F(LayoutOptimizationTest,
   ASSERT_TRUE(firstResult.succeeded()) << firstResult.detail;
   ASSERT_TRUE(secondResult.succeeded()) << secondResult.detail;
 
-  EXPECT_EQ(firstResult.statistics.selectedMaterializations, 14u);
-  EXPECT_EQ(firstResult.statistics.layoutMaterializationsAfter, 14u);
-  EXPECT_EQ(countOps<LayoutMaterializeOp>(first->getOperation()), 14u);
+  // Scalar fills now initialize the selected encoding directly. The only
+  // conversions left are the three NCx and one Cx external input uses.
+  EXPECT_EQ(firstResult.statistics.selectedMaterializations, 4u);
+  EXPECT_EQ(firstResult.statistics.layoutMaterializationsAfter, 4u);
+  EXPECT_EQ(countOps<LayoutMaterializeOp>(first->getOperation()), 4u);
   unsigned tensorToNCx = 0;
   unsigned nCxToTensor = 0;
   unsigned tensorToCx = 0;
@@ -1846,10 +1848,10 @@ TEST_F(LayoutOptimizationTest,
     cxToTensor += source.getLayout() == MemLayout::Cx &&
                   result.getLayout() == MemLayout::Tensor;
   });
-  EXPECT_EQ(tensorToNCx, 5u);
-  EXPECT_EQ(nCxToTensor, 2u);
-  EXPECT_EQ(tensorToCx, 4u);
-  EXPECT_EQ(cxToTensor, 3u);
+  EXPECT_EQ(tensorToNCx, 3u);
+  EXPECT_EQ(nCxToTensor, 0u);
+  EXPECT_EQ(tensorToCx, 1u);
+  EXPECT_EQ(cxToTensor, 0u);
   EXPECT_EQ(countOps<mlir::memref::ExpandShapeOp>(first->getOperation()), 2u);
   EXPECT_EQ(countOps<mlir::memref::CollapseShapeOp>(first->getOperation()), 3u);
   EXPECT_EQ(firstResult.statistics.bufferizationInvocations, 1u);
@@ -2995,6 +2997,152 @@ TEST_F(LayoutOptimizationTest,
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
       ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
     }
+}
+
+TEST_F(LayoutOptimizationTest, NestedRecurrenceRetainsComputeLayout) {
+  for (bool externalInit : {false, true})
+    for (llvm::StringRef dtype : {"f16", "bf16"})
+      for (int64_t extent : {1024, 1025, 1031})
+        for (llvm::StringRef domain :
+             {"static", "growing", "translated", "empty", "unknown"}) {
+          SCOPED_TRACE(dtype.str());
+          SCOPED_TRACE(extent);
+          SCOPED_TRACE(domain.str());
+          SCOPED_TRACE(externalInit);
+          std::string rows = std::to_string(extent);
+          std::string lhs = "tensor<1x" + rows + "x128x" + dtype.str() + ">";
+          std::string rhs = "tensor<1x128x128x" + dtype.str() + ">";
+          std::string state = "tensor<1x" + rows + "x128xf32>";
+          std::string scale = "tensor<1x" + rows + "xf32>";
+          std::string output = "tensor<16x" + rows + "x128xf32>";
+          std::string text;
+          llvm::raw_string_ostream ir(text);
+          ir << "#id = affine_map<(b,m,n)->(b,m,n)>\n"
+                "#row = affine_map<(b,m,n)->(b,m)>\n"
+                "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+                "func.func @entry(%lhs: "
+             << lhs << ", %rhs: " << rhs << ", %scale: " << scale
+             << ", %limit: index, %seed: " << state << ") -> " << output
+             << " { %r = wafer.tile.region(%lhs, %rhs, %scale, %limit, %seed : "
+             << lhs << ", " << rhs << ", " << scale << ", index, " << state
+             << ") -> (" << output << ") { ^bb0(%a: " << lhs << ", %b: " << rhs
+             << ", %s: " << scale << ", %bound: index, %initial: " << state
+             << "): %c0 = arith.constant 0 : index "
+                "%c1 = arith.constant 1 : index "
+                "%c16 = arith.constant 16 : index "
+                "%zero = arith.constant 0.0 : f32 "
+                "%empty = tensor.empty() : "
+             << output
+             << " %outer = scf.for %q = %c0 to %c16 step %c1 "
+                "iter_args(%out = %empty) -> ("
+             << output << ") { ";
+          if (externalInit)
+            ir << "%init = tensor.cast %initial : " << state << " to " << state;
+          else
+            ir << "%e = tensor.empty() : " << state
+               << " %init = linalg.fill ins(%zero : f32) outs(%e : " << state
+               << ") -> " << state;
+          ir << " %end = "
+             << (domain == "growing"      ? "arith.addi %q, %c1 : index"
+                 : domain == "translated" ? "arith.addi %q, %c16 : index"
+                 : domain == "empty"      ? "arith.constant 0 : index"
+                 : domain == "unknown"    ? "arith.addi %bound, %c0 : index"
+                                          : "arith.constant 16 : index")
+             << " %inner = scf.for %k = "
+             << (domain == "translated" ? "%q" : "%c0")
+             << " to %end step %c1 iter_args(%acc = %init) -> (" << state
+             << ") { %scaled = linalg.generic {indexing_maps = [#id,#row,#id], "
+                "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+                "ins(%acc, %s : "
+             << state << ", " << scale << ") outs(%acc : " << state
+             << ") { ^bb1(%v: f32, %factor: f32, %old: f32): "
+                "%product = arith.mulf %v, %factor : f32 "
+                "linalg.yield %product : f32 } -> "
+             << state << " %next = linalg.batch_matmul ins(%a, %b : " << lhs
+             << ", " << rhs << ") outs(%scaled : " << state << ") -> " << state
+             << " scf.yield %next : " << state
+             << " } %updated = tensor.insert_slice %inner into %out[%q,0,0] "
+                "[1,"
+             << extent << ",128] [1,1,1] : " << state << " into " << output
+             << " scf.yield %updated : " << output
+             << " } wafer.tile.yield %outer : " << output
+             << " } return %r : " << output << " } } }";
+          auto module = parse(text);
+          ASSERT_TRUE(module) << text;
+          auto relations = outputRelation(*module);
+          auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+          ASSERT_TRUE(result.succeeded()) << result.detail;
+          unsigned innerStates = 0, stateConversions = 0, entryConversions = 0;
+          module->walk([&](LayoutMaterializeOp copy) {
+            auto source =
+                mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+            auto dest =
+                mlir::cast<mlir::MemRefType>(copy.getResult().getType());
+            if (source.getElementType().isF32() && source.getRank() == 3 &&
+                source.getDimSize(2) == 128 &&
+                getWaferMemoryAttr(source).getLayout() != MemLayout::NCx &&
+                getWaferMemoryAttr(dest).getLayout() == MemLayout::NCx)
+              ++entryConversions;
+          });
+          module->walk([&](mlir::scf::ForOp loop) {
+            if (!loop->getParentOfType<mlir::scf::ForOp>())
+              return;
+            for (auto argument : loop.getRegionIterArgs()) {
+              auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
+              if (!type || !type.getElementType().isF32())
+                continue;
+              ++innerStates;
+              if (domain != "empty" && domain != "unknown") {
+                EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), MemLayout::NCx);
+              }
+            }
+            loop.walk([&](LayoutMaterializeOp copy) {
+              auto type =
+                  mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+              if (type.getElementType().isF32() && type.getRank() == 3)
+                ++stateConversions;
+            });
+          });
+          EXPECT_EQ(innerStates, 1u);
+          if (domain != "empty" && domain != "unknown") {
+            EXPECT_EQ(stateConversions, 0u);
+            if (!externalInit) {
+              EXPECT_EQ(entryConversions, 0u);
+            }
+          }
+          auto lowered = lowerStructuredComputeToTile(*module, relations);
+          ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          // Unbounded execution frequency remains legal for layout ranking.
+          // The downstream target address gate separately owns its range proof.
+          if (domain == "unknown")
+            continue;
+          auto movement = materializeTileBoundaryMovement(*module, relations);
+          ASSERT_TRUE(movement.succeeded()) << movement.detail;
+          std::string detail;
+          auto standalone = createStandaloneTileModules(std::move(module),
+                                                        &detail, &relations);
+          ASSERT_TRUE(mlir::succeeded(standalone)) << detail;
+          ASSERT_EQ(standalone->size(), 1u);
+          auto &tile = standalone->front();
+          TileRegionToInstrLoweringSession session(*context);
+          llvm::SmallVector<TileRegionOp> regions;
+          tile.module->walk([&](TileRegionOp op) { regions.push_back(op); });
+          for (auto region : regions)
+            ASSERT_TRUE(
+                mlir::succeeded(convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(
+              convertBufferizationCopiesToInstr(*tile.module, session)));
+          ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
+          tile.module->walk([&](InstrGemmOp op) {
+            ASSERT_TRUE(op.getPsum());
+            EXPECT_NE(op.getPsum(), op.getDest());
+          });
+          TileMemoryPlanningFailure failure;
+          auto planned = planTileMemory(std::move(tile.module), &failure);
+          ASSERT_TRUE(mlir::succeeded(planned));
+          EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+        }
 }
 
 TEST_F(LayoutOptimizationTest, PointwiseChainsRetainEveryLegalLayoutChoice) {

@@ -1,0 +1,844 @@
+{
+  "date": "2026-09-22",
+  "scope": "循环累加器保持所选布局；动态频次、fill布局、冗余初始化及descriptor递归修复",
+  "artifacts": "/data/vibe_compiler-validation/attention-closure-20260922",
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "product_identity": {
+    "recurrence-verified": {
+      "compiler_sha256": "21dc3c1ce0195e80fd894d72fa2d6cec65cdd02bd071cac2c3ec9a3316a22a14",
+      "artifacts": {
+        "manifest.json": "76d66227cf9dc1500523100a37a7c027279af86c6cf7b07b817622a552a75cd4",
+        "data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+        "modules/module_00000.so": "d69c7460c5075e3490fe847974537b305441abd36399d805e0e4ca2909b8401b"
+      }
+    },
+    "recurrence-verified-tail": {
+      "compiler_sha256": "21dc3c1ce0195e80fd894d72fa2d6cec65cdd02bd071cac2c3ec9a3316a22a14",
+      "artifacts": {
+        "manifest.json": "f221a1d14742d6e87cc0190aa5e6485ca7d3c8726bdc0c64224d9f4c58684e10",
+        "data/program-data.bin": "4920e661bf809268810448bbc00c1428eaf403ca29861185c4186eedd4e8fa17",
+        "modules/module_00000.so": "b015db88eb9ca05effbf9e029184c45c416f454b7537811e4a8f5e155fe21281"
+      }
+    },
+    "recurrence-verified-profile": {
+      "compiler_sha256": "21dc3c1ce0195e80fd894d72fa2d6cec65cdd02bd071cac2c3ec9a3316a22a14",
+      "artifacts": {
+        "manifest.json": "76d66227cf9dc1500523100a37a7c027279af86c6cf7b07b817622a552a75cd4",
+        "data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+        "modules/module_00000.so": "d69c7460c5075e3490fe847974537b305441abd36399d805e0e4ca2909b8401b"
+      }
+    }
+  },
+  "measurements": {
+    "recurrence-verified": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "76d66227cf9dc1500523100a37a7c027279af86c6cf7b07b817622a552a75cd4",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=3852000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "76d66227cf9dc1500523100a37a7c027279af86c6cf7b07b817622a552a75cd4",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=3845000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "76d66227cf9dc1500523100a37a7c027279af86c6cf7b07b817622a552a75cd4",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=3878000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ],
+    "recurrence-verified-tail": [
+      {
+        "audit": {
+          "case": "attention-prefill-tail-1031",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "f221a1d14742d6e87cc0190aa5e6485ca7d3c8726bdc0c64224d9f4c58684e10",
+          "comparison_passed": true,
+          "memory_guard_bytes": 19456,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "a1ae96c6aa73ba2145d196792400bfb793601ec619e0e06b06a9e938e20e25db",
+            "card_00_user_input_1.bf16.raw": "da0bbaca66ec4c24804afd8a579730ed8dcb005b21c42d3059a7589d23581e90",
+            "card_00_user_input_2.bf16.raw": "50760732f684a00af54b840d9df76045fd5b95df47eefa5f049329f9373d42db"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                1031,
+                64
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65984,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999979316708467,
+              "relative_l2_error": 0.002039950444697165,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 5.53878649938707e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1330000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ],
+    "recurrence-verified-profile": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "76d66227cf9dc1500523100a37a7c027279af86c6cf7b07b817622a552a75cd4",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=3897000",
+            "profile_run: /data/vibe_compiler-validation/attention-closure-20260922/recurrence-verified-profile-prepared/package/package.profile/runs/current"
+          ]
+        }
+      }
+    ],
+    "recurrence-final": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "5395c663001379ac8a5498c8c2170c5aaccb93c16c7cd8a685d4f2c3031153d8",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4235000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "5395c663001379ac8a5498c8c2170c5aaccb93c16c7cd8a685d4f2c3031153d8",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4237000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "5395c663001379ac8a5498c8c2170c5aaccb93c16c7cd8a685d4f2c3031153d8",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4151000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ]
+  },
+  "profile": {
+    "primary": {
+      "completion_observation_fraction": 0.0036034781112894644,
+      "completion_observation_resolution_ns": 15418,
+      "device_elapsed_ns": 3897000,
+      "device_elapsed_quantized_zero": false,
+      "device_timer_kind": "tx-stream-events",
+      "host_completion_high_resolution": false,
+      "host_envelope_available": true,
+      "host_launch_to_completion_ns": 4278644,
+      "host_non_submit_envelope_ns": 4163501,
+      "host_submit_ns": 115143,
+      "host_submit_quantized_zero": false,
+      "includes_device_control_wait_and_scheduling": true,
+      "includes_host_completion_polling": false,
+      "includes_host_submit": false,
+      "includes_trace_instrumentation": false,
+      "is_engine_only": false,
+      "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+      "qualified": true,
+      "sample_id": "primary",
+      "sample_index": 0,
+      "scope": "primary-launch-to-stream-completion",
+      "status": "Measured"
+    },
+    "trace_capture": {
+      "captured_events": 77728,
+      "full_execution": true,
+      "scope": "event-prefix",
+      "total_events": 77728
+    },
+    "valid": true,
+    "validity": {
+      "clock_alignment": false,
+      "cost_accounting": true,
+      "environment": true,
+      "full_trace": true,
+      "host_completion_resolution": false,
+      "measurement_basis": true,
+      "output_equivalence": true,
+      "pmu": true,
+      "pmu_restore": true,
+      "profile_instrumentation": true,
+      "program_contract": true,
+      "semantic_correctness": null,
+      "trace": true
+    },
+    "engine_active_time": {
+      "additive_to_kernel_launch_envelope": false,
+      "by_engine": [
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 986422.75,
+          "engine": "CT",
+          "maximum_per_tile_ns": 1127309,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 563799,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 15782764
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 318122.0,
+          "engine": "NE",
+          "maximum_per_tile_ns": 363568,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 181784,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 5089952
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 305956.6875,
+          "engine": "RDMA",
+          "maximum_per_tile_ns": 387578,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 208527,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 4895307
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 24790.0,
+          "engine": "WDMA",
+          "maximum_per_tile_ns": 33470,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 14768,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 396640
+        },
+        {
+          "active_tile_count": 16,
+          "available_tile_count": 16,
+          "average_per_tile_ns": 791354.625,
+          "engine": "TDMA",
+          "maximum_per_tile_ns": 885470,
+          "measurement_kind": "trace-pmu-engine-active-time",
+          "minimum_per_tile_ns": 510636,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 12661674
+        }
+      ],
+      "card_wide_engine_elapsed_ns": null,
+      "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+      "card_wide_engine_elapsed_status": "Unavailable",
+      "cross_tile_sum_role": "work-volume-not-wall-time",
+      "measurement_kind": "trace-pmu-engine-active-time",
+      "measurement_run": "trace-diagnostic",
+      "per_tile_work_volume": {
+        "available_tile_count": 16,
+        "average_per_tile_total_work_ns": 2426646.0625,
+        "maximum_per_tile_total_work_ns": 2794341,
+        "minimum_per_tile_total_work_ns": 1480514,
+        "status": "Measured",
+        "sum_across_tiles_work_ns": 38826337
+      },
+      "relation_to_primary": "separate-run-proxy",
+      "scope": "per-tile-per-ncc-engine",
+      "source_capture": "trace",
+      "unit": "ns"
+    },
+    "tile0_calls": {
+      "wafer_tx81_rdma": 161,
+      "wafer_tx81_gather_scatter": 1172,
+      "wafer_tx81_memset": 107,
+      "wafer_tx81_gemm_oriented": 144,
+      "wafer_tx81_elementwise_mul": 248,
+      "wafer_tx81_reduce_max": 72,
+      "wafer_tx81_elementwise_max": 72,
+      "wafer_tx81_elementwise_eq": 88,
+      "wafer_tx81_mask_move": 88,
+      "wafer_tx81_elementwise_sub": 144,
+      "wafer_tx81_elementwise_exp_lp": 144,
+      "wafer_tx81_reduce_sum": 72,
+      "wafer_tx81_elementwise_add": 88,
+      "wafer_tx81_convert_fp32_bf16": 88,
+      "wafer_tx81_elementwise_recip": 16,
+      "wafer_tx81_wdma": 16
+    }
+  },
+  "roots": [
+    "静态循环域查询整体失败使有界动态内层按一次计价，既有PBQP因此错误低估每步布局往返；逐层current SSA频次只影响有限排序成本。",
+    "linalg.fill被固定为Tensor；现在直接填充所选独立物理布局，外部/子视图只发布logical valid范围。",
+    "direct blocked score fill在无psum的GEMM前被完整覆盖；原初始化删除只经layout copy发现，现检查actual所有alias首次内容使用和padding。",
+    "符号movement合并inner_bytes后递归拆三层以上地址轴时把payload重置为elementBytes；传递已合并长度修复，独立动态SCF/descriptor逐byte检查。"
+  ],
+  "actual_ir": {
+    "tile0_kv_pairs": 72,
+    "tile0_query_blocks": 16,
+    "loop_state_layout": "NCx",
+    "accumulator_layout_conversions_in_kv_loop": 0,
+    "accumulator_distinct_psum_result_full_copies": 72,
+    "output_bf16_layout_restorations": 16,
+    "terminal_join_per_tile": 1,
+    "gs_calls_previous": 1156,
+    "gs_calls_current": 1172,
+    "gs_count_explanation": "A的144次布局转换变为72次同布局发布；m多72次1KiB发布；外部BF16输出多16次恢复，因此总GS次数增加16，但TDMA活动下降。",
+    "new_gs_breakdown": {
+      "row_alpha_and_final_normalization_broadcast": 704,
+      "m_snapshot_safe_and_publication": 216,
+      "kv_layout": 144,
+      "q_layout": 16,
+      "mask_layout": 4,
+      "accumulator_same_layout_publication": 72,
+      "bf16_output_layout_restore": 16
+    },
+    "tile0_static_gs_sites": 39
+  },
+  "performance": {
+    "previous_recorded_median_ms": 4.086,
+    "current_ms": [
+      3.852,
+      3.845,
+      3.878
+    ],
+    "median_ms": 3.852,
+    "observed_reduction_percent": 5.726872246696045,
+    "tail_single_ms": 1.33,
+    "previous_tdma_max_ms": 1.01673,
+    "current_tdma_max_ms": 0.88547,
+    "intermediate_before_dead_fill_cleanup_ms": [
+      4.235,
+      4.237,
+      4.151
+    ],
+    "limitations": [
+      "没有重跑历史包；尾块只有单次正确性资格，不签稳定加速。",
+      "保留GEMM独立psum/result，不将72次同布局发布称为已删除。",
+      "各引擎活动时间可重叠；site attribution仍ambiguous，不签单条指令精确引擎耗时。",
+      "剩余行广播和CT算术链仍在，未达到3ms，也不声明已达硬件极限。"
+    ]
+  },
+  "host_coverage": {
+    "recurrence_configs": 60,
+    "fill_domain_configs": 18,
+    "direct_fill_overwrite_configs": 18,
+    "mapped_broadcast_byte_oracles": 9,
+    "lit_passed": 91,
+    "organization_passed": 2,
+    "full_host_status": "passed",
+    "logs": [
+      "recurrence-verified-host.log",
+      "recurrence-verified-transforms.log",
+      "recurrence-verified-lit.log",
+      "recurrence-organization.log",
+      "recurrence-canonical-noop.log",
+      "recurrence-broadcast-execution.log",
+      "recurrence-movement-fixed.log",
+      "recurrence-accounting-fixed.log",
+      "recurrence-verified-transforms-detail.log"
+    ],
+    "known_intermediate_failures": [
+      {
+        "log": "recurrence-final-host.log",
+        "cause": "旧external-init转换数断言、动态layout暴露的descriptor覆盖缺口、accepted与reuse严格不等假设；逐项修复后重跑。"
+      },
+      {
+        "log": "recurrence-movement-fixed.log",
+        "cause": "attention非整除lowering已通过，新增oracle fixture的formatv右花括号仍有语法错误。"
+      },
+      {
+        "log": "recurrence-broadcast-fixed.log",
+        "cause": "新增fixture使用要求同layout的broadcast op；改为实际支持mapped mixed-layout的elementwise。"
+      },
+      {
+        "log": "recurrence-broadcast-addresses.log",
+        "cause": "oracle只数静态GS，遗漏实际SCF合并命令的动态执行；修为独立解释SCF和地址。"
+      },
+      {
+        "log": "recurrence-broadcast-execution.log",
+        "result": "最终9组逐byte覆盖及SPM通过。"
+      }
+    ],
+    "search_accounting": "4096输入42次actual trials中8个accepted均为reuse，19个reuse容量拒绝；修正subset不等式为>=，保留capacity/resident/实际DDR读取量及独立双route闭合断言。",
+    "ctest_passed": 29,
+    "transforms_tests_passed": 529,
+    "driver_tests_passed": 151,
+    "canonical_complete_and_noop": true
+  },
+  "compile_evidence": {
+    "pipeline-final": {
+      "User time (seconds)": "User time (seconds): 372.14",
+      "System time (seconds)": "System time (seconds): 23.66",
+      "Elapsed (wall clock) time": "Elapsed (wall clock) time (h:mm:ss or m:ss): 3:11.38",
+      "Maximum resident set size (kbytes)": "Maximum resident set size (kbytes): 1362692",
+      "Exit status": "Exit status: 0",
+      "layout_counters": [
+        "wafer-compile: compile-counter category=layout name=boundary-source-views-elided value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bufferization-invocations value=40 overflow=false",
+        "wafer-compile: compile-counter category=layout name=canonical-assignments value=40 overflow=false",
+        "wafer-compile: compile-counter category=layout name=constant-read-materializations value=512 overflow=false",
+        "wafer-compile: compile-counter category=layout name=conversion-activations value=54189 overflow=false",
+        "wafer-compile: compile-counter category=layout name=feasible-fallbacks value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=function-boundary-queries value=640 overflow=false",
+        "wafer-compile: compile-counter category=layout name=invocations value=40 overflow=false",
+        "wafer-compile: compile-counter category=layout name=loop-invariant-materializations value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-after value=9630 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-before value=9630 overflow=false",
+        "wafer-compile: compile-counter category=layout name=necessary-copies value=3742 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-destinations value=495 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-subviews value=495 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-factors value=137153 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-variables value=92015 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-queries value=10562 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-reuses value=232638 overflow=false",
+        "wafer-compile: compile-counter category=layout name=redundant-publication-copies value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=selected-materializations value=9630 overflow=false",
+        "wafer-compile: compile-counter category=layout name=shared-materializations-reused value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=solver-work value=10134825 overflow=false",
+        "wafer-compile: compile-counter category=layout name=tuple-variables value=6127 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unused-materializations-erased value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=use-bindings value=15564 overflow=false",
+        "wafer-compile: compile-counter category=layout name=value-groups value=16135 overflow=false"
+      ]
+    },
+    "recurrence-verified": {
+      "User time (seconds)": "User time (seconds): 319.39",
+      "System time (seconds)": "System time (seconds): 15.29",
+      "Elapsed (wall clock) time": "Elapsed (wall clock) time (h:mm:ss or m:ss): 2:28.78",
+      "Maximum resident set size (kbytes)": "Maximum resident set size (kbytes): 892124",
+      "Exit status": "Exit status: 0",
+      "layout_counters": [
+        "wafer-compile: compile-counter category=layout name=boundary-source-views-elided value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bounded-loop-costs value=1240 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bufferization-invocations value=39 overflow=false",
+        "wafer-compile: compile-counter category=layout name=canonical-assignments value=39 overflow=false",
+        "wafer-compile: compile-counter category=layout name=constant-read-materializations value=464 overflow=false",
+        "wafer-compile: compile-counter category=layout name=conversion-activations value=43764 overflow=false",
+        "wafer-compile: compile-counter category=layout name=feasible-fallbacks value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=function-boundary-queries value=624 overflow=false",
+        "wafer-compile: compile-counter category=layout name=invocations value=39 overflow=false",
+        "wafer-compile: compile-counter category=layout name=loop-invariant-materializations value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-after value=2644 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-before value=2644 overflow=false",
+        "wafer-compile: compile-counter category=layout name=necessary-copies value=2970 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-destinations value=463 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-subviews value=463 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-factors value=110558 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-variables value=74874 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-queries value=10622 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-reuses value=211970 overflow=false",
+        "wafer-compile: compile-counter category=layout name=redundant-publication-copies value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=selected-materializations value=2644 overflow=false",
+        "wafer-compile: compile-counter category=layout name=shared-materializations-reused value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=solver-work value=22536925 overflow=false",
+        "wafer-compile: compile-counter category=layout name=tuple-variables value=3396 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unknown-loop-costs value=79 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unused-materializations-erased value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=use-bindings value=12413 overflow=false",
+        "wafer-compile: compile-counter category=layout name=value-groups value=15301 overflow=false"
+      ]
+    },
+    "recurrence-verified-tail": {
+      "User time (seconds)": "User time (seconds): 336.99",
+      "System time (seconds)": "System time (seconds): 119.63",
+      "Elapsed (wall clock) time": "Elapsed (wall clock) time (h:mm:ss or m:ss): 5:47.32",
+      "Maximum resident set size (kbytes)": "Maximum resident set size (kbytes): 15710608",
+      "Exit status": "Exit status: 0",
+      "layout_counters": [
+        "wafer-compile: compile-counter category=layout name=boundary-source-views-elided value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bounded-loop-costs value=1040 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bufferization-invocations value=41 overflow=false",
+        "wafer-compile: compile-counter category=layout name=canonical-assignments value=41 overflow=false",
+        "wafer-compile: compile-counter category=layout name=constant-read-materializations value=764 overflow=false",
+        "wafer-compile: compile-counter category=layout name=conversion-activations value=64323 overflow=false",
+        "wafer-compile: compile-counter category=layout name=feasible-fallbacks value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=function-boundary-queries value=656 overflow=false",
+        "wafer-compile: compile-counter category=layout name=invocations value=41 overflow=false",
+        "wafer-compile: compile-counter category=layout name=loop-invariant-materializations value=66 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-after value=13284 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-before value=13284 overflow=false",
+        "wafer-compile: compile-counter category=layout name=necessary-copies value=4506 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-destinations value=495 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-subviews value=495 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-factors value=163355 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-variables value=107957 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-queries value=18092 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-reuses value=327504 overflow=false",
+        "wafer-compile: compile-counter category=layout name=redundant-publication-copies value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=selected-materializations value=13284 overflow=false",
+        "wafer-compile: compile-counter category=layout name=shared-materializations-reused value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=solver-work value=23547640 overflow=false",
+        "wafer-compile: compile-counter category=layout name=tuple-variables value=5392 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unknown-loop-costs value=71 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unused-materializations-erased value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=use-bindings value=18350 overflow=false",
+        "wafer-compile: compile-counter category=layout name=value-groups value=19892 overflow=false"
+      ]
+    },
+    "recurrence-verified-profile": {
+      "User time (seconds)": "User time (seconds): 328.11",
+      "System time (seconds)": "System time (seconds): 15.91",
+      "Elapsed (wall clock) time": "Elapsed (wall clock) time (h:mm:ss or m:ss): 2:32.25",
+      "Maximum resident set size (kbytes)": "Maximum resident set size (kbytes): 891748",
+      "Exit status": "Exit status: 0",
+      "layout_counters": [
+        "wafer-compile: compile-counter category=layout name=boundary-source-views-elided value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bounded-loop-costs value=1240 overflow=false",
+        "wafer-compile: compile-counter category=layout name=bufferization-invocations value=39 overflow=false",
+        "wafer-compile: compile-counter category=layout name=canonical-assignments value=39 overflow=false",
+        "wafer-compile: compile-counter category=layout name=constant-read-materializations value=464 overflow=false",
+        "wafer-compile: compile-counter category=layout name=conversion-activations value=43764 overflow=false",
+        "wafer-compile: compile-counter category=layout name=feasible-fallbacks value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=function-boundary-queries value=624 overflow=false",
+        "wafer-compile: compile-counter category=layout name=invocations value=39 overflow=false",
+        "wafer-compile: compile-counter category=layout name=loop-invariant-materializations value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-after value=2644 overflow=false",
+        "wafer-compile: compile-counter category=layout name=materializations-before value=2644 overflow=false",
+        "wafer-compile: compile-counter category=layout name=necessary-copies value=2970 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-destinations value=463 overflow=false",
+        "wafer-compile: compile-counter category=layout name=output-subviews value=463 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-factors value=110558 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pbqp-variables value=74874 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-queries value=10622 overflow=false",
+        "wafer-compile: compile-counter category=layout name=pointwise-proof-reuses value=211970 overflow=false",
+        "wafer-compile: compile-counter category=layout name=redundant-publication-copies value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=selected-materializations value=2644 overflow=false",
+        "wafer-compile: compile-counter category=layout name=shared-materializations-reused value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=solver-work value=22536925 overflow=false",
+        "wafer-compile: compile-counter category=layout name=tuple-variables value=3396 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unknown-loop-costs value=79 overflow=false",
+        "wafer-compile: compile-counter category=layout name=unused-materializations-erased value=0 overflow=false",
+        "wafer-compile: compile-counter category=layout name=use-bindings value=12413 overflow=false",
+        "wafer-compile: compile-counter category=layout name=value-groups value=15301 overflow=false"
+      ]
+    }
+  }
+}

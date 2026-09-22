@@ -2231,3 +2231,20 @@
 - 接入前核对实际安装固件对`module_init`/`module_cleanup`的调用；device linker必须动态导出这两个真实hook。
   `--exclude-libs,ALL`可能将hook隐藏，仅在链接命令里写export选项不够；检查最终ELF的dynamic definitions。
 - 输入重定义hook、缺失hook或未导出loader符号都必须在原子发布前失败；普通、Count、Trace和extra object入口共同覆盖。
+
+## 动态循环不能抹掉已知的布局搬运频次
+
+- 根因：布局成本使用整组静态loop域查询，遇到一个动态界就把整组频次退回1；内层每步转换因此可能比外部一次转换更便宜。
+  SCF init、iter_arg、yield/result原本已有布局约束，缺口在重复成本，而不是必须新增循环state协议。
+- 修复：逐层累计已知次数，有界动态次数只作有限排序成本，未知层不抹掉其它层；上下界相关性通过current SSA证明。
+  scalar fill按所选目标布局初始化，不能额外固定成Tensor。容量仍只由实际IR及SPM规划确定。
+- 防复发：非attention recurrence覆盖静态、有界动态、相关界、空域、未知域及外部初值，检查内层转换和直接Instr/SPM结果。
+  指令减少仍须实测性能；direct fill改变后须复查完整覆盖的死初始化，不能删除被psum或其它旧值reader观察的内容。
+
+## 描述符递归拆分必须携带已合并的连续字节
+
+- 根因：符号地址轴先折入`inner_bytes`，剩余轴超过三个时递归拆分，却从单元素字节数重新开始；被折入的长度因子丢失。
+  NCx→Tensor投影广播的非整除通道暴露该问题，exact coverage检查阻止了错误指令发布。
+- 修复：递归同时传递base、剩余axes和当前`inner_bytes`，directional DMA的连续性检查使用同一payload基数。
+- 防复发：rank4的1024/1025/1031、F16/BF16/F32，独立执行实际SCF及descriptor并逐字节核对源地址和目标唯一覆盖。
+  相同descriptor可能合并成SCF循环，测试不能只遍历静态GS site而遗漏动态执行。

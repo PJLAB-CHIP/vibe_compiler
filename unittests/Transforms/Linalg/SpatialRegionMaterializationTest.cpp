@@ -1433,6 +1433,8 @@ TEST(SpatialRegionMaterializationTest,
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CurrentIRDownstreamStatistics downstream;
       ExecutableLoweringStatistics executable;
+      ASSERT_TRUE(mlir::succeeded(
+          optimizeCurrentIRStorage(*actual->module, actual->relations)));
       auto compiled = compileCurrentIRCandidateToExecutable(
           std::move(actual->module), std::move(actual->relations), CardId(0),
           allTiles(), program, wafer::compiler::testing::executionConfig(),
@@ -3133,6 +3135,8 @@ TEST(SpatialRegionMaterializationTest,
             llvm::raw_string_ostream diagnostics(diagnosticsText);
             CurrentIRDownstreamStatistics downstream;
             ExecutableLoweringStatistics executable;
+            ASSERT_TRUE(mlir::succeeded(
+                optimizeCurrentIRStorage(*actual->module, actual->relations)));
             auto compiled = compileCurrentIRCandidateToExecutable(
                 std::move(actual->module), std::move(actual->relations),
                 CardId(0), allTiles(), program,
@@ -3412,6 +3416,8 @@ TEST(SpatialRegionMaterializationTest, AssemblesHaloInExactConsumerWindow) {
         llvm::raw_string_ostream diagnostics(diagnosticsText);
         CurrentIRDownstreamStatistics downstream;
         ExecutableLoweringStatistics executable;
+        ASSERT_TRUE(mlir::succeeded(
+            optimizeCurrentIRStorage(*actual->module, actual->relations)));
         auto compiled = compileCurrentIRCandidateToExecutable(
             std::move(actual->module), std::move(actual->relations), CardId(0),
             allTiles(), program, wafer::compiler::testing::executionConfig(),
@@ -3618,6 +3624,8 @@ TEST(SpatialRegionMaterializationTest, MaterializesSplatAtSelectedDemand) {
           llvm::raw_string_ostream diagnostics(diagnosticsText);
           CurrentIRDownstreamStatistics downstream;
           ExecutableLoweringStatistics executable;
+          ASSERT_TRUE(mlir::succeeded(
+              optimizeCurrentIRStorage(*actual->module, actual->relations)));
           auto compiled = compileCurrentIRCandidateToExecutable(
               std::move(actual->module), std::move(actual->relations),
               CardId(0), allTiles(), program,

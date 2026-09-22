@@ -9,6 +9,11 @@ Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前�
 真实规模覆盖合同。随后闭合的`foundational-coverage-matrix`补齐rank>=3、主要维度>=1024、整除/非整除及结构语义
 矩阵；以下原始证据需要与该补测项的fresh证据共同使用。
 
+## 2026-09-22板测性能子步骤
+
+职责分拆与通用循环流水的实施及BF16主块/1031尾块实卡验收见[tile-loop-pipelining](tile-loop-pipelining.md)。
+合法流水没有确认净收益，正式选择保留串行；此子步骤闭合不代表当前`board-testing`总任务完成。
+
 ## Current迁移说明
 
 `spatial-region-current-ir-materialization`的current closure已经取代提交`4406e812`中的初始实现边界。下表对应行记录本轮实际完成结果；

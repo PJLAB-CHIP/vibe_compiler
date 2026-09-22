@@ -17,8 +17,6 @@ enum class CommunicationProposalPolicy { Fixed, DependencyOrdered };
 struct CurrentIRDownstreamOptions {
   LayoutMaterializationPlacement movementPlacement =
       LayoutMaterializationPlacement::FirstUse;
-  std::vector<TilePipelineChoice> pipelineChoices;
-  LoopPipeliningLimits pipelineLimits;
   bool distanceOneLoadPipeline = false;
   CommunicationProposalPolicy communication =
       CommunicationProposalPolicy::Fixed;
@@ -43,9 +41,15 @@ struct CurrentIRDownstreamStatistics {
   uint64_t nccJoinOperations = 0;
 };
 
-/// Consumes one physical, movement-closed current-IR candidate and executes
-/// the shared downstream stage sequence: loop pipelining, storage and movement
-/// optimization, standalone Tile fanout, Tile-to-Instr, exact transfer cleanup,
+/// Applies the common storage/movement transformations before querying or
+/// binding any pipeline choice. Rebuilds actual owners and verifies the result.
+mlir::LogicalResult
+optimizeCurrentIRStorage(mlir::ModuleOp module,
+                         StructuredMaterializationRelations &relations);
+
+/// Consumes the optimized physical current IR produced by
+/// optimizeCurrentIRStorage and executes loop pipelining, standalone Tile
+/// fanout, Tile-to-Instr, exact transfer cleanup,
 /// fresh completion and the unique actual memory/target leaf. It never
 /// constructs a structural choice, repairs a failed candidate or rebuilds an
 /// accepted owner.

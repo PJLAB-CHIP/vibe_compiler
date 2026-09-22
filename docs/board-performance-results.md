@@ -16,6 +16,68 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-22：循环累加器保持NCx
+
+BF16 `[1,28,2048,128]`，当前新包三次无采集、无插桩实卡为 **3.852 / 3.845 / 3.878ms**，
+中位数3.852ms，比上一版记录的4.086ms下降约 **5.7%**。输入、boot/runtime与容差相同，未重跑历史包。
+7,340,032个输出无超阈值差异，cosine 0.9999981331、relative L2 0.00193234，10752字节guard、16 Tile完成和退出健康。
+BF16 1031尾块单次 **1.330ms**，65,984输出无超阈值差异、19456字节guard及执行窗口日志健康；不据此宣称尾块加速。
+
+根因是布局成本按整组静态loop域求重复次数，遇到动态界整组退回一次，低估内层Tensor↔NCx往返。
+既有SCF recurrence布局图已表达init、iter_arg、yield和result，不需要attention专用state协议。
+现在逐层保留已知重复次数，使用current SSA相关上下界估算动态次数，仅影响有限排序成本；实际SPM准入路径不变。
+同时解除fill的Tensor固定布局，独立allocation直接填所选encoding；子视图/外部目标只发布logical valid元素。
+
+实际忙Tile的72次KV更新中，A初值、缩放、GEMM psum/result及回传均保持NCx，没有内层Tensor↔NCx转换；
+每个query块只在最终BF16输出恢复普通布局。GEMM独立psum/result之间仍有72次128KiB同布局发布，不能说循环内没有copy。
+总GS调用由1156变为1172：A的144次布局转换变为72次同布局发布，m多72次1KiB发布，最终输出多16次布局恢复。
+因此总条数没有下降，下降的是搬运量和重排工作。行alpha及最终归一化广播仍有704次GS，m相关复制216次，
+Q/K/V准备160次，mask准备4次；它们是当前明确保留的工作。
+
+独立profile有效且77,728事件完整，Primary **3.897ms**。各引擎最大每Tile活动为CT **1.127309ms**、
+NE **0.363568ms**、RDMA **0.387578ms**、WDMA **0.033470ms**、TDMA **0.885470ms**。
+对照上一版TDMA 1.016730ms下降约12.9%，CT/NE基本不变；不能把这些可重叠活动相加或当作逐site精确耗时。
+当前整卡矩阵吞吐按相同33.823GFLOP和普通中位数折算约8.78TFLOP/s、峰值的6.86%，尚不能称为硬件极限。
+
+中间版只有布局/fill调整时测得4.235/4.237/4.151ms：direct NCx score fill没有被原先依赖layout-copy的死初始化规则删除。
+补齐actual alias首次使用、完整覆盖和padding证明后删除无psum GEMM前的冗余fill，得到上述最终结果；有旧值读取或padding时保留。
+完整回归还暴露通用descriptor递归丢失已合并`inner_bytes`，exact coverage检查拦截后已修复，独立执行SCF和descriptor逐字节验证。
+通用回归包含60组非attention recurrence、18组fill写域、18组初始化覆盖、9组搬运地址oracle，以及实际attention非整除路径。
+529项Transforms及Driver/Conversion/Analysis、24组独立SystemC与public-link smoke通过；91项lit、2项组织检查和canonical/no-op通过。
+主机与产品身份、普通计时和独立profile见[循环布局验收证据](data/board-performance/attention-loop-layout-20260922.json)。
+
+## 2026-09-22：通用循环流水与K/V重叠验收
+
+BF16 `[1,28,2048,128]`，同一复制优化和Q/mask准备复用下，正式串行winner三次无插桩为
+**4.141 / 4.086 / 4.077ms**，中位数4.086ms；合法双buffer流水候选为 **4.105ms**。
+流水样本落在串行区间内，没有已确认的净收益，保留正式串行选择。1031尾块为 **1.313ms**。
+各样本的全量数值、guard、terminal completion、厂商清理及执行窗口日志健康；未重跑历史包。
+
+原实现只支持静态长循环，条件读取与动态最后槽不闭合。现在复用pinned SCF pipeliner处理有界动态域、0/1/多步、
+非零起点和正步长、conditional load及原taken path；实际slots和最后槽SSA进入唯一completion/SPM路径。
+存储优化先形成串行/流水共同输入；SPM与DDR按typed address space判断NoAlias。
+默认预算内曾因后发现的大tile挤掉已验收的兄弟起点，导致准备复用与流水组合没有被实际验收；
+现在以已通过actual leaf的最低已知成本点排列未启动兄弟，每个兄弟仍须独立物化并通过全部门禁。
+没有扩大head/tile搜索预算，也没有把来源候选的SPM合法性继承给兄弟。
+
+独立profile的串行Primary为4.083ms，流水为4.150ms；各77,280个事件完整。串行最忙引擎的每Tile活动量为
+CT **1.127325ms**、NE **0.363456ms**、RDMA **0.370790ms**、WDMA **0.031962ms**、TDMA **1.016730ms**；
+流水的对应值为1.127341/0.363456/0.411671/0.035299/1.016770ms。
+这是一组跨运行的活动量，不能相加或直接从普通总时间中扣除。两者动态指令数相同，流水没有减少主要计算/搬运工作。
+较早未保留Q/mask外提的FirstUse流水为6.114ms，只作为候选组合问题的诊断证据，不算纯流水消融。
+
+以串行包实际1008个KV block pair、每对两个256×256×128矩阵乘计算，矩阵工作量为33.823GFLOP。
+按4.086ms普通中位数，整卡约8.28TFLOP/s，为BF16矩阵峰值128TOPS的 **6.47%**。
+忙Tile的72对为2.416GFLOP，单Tile 8TOPS对应0.302ms算术下限；对比NE活动0.363456ms，活动期间约 **83.1%**。
+这里按MAC=2 operations、厂商标称峰值计算；不是同一轮时间戳的精确分段，也不是CT/TDMA利用率。
+28 head的12 Tile双head、4 Tile单head使理想均衡率为87.5%，不足以解释全部空闲。
+该包实际DDR读144MiB、写14MiB，共158MiB；折合40.55GB/s，约为共享200GB/s峰值的20.3%，理想流量下限0.828ms。
+CT含Explp、归约等不同吞吐的指令，TDMA也缺少本负载的校准峰值，不能用一个未经验证的吞吐数字签精确利用率。
+
+后续发现忙Tile的72次KV更新仍含A的144次Tensor↔NCx布局搬运；这属于循环布局选择问题，另行修复和验收，
+不包含在以上流水成绩中。主机矩阵、产品身份、普通及profile原始摘要见
+[流水验收证据](data/board-performance/attention-loop-pipelining-20260922.json)。
+
 ## 2026-09-22：消除私有状态结果的重复发布
 
 BF16 `[1,28,2048,128]` 新包三次无采集、无插桩为 **4.088 / 4.145 / 4.076ms**，

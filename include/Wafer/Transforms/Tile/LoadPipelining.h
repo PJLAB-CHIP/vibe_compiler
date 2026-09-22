@@ -8,12 +8,16 @@
 #include "llvm/ADT/SmallVector.h"
 
 namespace wafer::compiler::detail {
-/// Query the current physical load/consumer graph. No capacity prediction is
-/// used; eligibility requires a complete per-iteration definition and no
-/// escaping or mutated alias of the selected load destination.
-bool hasDistanceOneLoadPipeline(mlir::ModuleOp module);
-llvm::SmallVector<mlir::scf::ForOp, 4>
-getDistanceOneLoadPipelineLoops(mlir::ModuleOp module);
+struct LoadPipelineQueryResult {
+  llvm::SmallVector<mlir::scf::ForOp, 4> loops;
+  std::optional<LoopPipeliningFailure> failure;
+  bool succeeded() const { return !failure.has_value(); }
+};
+
+/// Query verified current physical load/consumer IR. Eligibility requires a
+/// complete iteration-local definition and no escaping alias. Later reads and
+/// writes within that lifetime are allowed. No capacity prediction is used.
+LoadPipelineQueryResult queryDistanceOneLoadPipelines(mlir::ModuleOp module);
 
 /// Materialize two actual slots and the existing SCF pipeline in the owned
 /// transaction. The ordinary Instr/completion/memory path remains the consumer.

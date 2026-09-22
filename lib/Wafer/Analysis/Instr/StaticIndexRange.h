@@ -44,17 +44,19 @@ struct StaticIndexRangeResult {
 };
 
 /// Conservatively evaluates a non-negative index value from constants,
-/// bounded scf.for induction variables with a positive constant step,
-/// checked addition/subtraction, multiplication with at least one singleton
-/// operand, unsigned division / signed ceil division by a positive constant,
+/// bounded scf.for induction variables with a proven positive step,
+/// checked addition/subtraction and bounded-interval multiplication,
+/// unsigned division / signed ceil division by a positive constant,
 /// signed min/max intervals,
 /// and identity-preserving
 /// wafer.tile.region block/result edges.
 /// Fixed-width integer SSA and integer/index casts use InferIntRangeInterface
 /// with full type ranges for unknown leaves. Only a proven non-negative final
 /// range is accepted; finite-width truncation and wrapping are preserved.
-/// When `use` is present, constant integer comparisons on enclosing scf.if
-/// paths refine the same SSA values before arithmetic is evaluated. Unknown
+/// When `use` is present, bounded integer comparisons on enclosing scf.if
+/// paths refine the same SSA values and preserve proven induction grids.
+/// Bounds used for these constraints are evaluated without path assumptions.
+/// Unknown
 /// expressions and arithmetic overflow fail closed.
 StaticIndexRangeResult
 evaluateNonNegativeStaticIndexRange(mlir::Value value,

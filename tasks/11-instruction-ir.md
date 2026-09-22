@@ -545,8 +545,15 @@ completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保�
 `busytable`只能作为target capability/legality/cost input，不能替代token、typed join、effects或terminal
 drain。不携带resident data的pending NCC completion set可按精确event/control relation跨内部traversal、loop nest和
 traversal separation；same-worker ordered reuse的SPM root可在同一region及已证明安全的loop backedge内延续。
-有界但非恒定的SCF上下界沿共同StaticIndexRange读取当前SSA：正的常量step与有界lower/upper给出IV范围，
-仅凭SSA余数证明才能按共同网格收紧终点。正常量除数的unsigned division和signed ceil-div给出商范围；
+有界但非恒定的SCF上下界沿共同StaticIndexRange读取当前SSA：已证明为正的step与有界lower/upper给出IV范围，
+`index`乘法可组合两个已证明的有界区间，检查四个端点积及溢出；未知因子不视为常数，有限位宽整数仍按原InferIntRange语义。
+仅凭常量step及lower的SSA余数证明才能按共同网格收紧端点。使用点的`scf.if`比较可用另一操作数的已证明区间
+收紧本操作数；该区间独立于正在收集的分支约束，避免循环证明。分支收紧之后仍须保留原循环网格，
+不能把非单位步长IV当作区间内每个整数均可达。Unsigned比较只在两侧均已证明非负时用于signed地址区间。
+范围证明只读当前SSA；unknown、空域和算术溢出保持原typed结果，不放宽DDR descriptor检查。
+本项覆盖rank3的1024/1025/1031、非零起点、非单位step、动态比较界、then/else与负数unsigned反例，
+并以条件预取的实际RDMA与DDR规划作为直接下游见证。
+正常量除数的unsigned division和signed ceil-div给出商范围；
 Instr→LLVM在同一次full conversion中复用pinned Arith的ceil/floor expansion与既有LLVM patterns。
 NCC placement与SPM/DDR lifetime共同使用实际上下界的非空证明；
 不能因上界不是常量就增加join，也不能把“存在非空执行”当作“每次调用必定非空”。
@@ -1154,6 +1161,9 @@ Static movement instr-lowering覆盖 static movement descriptor splitting / pack
   source/dest stride × iteration；只在full/C0/folded tail、NCx per-N padding、directional DMA连续性、
   target field和三层上限边界拆成后续command。dynamic shape、bit-packed element或无法证明的relation
   structured failure，不回退到production per-element segment enumeration。
+  拆分递归必须同时保留已合并的`inner_bytes`与剩余地址轴，不能在超过三层后把连续payload重置为单元素。
+  覆盖rank4 NCx→Tensor投影广播的1024/1025/1031通道、完整块及尾部；以独立物理地址oracle检查每个目标元素
+  的唯一写入和对应源地址，并验证实际Instr输出。
 
 Static movement planning的host构造复杂度不属于IR协议，但必须保持可扩展且与统一physical mapping等价：
 

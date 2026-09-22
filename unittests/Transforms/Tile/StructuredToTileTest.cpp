@@ -39,6 +39,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
@@ -1526,6 +1527,78 @@ module {
       EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
     }
   }
+}
+
+TEST_F(StructuredToTileTest, FillPreservesBlockedSubviewWriteDomain) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef layout : {"tensor", "cx", "ncx"})
+      for (bool subview : {false, true}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(layout.str());
+        SCOPED_TRACE(subview);
+        std::string memory = "#wafer.memory<spm, " + layout.str() + ">";
+        std::string root = "memref<1x" + std::to_string(extent + 2) +
+                           "x65xf32, " + memory + ">";
+        std::string dest = subview ? "memref<1x" + std::to_string(extent) +
+                                         "x65xf32, strided<[" +
+                                         std::to_string((extent + 2) * 65) +
+                                         ",65,1], offset: 65>, " + memory + ">"
+                                   : root;
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module { wafer.tile.module card_id = 0 tile_id = 0 { "
+              "func.func @entry() -> f32 { %token = arith.constant false "
+              "%r = wafer.tile.region(%token : i1) -> (f32) { ^bb0(%t: i1): "
+              "%value = arith.constant 2.0 : f32 "
+              "%zero = arith.constant 0 : index "
+              "%storage = memref.alloc() : "
+           << root;
+        if (subview)
+          ir << " %dest = memref.subview %storage[0,1,0] [1," << extent
+             << ",65] [1,1,1] : " << root << " to " << dest;
+        std::string target = subview ? "%dest" : "%storage";
+        ir << " linalg.fill ins(%value : f32) outs(" << target << " : " << dest
+           << ") %observed = memref.load " << target
+           << "[%zero,%zero,%zero] : " << dest
+           << " wafer.tile.yield %observed : f32 } return %r : f32 } } }";
+        auto module = parse(text);
+        ASSERT_TRUE(module) << text;
+        mlir::Value destination;
+        module->walk([&](mlir::linalg::FillOp fill) {
+          destination = fill.getDpsInits().front();
+        });
+        StructuredMaterializationRelations relations;
+        auto lowered = lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
+        EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+        ASSERT_EQ(countOps<ComputeFillOp>(module->getOperation()), 1u);
+        bool privatePublication = subview && layout != "tensor";
+        EXPECT_EQ(countOps<MoveCopyIntoOp>(module->getOperation()),
+                  privatePublication ? 1u : 0u);
+        module->walk([&](ComputeFillOp fill) {
+          EXPECT_EQ(fill.getFillDomain().value_or(FillDomain::LogicalValid),
+                    layout == "tensor" ? FillDomain::LogicalValid
+                                       : FillDomain::PhysicalFootprint);
+          if (privatePublication) {
+            EXPECT_NE(fill.getDest(), destination);
+            EXPECT_TRUE(fill.getDest().getDefiningOp<mlir::memref::AllocOp>());
+          } else {
+            EXPECT_EQ(fill.getDest(), destination);
+          }
+        });
+        module->walk([&](MoveCopyIntoOp copy) {
+          EXPECT_EQ(copy.getDest(), destination);
+          auto source =
+              mlir::cast<mlir::MemRefType>(copy.getSource().getType());
+          EXPECT_EQ(
+              source.getShape(),
+              mlir::cast<mlir::MemRefType>(destination.getType()).getShape());
+          EXPECT_EQ(getWaferMemoryAttr(source).getLayout(),
+                    getWaferMemoryAttr(
+                        mlir::cast<mlir::MemRefType>(destination.getType()))
+                        .getLayout());
+        });
+      }
 }
 
 TEST_F(StructuredToTileTest, PreservesLoopDestinationAndPreexistingView) {
@@ -6785,6 +6858,133 @@ TEST_F(StructuredToTileTest, BroadcastLoweringPreservesEveryMappedByte) {
         ASSERT_TRUE(mlir::succeeded(planned));
         ASSERT_TRUE(mlir::succeeded(mlir::verify(**planned)));
       }
+}
+
+TEST_F(StructuredToTileTest, BlockedBroadcastSplitsKeepContiguousPayload) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (llvm::StringRef element : {"f16", "bf16", "f32"}) {
+      SCOPED_TRACE(::testing::Message() << extent << "/" << element.str());
+      // After merging a contiguous channel block, batch/head/replication/
+      // channel-block axes still exceed the three descriptor loop fields.
+      auto source =
+          llvm::formatv("memref<2x4x{0}x{1}, #wafer.memory<spm, ncx>>", extent,
+                        element)
+              .str();
+      auto result =
+          llvm::formatv("memref<2x4x8x{0}x{1}, #wafer.memory<spm, tensor>>",
+                        extent, element)
+              .str();
+      auto text = llvm::formatv(R"mlir(
+        module {{ func.func @entry() {{
+          wafer.tile.region() -> () {{
+            %source = memref.alloc() : {0}
+            %lhs = memref.alloc() : {1}
+            %result = wafer.tile.elementwise <sub> %lhs, %source
+                {{indexing_maps = [affine_map<(b,h,k,c)->(b,h,k,c)>,
+                                   affine_map<(b,h,k,c)->(b,h,c)>,
+                                   affine_map<(b,h,k,c)->(b,h,k,c)>]}
+                : ({1}, {0}) -> {1}
+            wafer.tile.yield
+          }
+          return
+        } }
+      )mlir",
+                                source, result)
+                      .str();
+      auto module = parse(text);
+      ASSERT_TRUE(module);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      TileRegionOp region;
+      module->walk([&](TileRegionOp op) { region = op; });
+      mlir::MemRefType sourceType;
+      module->walk([&](ComputeElementwiseOp op) {
+        sourceType = mlir::cast<mlir::MemRefType>(op.getInputs()[1].getType());
+      });
+      TileRegionToInstrLoweringSession session(*context);
+      ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      EXPECT_EQ(countOps<ComputeElementwiseOp>(*module), 0u);
+      int64_t elementBytes = element == "f32" ? 4 : 2;
+      std::vector<int64_t> sourceByte(2 * 4 * 8 * extent * elementBytes, -1);
+      llvm::DenseMap<mlir::Value, int64_t> indices;
+      auto evaluate = [&](auto &&self, mlir::Value value) -> int64_t {
+        if (auto constant = mlir::getConstantIntValue(value))
+          return *constant;
+        if (indices.contains(value))
+          return indices.lookup(value);
+        if (auto add = value.getDefiningOp<mlir::arith::AddIOp>())
+          return self(self, add.getLhs()) + self(self, add.getRhs());
+        if (auto mul = value.getDefiningOp<mlir::arith::MulIOp>())
+          return self(self, mul.getLhs()) * self(self, mul.getRhs());
+        ADD_FAILURE() << "unexpected address expression";
+        return 0;
+      };
+      unsigned dynamicCommands = 0;
+      auto executeMove = [&](InstrGatherScatterOp move) {
+        ++dynamicCommands;
+        auto address = [&](int64_t ordinal, bool read) {
+          int64_t address = ordinal % move.getInnerBytes();
+          ordinal /= move.getInnerBytes();
+          auto counts =
+              read ? move.getSrcIterations() : move.getDstIterations();
+          auto strides = read ? move.getSrcStrides() : move.getDstStrides();
+          for (unsigned dim = 0; dim < 3; ++dim) {
+            address += (ordinal % counts[dim]) * strides[dim];
+            ordinal /= counts[dim];
+          }
+          auto dynamic =
+              read ? move.getSrcOffsetValue() : move.getDstOffsetValue();
+          return address + (dynamic ? evaluate(evaluate, dynamic)
+                            : read  ? move.getSrcOffset().value_or(0)
+                                    : move.getDstOffset().value_or(0));
+        };
+        for (int64_t byte = 0; byte < static_cast<int64_t>(move.getByteCount());
+             ++byte) {
+          int64_t destination = address(byte, false);
+          ASSERT_GE(destination, 0);
+          ASSERT_LT(destination, static_cast<int64_t>(sourceByte.size()));
+          ASSERT_EQ(sourceByte[destination], -1);
+          sourceByte[destination] = address(byte, true);
+        }
+      };
+      auto execute = [&](auto &&self, mlir::Block &block) -> void {
+        for (auto &op : block) {
+          if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+            for (int64_t i = evaluate(evaluate, loop.getLowerBound());
+                 i < evaluate(evaluate, loop.getUpperBound());
+                 i += evaluate(evaluate, loop.getStep())) {
+              indices[loop.getInductionVar()] = i;
+              self(self, *loop.getBody());
+            }
+          } else if (auto move = mlir::dyn_cast<InstrGatherScatterOp>(op)) {
+            executeMove(move);
+          }
+        }
+      };
+      execute(execute, region.getBody().front());
+      EXPECT_GT(dynamicCommands, 1u);
+      // Pointwise layout mapping is independent of descriptor
+      // packing/splitting.
+      for (int64_t b = 0; b < 2; ++b)
+        for (int64_t h = 0; h < 4; ++h)
+          for (int64_t c = 0; c < extent; ++c) {
+            auto offset =
+                computeWaferPhysicalElementByteOffset(sourceType, {b, h, c});
+            ASSERT_TRUE(offset);
+            for (int64_t repeat = 0; repeat < 8; ++repeat)
+              for (int64_t byte = 0; byte < elementBytes; ++byte) {
+                int64_t dest =
+                    (((b * 4 + h) * 8 + repeat) * extent + c) * elementBytes +
+                    byte;
+                ASSERT_EQ(sourceByte[dest], *offset + byte);
+              }
+          }
+      ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+      TileMemoryPlanningFailure failure;
+      auto planned = planTileMemory(std::move(module), &failure);
+      ASSERT_TRUE(mlir::succeeded(planned));
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+    }
 }
 
 TEST_F(StructuredToTileTest, StridedSPMEndpointsPreserveEveryDMAAddress) {

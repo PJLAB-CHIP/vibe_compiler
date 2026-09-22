@@ -32,8 +32,10 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
 #include <deque>
+#include <iterator>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -676,7 +678,20 @@ public:
       support::addCompileCounter("access-reuse", "two-level-windows",
                                  shared.twoLevelWindows);
     }
-    auto pipelineLoops = getDistanceOneLoadPipelineLoops(*candidate->module);
+    if (mlir::failed(
+            optimizeCurrentIRStorage(*candidate->module, candidate->relations)))
+      return finish(fail(ExecutableCompilationStatus::CompilerFailure,
+                         "storage-optimization",
+                         "common storage optimization failed"));
+    auto pipelineQuery = queryDistanceOneLoadPipelines(*candidate->module);
+    if (pipelineQuery.failure &&
+        pipelineQuery.failure->kind != LoopPipeliningFailureKind::Unsupported)
+      return finish(fail(pipelineQuery.failure->kind ==
+                                 LoopPipeliningFailureKind::Indeterminate
+                             ? ExecutableCompilationStatus::IndeterminateFailure
+                             : ExecutableCompilationStatus::CompilerFailure,
+                         "search-pipeline", pipelineQuery.failure->detail));
+    auto &pipelineLoops = pipelineQuery.loops;
     llvm::SmallVector<PipelineScope, 4> pipelineScopes;
     bool completePipelineScopes = true;
     for (auto loop : pipelineLoops) {
@@ -859,10 +874,28 @@ public:
       if (auto *known =
               std::get_if<analysis::KnownSearchObjective>(&objective)) {
         auto duration = known->estimatedDurationPicoseconds;
+        if (support::getActiveCompileTimingSession())
+          diagnostics << "wafer-compile: accepted-candidate pipeline="
+                      << choice.pipeline
+                      << " estimated_picoseconds=" << duration << '\n';
         current().bestDuration =
             current().bestDuration ? std::min(*current().bestDuration, duration)
                                    : duration;
         current().proposals->observeAccepted(temporal.choices, *known);
+        // Preserve a qualified source point for each unstarted sibling. A
+        // later discovery has not passed this sibling's actual leaf and must
+        // not displace the point solely because it was discovered last.
+        for (auto &branch : implementations) {
+          if (branch->state != BranchState::Waiting ||
+              (branch->discoveryDuration &&
+               *branch->discoveryDuration <= duration))
+            continue;
+          auto point = llvm::find(branch->discovery, temporal.choices);
+          if (point == branch->discovery.end())
+            continue;
+          std::rotate(branch->discovery.begin(), point, std::next(point));
+          branch->discoveryDuration = duration;
+        }
       }
     }
     return finish(std::move(compiled), std::move(evaluatedObjective));
@@ -887,6 +920,7 @@ private:
   struct ImplementationBranch {
     ImplementationChoice choice;
     std::vector<std::vector<TemporalChoice>> discovery;
+    std::optional<uint64_t> discoveryDuration;
     long double priority = 0;
     std::unique_ptr<TemporalProposals> proposals;
     std::vector<TemporalSuccessor> raw;
@@ -921,11 +955,21 @@ private:
   bool discover(ImplementationChoice choice,
                 const std::vector<TemporalChoice> &point,
                 long double priority = 0) {
+    if (support::getActiveCompileTimingSession())
+      diagnostics << "wafer-compile: discovered-implementation structural="
+                  << explorationStratum << " from_implementation=" << *active
+                  << " attempt="
+                  << (statistics ? statistics->temporalCandidateActualizations
+                                 : 0)
+                  << " pipeline=" << choice.pipeline << " invariant="
+                  << (choice.placement ==
+                      LayoutMaterializationPlacement::LoopInvariant)
+                  << '\n';
     for (const auto &branch : implementations)
       if (branch->choice == choice) {
         if (branch->state == BranchState::Waiting) {
           auto existing = llvm::find(branch->discovery, point);
-          if (priority >= branch->priority) {
+          if (!branch->discoveryDuration && priority >= branch->priority) {
             if (existing != branch->discovery.end())
               branch->discovery.erase(existing);
             branch->discovery.insert(branch->discovery.begin(), point);

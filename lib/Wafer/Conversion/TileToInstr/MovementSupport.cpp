@@ -1124,12 +1124,12 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
     return span->bitOffset / 8;
   };
 
-  std::function<mlir::LogicalResult(int64_t, int64_t,
-                                    llvm::SmallVector<DescriptorAxis, 8>)>
+  std::function<mlir::LogicalResult(
+      int64_t, int64_t, llvm::SmallVector<DescriptorAxis, 8>, int64_t)>
       materializeDescriptor;
-  materializeDescriptor =
-      [&](int64_t sourceBase, int64_t destBase,
-          llvm::SmallVector<DescriptorAxis, 8> axes) -> mlir::LogicalResult {
+  materializeDescriptor = [&](int64_t sourceBase, int64_t destBase,
+                              llvm::SmallVector<DescriptorAxis, 8> axes,
+                              int64_t innerBytes) -> mlir::LogicalResult {
     for (DescriptorAxis &axis : axes) {
       if (axis.sourceStride < 0 && axis.destStride < 0) {
         std::optional<int64_t> sourceAdjustment =
@@ -1175,8 +1175,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
             destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
                            : std::nullopt;
         if (!nextSource || !nextDest ||
-            mlir::failed(
-                materializeDescriptor(*nextSource, *nextDest, remaining)))
+            mlir::failed(materializeDescriptor(*nextSource, *nextDest,
+                                               remaining, innerBytes)))
           return mlir::failure();
       }
       return mlir::success();
@@ -1213,7 +1213,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
     // physical padding boundary breaks that property, retain separate static
     // commands instead of inventing a dynamic endpoint offset form.
     if (engine != MovementEngine::GatherScatter) {
-      int64_t expectedStride = elementBytes;
+      int64_t expectedStride = innerBytes;
       for (size_t index = 0; index < axes.size(); ++index) {
         if (sequentialEndpointStride(axes[index]) != expectedStride) {
           DescriptorAxis split = axes[index];
@@ -1235,8 +1235,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
                 destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
                                : std::nullopt;
             if (!nextSource || !nextDest ||
-                mlir::failed(
-                    materializeDescriptor(*nextSource, *nextDest, remaining)))
+                mlir::failed(materializeDescriptor(*nextSource, *nextDest,
+                                                   remaining, innerBytes)))
               return mlir::failure();
           }
           return mlir::success();
@@ -1249,7 +1249,6 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
       }
     }
 
-    int64_t innerBytes = elementBytes;
     for (size_t index = 0; index < axes.size();) {
       DescriptorAxis axis = axes[index];
       if (axis.sourceStride == innerBytes && axis.destStride == innerBytes) {
@@ -1304,7 +1303,8 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
             destAdjustment ? checkedSignedAdd(destBase, *destAdjustment)
                            : std::nullopt;
         if (!nextSource || !nextDest ||
-            mlir::failed(materializeDescriptor(*nextSource, *nextDest, axes)))
+            mlir::failed(materializeDescriptor(*nextSource, *nextDest, axes,
+                                               innerBytes)))
           return mlir::failure();
       }
       return mlir::success();
@@ -1377,7 +1377,7 @@ getRelationMovementDescriptors(mlir::PatternRewriter &rewriter,
             {*nextSource - *sourceBase, *nextDest - *destBase, axis.count});
       }
       return materializeDescriptor(*sourceBase, *destBase,
-                                   std::move(descriptorAxes));
+                                   std::move(descriptorAxes), elementBytes);
     }
 
     for (const DimensionChoice &choice : choices[dim]) {

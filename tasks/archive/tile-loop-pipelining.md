@@ -1,9 +1,9 @@
 # Tile职责分拆与通用循环流水实施方案
 
 本计划归`board-testing`，状态和直接前置只由[progress](../progress.md)拥有。
-用户最新要求先完成已有部分实现，再开展尚未实现的优化。职责分拆与通用流水设计已完成，
-实施前先按[性能计划](board-workload-matrix.md#已有改动的收尾与接续)完成已有改动及方向取舍。
-文件布局按第3节迁移，动态流水能力仍按第4节单独实施；文件分拆不能代签流水接入或性能改善。
+职责分拆、通用循环流水和指定BF16产品验收已完成，本文保存当时的实施合同与验收证据。
+整体板测任务及后续性能优化仍由[性能计划](../plans/board-workload-matrix.md#已有改动的收尾与接续)接续；
+本记录不代表全部attention优化完成，也不把流水可用等同于性能改善。
 稳定语义由[10号第9节](../10-compute-movement.md#9-循环流水与存储优化的职责边界)拥有，源码组织遵循18号，
 作用域及变换规则遵循19号，完成与内存分别遵循11/09号；本计划不建立第二套IR或同步协议。
 
@@ -210,5 +210,44 @@ issue间隙、buffer及完成域；RDMA活动周期不是可直接扣除的总�
 5. 通用流水：先共同输入/依赖与动态域，再条件、rotation/completion/SPM和driver接入；按完整矩阵验证后提交。
 6. K/V接入及最终性能：复用第2步可见域与第4步存储结果，完成fresh no-card、实卡与独立profile，记录实际收益和剩余瓶颈。
 
-职责分拆的迁移与行为保持证据见第3节；通用流水扩展仍按第4节接续。
+职责分拆的迁移与行为保持证据见第3节；通用流水扩展的实际完成边界见下节验收记录。
 稳定设计不因排期改变；全部归同一board-testing，不新增work item，也不重新打开head/tile搜索。
+
+### 通用流水验收（2026-09-22）
+
+none/search及直接调用者已把storage共同优化移到流水选择之前；选择后不再复用旧operation绑定。
+动态域和静态短域复用pinned SCF predication，conditional load保留原taken path，轮转槽的动态最后值由真实非空域选择。
+嵌套候选优先内层，公共preflight拒绝重叠scope；此前父/子同时绑定导致改写后引用失效的主机崩溃已有独立回归。
+
+访问依赖区分iteration-private allocation、同stage保序、只读共享、NoAlias、实际不相交的invariant subview与轮转槽。
+动态per-iteration subview之间若缺少跨迭代距离证明仍返回Unsupported；这属于软件证明范围，不能解释为硬件限制。
+无value的未知effect不静默跳过；只有Wafer接口明确的engine摘要及有对应value-bound内存effect的摘要可消去重复统计。
+
+条件预取曾在card-ddr gate被误判越界：StaticIndexRange只消费与常量的比较，遗漏有界SSA条件，且分支收紧后没有重新交原IV网格。
+11号共同地址分析已补这两项，保留unsigned非负条件和原DDR descriptor检查。非attention的rank3 1024/1025/1031条件搬运
+经过独立SCF访问枚举、Instr、completion、SPM和DDR规划；动态0/1/多步、两槽/三槽的最终结果及空域初值已有执行见证。
+仅有loop前初始化、逃逸view、重叠/未知alias和索引位宽溢出有typed负例。
+
+专项StaticIndexRange及Loop/Load/RotatingBuffers实际通过；24组SystemC读取复用按CTest独立进程通过。
+直接整进程运行SystemC参数矩阵曾因第二次elaboration被拒，失败记录保留，正式注册的独立进程结果才是有效证据。
+Analysis、Transforms、Driver及24组SystemC共27项CTest全部通过；补充整数IV最后槽与原地consumer矩阵后，11项流水专项再次通过。
+17项结构/同步lit及60项Instr/target lit通过。当前主块和1031尾块完成fresh no-card；最终LLVM、ELF及ProgramData
+与本轮实测包一致，主块的Tile/Instr也逐字节一致。尾块早期IR有差异，不将其称作所有stage相同。
+
+正式串行winner三次普通实卡4.141/4.086/4.077ms，尾块1.313ms，完整数值/guard/完成及厂商退出健康。
+保留相同Q/mask准备复用的双槽流水actual候选4.105ms，未见净收益，正式选择仍为串行。
+串行/流水独立profile为4.083/4.150ms，各77,280事件完整，动态调用数相同；CT/NE/TDMA活动量基本相同，
+不能将RDMA活动量直接当可节省总时间。早期FirstUse候选6.114ms包含准备复用差异，不作为纯流水性能对照。
+本步实现与指定产品板端验收已完成；后续用户新增的循环累加器布局修复属于08号独立边界。
+证据见[流水验收](../../docs/data/board-performance/attention-loop-pipelining-20260922.json)及
+[性能分析](../../docs/board-performance-results.md#2026-09-22通用循环流水与kv重叠验收)。
+
+组合候选的起点问题已由本轮诊断确认：已接受的串行参数派生流水后，等待分支的发现列表被后来的同优先级参数
+反复前插；后者容量失败也不会恢复原起点。修复限定为保留actual已接受来源的最低成本起点，不改width/trials、
+head/tile域、SPM准入或候选变换。非attention driver回归及产品actual组合已经通过；来源成本只排序发现参数，兄弟自己的actual容量失败仍独立。
+同成本保留先到点，不能将本轮产品见证冒充单独的调度状态机穷举测试。
+
+进一步的具体拒绝证据为SPM轮转slot写入与DDR constant/global读取被通用AliasAnalysis返回MayAlias。
+两者已有不同的Wafer typed地址域，不能要求它们再通过同域root/range证明；本地流水依赖检查已消费该事实，
+rank3整除/tail的跨SPM/DDR global正例与原同域重叠/未知alias负例共同回归。
+修复后保持准备复用的流水候选进入完整actual门禁并成功构包，串行仍胜出；以上实卡记录是取舍依据，估时不代替测量。

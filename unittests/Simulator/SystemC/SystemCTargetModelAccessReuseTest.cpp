@@ -111,6 +111,7 @@ TEST_P(SystemCTargetModelAccessReuseTest,
   CurrentIRDownstreamOptions options;
   options.communication = CommunicationProposalPolicy::DependencyOrdered;
   auto config = llvm::cantFail(ExecutionConfig::createForSingleCard(1));
+  ASSERT_TRUE(mlir::succeeded(optimizeCurrentIRStorage(*module, relations)));
   auto compiled = compileCurrentIRCandidateToExecutable(
       std::move(module), std::move(relations), CardId(0), tiles, program,
       config, diagnostics, data, options);

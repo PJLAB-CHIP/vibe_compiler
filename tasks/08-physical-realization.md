@@ -190,6 +190,26 @@ Baseline与search使用同一完整合法label域。合法域只由明确的targ
 无固定layout要求的operation保留选择自由度，由完整转换成本决定布局。不能以缺少直接fixed-compute邻接为由删除某种layout，
 也不能把Tensor或Cx/NCx统一指定为计算布局。既有PBQP精确化简消费完整unary/binary factors。
 
+#### 循环内状态的布局与重复搬运成本
+
+输入是当前Linalg/Tensor/SCF中的init、iter_args、yield、result及实际consumer，输出为同一PBQP assignment物化的
+layout、buffer和movement，直接下游仍为One-Shot、StructuredToTile与Instr/SPM。用户入口沿用none/search；
+不新增attention专用改写，不强制所有state使用NCx，不改变算术、dtype、循环次序或psum/result的独立存储要求。
+
+同一recurrence中的布局选择必须同时计入入口转换、循环内consumer/publication和出口转换。有限成本使用current loop域的
+重复次数：静态域取实际次数；可证明上界的动态域只作排序估计，并保留上下界之间的SSA相关关系。
+某一层循环未知不能抹掉其它层已知的重复次数；未知次数不变成非法布局或SPM结论。
+`linalg.fill`的scalar值不依赖元素排列，布局由实际destination及consumer选择，不再像GEMM/reduce那样强制Tensor计算布局。
+StructuredToTile保持所选destination；Tensor保留logical-valid填充，独立连续Cx/NCx allocation显式使用已有physical-footprint合同，
+初始化其padding。子视图和外部目标只承诺logical写入：先填同布局独立allocation，再用既有MoveCopyInto发布有效元素；
+不能把它们直接当作完整物理范围填充。fill值、dtype和目标指令不变；独立初始化可直接写循环需要的布局，避免先填Tensor再转换。
+对于有明确NCx计算consumer的状态，循环内保持NCx、在外部consumer需要其它布局时才转换是已有合法选择；
+必须由完整布局图和实际物化证明，不靠state名称、shape或手工删除布局copy。
+
+完成条件：非attention的整除/非整除、多层和有界动态recurrence回归，保持初值/零次语义与算术链；
+实际内层GEMM psum/result及state布局一致，没有每步state布局往返；外部输出仍满足原layout，Instr/SPM及BF16产品验收通过。
+条件、未知循环和必须转换的consumer保持合法；具体覆盖与实测在当前板测计划记录。
+
 #### 布局求解前的逐元素目标分解
 
 非identity的result permutation是当前generic的显式逻辑轴顺序。分解复合payload时，各个算术中间值按

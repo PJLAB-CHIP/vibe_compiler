@@ -37,9 +37,11 @@ mlir::Value getCompleteWriteDestination(mlir::Operation *operation) {
 
 // Views do not observe contents. Follow all their aliases before selecting the
 // first non-view user; escaping and unknown operations remain ordinary users.
-mlir::Operation *findFirstStorageUse(
-    mlir::Value value, llvm::SmallVectorImpl<mlir::Value> &aliases,
-    const llvm::DenseSet<mlir::Operation *> &excluded, uint64_t &useCount) {
+mlir::Operation *
+findFirstStorageUse(mlir::Value value,
+                    llvm::SmallVectorImpl<mlir::Value> &aliases,
+                    const llvm::DenseSet<mlir::Operation *> &excluded,
+                    uint64_t &useCount, mlir::Operation *ignored = nullptr) {
   mlir::Block *block = value.getDefiningOp()->getBlock();
   aliases.push_back(value);
   llvm::DenseSet<mlir::Value> visited;
@@ -51,6 +53,8 @@ mlir::Operation *findFirstStorageUse(
     for (mlir::OpOperand &use : alias.getUses()) {
       ++useCount;
       mlir::Operation *user = use.getOwner();
+      if (user == ignored)
+        continue;
       auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user);
       if (view && view.getViewSource() == alias &&
           mlir::isMemoryEffectFree(user) && user->getBlock() == block) {
@@ -221,6 +225,36 @@ void eliminateUnusedStorageInitialization(
         rewriter.create<mlir::memref::AllocOp>(layout.getLoc(), type);
     rewriter.replaceOp(layout, allocation.getResult());
     ++removedCopies;
+  }
+
+  // A direct fill can become dead without any intervening layout copy. Keep
+  // padding initialization unless the following logical overwrite covers the
+  // entire physical footprint as well.
+  llvm::SmallVector<ComputeFillOp> fills;
+  root->walk([&](ComputeFillOp fill) { fills.push_back(fill); });
+  for (auto fill : fills) {
+    auto allocation = fill.getDest().getDefiningOp<mlir::memref::AllocOp>();
+    if (!allocation || allocation->getBlock() != fill->getBlock() ||
+        isExcluded(allocation, pipelineOperations) ||
+        isExcluded(fill, pipelineOperations))
+      continue;
+    auto type = allocation.getType();
+    if (fill.getFillDomain().value_or(FillDomain::LogicalValid) ==
+        FillDomain::PhysicalFootprint) {
+      auto info = computeWaferPhysicalTensorInfo(type);
+      if (!info || info->bitPackedElement ||
+          info->physicalElements != type.getNumElements())
+        continue;
+    }
+    llvm::SmallVector<mlir::Value> aliases;
+    auto *first = findFirstStorageUse(allocation, aliases, pipelineOperations,
+                                      useCount, fill);
+    if (!first || !fill->isBeforeInBlock(first) ||
+        isExcluded(first, pipelineOperations) ||
+        !completelyOverwrites(first, allocation, aliases))
+      continue;
+    rewriter.eraseOp(fill);
+    ++removedFills;
   }
 
   // Reverse def order lets a dead layout result expose its source's dead fill

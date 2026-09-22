@@ -882,6 +882,69 @@ TEST(StorageOptimizationTest, EliminateGemmInitializationThroughCompleteViews) {
       }
 }
 
+TEST(StorageOptimizationTest, DirectFillRequiresFullOverwriteWithoutPadding) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t channels : {64, 65})
+      for (unsigned mode : {0u, 1u, 2u}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << '/' << channels << '/' << mode);
+        auto context = createContext();
+        std::string lhs = "memref<1x" + std::to_string(extent) +
+                          "x64xbf16, #wafer.memory<spm, ncx>>";
+        std::string rhs = "memref<1x64x" + std::to_string(channels) +
+                          "xbf16, #wafer.memory<spm, ncx>>";
+        std::string state = "memref<1x" + std::to_string(extent) + "x" +
+                            std::to_string(channels) +
+                            "xf32, #wafer.memory<spm, ncx>>";
+        std::string attrs =
+            " {batch_count = 1 : i64, lhs_batch_dims = array<i64: 0>, "
+            "lhs_m_dim = 1 : i64, lhs_contracting_dim = 2 : i64, "
+            "rhs_batch_dims = array<i64: 0>, rhs_contracting_dim = 1 : i64, "
+            "rhs_n_dim = 2 : i64, result_batch_dims = array<i64: 0>, "
+            "result_m_dim = 1 : i64, result_n_dim = 2 : i64} : (" +
+            lhs + ", " + rhs + ")";
+        std::string text;
+        llvm::raw_string_ostream ir(text);
+        ir << "module { func.func @main() { wafer.tile.region() -> () { "
+              "%a = memref.alloc() : "
+           << lhs << " %b = memref.alloc() : " << rhs
+           << " %d = memref.alloc() : " << state
+           << " %one = arith.constant 1.0 : f32 wafer.tile.fill %d, %one "
+              "{fill_domain = #wafer.fill_domain<physical_footprint>} : "
+           << state << ", f32 ";
+        if (mode == 1)
+          ir << "%old = wafer.tile.copy %d : " << state << " -> " << state;
+        if (mode == 2)
+          ir << " %next = wafer.tile.gemm %a, %b psum(%d : " << state << ')'
+             << attrs << " -> " << state
+             << " wafer.tile.copy_into %next into %d : " << state << " into "
+             << state;
+        else
+          ir << " wafer.tile.gemm_into %a, %b into %d" << attrs << " into "
+             << state;
+        ir << " %read = wafer.tile.copy %d : " << state << " -> " << state
+           << " wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        mlir::IRRewriter rewriter(context.get());
+        eliminateUnusedStorageInitialization(*module, rewriter, {});
+        unsigned fills = 0;
+        module->walk([&](ComputeFillOp) { ++fills; });
+        EXPECT_EQ(fills, channels == 64 && mode == 0 ? 0u : 1u);
+        TileRegionToInstrLoweringSession session(*context);
+        llvm::SmallVector<TileRegionOp> regions;
+        module->walk([&](TileRegionOp region) { regions.push_back(region); });
+        for (auto region : regions)
+          ASSERT_TRUE(
+              mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+        ASSERT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
 TEST(StorageOptimizationTest,
      StorageInitializationPreservesSelectedPipelineObjects) {
   for (unsigned variant = 0; variant < 3; ++variant) {
@@ -1141,8 +1204,9 @@ TEST(StorageOptimizationTest,
     auto &pipeline = materialized.materialized->pipelines.front();
     uint64_t copies = 0, readers = 0;
     for (const auto &binding : pipeline.operations) {
-      uint64_t executions =
-          binding.phase == PipelinePhase::Kernel ? pipeline.kernelTripCount : 1;
+      uint64_t executions = binding.phase == PipelinePhase::Kernel
+                                ? *pipeline.kernelTripCount
+                                : 1;
       if (auto copy = mlir::dyn_cast<MoveCopyIntoOp>(binding.operation)) {
         copies += executions;
         EXPECT_NE(copy.getSource(), copy.getDest());

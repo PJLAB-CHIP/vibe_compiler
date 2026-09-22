@@ -53,7 +53,7 @@ struct PreparedTilePipeline {
   mlir::scf::ForOp loop;
   std::vector<TilePipelineOperation> operations;
   TilePipelineLowering lowering = TilePipelineLowering::SCFDistanceOne;
-  uint64_t tripCount = 0;
+  std::optional<uint64_t> tripCount;
   uint32_t stageCount = 0;
 };
 
@@ -85,7 +85,7 @@ struct PipelinedOperation {
 
 struct PipelinedLoop {
   uint32_t stageCount = 0;
-  uint64_t kernelTripCount = 0;
+  std::optional<uint64_t> kernelTripCount;
   uint64_t originalOperationCount = 0;
   std::vector<PipelinedOperation> operations;
 };

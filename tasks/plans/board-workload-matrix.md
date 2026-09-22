@@ -42,11 +42,33 @@
 
 #### 后续性能优化实施方案
 
-本节保留已有profile、各优化点及其验收合同。用户最新要求优先完成已有部分实现，再开展尚未实现的优化。
-当前直接前置是tail/输出融合验收及已有方向选择、causal草稿收尾；之后才实施
-[职责分拆与通用流水方案](tile-loop-pipelining.md)。当前顺序由[progress](../progress.md#当前调度)拥有，
+2026-09-22最新接续：用户确认输出累加器应在KV内层循环保持NCx，仅在外部输出需要时转换。
+修复前actual Instr的psum/result为NCx，但loop-carried state为Tensor，忙Tile的72次更新含144次state布局搬运、18MiB payload。
+本轮先以非attention复现定位PBQP成本原因，再改同一布局query；未使用attention名称、固定shape或强制NCx旁路。
+根因已由非attention复现及产品前后actual IR确认：静态循环域查询遇到动态域会使整组重复次数失效，低估内层往返；
+同时fill被固定成Tensor，阻止直接初始化所选循环布局。统一PBQP重复成本与fill布局已修正。
+主机尾块进一步暴露descriptor递归拆分丢失已合并inner_bytes，按11号修正并检查独立地址覆盖。
+直接blocked fill还暴露被GEMM完整覆盖的冗余初始化，按10号actual use/alias/full-overwrite证明删除；不能凭零值或psum名字删除。
+
+| 本项覆盖 | 检查与直接下游 |
+| --- | --- |
+| rank3+，1024/1025/1031，F16/BF16输入及原F32累加 | 普通GEMM recurrence和缩放→GEMM，实际state/psum/result布局、Instr/SPM |
+| 静态、多层、外层IV控制内层界、相关上下界、零/一步及未知次数 | 保留初值及循环语义；已知频次不因未知层丢失，不能猜SPM或同步 |
+| 外部Tensor输出、额外consumer及必须转换的不同布局 | 必要外部转换保留，无inner state roundtrip；原GEMM独立psum/result |
+| 当前BF16 attention主块与1031尾块 | fresh no-card、精确GS用途/次数、全量数值/guard、健康普通计时；理论利用率以实际工作量另算 |
+
+本节保留已有profile、各优化点及其验收合同。tail/输出融合、方向选择和causal分段已验收，
+[职责分拆与通用流水](../archive/tile-loop-pipelining.md)也已完成指定范围；当前顺序只由[progress](../progress.md#当前调度)拥有。
+
+循环布局本轮实卡：主块三次3.852/3.845/3.878ms，中位数3.852ms，较已记录4.086ms下降5.7%；
+1031尾块1.330ms，全部数值/guard/完成及正常退出健康。新独立profile Primary 3.897ms，TDMA最大活动0.885470ms，
+CT/NE约1.127309/0.363568ms；A内层布局往返为0，必要psum/result同布局发布仍有72次。
+总GS为1172次而非减少到零，剩余行广播与m复制需按实际use和完整生命周期分析，不从布局名推定可删。
+完整主机回归已通过：529项Transforms，Driver/Conversion/Analysis及24组独立SystemC与public-link smoke；
+91项受影响lit、2项组织检查、canonical完整增量与随后Ninja no-op通过。此循环布局子步骤已闭合；[本轮证据](../../docs/data/board-performance/attention-loop-layout-20260922.json)记录产品身份与中间回退原因。
+
 本节下表的编号仅用于对应原技术合同及历史检查点，不表示这些项目都尚未实现，也不覆盖当前顺序。
-全部仍归 `board-testing`。当前开发版本的累加器转置尚无净收益，不能把6.579ms当作已经优于此前5.983ms。
+全部仍归 `board-testing`。下表制定时的累加器转置版本未有净收益，不能把6.579ms当作已经优于此前5.983ms。
 两者都是历史健康单样本，配置/版本不同；引用记录作比较，不重跑历史包。
 
 **输入、输出和实施边界**：输入为同一BF16 `[1,28,2048,128]` causal source、当前actual IR与profile；
@@ -55,7 +77,7 @@
 候选须实际物化并重新规划SPM，不以估算决定合法性。用户入口保持正式none/search，诊断默认关闭。
 本轮不引入原生Transpose/Nchw2nhwc/Nhwc2nchw、额外safe分支、额外dtype窄化或历史包对跑。
 
-**证据基线**：当前转置state版profile Primary为6.388ms；忙Tile的CT约2.792ms、TDMA约1.699ms、
+**本节历史证据基线**：转置state版profile Primary为6.388ms；忙Tile的CT约2.792ms、TDMA约1.699ms、
 NE约0.363ms。这些来自Trace的引擎活动量可以重叠，不能相加或直接当作可节省的时间。
 该包的真实展开包含72次KV更新、16个query block；以下计数只描述此actual样本，不进入编译器匹配条件。
 

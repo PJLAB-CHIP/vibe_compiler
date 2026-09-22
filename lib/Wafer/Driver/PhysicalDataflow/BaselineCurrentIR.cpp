@@ -473,12 +473,18 @@ ExecutableCompilationResult compileBaselineCurrentIR(
       recordMovementInstrumentation(sharing.movement);
     }
 
+    if (mlir::failed(
+            optimizeCurrentIRStorage(*candidate->module, candidate->relations)))
+      return fail(ExecutableCompilationStatus::CompilerFailure,
+                  "storage-optimization", "common storage optimization failed");
+
     CurrentIRDownstreamStatistics downstream;
     auto downstreamOptions = options.downstream;
     const bool qualifyPipeline =
         options.qualification && options.qualification->pipelineLoads;
     const bool applyPipeline =
-        qualifyPipeline && hasDistanceOneLoadPipeline(*candidate->module);
+        qualifyPipeline &&
+        queryDistanceOneLoadPipelines(*candidate->module).succeeded();
     if (applyPipeline)
       downstreamOptions.distanceOneLoadPipeline = true;
     ExecutableCompilationResult result = compileCurrentIRCandidateToExecutable(

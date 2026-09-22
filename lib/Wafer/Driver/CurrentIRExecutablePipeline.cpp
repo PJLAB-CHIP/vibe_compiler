@@ -143,6 +143,21 @@ collectPhysicalCandidateInventory(mlir::ModuleOp module) {
 
 } // namespace
 
+mlir::LogicalResult
+optimizeCurrentIRStorage(mlir::ModuleOp module,
+                         StructuredMaterializationRelations &relations) {
+  if (!module || mlir::failed(verifyPhysicalTileDataflow(module)) ||
+      mlir::failed(checkStructuredBufferRelationsCurrent(module, relations)))
+    return mlir::failure();
+  mlir::IRRewriter rewriter(module.getContext());
+  preservePrivateScalarBroadcasts(module, rewriter, {});
+  fuseTransposeLayoutMovements(module, rewriter, {});
+  if (mlir::failed(optimizeStorage(module, rewriter, {})))
+    return mlir::failure();
+  rebuildCurrentBufferOwnerRelations(module, relations);
+  return checkStructuredBufferRelationsCurrent(module, relations);
+}
+
 ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     StructuredMaterializationRelations relations, CardId expectedCardId,
@@ -166,14 +181,10 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
 
   PipelinedModuleResult execution;
   if (options.distanceOneLoadPipeline) {
-    if (!options.pipelineChoices.empty())
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "loop-pipelining", "conflicting loop pipelining choices");
     execution =
         materializeDistanceOneLoadPipelines(std::move(module), relations);
   } else {
-    PreparedLoopPipelinesResult prepared = prepareLoopPipelines(
-        *module, options.pipelineChoices, options.pipelineLimits);
+    PreparedLoopPipelinesResult prepared = prepareLoopPipelines(*module, {});
     if (!prepared.succeeded()) {
       const LoopPipeliningFailureKind kind = prepared.failure->kind;
       return fail(kind == LoopPipeliningFailureKind::Indeterminate
@@ -195,20 +206,6 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
                 "loop-pipelining", execution.failure->detail);
   }
   auto &pipelined = *execution.materialized;
-  llvm::DenseSet<mlir::Operation *> pipelineOperations;
-  for (const PipelinedLoop &pipeline : pipelined.pipelines)
-    for (const PipelinedOperation &operation : pipeline.operations)
-      pipelineOperations.insert(operation.operation);
-  mlir::IRRewriter rewriter(pipelined.module->getContext());
-  preservePrivateScalarBroadcasts(*pipelined.module, rewriter,
-                                  pipelineOperations);
-  fuseTransposeLayoutMovements(*pipelined.module, rewriter, pipelineOperations);
-  if (mlir::failed(
-          optimizeStorage(*pipelined.module, rewriter, pipelineOperations)))
-    return fail(ExecutableCompilationStatus::CompilerFailure,
-                "storage-optimization",
-                "storage optimization produced an invalid explicit "
-                "loop-carried destination");
   std::string pipelineFailure;
   if (mlir::failed(verifyPipelinedModule(pipelined, &pipelineFailure)))
     return fail(ExecutableCompilationStatus::CompilerFailure, "loop-pipelining",

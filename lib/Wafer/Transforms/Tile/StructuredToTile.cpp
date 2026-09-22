@@ -1174,6 +1174,30 @@ static mlir::Value findLastFillValueBefore(mlir::Value destination,
   return {};
 }
 
+static void createDestinationFill(mlir::Value destination, mlir::Value value,
+                                  mlir::IRRewriter &rewriter,
+                                  mlir::Location location,
+                                  StructuredToTileStatistics &statistics) {
+  auto type = mlir::cast<mlir::MemRefType>(destination.getType());
+  bool blocked = getWaferMemoryAttr(type).getLayout() != MemLayout::Tensor;
+  mlir::Value filled = destination;
+  // Only an allocation owns the entire encoded footprint, including padding.
+  // A subview or an external buffer retains its exact logical write domain.
+  if (blocked && (!destination.getDefiningOp<mlir::memref::AllocOp>() ||
+                  !type.getLayout().isIdentity()))
+    filled =
+        rewriter.create<mlir::memref::AllocOp>(location, getOwnedType(type));
+  auto domain = blocked ? FillDomainAttr::get(rewriter.getContext(),
+                                              FillDomain::PhysicalFootprint)
+                        : FillDomainAttr{};
+  rewriter.create<ComputeFillOp>(location, filled, value, domain);
+  ++statistics.fills;
+  if (filled != destination) {
+    rewriter.create<MoveCopyIntoOp>(location, filled, destination);
+    ++statistics.passthroughMovements;
+  }
+}
+
 static mlir::LogicalResult
 lowerCapturedFill(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
                   StructuredToTileStatistics &statistics) {
@@ -1182,10 +1206,9 @@ lowerCapturedFill(mlir::linalg::LinalgOp operation, mlir::IRRewriter &rewriter,
   if (!value || !getMemRef(destination))
     return mlir::failure();
   rewriter.setInsertionPoint(operation);
-  rewriter.create<ComputeFillOp>(operation.getLoc(), destination, value,
-                                 FillDomainAttr{});
+  createDestinationFill(destination, value, rewriter, operation.getLoc(),
+                        statistics);
   rewriter.eraseOp(operation);
-  ++statistics.fills;
   return mlir::success();
 }
 
@@ -1322,9 +1345,8 @@ materializeExprMap(ExprValue value, mlir::MemRefType targetShapeType,
       value.buffer.getType() == targetShapeType.getElementType()) {
     auto allocation = rewriter.create<mlir::memref::AllocOp>(
         location, getOwnedType(targetShapeType));
-    rewriter.create<ComputeFillOp>(location, allocation.getResult(),
-                                   value.buffer, FillDomainAttr{});
-    ++statistics.fills;
+    createDestinationFill(allocation.getResult(), value.buffer, rewriter,
+                          location, statistics);
     return ExprValue{
         allocation.getResult(),
         getIdentityMap(rewriter.getContext(), targetShapeType.getRank())};
@@ -1573,11 +1595,10 @@ static mlir::LogicalResult lowerFill(mlir::linalg::LinalgOp operation,
                                      mlir::IRRewriter &rewriter,
                                      StructuredToTileStatistics &statistics) {
   rewriter.setInsertionPoint(operation);
-  rewriter.create<ComputeFillOp>(
-      operation.getLoc(), operation.getDpsInits().front(),
-      operation.getDpsInputs().front(), FillDomainAttr{});
+  createDestinationFill(operation.getDpsInits().front(),
+                        operation.getDpsInputs().front(), rewriter,
+                        operation.getLoc(), statistics);
   rewriter.eraseOp(operation);
-  ++statistics.fills;
   return mlir::success();
 }
 

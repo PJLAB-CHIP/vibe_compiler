@@ -182,7 +182,7 @@ relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
 
 ### Tile循环流水和存储变换的源码粒度
 
-10号循环流水合同按下列职责组织，迁移步骤和当前覆盖见[实施计划](plans/tile-loop-pipelining.md)。
+10号循环流水合同按下列职责组织，迁移及覆盖证据见[验收记录](archive/tile-loop-pipelining.md)。
 这是目标owner边界，不能以本文的文件名代签迁移已经完成；实现状态只由progress拥有。
 
 | 源码职责 | 文件归属 | 依赖边界 |

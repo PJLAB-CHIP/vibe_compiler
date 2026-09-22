@@ -4,8 +4,11 @@
 #include "LoopPipeliningInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -17,6 +20,68 @@ namespace {
 RotatingAllocationMaterializationResult
 rotationFailure(LoopPipeliningFailureKind kind, llvm::StringRef detail) {
   return {{}, LoopPipeliningFailure{kind, {}, detail.str()}};
+}
+
+// A rotating slot must be fully defined within its own iteration before any
+// read. A pre-loop initialization alone only initializes slot0.
+bool hasCompleteIterationDefinition(mlir::Value root, mlir::scf::ForOp loop,
+                                    bool observedAfter) {
+  llvm::SmallVector<mlir::Value> pending{root};
+  llvm::DenseSet<mlir::Value> seen;
+  llvm::SmallVector<mlir::Operation *> uses;
+  llvm::SmallVector<mlir::Operation *> definitions;
+  while (!pending.empty()) {
+    auto value = pending.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    for (auto &use : value.getUses()) {
+      auto *operation = use.getOwner();
+      if (mlir::isa<mlir::memref::DeallocOp>(operation))
+        continue;
+      if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(operation)) {
+        if (!loop->isAncestor(operation) ||
+            !mlir::isMemoryEffectFree(operation))
+          return false;
+        pending.append(operation->getResults().begin(),
+                       operation->getResults().end());
+        continue;
+      }
+      auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+      if (!interface)
+        return false;
+      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
+      interface.getEffectsOnValue(value, effects);
+      if (effects.empty() || llvm::any_of(effects, [](const auto &effect) {
+            return !mlir::isa<mlir::MemoryEffects::Read,
+                              mlir::MemoryEffects::Write>(effect.getEffect());
+          }))
+        return false;
+      if (!loop->isAncestor(operation))
+        continue;
+      uses.push_back(operation);
+      mlir::Value dest;
+      if (auto load = mlir::dyn_cast<StorageLoadOp>(operation))
+        dest = load.getDest();
+      else if (auto fill = mlir::dyn_cast<ComputeFillOp>(operation))
+        dest = fill.getDest();
+      else if (auto fill = mlir::dyn_cast<InstrFillOp>(operation))
+        dest = fill.getDest();
+      else if (auto copy = mlir::dyn_cast<MoveCopyIntoOp>(operation))
+        dest = copy.getDest();
+      if (dest == root && llvm::none_of(effects, [](const auto &effect) {
+            return mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+          }))
+        definitions.push_back(operation);
+    }
+  }
+  mlir::DominanceInfo dominance(loop);
+  return llvm::any_of(definitions, [&](mlir::Operation *definition) {
+    if (observedAfter && definition->getBlock() != loop.getBody())
+      return false;
+    return llvm::all_of(uses, [&](mlir::Operation *use) {
+      return definition == use || dominance.properlyDominates(definition, use);
+    });
+  });
 }
 
 } // namespace
@@ -31,7 +96,7 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
 
   struct PreparedRotation {
     RotatingAllocationBinding binding;
-    uint64_t tripCount = 0;
+    std::optional<uint64_t> tripCount;
     llvm::SmallVector<mlir::Operation *, 8> insideUses;
     llvm::SmallVector<mlir::Operation *, 4> beforeUses;
     llvm::SmallVector<mlir::Operation *, 4> afterUses;
@@ -52,13 +117,15 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
         loop->getParentOfType<TileRegionOp>() != allocationRegion ||
         allocation->getBlock() != loop->getBlock() ||
         !allocation->isBeforeInBlock(loop) || binding.multiplicity < 2 ||
-        !tripCount || *tripCount < binding.multiplicity ||
         !allocation.getDynamicSizes().empty() ||
         !allocation.getSymbolOperands().empty() ||
         !allocations.insert(allocation).second)
-      return rotationFailure(
-          LoopPipeliningFailureKind::BrokenContract,
-          "rotating allocation requires a static pre-loop TileRegion root");
+      return rotationFailure(LoopPipeliningFailureKind::BrokenContract,
+                             "rotating allocation requires a static-shaped "
+                             "pre-loop TileRegion root");
+
+    if (auto failure = checkLoopPipeliningDomain(loop, binding.multiplicity))
+      return {{}, std::move(failure)};
 
     const bool hasRelation =
         llvm::any_of(relations.buffers, [&](const auto &entry) {
@@ -69,10 +136,11 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
           LoopPipeliningFailureKind::BrokenContract,
           "rotating allocation has no current typed owner relation");
 
-    PreparedRotation rotation{binding, *tripCount};
+    PreparedRotation rotation{binding, tripCount};
     for (mlir::Operation *user : allocation.getResult().getUsers()) {
       if (auto dealloc = mlir::dyn_cast<mlir::memref::DeallocOp>(user)) {
-        if (rotation.deallocation)
+        if (rotation.deallocation || dealloc->getBlock() != loop->getBlock() ||
+            !loop->isBeforeInBlock(dealloc))
           return rotationFailure(
               LoopPipeliningFailureKind::BrokenContract,
               "rotating allocation has several deallocations");
@@ -90,6 +158,11 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
       (user->isBeforeInBlock(loop) ? rotation.beforeUses : rotation.afterUses)
           .push_back(user);
     }
+    if (!hasCompleteIterationDefinition(allocation, loop,
+                                        !rotation.afterUses.empty()))
+      return rotationFailure(LoopPipeliningFailureKind::Unsupported,
+                             "rotating root lacks a complete iteration-local "
+                             "definition or has an escaping alias");
     prepared.push_back(std::move(rotation));
   }
 
@@ -111,25 +184,70 @@ RotatingAllocationMaterializationResult materializeRotatingAllocations(
     }
 
     mlir::OpBuilder loopBuilder = mlir::OpBuilder::atBlockBegin(loop.getBody());
+    auto constant = [&](mlir::OpBuilder &builder, int64_t value) {
+      return builder.create<mlir::arith::ConstantOp>(
+          loop.getLoc(),
+          builder.getIntegerAttr(loop.getInductionVar().getType(), value));
+    };
     mlir::Value delta = loopBuilder.create<mlir::arith::SubIOp>(
         loop.getLoc(), loop.getInductionVar(), loop.getLowerBound());
     mlir::Value iteration = loopBuilder.create<mlir::arith::DivUIOp>(
         loop.getLoc(), delta, loop.getStep());
-    mlir::Value divisor = loopBuilder.create<mlir::arith::ConstantIndexOp>(
-        loop.getLoc(), rotation.binding.multiplicity);
+    mlir::Value divisor = constant(loopBuilder, rotation.binding.multiplicity);
     mlir::Value slotIndex = loopBuilder.create<mlir::arith::RemUIOp>(
         loop.getLoc(), iteration, divisor);
     mlir::Value selected = slots.front();
     for (uint32_t index = 1; index < rotation.binding.multiplicity; ++index) {
-      mlir::Value expected = loopBuilder.create<mlir::arith::ConstantIndexOp>(
-          loop.getLoc(), index);
+      mlir::Value expected = constant(loopBuilder, index);
       mlir::Value condition = loopBuilder.create<mlir::arith::CmpIOp>(
           loop.getLoc(), mlir::arith::CmpIPredicate::eq, slotIndex, expected);
       selected = loopBuilder.create<mlir::arith::SelectOp>(
           loop.getLoc(), condition, slots[index], selected);
     }
-    mlir::Value finalSlot =
-        slots[(rotation.tripCount - 1) % rotation.binding.multiplicity];
+    mlir::Value finalSlot = slots.front();
+    if (!rotation.afterUses.empty()) {
+      if (rotation.tripCount) {
+        if (*rotation.tripCount)
+          finalSlot =
+              slots[(*rotation.tripCount - 1) % rotation.binding.multiplicity];
+      } else {
+        // Last valid ordinal is floor((upper - lower - 1) / step), evaluated
+        // only on the nonempty path. Zero iterations preserve original slot0.
+        mlir::OpBuilder after(loop);
+        after.setInsertionPointAfter(loop);
+        auto nonempty = after.create<mlir::arith::CmpIOp>(
+            loop.getLoc(), mlir::arith::CmpIPredicate::slt,
+            loop.getLowerBound(), loop.getUpperBound());
+        auto last = after.create<mlir::scf::IfOp>(
+            loop.getLoc(), mlir::TypeRange{allocation.getType()}, nonempty,
+            /*withElseRegion=*/true);
+        auto chosen =
+            mlir::OpBuilder::atBlockBegin(&last.getThenRegion().front());
+        auto one = constant(chosen, 1);
+        auto span = chosen.create<mlir::arith::SubIOp>(
+            loop.getLoc(), loop.getUpperBound(), loop.getLowerBound());
+        auto distance =
+            chosen.create<mlir::arith::SubIOp>(loop.getLoc(), span, one);
+        auto ordinal = chosen.create<mlir::arith::DivUIOp>(
+            loop.getLoc(), distance, loop.getStep());
+        auto count = constant(chosen, rotation.binding.multiplicity);
+        auto index =
+            chosen.create<mlir::arith::RemUIOp>(loop.getLoc(), ordinal, count);
+        mlir::Value value = slots.front();
+        for (uint32_t slot = 1; slot < rotation.binding.multiplicity; ++slot) {
+          auto number = constant(chosen, slot);
+          auto matches = chosen.create<mlir::arith::CmpIOp>(
+              loop.getLoc(), mlir::arith::CmpIPredicate::eq, index, number);
+          value = chosen.create<mlir::arith::SelectOp>(loop.getLoc(), matches,
+                                                       slots[slot], value);
+        }
+        chosen.create<mlir::scf::YieldOp>(loop.getLoc(), value);
+        auto empty =
+            mlir::OpBuilder::atBlockBegin(&last.getElseRegion().front());
+        empty.create<mlir::scf::YieldOp>(loop.getLoc(), slots.front());
+        finalSlot = last.getResult(0);
+      }
+    }
     auto replace = [&](llvm::ArrayRef<mlir::Operation *> users,
                        mlir::Value replacement) {
       for (mlir::Operation *user : users)

@@ -3,8 +3,11 @@
 #include "Wafer/Transforms/Tile/LoadPipelining.h"
 #include "LoopPipeliningInternal.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Transforms/Tile/RotatingBuffers.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -13,6 +16,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <functional>
 #include <utility>
 
 namespace wafer::compiler::detail {
@@ -31,8 +35,7 @@ bool collectLoadDependencies(mlir::Value value, mlir::scf::ForOp loop,
   mlir::Operation *definition = value.getDefiningOp();
   if (!definition || !loop->isAncestor(definition))
     return true;
-  if (definition->getBlock() != loop.getBody() ||
-      !mlir::isMemoryEffectFree(definition))
+  if (definition->getNumRegions() || !mlir::isMemoryEffectFree(definition))
     return false;
   if (!early.insert(definition).second)
     return true;
@@ -41,24 +44,25 @@ bool collectLoadDependencies(mlir::Value value, mlir::scf::ForOp loop,
   });
 }
 
-bool hasOnlyPostLoadReads(mlir::Value value, StorageLoadOp load,
-                          mlir::scf::ForOp loop,
-                          llvm::DenseSet<mlir::Value> &visited) {
+bool hasIterationLocalUses(mlir::Value value, StorageLoadOp load,
+                           mlir::scf::ForOp loop,
+                           llvm::DenseSet<mlir::Value> &visited) {
   if (!visited.insert(value).second)
     return true;
   for (mlir::OpOperand &use : value.getUses()) {
     mlir::Operation *user = use.getOwner();
     if (user == load && use.getOperandNumber() == 1)
       continue;
-    if (user->getBlock() != loop.getBody())
+    if (!loop->isAncestor(user))
       return false;
     if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
       if (view.getViewSource() != value || user->getNumResults() != 1 ||
-          !hasOnlyPostLoadReads(user->getResult(0), load, loop, visited))
+          !hasIterationLocalUses(user->getResult(0), load, loop, visited))
         return false;
       continue;
     }
-    if (!load->isBeforeInBlock(user))
+    mlir::DominanceInfo dominance(loop);
+    if (!dominance.properlyDominates(load, user))
       return false;
     auto interface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(user);
     if (!interface)
@@ -66,50 +70,153 @@ bool hasOnlyPostLoadReads(mlir::Value value, StorageLoadOp load,
     llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 4> effects;
     interface.getEffectsOnValue(value, effects);
     if (effects.empty() || llvm::any_of(effects, [](const auto &effect) {
-          return !mlir::isa<mlir::MemoryEffects::Read>(effect.getEffect());
+          return !mlir::isa<mlir::MemoryEffects::Read,
+                            mlir::MemoryEffects::Write>(effect.getEffect());
         }))
       return false;
   }
   return true;
 }
 
+bool collectConditionalDependencies(
+    StorageLoadOp load, mlir::scf::ForOp loop,
+    llvm::DenseSet<mlir::Operation *> &dependencies) {
+  for (auto *parent = load->getParentOp(); parent != loop;
+       parent = parent->getParentOp()) {
+    auto conditional = mlir::dyn_cast<mlir::scf::IfOp>(parent);
+    if (!conditional || !collectLoadDependencies(conditional.getCondition(),
+                                                 loop, dependencies))
+      return false;
+  }
+  return true;
+}
+
+// Recreate only the existing conditional scopes and pure address dependencies.
+// Computation stays in its original branch; moving the original load preserves
+// the actual buffer-owner relation. The mapping lives only during this rewrite.
+mlir::scf::IfOp extractPrefetchScope(LoadPipeline &pipeline,
+                                     mlir::IRRewriter &rewriter,
+                                     llvm::DenseSet<mlir::Operation *> &early) {
+  early.clear();
+  for (auto load : pipeline.loads)
+    if (!collectLoadDependencies(load.getDest(), pipeline.loop, early))
+      return {};
+  llvm::SmallVector<mlir::Operation *> address;
+  for (auto &operation : pipeline.loop.getBody()->without_terminator())
+    if (early.contains(&operation))
+      address.push_back(&operation);
+  for (auto *operation : llvm::reverse(address))
+    rewriter.moveOpBefore(operation, pipeline.loop.getBody(),
+                          pipeline.loop.getBody()->begin());
+  rewriter.setInsertionPoint(pipeline.loop);
+  auto always =
+      rewriter.create<mlir::arith::ConstantIntOp>(pipeline.loop.getLoc(), 1, 1);
+  if (address.empty())
+    rewriter.setInsertionPointToStart(pipeline.loop.getBody());
+  else
+    rewriter.setInsertionPointAfter(address.back());
+  auto prefetch = rewriter.create<mlir::scf::IfOp>(
+      pipeline.loop.getLoc(), always, /*withElseRegion=*/false);
+  mlir::IRMapping mapping;
+  for (auto load : pipeline.loads)
+    mapping.map(load.getDest(), load.getDest());
+  llvm::DenseMap<mlir::Block *, mlir::Block *> blocks;
+  blocks[pipeline.loop.getBody()] = &prefetch.getThenRegion().front();
+  llvm::SmallVector<mlir::Operation *> copied;
+  std::function<mlir::Value(mlir::Value)> cloneValue;
+  std::function<mlir::Block *(mlir::Block *)> cloneBlock;
+  cloneBlock = [&](mlir::Block *block) -> mlir::Block * {
+    auto known = blocks.find(block);
+    if (known != blocks.end())
+      return known->second;
+    auto original = mlir::cast<mlir::scf::IfOp>(block->getParentOp());
+    auto *parent = cloneBlock(original->getBlock());
+    auto condition = cloneValue(original.getCondition());
+    rewriter.setInsertionPoint(parent->getTerminator());
+    auto scope = rewriter.create<mlir::scf::IfOp>(
+        original.getLoc(), condition, !original.getElseRegion().empty());
+    blocks[&original.getThenRegion().front()] = &scope.getThenRegion().front();
+    if (!original.getElseRegion().empty())
+      blocks[&original.getElseRegion().front()] =
+          &scope.getElseRegion().front();
+    return blocks.lookup(block);
+  };
+  cloneValue = [&](mlir::Value value) -> mlir::Value {
+    if (auto known = mapping.lookupOrNull(value))
+      return known;
+    auto *definition = value.getDefiningOp();
+    if (!definition || !pipeline.loop->isAncestor(definition))
+      return value;
+    for (auto operand : definition->getOperands())
+      mapping.map(operand, cloneValue(operand));
+    auto *block = cloneBlock(definition->getBlock());
+    auto scopes = block->getOps<mlir::scf::IfOp>();
+    if (scopes.empty())
+      rewriter.setInsertionPoint(block->getTerminator());
+    else
+      rewriter.setInsertionPoint(*scopes.begin());
+    rewriter.clone(*definition, mapping);
+    copied.push_back(definition);
+    return mapping.lookup(value);
+  };
+  for (auto load : pipeline.loads) {
+    auto source = cloneValue(load.getSource());
+    auto *block = cloneBlock(load->getBlock());
+    rewriter.modifyOpInPlace(load,
+                             [&] { load.getSourceMutable().set(source); });
+    rewriter.moveOpBefore(load, block->getTerminator());
+  }
+  for (auto *operation : llvm::reverse(copied))
+    if (operation->use_empty() && mlir::isMemoryEffectFree(operation))
+      rewriter.eraseOp(operation);
+  early.insert(prefetch);
+  return prefetch;
+}
+
 llvm::SmallVector<LoadPipeline, 4> findLoadPipelines(mlir::ModuleOp module) {
+  support::ScopedCompileTimingSpan timing("analysis", "load-pipelining",
+                                          "current-loops");
   llvm::SmallVector<LoadPipeline, 4> pipelines;
   module.walk([&](mlir::scf::ForOp loop) {
+    support::addCompileCounter("load-pipelining", "queried-loops", 1);
     auto tripCount = getStaticTripCount(loop);
-    if (!loop->getParentOfType<TileRegionOp>() || !tripCount ||
-        *tripCount < 2 ||
-        llvm::any_of(
-            loop.getBody()->without_terminator(),
-            [](auto &operation) { return operation.getNumRegions() != 0; }))
+    if (!loop->getParentOfType<TileRegionOp>() ||
+        (tripCount && *tripCount == 0) || checkLoopPipeliningDomain(loop, 2))
       return;
     // This construction pipelines one local loop. Peeling a cross-Tile
     // protocol requires a joint transformation of every participant; cloning
     // its messages locally cannot preserve the existing completion identity.
     for (auto &operation : loop.getBody()->without_terminator()) {
-      auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
+      auto effects = mlir::getEffectsRecursively(&operation);
       if (!effects)
         return;
-      llvm::SmallVector<mlir::MemoryEffects::EffectInstance> instances;
-      effects.getEffects(instances);
-      if (llvm::any_of(instances, [](const auto &effect) {
+      if (llvm::any_of(*effects, [](const auto &effect) {
             return effect.getResource() == WaferCommunicationResource::get() ||
                    effect.getResource() == WaferSyncResource::get();
           }))
         return;
     }
+    // The post-order walk discovers inner candidates first. Do not bind an
+    // overlapping outer transform to handles that the inner rewrite replaces.
+    if (llvm::any_of(pipelines, [&](const LoadPipeline &selected) {
+          return loop->isAncestor(selected.loop);
+        }))
+      return;
     LoadPipeline pipeline{loop};
-    for (StorageLoadOp load : loop.getBody()->getOps<StorageLoadOp>()) {
+    llvm::SmallVector<StorageLoadOp> loads;
+    loop.walk([&](StorageLoadOp load) { loads.push_back(load); });
+    for (StorageLoadOp load : loads) {
       auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
-      if (!allocation || allocation->getBlock() != loop.getBody() ||
+      if (!allocation || allocation->getBlock() != load->getBlock() ||
           allocation.getResult().hasOneUse() ||
           !allocation.getDynamicSizes().empty() ||
           !allocation.getSymbolOperands().empty())
         continue;
       llvm::DenseSet<mlir::Value> visited;
       llvm::DenseSet<mlir::Operation *> dependencies;
-      if (!hasOnlyPostLoadReads(allocation, load, loop, visited) ||
-          !collectLoadDependencies(load.getSource(), loop, dependencies))
+      if (!hasIterationLocalUses(allocation, load, loop, visited) ||
+          !collectLoadDependencies(load.getSource(), loop, dependencies) ||
+          !collectConditionalDependencies(load, loop, dependencies))
         continue;
       pipeline.loads.push_back(load);
       pipeline.allocations.push_back(allocation);
@@ -122,22 +229,31 @@ llvm::SmallVector<LoadPipeline, 4> findLoadPipelines(mlir::ModuleOp module) {
 
 } // namespace
 
-bool hasDistanceOneLoadPipeline(mlir::ModuleOp module) {
-  return module && !findLoadPipelines(module).empty();
-}
-
-llvm::SmallVector<mlir::scf::ForOp, 4>
-getDistanceOneLoadPipelineLoops(mlir::ModuleOp module) {
-  llvm::SmallVector<mlir::scf::ForOp, 4> loops;
-  if (module)
-    for (auto &pipeline : findLoadPipelines(module))
-      loops.push_back(pipeline.loop);
-  return loops;
+LoadPipelineQueryResult queryDistanceOneLoadPipelines(mlir::ModuleOp module) {
+  LoadPipelineQueryResult result;
+  if (!module) {
+    result.failure = LoopPipeliningFailure{
+        LoopPipeliningFailureKind::BrokenContract,
+        {},
+        "load pipeline query requires current physical IR"};
+    return result;
+  }
+  for (auto &pipeline : findLoadPipelines(module))
+    result.loops.push_back(pipeline.loop);
+  if (result.loops.empty())
+    result.failure =
+        LoopPipeliningFailure{LoopPipeliningFailureKind::Unsupported,
+                              {},
+                              "no load has a bounded domain, movable address "
+                              "and complete local lifetime"};
+  return result;
 }
 
 PipelinedModuleResult materializeDistanceOneLoadPipelines(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     StructuredMaterializationRelations &relations) {
+  support::ScopedCompileTimingSpan timing("transformation", "load-pipelining",
+                                          "materialize");
   if (!module || mlir::failed(mlir::verify(*module)))
     return materializationFailure(LoopPipeliningFailureKind::BrokenContract,
                                   "load pipeline requires verified current IR");
@@ -200,6 +316,17 @@ PipelinedModuleResult materializeDistanceOneLoadPipelines(
           return materializationFailure(
               LoopPipeliningFailureKind::CompilerBug,
               "load pipeline rotation changed an address dependency");
+    }
+    auto tripCount = getStaticTripCount(pipeline.loop);
+    if (!tripCount || *tripCount < 2 ||
+        llvm::any_of(
+            pipeline.loads,
+            [&](StorageLoadOp load) {
+              return load->getBlock() != pipeline.loop.getBody();
+            })) {
+      if (!extractPrefetchScope(pipeline, rewriter, early))
+        return materializationFailure(LoopPipeliningFailureKind::CompilerBug,
+                                      "prefetch scope lost a prepared address");
     }
     TilePipelineChoice choice;
     choice.loop = pipeline.loop;

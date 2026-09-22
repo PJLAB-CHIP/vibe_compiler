@@ -1,0 +1,915 @@
+{
+  "date": "2026-09-22",
+  "scope": "通用动态/条件循环流水与K/V接入；循环布局修复前的独立验收",
+  "artifacts": "/data/vibe_compiler-validation/attention-closure-20260922",
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "measurements": {
+    "pipeline-spaces": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4141000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4086000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      },
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4077000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ],
+    "pipeline-tail": [
+      {
+        "audit": {
+          "case": "attention-prefill-tail-1031",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "bae36497598936e097a98810062520c6f44fdc0c22b9939167668af46e3ed734",
+          "comparison_passed": true,
+          "memory_guard_bytes": 19456,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "a1ae96c6aa73ba2145d196792400bfb793601ec619e0e06b06a9e938e20e25db",
+            "card_00_user_input_1.bf16.raw": "da0bbaca66ec4c24804afd8a579730ed8dcb005b21c42d3059a7589d23581e90",
+            "card_00_user_input_2.bf16.raw": "50760732f684a00af54b840d9df76045fd5b95df47eefa5f049329f9373d42db"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                1,
+                1031,
+                64
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 65984,
+              "max_abs_error": 0.0078125,
+              "cosine_similarity": 0.9999979316708467,
+              "relative_l2_error": 0.002039950444697165,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 5.53878649938707e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=1313000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ],
+    "pipeline-qualified": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "844dbc5452f861c41e8c41ce49eb9193b48b35f9f6b6a62b698e25f0b6f5589f",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=6114000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ],
+    "pipeline-composed-qualified": [
+      {
+        "audit": {
+          "case": "attention-prefill-28-heads-2048",
+          "step": 1,
+          "policy": "search",
+          "search_mode": null,
+          "search_width": null,
+          "search_trials": null,
+          "manifest_sha256": "f4d7a7955b610b3cb8387f8a35692a888667833687ea35b92406009e09984c18",
+          "comparison_passed": true,
+          "memory_guard_bytes": 10752,
+          "comparison": {
+            "rtol": 0.006,
+            "atol": 0.008,
+            "equal_nan": false,
+            "min_cosine": 0.9999,
+            "max_relative_l2": 0.01
+          },
+          "inputs": {
+            "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+            "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+            "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+          },
+          "outputs": [
+            {
+              "shape": [
+                1,
+                28,
+                2048,
+                128
+              ],
+              "dtype": "torch.bfloat16",
+              "elements": 7340032,
+              "max_abs_error": 0.015625,
+              "cosine_similarity": 0.9999981330706693,
+              "relative_l2_error": 0.0019323393761810942,
+              "elementwise_mismatches": 0,
+              "mean_abs_error": 3.965543557693617e-05
+            }
+          ],
+          "timing": [
+            "board_timing: kind=tx-stream-events device_elapsed_ns=4105000"
+          ]
+        },
+        "health": {
+          "passed": true,
+          "returncode": 0,
+          "alarms": [],
+          "problems": [],
+          "host_register_capture": false
+        }
+      }
+    ]
+  },
+  "profiles": {
+    "pipeline-selected-profile": {
+      "primary": {
+        "completion_observation_fraction": 0.0018059152242060788,
+        "completion_observation_resolution_ns": 7950,
+        "device_elapsed_ns": 4083000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": true,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 4402200,
+        "host_non_submit_envelope_ns": 4270987,
+        "host_submit_ns": 131213,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "trace_capture": {
+        "captured_events": 77280,
+        "full_execution": true,
+        "scope": "event-prefix",
+        "total_events": 77280
+      },
+      "valid": true,
+      "validity": {
+        "clock_alignment": false,
+        "cost_accounting": true,
+        "environment": true,
+        "full_trace": true,
+        "host_completion_resolution": true,
+        "measurement_basis": true,
+        "output_equivalence": true,
+        "pmu": true,
+        "pmu_restore": true,
+        "profile_instrumentation": true,
+        "program_contract": true,
+        "semantic_correctness": null,
+        "trace": true
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 986449.0,
+            "engine": "CT",
+            "maximum_per_tile_ns": 1127325,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 563821,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 15783184
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 318024.0,
+            "engine": "NE",
+            "maximum_per_tile_ns": 363456,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 181728,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 5088384
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 299773.625,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 370790,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 177320,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 4796378
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 24404.875,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 31962,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 13829,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 390478
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 905907.625,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 1016730,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 576034,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 14494522
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 2534559.125,
+          "maximum_per_tile_total_work_ns": 2908155,
+          "minimum_per_tile_total_work_ns": 1512748,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 40552946
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      },
+      "tile0_entry_cycles": 6693278,
+      "tile0_partition_cycles": {
+        "ncc-submit": 674772,
+        "site-control": 5269663,
+        "entry-epilogue": 2753,
+        "completion-wait-proxy": 2183,
+        "entry-prologue": 2129,
+        "between-site-gap": 741778
+      },
+      "tile0_command_counts": {
+        "wafer_tx81_rdma": 161,
+        "wafer_tx81_gather_scatter": 1156,
+        "wafer_tx81_memset": 107,
+        "wafer_tx81_gemm_oriented": 144,
+        "wafer_tx81_elementwise_mul": 248,
+        "wafer_tx81_reduce_max": 72,
+        "wafer_tx81_elementwise_max": 72,
+        "wafer_tx81_elementwise_eq": 88,
+        "wafer_tx81_mask_move": 88,
+        "wafer_tx81_elementwise_sub": 144,
+        "wafer_tx81_elementwise_exp_lp": 144,
+        "wafer_tx81_reduce_sum": 72,
+        "wafer_tx81_elementwise_add": 88,
+        "wafer_tx81_convert_fp32_bf16": 88,
+        "wafer_tx81_elementwise_recip": 16,
+        "wafer_tx81_wdma": 16,
+        "wafer_tx81_ncc_join": 1
+      },
+      "tile0_submit_cycles": {
+        "wafer_tx81_memset": 140834,
+        "wafer_tx81_gemm_oriented": 55929,
+        "wafer_tx81_gather_scatter": 209056,
+        "wafer_tx81_rdma": 22152,
+        "wafer_tx81_wdma": 3743,
+        "wafer_tx81_elementwise_sub": 32945,
+        "wafer_tx81_elementwise_eq": 19346,
+        "wafer_tx81_convert_fp32_bf16": 20386,
+        "wafer_tx81_mask_move": 19509,
+        "wafer_tx81_elementwise_exp_lp": 32621,
+        "wafer_tx81_elementwise_mul": 53676,
+        "wafer_tx81_reduce_max": 15564,
+        "wafer_tx81_elementwise_max": 13575,
+        "wafer_tx81_elementwise_add": 17038,
+        "wafer_tx81_reduce_sum": 14538,
+        "wafer_tx81_elementwise_recip": 3860
+      }
+    },
+    "pipeline-qualified-profile": {
+      "primary": {
+        "completion_observation_fraction": 0.002682120502551028,
+        "completion_observation_resolution_ns": 17800,
+        "device_elapsed_ns": 6243000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": false,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 6636540,
+        "host_non_submit_envelope_ns": 6517388,
+        "host_submit_ns": 119152,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "trace_capture": {
+        "captured_events": 82800,
+        "full_execution": true,
+        "scope": "event-prefix",
+        "total_events": 82800
+      },
+      "valid": true,
+      "validity": {
+        "clock_alignment": false,
+        "cost_accounting": true,
+        "environment": true,
+        "full_trace": true,
+        "host_completion_resolution": false,
+        "measurement_basis": true,
+        "output_equivalence": true,
+        "pmu": true,
+        "pmu_restore": true,
+        "profile_instrumentation": true,
+        "program_contract": true,
+        "semantic_correctness": null,
+        "trace": true
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 990376.625,
+            "engine": "CT",
+            "maximum_per_tile_ns": 1131898,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 565928,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 15846026
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 318052.4375,
+            "engine": "NE",
+            "maximum_per_tile_ns": 363495,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 181744,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 5088839
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 401274.75,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 484856,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 240023,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 6420396
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 23955.4375,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 29808,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 13834,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 383287
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 2732009.0625,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 3122845,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 1561104,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 43712145
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 4465668.3125,
+          "maximum_per_tile_total_work_ns": 5132200,
+          "minimum_per_tile_total_work_ns": 2564649,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 71450693
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      },
+      "tile0_entry_cycles": 9012207,
+      "tile0_submit_cycles": {
+        "wafer_tx81_memset": 1911237,
+        "wafer_tx81_gemm_oriented": 59092,
+        "wafer_tx81_rdma": 22047,
+        "wafer_tx81_gather_scatter": 229024,
+        "wafer_tx81_wdma": 3840,
+        "wafer_tx81_elementwise_mul": 53267,
+        "wafer_tx81_elementwise_exp_lp": 35951,
+        "wafer_tx81_elementwise_add": 18836,
+        "wafer_tx81_mask_move": 18266,
+        "wafer_tx81_elementwise_eq": 19973,
+        "wafer_tx81_reduce_sum": 15615,
+        "wafer_tx81_elementwise_max": 14954,
+        "wafer_tx81_elementwise_sub": 32553,
+        "wafer_tx81_convert_fp32_bf16": 18155,
+        "wafer_tx81_reduce_max": 15743,
+        "wafer_tx81_elementwise_recip": 3206
+      },
+      "tile0_command_counts": {
+        "wafer_tx81_rdma": 176,
+        "wafer_tx81_memset": 152,
+        "wafer_tx81_gather_scatter": 1272,
+        "wafer_tx81_gemm_oriented": 144,
+        "wafer_tx81_elementwise_mul": 248,
+        "wafer_tx81_reduce_max": 72,
+        "wafer_tx81_elementwise_max": 72,
+        "wafer_tx81_elementwise_eq": 88,
+        "wafer_tx81_mask_move": 88,
+        "wafer_tx81_elementwise_sub": 144,
+        "wafer_tx81_elementwise_exp_lp": 144,
+        "wafer_tx81_reduce_sum": 72,
+        "wafer_tx81_elementwise_add": 88,
+        "wafer_tx81_convert_fp32_bf16": 88,
+        "wafer_tx81_elementwise_recip": 16,
+        "wafer_tx81_wdma": 16,
+        "wafer_tx81_ncc_join": 1
+      },
+      "tile0_partition_cycles": {
+        "site-control": 5727573,
+        "ncc-submit": 2471759,
+        "between-site-gap": 805075,
+        "entry-prologue": 3130,
+        "entry-epilogue": 2447,
+        "completion-wait-proxy": 2223
+      }
+    },
+    "pipeline-composed-qualified-profile": {
+      "primary": {
+        "completion_observation_fraction": 0.0038650725507014343,
+        "completion_observation_resolution_ns": 17565,
+        "device_elapsed_ns": 4150000,
+        "device_elapsed_quantized_zero": false,
+        "device_timer_kind": "tx-stream-events",
+        "host_completion_high_resolution": false,
+        "host_envelope_available": true,
+        "host_launch_to_completion_ns": 4544546,
+        "host_non_submit_envelope_ns": 4429296,
+        "host_submit_ns": 115250,
+        "host_submit_quantized_zero": false,
+        "includes_device_control_wait_and_scheduling": true,
+        "includes_host_completion_polling": false,
+        "includes_host_submit": false,
+        "includes_trace_instrumentation": false,
+        "is_engine_only": false,
+        "measurement_kind": "tx-stream-kernel-launch-to-completion-envelope",
+        "qualified": true,
+        "sample_id": "primary",
+        "sample_index": 0,
+        "scope": "primary-launch-to-stream-completion",
+        "status": "Measured"
+      },
+      "trace_capture": {
+        "captured_events": 77280,
+        "full_execution": true,
+        "scope": "event-prefix",
+        "total_events": 77280
+      },
+      "valid": true,
+      "validity": {
+        "clock_alignment": false,
+        "cost_accounting": true,
+        "environment": true,
+        "full_trace": true,
+        "host_completion_resolution": false,
+        "measurement_basis": true,
+        "output_equivalence": true,
+        "pmu": true,
+        "pmu_restore": true,
+        "profile_instrumentation": true,
+        "program_contract": true,
+        "semantic_correctness": null,
+        "trace": true
+      },
+      "engine_active_time": {
+        "additive_to_kernel_launch_envelope": false,
+        "by_engine": [
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 986463.0,
+            "engine": "CT",
+            "maximum_per_tile_ns": 1127341,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 563829,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 15783408
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 318024.0,
+            "engine": "NE",
+            "maximum_per_tile_ns": 363456,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 181728,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 5088384
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 320962.75,
+            "engine": "RDMA",
+            "maximum_per_tile_ns": 411671,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 209607,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 5135404
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 26669.25,
+            "engine": "WDMA",
+            "maximum_per_tile_ns": 35299,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 17798,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 426708
+          },
+          {
+            "active_tile_count": 16,
+            "available_tile_count": 16,
+            "average_per_tile_ns": 906007.4375,
+            "engine": "TDMA",
+            "maximum_per_tile_ns": 1016770,
+            "measurement_kind": "trace-pmu-engine-active-time",
+            "minimum_per_tile_ns": 576054,
+            "status": "Measured",
+            "sum_across_tiles_work_ns": 14496119
+          }
+        ],
+        "card_wide_engine_elapsed_ns": null,
+        "card_wide_engine_elapsed_reason": "per-tile engines may overlap and have no qualified global activity start/end alignment",
+        "card_wide_engine_elapsed_status": "Unavailable",
+        "cross_tile_sum_role": "work-volume-not-wall-time",
+        "measurement_kind": "trace-pmu-engine-active-time",
+        "measurement_run": "trace-diagnostic",
+        "per_tile_work_volume": {
+          "available_tile_count": 16,
+          "average_per_tile_total_work_ns": 2558126.4375,
+          "maximum_per_tile_total_work_ns": 2954537,
+          "minimum_per_tile_total_work_ns": 1549048,
+          "status": "Measured",
+          "sum_across_tiles_work_ns": 40930023
+        },
+        "relation_to_primary": "separate-run-proxy",
+        "scope": "per-tile-per-ncc-engine",
+        "source_capture": "trace",
+        "unit": "ns"
+      },
+      "tile0_entry_cycles": 6752641,
+      "tile0_partition_cycles": {
+        "ncc-submit": 678820,
+        "site-control": 5305700,
+        "completion-wait-proxy": 2246,
+        "between-site-gap": 761662,
+        "entry-epilogue": 2161,
+        "entry-prologue": 2052
+      },
+      "tile0_command_counts": {
+        "wafer_tx81_rdma": 161,
+        "wafer_tx81_gather_scatter": 1156,
+        "wafer_tx81_memset": 107,
+        "wafer_tx81_gemm_oriented": 144,
+        "wafer_tx81_elementwise_mul": 248,
+        "wafer_tx81_reduce_max": 72,
+        "wafer_tx81_elementwise_max": 72,
+        "wafer_tx81_elementwise_eq": 88,
+        "wafer_tx81_mask_move": 88,
+        "wafer_tx81_elementwise_sub": 144,
+        "wafer_tx81_elementwise_exp_lp": 144,
+        "wafer_tx81_reduce_sum": 72,
+        "wafer_tx81_elementwise_add": 88,
+        "wafer_tx81_convert_fp32_bf16": 88,
+        "wafer_tx81_elementwise_recip": 16,
+        "wafer_tx81_wdma": 16,
+        "wafer_tx81_ncc_join": 1
+      },
+      "tile0_submit_cycles": {
+        "wafer_tx81_memset": 138852,
+        "wafer_tx81_gemm_oriented": 56477,
+        "wafer_tx81_gather_scatter": 209176,
+        "wafer_tx81_rdma": 19737,
+        "wafer_tx81_wdma": 3737,
+        "wafer_tx81_elementwise_eq": 20182,
+        "wafer_tx81_elementwise_add": 19388,
+        "wafer_tx81_convert_fp32_bf16": 21135,
+        "wafer_tx81_elementwise_mul": 58567,
+        "wafer_tx81_reduce_sum": 14712,
+        "wafer_tx81_elementwise_max": 13844,
+        "wafer_tx81_elementwise_exp_lp": 33226,
+        "wafer_tx81_reduce_max": 15631,
+        "wafer_tx81_elementwise_sub": 32892,
+        "wafer_tx81_mask_move": 18019,
+        "wafer_tx81_elementwise_recip": 3245
+      }
+    }
+  },
+  "host_evidence": [
+    "pipeline-composed-host.log",
+    "pipeline-index-type-unit.log",
+    "pipeline-composed-analysis.log",
+    "pipeline-composed-lit.log",
+    "pipeline-range-downstream-lit.log",
+    "pipeline-index-type-build.log"
+  ],
+  "final_product_identity": {
+    "pipeline-final": {
+      "tile-dataflow": {
+        "files": 16,
+        "equal": true
+      },
+      "instruction": {
+        "files": 16,
+        "equal": true
+      },
+      "target-llvm": {
+        "files": 16,
+        "equal": true
+      },
+      "modules/module_00000.so": {
+        "equal": true,
+        "sha256": "858f293ca5c82ee76c752f2904a71a318eddc2438d588c95309c718f4f0c56aa"
+      },
+      "data/program-data.bin": {
+        "equal": true,
+        "sha256": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b"
+      },
+      "manifest.json": {
+        "equal": true,
+        "sha256": "a4e3bed8e2ae605b0a1262287e6e961e12855b3c7a2056d4db9652f984f8b33a"
+      }
+    },
+    "pipeline-final-tail": {
+      "tile-dataflow": {
+        "files": 16,
+        "equal": false
+      },
+      "instruction": {
+        "files": 16,
+        "equal": false
+      },
+      "target-llvm": {
+        "files": 16,
+        "equal": true
+      },
+      "modules/module_00000.so": {
+        "equal": true,
+        "sha256": "d125a813f6bfee8af8ed5e05826f6380b9e3885c98cb9ec2382fdb5cc2d53657"
+      },
+      "data/program-data.bin": {
+        "equal": true,
+        "sha256": "4920e661bf809268810448bbc00c1428eaf403ca29861185c4186eedd4e8fa17"
+      },
+      "manifest.json": {
+        "equal": true,
+        "sha256": "bae36497598936e097a98810062520c6f44fdc0c22b9939167668af46e3ed734"
+      }
+    }
+  },
+  "limits": [
+    "无已确认的流水净收益；正式winner仍串行。",
+    "较早FirstUse流水样本未保留相同Q/mask hoisting，不作为纯流水消融。",
+    "循环布局新修复在独立记录中验收。",
+    "所有PMU活动量不可相加；单site精确engine归因仍ambiguous。"
+  ]
+}

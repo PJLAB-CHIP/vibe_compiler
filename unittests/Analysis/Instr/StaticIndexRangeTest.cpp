@@ -17,6 +17,7 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <string>
 
@@ -545,6 +546,149 @@ TEST_F(StaticIndexRangeTest,
     } else {
       EXPECT_EQ(result.failure, StaticIndexRangeFailureKind::NegativeRange);
     }
+  }
+}
+
+TEST_F(StaticIndexRangeTest, BoundedBranchOperandsPreserveInductionGrid) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t step : {3, 32, 128}) {
+      SCOPED_TRACE(::testing::Message() << extent << '/' << step);
+      auto module =
+          mlir::parseSourceString<mlir::ModuleOp>(llvm::formatv(R"mlir(
+        module {{ func.func @entry(%data: memref<1x{0}x64xf16>) {{
+          %zero = arith.constant 0 : index
+          %begin = arith.constant 7 : index
+          %end = arith.constant {0} : index
+          %step = arith.constant {1} : index
+          %outer_step = arith.constant 128 : index
+          scf.for %outer = %zero to %end step %outer_step {{
+            %next_outer = arith.addi %outer, %outer_step : index
+            %upper = arith.minsi %next_outer, %end : index
+            %limit = arith.subi %upper, %step : index
+            scf.for %iv = %begin to %upper step %step {{
+              %has_next = arith.cmpi slt, %iv, %limit : index
+              scf.if %has_next {{
+                %next = arith.addi %iv, %step : index
+                %value = memref.load %data[%zero, %next, %zero] : memref<1x{0}x64xf16>
+              } else {{
+                %last = memref.load %data[%zero, %iv, %zero] : memref<1x{0}x64xf16>
+              }
+            }
+          }
+          return
+        } }
+      )mlir",
+                                                                extent, step)
+                                                      .str(),
+                                                  &context);
+      ASSERT_TRUE(module);
+      const auto before = print(*module);
+      llvm::SmallVector<mlir::memref::LoadOp> loads;
+      module->walk([&](mlir::memref::LoadOp op) { loads.push_back(op); });
+      ASSERT_EQ(loads.size(), 2u);
+      auto next = evaluateNonNegativeStaticIndexRange(loads[0].getIndices()[1],
+                                                      loads[0]);
+      auto last = evaluateNonNegativeStaticIndexRange(loads[1].getIndices()[1],
+                                                      loads[1]);
+      ASSERT_TRUE(next.succeeded());
+      ASSERT_TRUE(last.succeeded());
+      int64_t firstNext = extent, finalNext = -1;
+      for (int64_t outer = 0; outer < extent; outer += 128)
+        for (int64_t iv = 7, upper = std::min(outer + 128, extent); iv < upper;
+             iv += step) {
+          if (iv + step < upper) {
+            firstNext = std::min(firstNext, iv + step);
+            finalNext = std::max(finalNext, iv + step);
+          } else {
+            EXPECT_LE(last.range.min, iv);
+            EXPECT_GE(last.range.max, iv);
+          }
+        }
+      EXPECT_EQ(next.range.min, firstNext);
+      EXPECT_EQ(next.range.max, finalNext);
+      EXPECT_LT(next.range.max, extent);
+      EXPECT_EQ(print(*module), before);
+    }
+}
+
+TEST_F(StaticIndexRangeTest, BoundedEqualityIntersectsIntervalsNotEndpoints) {
+  // Scalar oracle for predicate composition; the rank3 access test above and
+  // load-pipeline DDR planning exercise the same query on actual payloads.
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module { func.func @entry(%a: i32, %b: i32) {
+      %zero = arith.constant 0 : i32
+      %end = arith.constant 1031 : i32
+      %one = arith.constant 1 : i32
+      %al = arith.maxsi %a, %zero : i32
+      %x = arith.minsi %al, %end : i32
+      %bl = arith.maxsi %b, %one : i32
+      %y = arith.minsi %bl, %end : i32
+      %same = arith.cmpi eq, %x, %y : i32
+      %positive = arith.cmpi sgt, %x, %zero : i32
+      %both = arith.andi %same, %positive : i1
+      scf.if %both {
+        %use = arith.index_cast %x : i32 to index
+      }
+      return
+    } }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  mlir::arith::IndexCastOp use;
+  module->walk([&](mlir::arith::IndexCastOp op) { use = op; });
+  auto range = evaluateNonNegativeStaticIndexRange(use.getIn(), use);
+  ASSERT_TRUE(range.succeeded());
+  EXPECT_FALSE(range.range.empty);
+  EXPECT_EQ(range.range.min, 1);
+  EXPECT_EQ(range.range.max, 1031);
+}
+TEST_F(StaticIndexRangeTest, BoundedProductsPreserveSignsAndRejectOverflow) {
+  // Bounded scalar oracle for interval multiplication; the load-pipeline
+  // matrix consumes count * runtime-positive-step on rank3 1024/1025/1031.
+  for (auto bounds : {std::array<int64_t, 4>{0, 29, 32, 33},
+                      std::array<int64_t, 4>{-7, -2, -5, -1},
+                      std::array<int64_t, 4>{-3, 5, -2, 4},
+                      std::array<int64_t, 4>{1, INT64_MAX, 1, 2}}) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        llvm::formatv(R"mlir(module {{
+          func.func @entry(%a: i64, %b: i64) -> index {{
+            %al = arith.constant {0} : i64
+            %ah = arith.constant {1} : i64
+            %bl = arith.constant {2} : i64
+            %bh = arith.constant {3} : i64
+            %ax = arith.maxsi %a, %al : i64
+            %ac = arith.minsi %ax, %ah : i64
+            %bx = arith.maxsi %b, %bl : i64
+            %bc = arith.minsi %bx, %bh : i64
+            %ai = arith.index_cast %ac : i64 to index
+            %bi = arith.index_cast %bc : i64 to index
+            %product = arith.muli %ai, %bi : index
+            return %product : index
+          }
+        })mlir",
+                      bounds[0], bounds[1], bounds[2], bounds[3])
+            .str(),
+        &context);
+    ASSERT_TRUE(module);
+    auto result = evaluateNonNegativeStaticIndexRange(returned(*module));
+    if (bounds[1] == INT64_MAX) {
+      EXPECT_EQ(result.failure,
+                StaticIndexRangeFailureKind::ArithmeticOverflow);
+      continue;
+    }
+    int64_t minimum = INT64_MAX, maximum = INT64_MIN;
+    for (int64_t a = bounds[0]; a <= bounds[1]; ++a)
+      for (int64_t b = bounds[2]; b <= bounds[3]; ++b) {
+        minimum = std::min(minimum, a * b);
+        maximum = std::max(maximum, a * b);
+      }
+    if (minimum < 0) {
+      EXPECT_EQ(result.failure, StaticIndexRangeFailureKind::NegativeRange);
+      continue;
+    }
+    ASSERT_TRUE(result.succeeded());
+    EXPECT_EQ(result.range.min, minimum);
+    EXPECT_EQ(result.range.max, maximum);
   }
 }
 } // namespace

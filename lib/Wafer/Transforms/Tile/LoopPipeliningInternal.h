@@ -8,6 +8,8 @@
 
 namespace wafer::compiler::detail {
 std::optional<uint64_t> getStaticTripCount(mlir::scf::ForOp loop);
+std::optional<LoopPipeliningFailure>
+checkLoopPipeliningDomain(mlir::scf::ForOp loop, uint32_t stageCount);
 
 PipelinedModuleResult
 materializationFailure(LoopPipeliningFailureKind kind, llvm::StringRef detail,

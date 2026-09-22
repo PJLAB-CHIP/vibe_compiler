@@ -126,47 +126,57 @@ private:
 
   void addComparisonConstraint(mlir::Value value,
                                mlir::arith::CmpIPredicate predicate,
-                               int64_t constant) {
+                               StaticIndexRange other) {
     using Predicate = mlir::arith::CmpIPredicate;
     bool isUnsigned =
         predicate == Predicate::ult || predicate == Predicate::ule ||
         predicate == Predicate::ugt || predicate == Predicate::uge;
     // The stored interval is signed. An unsigned comparison only refines it
-    // when both the operand interval and constant are known non-negative.
-    if (isUnsigned && constant < 0)
+    // when both operand intervals are known non-negative.
+    if (other.empty || (isUnsigned && other.min < 0))
       return;
     Constraint &constraint =
         isUnsigned ? unsignedConstraints[value] : constraints[value];
     switch (predicate) {
     case Predicate::eq:
-      constrainMinimum(constraint, constant);
-      constrainMaximum(constraint, constant);
+      constrainMinimum(constraint, other.min);
+      constrainMaximum(constraint, other.max);
       return;
     case Predicate::ne:
       return;
     case Predicate::slt:
     case Predicate::ult:
-      if (constant != std::numeric_limits<int64_t>::min())
-        constrainMaximum(constraint, constant - 1);
+      if (other.max != std::numeric_limits<int64_t>::min())
+        constrainMaximum(constraint, other.max - 1);
       return;
     case Predicate::sle:
     case Predicate::ule:
-      constrainMaximum(constraint, constant);
+      constrainMaximum(constraint, other.max);
       return;
     case Predicate::sgt:
     case Predicate::ugt:
-      if (constant != std::numeric_limits<int64_t>::max())
-        constrainMinimum(constraint, constant + 1);
+      if (other.min != std::numeric_limits<int64_t>::max())
+        constrainMinimum(constraint, other.min + 1);
       return;
     case Predicate::sge:
     case Predicate::uge:
-      constrainMinimum(constraint, constant);
+      constrainMinimum(constraint, other.min);
       return;
     }
     llvm_unreachable("unhandled integer comparison predicate");
   }
 
-  void collectComparisonConstraint(mlir::Value condition, bool selected) {
+  void collectComparisonConstraint(mlir::Value condition, bool selected,
+                                   StaticIndexRangeEvaluator &unconditioned) {
+    // A true conjunction and a false disjunction each imply both operands.
+    auto *definition = condition.getDefiningOp();
+    if (definition &&
+        ((selected && mlir::isa<mlir::arith::AndIOp>(definition)) ||
+         (!selected && mlir::isa<mlir::arith::OrIOp>(definition)))) {
+      for (mlir::Value operand : definition->getOperands())
+        collectComparisonConstraint(operand, selected, unconditioned);
+      return;
+    }
     auto compare = condition.getDefiningOp<mlir::arith::CmpIOp>();
     if (!compare)
       return;
@@ -174,32 +184,35 @@ private:
     if (!selected)
       predicate = invertPredicate(predicate);
 
-    if (std::optional<int64_t> rhs =
-            mlir::getConstantIntValue(compare.getRhs())) {
-      addComparisonConstraint(compare.getLhs(), predicate, *rhs);
-      return;
-    }
-    if (std::optional<int64_t> lhs =
-            mlir::getConstantIntValue(compare.getLhs()))
-      addComparisonConstraint(compare.getRhs(), swapPredicate(predicate), *lhs);
+    Result rhs = unconditioned.evaluate(compare.getRhs());
+    if (rhs.succeeded())
+      addComparisonConstraint(compare.getLhs(), predicate, rhs.range);
+    Result lhs = unconditioned.evaluate(compare.getLhs());
+    if (lhs.succeeded())
+      addComparisonConstraint(compare.getRhs(), swapPredicate(predicate),
+                              lhs.range);
   }
 
   void collectEnclosingBranchConstraints(mlir::Operation *use) {
     if (!use)
       return;
+    // Never populate the query cache while branch constraints are incomplete.
+    StaticIndexRangeEvaluator unconditioned(nullptr);
     mlir::Operation *nested = use;
     while (mlir::Operation *parent = nested->getParentOp()) {
       if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
         if (nested->getBlock() == ifOp.thenBlock())
-          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/true);
+          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/true,
+                                      unconditioned);
         else if (nested->getBlock() == ifOp.elseBlock())
-          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/false);
+          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/false,
+                                      unconditioned);
       }
       nested = parent;
     }
   }
 
-  Result applyConstraint(mlir::Value value, Result result) const {
+  Result applyConstraint(mlir::Value value, Result result) {
     if (!result.succeeded() || result.range.empty)
       return result;
     auto apply = [&](const auto &bounds) {
@@ -216,6 +229,41 @@ private:
       apply(unsignedConstraints);
     if (result.range.min > result.range.max)
       result.range = StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true};
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+    auto loop = argument ? mlir::dyn_cast<mlir::scf::ForOp>(
+                               argument.getOwner()->getParentOp())
+                         : mlir::scf::ForOp{};
+    if (result.range.empty || !loop || value != loop.getInductionVar())
+      return result;
+    Result step = evaluate(loop.getStep());
+    if (!step.succeeded() || step.range.empty || step.range.min <= 0 ||
+        step.range.min != step.range.max)
+      return result;
+    const int64_t stride = step.range.min;
+    Result lower = evaluate(loop.getLowerBound());
+    std::optional<uint64_t> residue;
+    if (lower.succeeded() && !lower.range.empty && lower.range.min >= 0 &&
+        lower.range.min == lower.range.max)
+      residue = lower.range.min % stride;
+    else
+      residue = getKnownIndexRemainder(loop.getLowerBound(), stride);
+    if (!residue || result.range.min < 0)
+      return result;
+    const int64_t expected = static_cast<int64_t>(*residue);
+    const int64_t remainder = result.range.max % stride;
+    const int64_t adjustment = remainder >= expected
+                                   ? remainder - expected
+                                   : stride - (expected - remainder);
+    result.range.max -= adjustment;
+    if (result.range.max < result.range.min) {
+      result.range = StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true};
+      return result;
+    }
+    // Derive the first reachable point from the rounded maximum. This cannot
+    // overflow and also works for non-power-of-two constant steps.
+    result.range.min =
+        result.range.max -
+        ((result.range.max - result.range.min) / stride) * stride;
     return result;
   }
 
@@ -351,8 +399,7 @@ private:
     Result stepRange = evaluate(loop.getStep());
     if (!lowerRange.succeeded() || !upperRange.succeeded() ||
         !stepRange.succeeded() || lowerRange.range.empty ||
-        upperRange.range.empty || stepRange.range.empty ||
-        stepRange.range.min != stepRange.range.max)
+        upperRange.range.empty || stepRange.range.empty)
       return failed(Failure::DynamicLoopBounds);
     int64_t lower = lowerRange.range.min;
     int64_t upper = upperRange.range.max;
@@ -361,6 +408,8 @@ private:
       return failed(Failure::InvalidLoopBounds);
     if (upper <= lower)
       return Result{StaticIndexRange{lower, lower, /*empty=*/true}};
+    if (stepRange.range.min != stepRange.range.max)
+      return Result{StaticIndexRange{lower, upper - 1, /*empty=*/false}};
 
     if (lowerRange.range.min != lowerRange.range.max) {
       int64_t maximum = upper - 1;
@@ -444,22 +493,17 @@ private:
     if (operands->first.empty || operands->second.empty)
       return Result{StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true}};
 
-    const bool lhsSingleton = operands->first.min == operands->first.max;
-    const bool rhsSingleton = operands->second.min == operands->second.max;
-    if (!lhsSingleton && !rhsSingleton)
-      return failed(Failure::NonSingletonMultiplication);
-    const int64_t factor =
-        lhsSingleton ? operands->first.min : operands->second.min;
-    const StaticIndexRange varying =
-        lhsSingleton ? operands->second : operands->first;
-    int64_t first = 0;
-    int64_t second = 0;
-    if (llvm::MulOverflow(varying.min, factor, first) ||
-        llvm::MulOverflow(varying.max, factor, second))
-      return failed(Failure::ArithmeticOverflow);
-    return Result{StaticIndexRange{std::min(first, second),
-                                   std::max(first, second),
-                                   /*empty=*/false}};
+    int64_t minimum = std::numeric_limits<int64_t>::max();
+    int64_t maximum = std::numeric_limits<int64_t>::min();
+    for (int64_t lhs : {operands->first.min, operands->first.max})
+      for (int64_t rhs : {operands->second.min, operands->second.max}) {
+        int64_t product = 0;
+        if (llvm::MulOverflow(lhs, rhs, product))
+          return failed(Failure::ArithmeticOverflow);
+        minimum = std::min(minimum, product);
+        maximum = std::max(maximum, product);
+      }
+    return Result{StaticIndexRange{minimum, maximum, /*empty=*/false}};
   }
 
   Result evaluateUnsignedDivide(mlir::arith::DivUIOp divide) {
