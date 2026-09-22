@@ -1,0 +1,221 @@
+{
+  "work_item": "board-testing",
+  "case": "attention-prefill-28-heads-2048",
+  "dtype": "bf16",
+  "shape": [
+    1,
+    28,
+    2048,
+    128
+  ],
+  "device_elapsed_ms": [
+    4.314,
+    4.223,
+    4.233
+  ],
+  "median_device_elapsed_ms": 4.233,
+  "transposed_same_turn_device_elapsed_ms": [
+    4.424,
+    4.401,
+    4.368
+  ],
+  "board_samples": [
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "ae0e7064e1b5519a4f9e8fc244f4699e91ff19b4b8e4f23832695276b2078b02",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4314000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "ae0e7064e1b5519a4f9e8fc244f4699e91ff19b4b8e4f23832695276b2078b02",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4223000"
+      ]
+    },
+    {
+      "case": "attention-prefill-28-heads-2048",
+      "step": 1,
+      "policy": "search",
+      "search_mode": null,
+      "search_width": null,
+      "search_trials": null,
+      "manifest_sha256": "ae0e7064e1b5519a4f9e8fc244f4699e91ff19b4b8e4f23832695276b2078b02",
+      "comparison_passed": true,
+      "memory_guard_bytes": 10752,
+      "comparison": {
+        "rtol": 0.006,
+        "atol": 0.008,
+        "equal_nan": false,
+        "min_cosine": 0.9999,
+        "max_relative_l2": 0.01
+      },
+      "inputs": {
+        "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+        "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+        "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+      },
+      "outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "timing": [
+        "board_timing: kind=tx-stream-events device_elapsed_ns=4233000"
+      ]
+    }
+  ],
+  "board_compiler_sha256": "9ad4ee213564fe9a7bc9f8912cb069928dd86ed3d360282e580ce80f8509c543",
+  "final_compiler_sha256": "fb4c8b7d968f70ca10acec28a91cd44b80b3e1f11f598fbfa60c5f183078400f",
+  "root_cause": "The previous query >= 64 rule ignored output element permutation; lower static instruction count did not predict total movement cost.",
+  "decision": "Keep KQ score and conventional accumulator when reordering would change non-unit axis order. Unit-axis reordering remains subject to full SSA closure and downstream legality.",
+  "static_gs_per_tile": {
+    "transposed": 14,
+    "regular": 44
+  },
+  "limits": [
+    "Direction performance measured only for the stated input; no universal shape-wide speed claim.",
+    "No native transpose or numeric dtype/arithmetic change.",
+    "No extra profile for this orientation experiment; earlier engine PMU is not attributed to this package."
+  ],
+  "host": {
+    "attention_unit_tests_passed": 11,
+    "extended_main_tail_combinations": 12,
+    "attention_lit_passed": 9,
+    "skips": 0,
+    "canonical_incremental": true,
+    "subsequent_noop": true
+  },
+  "status": "Final source fresh no-card passed; all 16 Tile Instr and LLVM outputs match freshly board-tested orientation experiment",
+  "final_device_output_comparison": {
+    "instruction": {
+      "files": 16,
+      "identical": [
+        "tile_00000.mlir",
+        "tile_00001.mlir",
+        "tile_00002.mlir",
+        "tile_00003.mlir",
+        "tile_00004.mlir",
+        "tile_00005.mlir",
+        "tile_00006.mlir",
+        "tile_00007.mlir",
+        "tile_00008.mlir",
+        "tile_00009.mlir",
+        "tile_00010.mlir",
+        "tile_00011.mlir",
+        "tile_00012.mlir",
+        "tile_00013.mlir",
+        "tile_00014.mlir",
+        "tile_00015.mlir"
+      ],
+      "different": []
+    },
+    "target-llvm": {
+      "files": 16,
+      "identical": [
+        "tile_00000.ll",
+        "tile_00001.ll",
+        "tile_00002.ll",
+        "tile_00003.ll",
+        "tile_00004.ll",
+        "tile_00005.ll",
+        "tile_00006.ll",
+        "tile_00007.ll",
+        "tile_00008.ll",
+        "tile_00009.ll",
+        "tile_00010.ll",
+        "tile_00011.ll",
+        "tile_00012.ll",
+        "tile_00013.ll",
+        "tile_00014.ll",
+        "tile_00015.ll"
+      ],
+      "different": []
+    }
+  }
+}

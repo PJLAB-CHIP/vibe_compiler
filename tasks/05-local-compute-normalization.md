@@ -766,8 +766,10 @@ scale/普通mask/causal bias的map与score轴排列一起组合；可见性仍�
 输出恢复不能依赖这些入口，也不继续其资格实验。逻辑转置、metadata view及GEMM操作数方向分别遵守各自现有合同；
 需要实际搬运的转置通过已验证的GS路径实现，并计算其真实粒度、次数和成本。
 
-当前完整组主块的进一步实现选择为：在decomposition入口，对已经物化的私有accumulator SSA闭包统一重排为
-batch/value/query。闭包沿online DPS state、SCF init/iter_arg/yield/result、保rank的Tensor slice及parallel Linalg merge/finalize传播，
+当前采用KQ score及常规accumulator：自动重排只允许移动extent为1的轴，所有非unit轴在原排列和新排列中的
+相对次序必须一致。该检查覆盖整个私有state闭包；普通query/value均非unit时保持原方向，避免新增逐元素输出置换。
+这是一项当前target的收益选择，不能据此宣称硬件不支持其它方向。已有caller提供的合法转置accumulator map仍可分解。
+满足上述条件时，在decomposition入口，对已经物化的私有accumulator SSA闭包统一重排为batch/value/query。闭包沿online DPS state、SCF init/iter_arg/yield/result、保rank的Tensor slice及parallel Linalg merge/finalize传播，
 slice的offset/size/stride随相同轴置换；完整state和不同大小的main/tail分别使用各自的actual shape，不要求尺寸相同。
 输出`insert_slice`的source是私有state的发布边界，不能据此把整个destination也转置；只有destination或loop yield已在同一
 闭包中时才将该insert视为state更新。否则在该source前恢复方向，避免将完整产品输出物化为SPM临时矩阵。
@@ -778,10 +780,11 @@ merge/finalize的DPS init若未被scalar region读取，只是输出目的地，
 保留原方向；不能在step内插入往返。Q=1及不含完整query unit的独立state保持原方向。
 这属于online state展开，不能扩展为ordinary pure graph入口旁的通用等价改写。
 
-代价依据：当前实际BQ256/D128的每个双head Tile有72次state更新、16次finalize；常规方向需576+128次GS广播。
-完整转置可将这两类广播改成实际NCx上的分组Mul，额外输出方向恢复至多16次；GEMM用`Vᵀ × Pᵀ`，
-V和P的storage不因交换逻辑乘法顺序而另建完整转置。实际layout可能仍产生其它转换，须以新Instr计数和SPM结果核实，
-不能预先把它们算作已删除。输出恢复复制的是最终窄dtype矩阵，不额外把F32全state写出再读回。
+方向取舍依据：本轮相同Explp、复制优化和输出融合版本中，常规accumulator实际每Tile静态GS为44，
+转置accumulator为14，但前者三次中位数4.233ms，后者4.401ms。常规方向的广播由重复读取扩展为多条宽搬运；
+转置方向仍需2字节颗粒输出恢复，少指令并不等于低成本。故当前不自动引入非平凡输出置换。
+这是指定输入上的实测决策，不是所有shape的普遍性能定理；后续如扩大选择范围，仍须核对实际粒度、动态次数及净收益，
+不得用预测buffer或estimated SPM控制合法性。完整实验身份与数值见板端性能记录。
 SCF类型一致性依[官方合同](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)，
 map重排依[Linalg合同](https://mlir.llvm.org/docs/Dialects/Linalg/)；API以pinned源和原decomposition测试确认。
 

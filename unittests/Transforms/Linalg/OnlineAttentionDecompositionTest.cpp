@@ -56,13 +56,17 @@ std::string tensorType(llvm::StringRef shape, llvm::StringRef elementType) {
 mlir::OwningOpRef<mlir::ModuleOp> parseOnlineModule(mlir::MLIRContext &context,
                                                     int64_t keyValueExtent,
                                                     llvm::StringRef elementType,
-                                                    bool withMask) {
+                                                    bool withMask,
+                                                    int64_t valueExtent = 128) {
   const std::string queryType = tensorType("2x4x1025x64", elementType);
   const std::string keyType =
       tensorType("2x4x" + std::to_string(keyValueExtent) + "x64", elementType);
   const std::string valueType =
-      tensorType("2x4x" + std::to_string(keyValueExtent) + "x128", elementType);
-  const std::string accumulatorType = tensorType("2x4x1025x128", "f32");
+      tensorType("2x4x" + std::to_string(keyValueExtent) + "x" +
+                     std::to_string(valueExtent),
+                 elementType);
+  const std::string accumulatorType =
+      tensorType("2x4x1025x" + std::to_string(valueExtent), "f32");
   const std::string maskType =
       "tensor<2x1025x" + std::to_string(keyValueExtent) + "xf32>";
   std::string text;
@@ -523,13 +527,13 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
         mlir::IRRewriter orientationRewriter(context.get());
         ASSERT_TRUE(mlir::succeeded(orientOnlineAttentionAccumulators(
             *module, relations, orientationRewriter)));
-        EXPECT_GT(countOps<mlir::linalg::TransposeOp>(*module), 0u);
+        EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(*module), 0u);
         region.walk([&](LinalgExtOnlineAttentionOp online) {
           EXPECT_EQ(online.getAccumulatorMap().getResult(3),
-                    builder.getAffineDimExpr(2));
-          EXPECT_EQ(online.getAccumulator().getType().getDimSize(2), 128);
-          EXPECT_EQ(online.getAccumulator().getType().getDimSize(3),
+                    builder.getAffineDimExpr(5));
+          EXPECT_EQ(online.getAccumulator().getType().getDimSize(2),
                     online.getQuery().getType().getDimSize(2));
+          EXPECT_EQ(online.getAccumulator().getType().getDimSize(3), 128);
         });
         ASSERT_TRUE(
             mlir::succeeded(decomposeOnlineAttention(*module, relations)));
@@ -549,168 +553,170 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
 TEST(OnlineAttentionDecompositionTest,
      MainAndTailBecomeActualQKStateAndPVWithoutNewLoops) {
   for (llvm::StringRef dtype : {"f16", "bf16"})
-    for (int64_t extent : {1024, 1025, 1031}) {
-      SCOPED_TRACE(extent);
-      std::unique_ptr<mlir::MLIRContext> context = createContext();
-      auto module = parseOnlineModule(*context, extent, dtype,
-                                      /*withMask=*/false);
-      ASSERT_TRUE(module);
-      TileRegionOp region = findRegion(*module);
-      TemporalDomainResult domain = buildTemporalDomain(region);
-      ASSERT_TRUE(domain.succeeded());
-      TemporalChoice choice = selectK2Tile(*domain.domain, 128);
-      StructuredMaterializationRelations relations;
-      relations.structuralOutputs.push_back({0, region.getResult(0)});
-      TemporalTilingFailure tilingFailure;
-      auto tiled = applyTemporalTiling({{*domain.domain, choice}}, relations,
-                                       &tilingFailure);
-      ASSERT_TRUE(mlir::succeeded(tiled)) << tilingFailure.detail;
-      const unsigned onlineBefore =
-          countOps<LinalgExtOnlineAttentionOp>(module->getOperation());
-      const unsigned loopsBefore =
-          countOps<mlir::scf::ForOp>(module->getOperation());
-      ASSERT_EQ(onlineBefore, extent == 1024 ? 1u : 2u);
+    for (int64_t extent : {1024, 1025, 1031})
+      for (int64_t valueExtent : {1, 128}) {
+        SCOPED_TRACE(extent);
+        std::unique_ptr<mlir::MLIRContext> context = createContext();
+        auto module = parseOnlineModule(*context, extent, dtype,
+                                        /*withMask=*/false, valueExtent);
+        ASSERT_TRUE(module);
+        TileRegionOp region = findRegion(*module);
+        TemporalDomainResult domain = buildTemporalDomain(region);
+        ASSERT_TRUE(domain.succeeded());
+        TemporalChoice choice = selectK2Tile(*domain.domain, 128);
+        StructuredMaterializationRelations relations;
+        relations.structuralOutputs.push_back({0, region.getResult(0)});
+        TemporalTilingFailure tilingFailure;
+        auto tiled = applyTemporalTiling({{*domain.domain, choice}}, relations,
+                                         &tilingFailure);
+        ASSERT_TRUE(mlir::succeeded(tiled)) << tilingFailure.detail;
+        const unsigned onlineBefore =
+            countOps<LinalgExtOnlineAttentionOp>(module->getOperation());
+        const unsigned loopsBefore =
+            countOps<mlir::scf::ForOp>(module->getOperation());
+        ASSERT_EQ(onlineBefore, extent == 1024 ? 1u : 2u);
 
-      mlir::IRRewriter orientationRewriter(context.get());
-      ASSERT_TRUE(mlir::succeeded(orientOnlineAttentionAccumulators(
-          *module, relations, orientationRewriter)));
-      module->walk([&](LinalgExtOnlineAttentionOp online) {
-        EXPECT_EQ(online.getAccumulator().getType().getShape(),
-                  llvm::ArrayRef<int64_t>({2, 4, 128, 1025}));
-        EXPECT_EQ(online.getAccumulatorMap().getResult(3),
-                  mlir::getAffineDimExpr(2, context.get()));
-      });
-      EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(*module), 1u);
-      module->walk([&](mlir::linalg::TransposeOp transpose) {
-        EXPECT_FALSE(transpose->getParentOfType<mlir::scf::ForOp>());
-        EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(
-                      transpose->getResult(0).getType())
-                      .getShape(),
-                  llvm::ArrayRef<int64_t>({2, 4, 1025, 128}));
-      });
+        mlir::IRRewriter orientationRewriter(context.get());
+        ASSERT_TRUE(mlir::succeeded(orientOnlineAttentionAccumulators(
+            *module, relations, orientationRewriter)));
+        module->walk([&](LinalgExtOnlineAttentionOp online) {
+          EXPECT_EQ(online.getAccumulator().getType().getShape(),
+                    valueExtent == 1
+                        ? llvm::ArrayRef<int64_t>({2, 4, 1, 1025})
+                        : llvm::ArrayRef<int64_t>({2, 4, 1025, 128}));
+          EXPECT_EQ(
+              online.getAccumulatorMap().getResult(3),
+              mlir::getAffineDimExpr(valueExtent == 1 ? 2 : 5, context.get()));
+        });
+        EXPECT_EQ(countOps<mlir::linalg::TransposeOp>(*module),
+                  valueExtent == 1 ? 1u : 0u);
 
-      OnlineAttentionDecompositionFailure failure;
-      auto decomposed = decomposeOnlineAttention(*module, relations, &failure);
-      ASSERT_TRUE(mlir::succeeded(decomposed)) << failure.detail;
-      EXPECT_EQ(decomposed->decomposedOperations, onlineBefore);
-      EXPECT_EQ(decomposed->qkContractions, onlineBefore);
-      EXPECT_EQ(decomposed->pvContractions, onlineBefore);
-      EXPECT_EQ(decomposed->scoreApplications, onlineBefore);
-      EXPECT_EQ(decomposed->rowReductions, onlineBefore * 2);
-      EXPECT_EQ(decomposed->normalizationFactors, onlineBefore);
-      EXPECT_EQ(decomposed->probabilityUpdates, onlineBefore);
-      EXPECT_EQ(decomposed->stateScales, onlineBefore * 2);
-      EXPECT_EQ(decomposed->scoreScratchTensors, onlineBefore);
-      EXPECT_EQ(decomposed->maximumScoreElements, UINT64_C(2) * 4 * 1025 * 128);
-      EXPECT_EQ(countOps<LinalgExtAttentionOp>(module->getOperation()), 0u);
-      EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()),
-                0u);
-      EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()),
-                loopsBefore);
-      EXPECT_EQ(countContractions(module->getOperation()), onlineBefore * 2);
-      EXPECT_EQ(countRowReductions(module->getOperation()), onlineBefore * 2);
-      EXPECT_EQ(countOps<mlir::math::ExpOp>(module->getOperation()),
-                onlineBefore * 2);
-      EXPECT_EQ(countOps<mlir::arith::CmpFOp>(module->getOperation()),
-                onlineBefore);
-      module->walk([&](mlir::arith::CmpFOp comparison) {
-        auto rows = comparison->getParentOfType<mlir::linalg::GenericOp>();
-        ASSERT_TRUE(rows);
-        auto type =
-            mlir::cast<mlir::RankedTensorType>(rows.getResult(0).getType());
-        EXPECT_EQ(type.getShape(), llvm::ArrayRef<int64_t>({2, 4, 1025}));
-        // Both old-state rescaling and score exponentiation consume this one
-        // row value, while the original maximum still feeds the state yield.
-        EXPECT_EQ(std::distance(rows.getResult(0).use_begin(),
-                                rows.getResult(0).use_end()),
-                  2);
-      });
-      module->walk([&](mlir::math::ExpOp exponential) {
-        auto generic = exponential->getParentOfType<mlir::linalg::GenericOp>();
-        EXPECT_EQ(countOps<mlir::arith::CmpFOp>(generic), 0u);
-        EXPECT_EQ(countOps<mlir::arith::SelectOp>(generic), 0u);
-        EXPECT_TRUE(
-            exponential.getOperand().getDefiningOp<mlir::arith::SubFOp>());
-      });
-      module->walk([&](mlir::scf::ForOp loop) {
-        EXPECT_EQ(loop.getNumRegionIterArgs(), 3u);
-      });
-      unsigned scoreScratch = 0;
-      module->walk([&](mlir::linalg::GenericOp generic) {
-        if (generic.getNumDpsInputs() != 2 || generic->getNumResults() != 1)
-          return;
-        mlir::Value query = generic.getDpsInputs()[1];
-        while (auto slice = query.getDefiningOp<mlir::tensor::ExtractSliceOp>())
-          query = slice.getSource();
-        if (query != region.getBody().front().getArgument(0))
-          return;
-        auto type =
-            mlir::cast<mlir::RankedTensorType>(generic.getResult(0).getType());
-        ++scoreScratch;
-        EXPECT_TRUE(type.getElementType().isF32());
-        EXPECT_EQ(type.getShape()[0], 2);
-        EXPECT_EQ(type.getShape()[1], 4);
-        EXPECT_LE(type.getShape()[2], 128);
-        EXPECT_EQ(type.getShape()[3], 1025);
-      });
-      EXPECT_EQ(scoreScratch, onlineBefore);
-      EXPECT_TRUE(
-          mlir::succeeded(verifyOnlineAttentionDecompositionComplete(*module)));
-      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-      LayoutOptimizationResult layout =
-          resolveCurrentLayoutsAndBufferize(*module, relations);
-      ASSERT_TRUE(layout.succeeded()) << layout.detail;
-      EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
-      unsigned carriedStates = 0;
-      module->walk([&](mlir::scf::ForOp loop) {
-        if (loop.getNumRegionIterArgs() != 3)
-          return;
-        for (auto argument : loop.getRegionIterArgs()) {
-          auto type = mlir::cast<mlir::MemRefType>(argument.getType());
-          EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), MemLayout::NCx);
-          ++carriedStates;
-        }
-      });
-      EXPECT_EQ(carriedStates, 3u);
-      EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
-      EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
-      ASSERT_EQ(relations.structuralOutputs.size(), 1u);
-      EXPECT_TRUE(isWaferDDRMemRefType(
-          relations.structuralOutputs.front().endpoint.getType()));
-      StructuredToTileResult tileLowering =
-          lowerStructuredComputeToTile(*module, relations);
-      ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
-      EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
-      // Probability narrows at the PV input, including the one-element tail.
-      EXPECT_EQ(tileLowering.statistics.contractions, onlineBefore * 2);
-      module->walk([&](ComputeGemmOp op) {
-        auto lhs = mlir::cast<mlir::MemRefType>(op.getLhs().getType());
-        if (lhs.getElementType().isF32()) {
-          EXPECT_NE(lhs.getShape().back(), 1);
-        }
-      });
-      EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
-      EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
-      EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
-          module->getOperation(), relations)));
-      BoundaryMovementResult movement =
-          materializeTileBoundaryMovement(*module, relations);
-      ASSERT_TRUE(movement.succeeded()) << movement.detail;
-      EXPECT_GT(movement.statistics.ddrLoads, 0u);
-      EXPECT_EQ(movement.statistics.ddrStores, 1u);
-      EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
-      EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
-      EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
-      EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
-    }
+        OnlineAttentionDecompositionFailure failure;
+        auto decomposed =
+            decomposeOnlineAttention(*module, relations, &failure);
+        ASSERT_TRUE(mlir::succeeded(decomposed)) << failure.detail;
+        EXPECT_EQ(decomposed->decomposedOperations, onlineBefore);
+        EXPECT_EQ(decomposed->qkContractions, onlineBefore);
+        EXPECT_EQ(decomposed->pvContractions, onlineBefore);
+        EXPECT_EQ(decomposed->scoreApplications, onlineBefore);
+        EXPECT_EQ(decomposed->rowReductions, onlineBefore * 2);
+        EXPECT_EQ(decomposed->normalizationFactors, onlineBefore);
+        EXPECT_EQ(decomposed->probabilityUpdates, onlineBefore);
+        EXPECT_EQ(decomposed->stateScales, onlineBefore * 2);
+        EXPECT_EQ(decomposed->scoreScratchTensors, onlineBefore);
+        EXPECT_EQ(decomposed->maximumScoreElements,
+                  UINT64_C(2) * 4 * 1025 * 128);
+        EXPECT_EQ(countOps<LinalgExtAttentionOp>(module->getOperation()), 0u);
+        EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()),
+                  0u);
+        EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()),
+                  loopsBefore);
+        EXPECT_EQ(countContractions(module->getOperation()), onlineBefore * 2);
+        EXPECT_EQ(countRowReductions(module->getOperation()), onlineBefore * 2);
+        EXPECT_EQ(countOps<mlir::math::ExpOp>(module->getOperation()),
+                  onlineBefore * 2);
+        EXPECT_EQ(countOps<mlir::arith::CmpFOp>(module->getOperation()),
+                  onlineBefore);
+        module->walk([&](mlir::arith::CmpFOp comparison) {
+          auto rows = comparison->getParentOfType<mlir::linalg::GenericOp>();
+          ASSERT_TRUE(rows);
+          auto type =
+              mlir::cast<mlir::RankedTensorType>(rows.getResult(0).getType());
+          EXPECT_EQ(type.getShape(), llvm::ArrayRef<int64_t>({2, 4, 1025}));
+          // Both old-state rescaling and score exponentiation consume this one
+          // row value, while the original maximum still feeds the state yield.
+          EXPECT_EQ(std::distance(rows.getResult(0).use_begin(),
+                                  rows.getResult(0).use_end()),
+                    2);
+        });
+        module->walk([&](mlir::math::ExpOp exponential) {
+          auto generic =
+              exponential->getParentOfType<mlir::linalg::GenericOp>();
+          EXPECT_EQ(countOps<mlir::arith::CmpFOp>(generic), 0u);
+          EXPECT_EQ(countOps<mlir::arith::SelectOp>(generic), 0u);
+          EXPECT_TRUE(
+              exponential.getOperand().getDefiningOp<mlir::arith::SubFOp>());
+        });
+        module->walk([&](mlir::scf::ForOp loop) {
+          EXPECT_EQ(loop.getNumRegionIterArgs(), 3u);
+        });
+        unsigned scoreScratch = 0;
+        module->walk([&](mlir::linalg::GenericOp generic) {
+          if (generic.getNumDpsInputs() != 2 || generic->getNumResults() != 1)
+            return;
+          mlir::Value query = generic.getDpsInputs()[1];
+          while (auto slice =
+                     query.getDefiningOp<mlir::tensor::ExtractSliceOp>())
+            query = slice.getSource();
+          if (query != region.getBody().front().getArgument(0))
+            return;
+          auto type = mlir::cast<mlir::RankedTensorType>(
+              generic.getResult(0).getType());
+          ++scoreScratch;
+          EXPECT_TRUE(type.getElementType().isF32());
+          EXPECT_EQ(type.getShape()[0], 2);
+          EXPECT_EQ(type.getShape()[1], 4);
+          EXPECT_LE(type.getShape()[2], 128);
+          EXPECT_EQ(type.getShape()[3], 1025);
+        });
+        EXPECT_EQ(scoreScratch, onlineBefore);
+        EXPECT_TRUE(mlir::succeeded(
+            verifyOnlineAttentionDecompositionComplete(*module)));
+        EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+            module->getOperation(), relations)));
+        LayoutOptimizationResult layout =
+            resolveCurrentLayoutsAndBufferize(*module, relations);
+        ASSERT_TRUE(layout.succeeded()) << layout.detail;
+        EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
+        unsigned carriedStates = 0;
+        module->walk([&](mlir::scf::ForOp loop) {
+          if (loop.getNumRegionIterArgs() != 3)
+            return;
+          for (auto argument : loop.getRegionIterArgs()) {
+            auto type = mlir::cast<mlir::MemRefType>(argument.getType());
+            EXPECT_EQ(getWaferMemoryAttr(type).getLayout(), MemLayout::NCx);
+            ++carriedStates;
+          }
+        });
+        EXPECT_EQ(carriedStates, 3u);
+        EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
+        EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
+        ASSERT_EQ(relations.structuralOutputs.size(), 1u);
+        EXPECT_TRUE(isWaferDDRMemRefType(
+            relations.structuralOutputs.front().endpoint.getType()));
+        StructuredToTileResult tileLowering =
+            lowerStructuredComputeToTile(*module, relations);
+        ASSERT_TRUE(tileLowering.succeeded()) << tileLowering.detail;
+        EXPECT_EQ(countOps<mlir::linalg::LinalgOp>(module->getOperation()), 0u);
+        // Probability narrows at the PV input, including the one-element tail.
+        EXPECT_EQ(tileLowering.statistics.contractions, onlineBefore * 2);
+        module->walk([&](ComputeGemmOp op) {
+          auto lhs = mlir::cast<mlir::MemRefType>(op.getLhs().getType());
+          if (lhs.getElementType().isF32()) {
+            EXPECT_NE(lhs.getShape().back(), 1);
+          }
+        });
+        EXPECT_EQ(tileLowering.statistics.reductions, onlineBefore * 2);
+        EXPECT_TRUE(mlir::succeeded(verifyStructuredComputeLowered(*module)));
+        EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
+            module->getOperation(), relations)));
+        BoundaryMovementResult movement =
+            materializeTileBoundaryMovement(*module, relations);
+        ASSERT_TRUE(movement.succeeded()) << movement.detail;
+        EXPECT_GT(movement.statistics.ddrLoads, 0u);
+        EXPECT_EQ(movement.statistics.ddrStores, 1u);
+        EXPECT_TRUE(mlir::succeeded(verifyPhysicalTileDataflow(*module)));
+        EXPECT_TRUE(mlir::succeeded(lowerPhysicalToInstr(*module)));
+        EXPECT_LT(countOps<InstrGatherScatterOp>(module->getOperation()), 256u);
+        EXPECT_LT(countOps<SyncNCCJoinOp>(module->getOperation()), 16u);
+      }
 }
 
 TEST(OnlineAttentionDecompositionTest,
      StatePublicationRestoresNarrowBlockBeforeLargerInsertDestination) {
   for (int64_t extent : {1024, 1025, 1031}) {
     auto context = createContext();
-    auto module = parseOnlineModule(*context, extent, "bf16", false);
+    auto module = parseOnlineModule(*context, extent, "bf16", false, 1);
     ASSERT_TRUE(module);
     auto region = findRegion(*module);
     auto domain = buildTemporalDomain(region);
@@ -727,7 +733,7 @@ TEST(OnlineAttentionDecompositionTest,
     auto state = yield->getOperand(0);
     auto narrowType = mlir::cast<mlir::RankedTensorType>(state.getType())
                           .clone(rewriter.getBF16Type());
-    auto fullType = narrowType.clone(llvm::ArrayRef<int64_t>{4, 4, 1025, 128});
+    auto fullType = narrowType.clone(llvm::ArrayRef<int64_t>{4, 4, 1025, 1});
     auto fullEmpty = rewriter.create<mlir::tensor::EmptyOp>(
         location, fullType.getShape(), fullType.getElementType());
     auto zero = rewriter.create<mlir::arith::ConstantOp>(
@@ -788,7 +794,7 @@ TEST(OnlineAttentionDecompositionTest,
     for (bool innerObserver : {false, true}) {
       SCOPED_TRACE(::testing::Message() << extent << "/" << innerObserver);
       auto context = createContext();
-      auto module = parseOnlineModule(*context, extent, "bf16", false);
+      auto module = parseOnlineModule(*context, extent, "bf16", false, 1);
       ASSERT_TRUE(module);
       auto region = findRegion(*module);
       auto domain = buildTemporalDomain(region);

@@ -28,6 +28,18 @@ struct StateComponent {
   llvm::DenseSet<mlir::Value> protectedValues;
   llvm::DenseMap<mlir::Operation *, mlir::RankedTensorType> privateInits;
 
+  bool preservesElementOrder(mlir::Value value) const {
+    auto type = mlir::cast<mlir::RankedTensorType>(value.getType());
+    llvm::SmallVector<int64_t> before, after;
+    for (int64_t axis = 0; axis < type.getRank(); ++axis)
+      if (type.getDimSize(axis) != 1)
+        before.push_back(axis);
+    for (int64_t axis : permutation)
+      if (type.getDimSize(axis) != 1)
+        after.push_back(axis);
+    return before == after;
+  }
+
   bool add(mlir::Value value) {
     auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
     if (!type || !type.hasStaticShape() ||
@@ -394,7 +406,14 @@ mlir::LogicalResult orientOnlineAttentionAccumulators(
       component.protectedValues.insert(boundary.sourceEndpoint);
       component.protectedValues.insert(boundary.destinationEndpoint);
     }
-    if (!component.close(online.getAccumulator()))
+    // A nontrivial output permutation needs element-granular movement on the
+    // current target. Measured full-chain savings did not pay for that work.
+    // Only move unit axes: this retains grouping without changing output order.
+    if (!component.preservesElementOrder(online.getAccumulator()) ||
+        !component.close(online.getAccumulator()) ||
+        !llvm::all_of(component.values, [&](mlir::Value value) {
+          return component.preservesElementOrder(value);
+        }))
       continue;
     component.apply(rewriter);
     support::addCompileCounter("online-attention",
