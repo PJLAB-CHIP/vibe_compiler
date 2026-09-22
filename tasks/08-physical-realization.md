@@ -80,11 +80,22 @@ post-attention bounded logical normalization
        attention -> online state contributions/merge
   -> current-op temporal tile-and-fuse, including online K2 stateful tiling
   -> online-attention decomposition and final current SSA/use graph
+  -> selected Tensor subset materialization and shared-use closure
   -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
   -> physical TileRegion
 ```
+
+进入本stage前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
+Spatial/Temporal共享纯索引与片段生成；计算融合由Temporal拥有，layout只消费其实际结果。
+“保留共享”与“按窗口局部物化”是两个明确的Tensor实现，不能由bufferization/allocator临时互换，
+也不能因局部IR物化失败而在这里重建完整输入。真实full-use保留完整值，不能仅凭allocation大就删去。
+`prepareCurrentLayoutInput`中的已有Tensor preparation若暴露新的需求，调用同一子集helper闭合后再建立layout query；
+相关IR mutation后重建analysis，不让早期查询成为当前buffer的事实来源。具体算法与覆盖由
+[06号合同](06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)拥有。
+物理搬运位置仍由`PhysicalMovementPlacement`按实际alias/effect证明；BoundaryMovement后的AccessReuse维持原输入合同。
+本项不扩展任意中间存储缓存，不新增layout解、SPM准入或同步算法。
 
 进入layout/bufferization时，selected spatial/temporal IR中的`tensor.extract_slice(tensor.empty)`按实际slice result type与encoding重建局部empty。
 `tensor.empty`没有定义内容，该规则与pinned MLIR `FoldEmptyTensorWithExtractSliceOp`一致；它只收敛当前tile的未初始化destination尺寸，

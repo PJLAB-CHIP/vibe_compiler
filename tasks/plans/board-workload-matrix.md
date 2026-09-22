@@ -1,5 +1,42 @@
 # 扩展板测矩阵与三轮性能调优
 
+## Tensor子集物化整改与核心性能保护（2026-09-23）
+
+用户要求基于代码细化通用方案，并明确保护大GEMM及2048 attention性能。任务状态只看progress，
+稳定边界已进入06/08/18号，具体算法、迁移、覆盖及硬性门槛集中在
+[Tensor子集物化实施计划](tensor-subset-materialization.md)。本轮交付文档，不表示实现或板端已经完成。
+
+该整改处理已选窗口的Tensor来源与局部物化，计算融合、共享选择和物理复用各归原层级；
+不扩展AccessReuse中间存储资格，不以重新实现缓存或增加搜索预算作为两个长LM可行的前置。
+四项保护为4096³ FP16/BF16、4097³ FP16及`[1,28,2048,128]` BF16 causal attention。
+每项fresh产品/no-card后，按计划的相同条件三次普通实卡比较完整样本和中位数；数值与性能分别通过，
+不能用LM通过或其它case提速抵消回退。先完成保护，再接两项长LM，实施与验证顺序只以progress为准。
+
+## 完整单层LM长序列实卡接续（2026-09-23）
+
+原模型接续授权为注册`llama-2-7b-single-layer-lm-1024`和`llama-2-7b-single-layer-lm-tail-1025`，
+计算精度FP16，seed20260803，沿用standard search width8/trials42及16号完整LM合同。
+输入为原HF完整单层module、合法i64 IDs及当前compiler/runtime；本项通过唯一PyTorch runner重新导出source，
+生成全部logits reference、ExecutablePackage与guard no-card。直接下游为原`wafer-run`及完整数值/生命周期检查。
+两项均准备完成后逐case单次普通实卡，记录耗时但不以单样本声称性能提升；默认关闭寄存器采集和设备插桩。
+不裁剪词表、token、模型计算或输出，不改变dtype/容差/搜索预算；不启动deep、其它模型调优或attention优化。
+
+| 覆盖输入 | 本轮exact要求与直接消费者 |
+| --- | --- |
+| S1024 FP16；i64 IDs包含重复值、0及31999 | 实际embedding→原decoder→final RMSNorm→LM head；`[1,1024,32000]`全部logits、manifest/payload dtype一致；fresh package/no-card后实卡全量相似度与guard |
+| S1025 FP16，非整除尾部 | 同一完整图及`[1,1025,32000]`全部logits；真实尾块的package/no-card、全量相似度与guard |
+| 两项共同生命周期 | 每次launch前系统占用检查；原cosine≥0.9999且relative L2≤0.01；正常completion/readback/厂商清理，执行窗口无fatal/timeout |
+
+当前处于主机准备。先核对历史编译失败是否仍能由current source复现；如需修复，归对应编号设计补通用根因及覆盖，
+不从旧失败推定当前不可用。异常停止批次，不自动retry/reset；实卡完成前不签本项通过。
+
+本轮默认8/42首次准备均失败：S1024为42次actual capacity拒绝；S1025为29次capacity、13次unsupported。
+后者包含非byte对齐i1 store；两者后续容量样本仍有完整K/V规模的SPM allocation。
+本轮随后以既有同步capacity observer检查仍存活的实际Instr与allocation/user，限制四次actual尝试。
+已确认FA循环内存在分块计算，而输入仍保留完整K/V assembly；代码审查发现多轴需求生成及共享取舍的边界限制。
+诊断未改变候选、SPM gate或设备指令；临时打印仍须在正式构包前移除。后续按上方通用整改计划推进，
+不把Tensor局部化设计代签packed-i1尾部写回问题或实际容量/数值/性能验收。
+
 ## Attention收束后的当前版本板测接续（2026-09-22）
 
 用户授权完成剩余既定实卡case。输入为现有注册case、原dtype/shape/seed和当前编译器，

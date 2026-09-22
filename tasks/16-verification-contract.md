@@ -43,7 +43,9 @@ Pipeline position:
 5. **Board correctness evidence**：当前构建、当前package、当前payload在真实设备完成output/guard和lifecycle检查。
    普通模型矩阵的allocation/port间guard使用15号`--memory-guards`；no-card只证明guard plan可构造，
    实卡结果须记录实际检查字节数。此证据不覆盖compiler workspace内部对象或module loader私有存储。
-6. **Board performance evidence**：同一source/config/payload/ABI的baseline/winner做matched、重复、可解释的A/B。
+6. **Board performance evidence**：同一source/config/payload/ABI的baseline/winner做matched、重复、可解释的比较。
+   用户禁止重跑历史包时，以已有健康完整记录与本轮新包重复测量比较，保留boot/版本差异，不伪称同boot A/B。
+   guard、dtype、seed、搜索预算、采集/插桩及计时口径必须对应；不可比或未解释的回退不能签性能通过。
 
 只有第3层完成，且case、oracle、runner都齐全，板端任务才可写 `board-ready`。只有任务定义所需的第5/6层通过才可
 写 `done`。instruction count、理论makespan、host wall time、SystemC event count和no-card成功都不是实卡性能证据。

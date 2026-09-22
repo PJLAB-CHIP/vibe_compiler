@@ -15,6 +15,7 @@ Physical-dataflow search可以选择明确的transformation参数，但current I
 - TileRegion membership和显式replica choice；operation最终位于loop内或loop外不是choice；
 - 尚未被exact relation唯一决定的temporal tile vector和dependence-legal loop order；
 - attention fixed algorithm下的output/K2 spatial partition、contribution Tile和merge Tile；
+- 对当前Tensor assembly实际读取组保留共享或按已选窗口局部物化的显式选择；不包含任意驻留范围或缓存层级；
 - 针对current value/use的layout、movement、worker或order choice。
 
 必须先进入candidate-owned current IR才能存在的是事实：
@@ -68,7 +69,8 @@ Pipeline position:
   none由baseline-owned materializer从current TensorProgram和固定规则直接构造actual TileModule/TileRegion IR，不创建search choice/domain/state；
   search才枚举Spatial/Region transformation choice并交给search-owned structural materializer。Materializer把selected graph attention
   直接变成每个actual Tile上的三结果online-attention、state endpoints和merge/finalize。两条policy随后从各自candidate current IR建立并
-  立即应用temporal tile-and-fuse；online-attention的K2使用三个DPS state的stateful Tiling，之后确定性分解为Linalg/Tensor/SCF，再依次完成layout/view/bufferization、movement、execution structure、
+  立即应用temporal tile-and-fuse；online-attention的K2使用三个DPS state的stateful Tiling，之后确定性分解为Linalg/Tensor/SCF，
+  在实际Tensor子集的共享选择与局部物化闭合后，再依次完成layout/view/bufferization、movement、execution structure、
   TileRegion-to-Instr、worker/order/completion，再以completion-closed Instr进入共同actual leaf。
 - Output IR / files:
   policy-complete、verifier-valid的TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
@@ -470,9 +472,9 @@ movement消费对应actual relation并删除该argument，该attr不能越过phy
 先给出正确局部destination，再让bufferization决定alias/copy。对照pinned Tensor `foldExtractAfterInsertSlice`，该fold只消除
 紧邻且offset/size/stride相同的insert/extract，不能消除多片段拼接后的较大extract；因此在已选spatial demand的物化owner直接构造，
 不增加e-graph外的普通图等价探索，也不依赖canonicalizer消除完整allocation。
-后续temporal concat查询的exact结论只证明片段值；static concat loop specialization还须在实际生成的slice上证明
-offset grid、静态size及步长满足生成合同。重叠window或其它无法生成static pieces的slice保持读取已有紧凑assembly，
-普通TilingInterface切分继续有效；不能把可选concat融合不支持升级成整个temporal变换的compiler failure。
+后续Tensor子集查询的exact结论只证明片段值；生成器还须证明实际offset、静态size及有限分段可表达。
+重叠window属于共享取舍，不能单凭重复读取拒绝局部实现；真正无法生成static pieces时，显式局部候选返回typed unsupported。
+保留共享是独立实现选择，不是局部生成失败后的静默修复；普通TilingInterface切分与该生成能力分别判断。
 同一次fragment assembly中，相邻片段若来自同一个actual SSA endpoint、相同source rectangle及相同destination rectangle，
 只创建一次extract/insert。该规则利用tensor值不可变和相邻同址覆盖恒等式，不修改ExactDemand集合、owner或归约算术；
 不同endpoint、不同rectangle或中间有其它写入时保持原顺序。覆盖多contribution共用DPS init的重复矩形，
@@ -512,7 +514,7 @@ offset grid、静态size及步长满足生成合同。重叠window或其它无�
 - Output IR / files：只覆盖实际需求的tensor slice、局部reshape和必要的局部拼接；所有新值和来源都有实际SSA。
 - Downstream consumer：原temporal/layout路径、One-Shot Bufferization、movement、Instr及唯一SPM规划。
 - User-level driver / named pipeline：现有spatial与temporal materializer，共享只读关系查询和局部reshape物化；不新增产品入口。
-- Explicit non-goals：不改变选择启发式、SPM准入、数值顺序、dtype或真实full-use；不在allocator补裁剪，
+- Explicit non-goals：不改变SPM准入、数值顺序、dtype或真实full-use；共享选择仅按下述Tensor子集合同处理，不在allocator补裁剪，
   不把完整shape占位留给下游canonicalizer完成局部化，不引入普通graph的e-graph外等价搜索。
 - Completion criteria：组合链的exact读写坐标、主/尾块、共享来源及真实full-use保持；直接下游实际allocation随
   已选局部需求缩小，原ViT及LLaMA block/大GEMM保护走正式产品链验证。
@@ -539,23 +541,18 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 经同一关系的preimage与实际请求相交，得到结果坐标中的局部pieces。先证明pieces恰好覆盖请求，
 再对每个piece证明来源矩形及row-major顺序；仅在这些证明完成后生成紧凑destination和相对offset的拼接。
 来源仍由原fragment/SSA拥有，不按shape恢复owner；无可用有限分解、存在holes或顺序无法证明时保持失败。
-这扩展同一selected-demand物化边界，不扩大请求、不重建完整view，也不改变temporal的全use复用约束。
+这扩展同一selected-demand物化边界，不扩大请求、不重建完整view；是否改变共享次数按下述显式选择判断。
 相比MLIR reshape slice helper按线性化坐标生成循环，已有exact fragments可直接给出有限局部块，
 再用既有normalizer合并同截面的相邻请求，避免按序列行逐元素展开。
 
-多来源拼接的局部化也须跨同一透明view链闭合：输入是current `SubsetInsertionOpInterface`表达的
-完整、无重叠、静态矩形覆盖及其透明view链；查询先由索引interface找到实际拼接值。
-消费者完成temporal tiling后，先将实际subset映射到该值，再沿已有分段边界物化局部拼接，随后交给原layout/Instr/SPM路径。
-满足下述复用证明时，不能因consumer与拼接之间隔着view而保留完整assembly。拼接的原destination不要求是某个具体op：
-完整覆盖证明成立时，其旧内容没有实际读取；不完整、重叠、strided或无法证明的view维持typed拒绝。
-计算producer融合仍要求唯一消费。拼接局部化还必须证明保留复用：从actual subset、SSA作用域及实际循环grid
-检查全部读取；存在其它真实full-use、中间拼接值的其它consumer、重叠需求或无法证明的重复读取时保留原共享拼接，
-不把结构上可切片当成融合授权。
-对需求不变的内层循环，局部拼接放在其外部；若不变循环包围需求相关循环，当前物化器没有跨迭代存储选择，保持原共享值。
-不同读取及各自循环实例必须可证明不重叠，main/tail分别检查；证明只决定是否改写，不参与SPM合法性。
-融合归约完成后须从actual subset重新执行同一局部化，不能只处理普通scope；rank-reduced读取先以单位轴证明恢复
-局部full-rank subset，再组合局部reshape。每次loop specialization后重新读取current IR，不复用失效的嵌套句柄。
-这项扩展不改变所选tile size、计算顺序、dtype、真实full-use及SPM准入，也不增加普通graph等价改写路径。
+多来源拼接的局部化也须跨同一透明view链闭合：查询消费current `SubsetInsertionOpInterface`及其源索引关系，
+把实际subset映射到各来源，再物化选中的局部拼接。完整非重叠覆盖是其中一种情况；部分插入与覆盖重叠须按SSA覆盖顺序
+分别推导插入源和剩余destination需求，不能把旧值当作未初始化。原destination不要求是某个具体op。
+非单位stride、无法证明的view或无法生成的分段返回具体能力限制，不能猜测覆盖。
+局部数据来源证明不授予计算融合权限；计算producer仍由既有Temporal all-use/唯一消费等相应融合合同决定。
+拼接的full-use、中间值观察者和重复窗口由下述共享选择处理，不能把某一种复用策略写成所有局部化的语义限制。
+普通切分、融合归约和结构展开产生的actual subset调用同一实现；rank-reduced读取保持原subset坐标和单位轴关系。
+每次loop specialization或SSA替换后重建查询，不复用失效句柄；最终Tensor边界检查不能依赖早期已经扫描过原consumer。
 
 | 输入等价类 | exact要求 | 下游witness |
 | --- | --- | --- |
@@ -566,8 +563,8 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 | 多来源拼接→透明view→实际temporal subset，1024/1025/1031 | 多块与tail精确覆盖，局部assembly随需求收缩；与直接读取拼接走同一接口路径 | temporal→layout/bufferization→Instr/SPM；原ViT source及block/GEMM保护 |
 | 融合归约内rank-reduced读取，128主块、384归约块跨512拼接边界 | 实际归约覆盖不变，无完整assembly，尾部静态、无条件拼接 | actual Instr/completion/SPM |
 | 同一拼接的source或consumer删除unit维度，rank3/4及1024/1025/1031 | subset坐标保留destination rank；source窗口按标准rank-reduction mask投影，局部结果恢复consumer rank；不扩大读取 | actual temporal→layout→Instr/SPM与decode正式source |
-| 1024/1025/1031拼接输入，需求相关/不变轴的两种循环顺序，Independent/Joint | 不变内层之外只拼接一次；不变外层不得引入逐consumer重建；full-use或重叠读取保留共享值 | actual SCF动态拼接元素量及layout/Instr/SPM；LLaMA两种dtype与三组大GEMM实卡性能保护 |
-| 1024/1025/1031，最终或中间拼接值同时作为observable输出，Independent/Joint | 原共享拼接只在循环外构造一次，局部consumer不得额外重建 | 两个结构输出及实际layout/Instr/SPM |
+| 1024/1025/1031拼接输入，需求相关/不变轴的两种循环顺序，Independent/Joint | 共享实现保持共同构造次数；局部实现只在明确选择后允许重复，计算producer不被复制；不变内层可共用已证明可用的SSA结果 | 两分支actual SCF动态拼接量及layout/Instr/SPM；大GEMM和2048 attention性能保护 |
+| 1024/1025/1031，最终或中间拼接值同时作为observable输出，Independent/Joint | 原观察者及值保持；共享实现不额外重建，局部实现只重接选中的读取并计入额外拼接 | 两个结构输出、两分支实际layout/Instr/SPM与成本 |
 | 均匀literal经reshape，局部image跨原来源行界，FP16/BF16/F32及负零 | 1024/1025/1031、4/16 Tile，局部常量位型、窗口coverage和主/尾部保持 | actual spatial→temporal→Instr/SPM，不因非矩形image重建完整常量 |
 | 无法证明的关系、非unit stride、非透明计算/effect边界 | 不猜测reshape或丢弃语义，保持typed结果；不伪造容量结论 | verifier及负例 |
 | 原始ViT与保护case | 相同source、dtype、默认预算及原数值合同 | fresh package/no-card，串行实卡及匹配性能 |
@@ -576,6 +573,48 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 共享indexing analysis先构造该窗口的slice/insert关系，再与只删除unit维的reshape关系组合。
 插入源需求及未覆盖destination需求均按同一实际窗口求交，不能由较低rank的source shape补猜目标坐标。
 该关系供spatial、temporal及view materializer共同消费；不新增按consumer类型恢复rank的分支。
+
+#### 已选tile的Tensor子集物化与共享选择
+
+本节定义同一局部需求机制的职责边界；详细算法、迁移及本项覆盖矩阵见
+[实施计划](plans/tensor-subset-materialization.md)。实现状态只看progress，不以设计合同代签已有支持。
+
+- Upstream IR / input：当前TileRegion中的实际tensor subset、来源SSA、透明索引链、循环域与选定读取组；
+  Spatial提供当前transaction的真实fragment endpoint，Temporal提供实际切分后需求。
+- Current stage responsibility：只读分析证明来源/覆盖/顺序，纯Tensor物化落实已选需求；Planning/driver显式选择
+  保留共享或局部物化，Temporal的计算融合owner另行消费新暴露的source subset。
+- Output IR / files：现有Tensor/SCF SSA、局部destination与源/目标相对坐标；没有未来buffer、cache或指令清单。
+- Downstream consumer：已选择的计算融合和实际consumer，最终进入08号layout/bufferization、movement及Instr/SPM。
+- User-level driver / named pipeline：现有none/search调用同一原子变换，none不创建搜索session；注册资格入口复用同一实现。
+- Explicit non-goals：不扩展AccessReuse，不搜索任意驻留范围/缓存层级，不改变计算循环顺序或算术，不参与SPM准入；
+  不增加05号e-graph之外的普通图等价搜索，不将Spatial来源绑定与Temporal循环调度合成第二套总体planner。
+- Completion criteria：多维/参数化需求、共享与局部两分支及真实下游闭合；实现计划的完整LM、
+  三项大GEMM及2048 BF16 attention逐项通过功能和性能门槛。输入复用或已验收attention性能回退不能签完成。
+
+`TensorResultIndexing`/`IndexRelation`只保存当前关系。对窗口D和插入区域W，插入源消费D与W的交集经源映射后的集合，
+旧destination消费D去掉W后的集合；共同物化器按准确pieces形成局部值，保持last-writer及rank reduction。
+动态offset由当前有界循环和分支约束推导，不要求裸IV。分片边界、reshape周期和tail采用有界静态尺寸分段；
+不逐元素或逐迭代实例生成代码，不以bounding box替代带holes的集合。
+Opaque计算与loop-carried快照作为当前SSA边界；未选计算融合时只读取已有结果，不复制其算术。
+
+可以证明不重复构造的原确定性局部化继续适用。改变共享或动态拼接次数时，Planning为当前实际读取组提供
+“保留共享”和“局部物化”两种明确实现。真实full-use及其它中间值观察者保持；重叠读取不自动取消局部实现，
+但额外拼接必须实际物化并进入成本。位置由实际依赖/支配/控制流及该实现决定，不成为任意loop-placement搜索。
+不变内层可共享同一已证明可用的局部SSA；不变外层包围相关内层时不虚构跨迭代缓存。
+
+分支在实际Tensor checkpoint发现，克隆同一owner并用IRMapping对应；retile后重新查询，旧句柄和旁路inventory不跨stage。
+共享候选先失败容量不妨碍发现局部候选；局部生成失败也不在同一候选内静默恢复整块。
+新分支沿现有搜索预算计费，原共享合法候选保持可达；选择只描述当前读取与实现方式，不记录预估lifetime。
+每个实际分支都经过verify、fresh analysis、layout/Instr/completion及唯一SPM/cost；accepted IR不按计划重建。
+收益排序不能把footprint估算转为容量准入。
+
+语义Exact、生成Unsupported、ResourceExhausted、BrokenContract和后续实际Capacity分开报告。
+查询/生成约束不允许被一个bool吞掉；候选已选局部实现但生成失败时保留typed原因，post-mutation失败销毁候选。
+最终共同入口在结构展开完成、layout query之前；期间需要继续计算融合时调用同一helper，不保留早/晚两套生成规则。
+Layout preparation若再暴露实际需求，由相应Tensor producer通过同一helper闭合后交出IR；bufferization与allocator不补猜上游需求。
+
+物理搬运外提仍由`PhysicalMovementPlacement`按current SSA/alias/effect证明，AccessReuse仍消费BoundaryMovement后的实际load。
+二者都不承担Tensor assembly需求发现。本项不以扩大AccessReuse资格或重新实现驻留缓存作为正确性前置。
 
 #### 已选局部需求中的规则常量
 

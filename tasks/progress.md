@@ -18,6 +18,18 @@
 
 ## 当前调度
 
+2026-09-23最新要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
+本轮先交付文档；06/08/18号边界与[实施计划](plans/tensor-subset-materialization.md)已同步，代码实现、fresh产品和实卡尚未完成。
+后续顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；仍归`board-testing`，
+不新增队列项，不把扩展AccessReuse中间存储资格列为前置，不重开attention专项优化。
+任一保护项回退或不可比，整改不得签完成；固定case、seed、预算、guard、健康样本和比较门槛见实施计划第7节。
+
+2026-09-23用户授权接续完整单层LLaMA2 LM的S1024/1025 FP16两项实卡，仍归`board-testing`。
+先以当前正式入口重新生成source、合法i64 IDs、完整logits reference及package，通过本轮guard no-card，
+再逐case单次实卡核对全部输出、guard、正常清理和普通耗时；当前处于主机准备，未签board-ready。
+模型接续范围仅这两项；新增通用整改及四项性能保护按上方最新要求，deep搜索、LocalConv性能整改、三轮调优和已收束的attention优化保持后置。
+具体覆盖和证据见[长序列LM接续](plans/board-workload-matrix.md#完整单层lm长序列实卡接续2026-09-23)。
+
 2026-09-22用户授权接续剩余实卡case。仍归`board-testing`，先重签LLaMA block两种dtype及三项大GEMM，
 再完成ViT、GQA、普通/长cache两步decode、mask和其它受通用修改影响的既定配置。
 仅使用当前构建的新source/reference/package；已验收且实现未变的2048 BF16主块与1031 BF16尾块保留有效记录。

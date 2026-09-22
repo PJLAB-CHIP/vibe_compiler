@@ -161,6 +161,11 @@ Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice
 - closed spatial/region choice到actual TileModule/TileRegion的原子物化属于`Transforms/Linalg`；
 - selected temporal choice apply、compact tile/fuse、online-attention decomposition、layout/view/bufferization、movement和execution structure按其真实输入进入
   `Transforms/Linalg`或`Transforms/Tile`；
+- 已选Tensor子集的纯来源/覆盖/顺序证明扩展`Analysis/Linalg`的现有索引分析；共享或局部物化选择属于
+  `Planning/PhysicalDataflow`，当前候选调度属于Driver。共同片段生成进入`Transforms/Linalg`的独立职责文件，
+  Spatial保留endpoint绑定，Temporal保留循环与计算融合；局部物化helper不得调用计算producer tiler或建立物理缓存。
+  `Transforms/Tile`中的PhysicalMovementPlacement与AccessReuse继续只消费相应阶段的实际物理IR，
+  不接管Tensor需求传播；合同及迁移见06号与[子集物化计划](plans/tensor-subset-materialization.md)；
 - candidate-owned current endpoint/materialized-operation-buffer relation、replacement listener和buffer relation query进入`Transforms/Tile`，
   由caller-owned transaction传递且不跨IR epoch；source structured-node attribution不进入该component；
 - completion-closed Instr上的memory、transfer和transport rewrite进入`Transforms/Instr`。
