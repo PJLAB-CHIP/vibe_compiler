@@ -42,9 +42,10 @@
 
 #### 后续性能优化实施方案
 
-本节保留已有profile、各优化点及其验收合同。用户最新要求先设计并实施
-[职责分拆与通用流水两步方案](tile-loop-pipelining.md)：先按职责迁移且保持行为，再做通用流水及attention适配。
-当前只整理设计，原各优化点不取消；下表是原技术顺序，不覆盖上述最新直接前置。
+本节保留已有profile、各优化点及其验收合同。用户最新要求优先完成已有部分实现，再开展尚未实现的优化。
+当前直接前置是tail/输出融合验收及已有方向选择、causal草稿收尾；之后才实施
+[职责分拆与通用流水方案](tile-loop-pipelining.md)。当前顺序由[progress](../progress.md#当前调度)拥有，
+本节下表的编号仅用于对应原技术合同及历史检查点，不表示这些项目都尚未实现，也不覆盖当前顺序。
 全部仍归 `board-testing`。当前开发版本的累加器转置尚无净收益，不能把6.579ms当作已经优于此前5.983ms。
 两者都是历史健康单样本，配置/版本不同；引用记录作比较，不重跑历史包。
 
@@ -67,9 +68,10 @@ NE约0.363ms。这些来自Trace的引擎活动量可以重叠，不能相加或
 | 5．让K/V读取与计算重叠 | 当前 `findLoadPipelines` 要求静态trip count且body不含region；causal loop的上界依赖query、body有if，实际没有进入该路径。优先将可见域拆成全可见steady loop和边界处理，再扩展同一通用pipeline以支持loop-invariant动态上界，物化首块预取、双buffer、末块收尾。 | 先证明load的依赖与跨迭代range，双buffer必须真的进入IR并通过SPM；根据跨worker实际hazard安排completion。分别覆盖0/1/多步、causal boundary和tail，不逐步强插全局join。RDMA活动约0.359ms，只能说明活动量，不能承诺同额净收益；优先级在删复制之后。 |
 | 6．tile与工作分配（后置） | 先处理每块固定成本，再用少量有依据的tile形状比较运算量、指令与actual SPM。当前256² causal有36个pair/head，128²变成136个，score算术仅少约5.6%，不应仅按mask浪费缩tile。28 head按16 Tile分配使12 Tile两head、4 Tile一head。 | 更均匀的head×query分配在该样本最多消除约12.5%的理想工作量不均衡，不代表总延迟必降12.5%。用户此前已暂缓空间切分/搜索预算，此项先保留分析，不随本轮重新打开搜索改造；恢复前明确实际movement和重复读取代价。 |
 
-2、3、4每项先检查current IR，使用本轮变换前后actual instruction/copy count与fresh分析归因；
-在对应owner内改一次、验一次，不同时混入pipeline和tile调整。5依赖复制与方向稳定后再做，否则双buffer会掩盖实际需求。
-既有VuVLoop的非完整分组收尾与第3项一起闭合：按actual view拆成unit64主组和余组，余组使用已有合法VS/VuV或movement，
+2、3、4的既有实现和证据按下方检查点保留；剩余修改先检查current IR，使用本轮变换前后actual instruction/copy count与fresh分析归因。
+各owner内的功能变更分别复审，可在同一当前包完成必要的集成验证；不同时混入pipeline和tile调整。
+5依赖复制与方向稳定后再做，否则双buffer会掩盖实际需求。
+既有VuVLoop非完整分组实现优先收尾：按actual view拆成unit64主组和余组，余组使用已有合法VS/VuV或movement，
 精确检查覆盖与padding；不恢复unit32等合同外实验，也不因目标2048整除而略过其它shape的tail。
 NE活动接近该工作量的理论算术时间，当前优先减少CT/TDMA与串行空隙，而不是先改变GEMM数值图。
 GPU FlashAttention的[分块online softmax](https://github.com/Dao-AILab/flash-attention/blob/main/csrc/flash_attn/src/softmax.h)
@@ -79,6 +81,24 @@ GPU FlashAttention的[分块online softmax](https://github.com/Dao-AILab/flash-a
 设备只测当前指定BF16目标及本项确实影响的增量保护case。最终三次普通计时报告全部样本、中位数与范围，
 profile另列Primary及各引擎/指令热点，不混成一个数。当前恢复会话只执行本轮已准备的生产包；
 不能重启后继续已取消的原生转置专项。
+
+##### 已有改动的收尾与接续
+
+本轮排期核对了工作区diff、既有提交与测试日志。下面列出接续时可沿用的证据和缺口；
+只更新文档，没有追加源码、构建或实卡结果。已实现、主机通过及实卡通过分别记录，不能用“未闭合”统称为未实现。
+
+| 已有改动 | 已取得的实现与验证证据 | 收尾动作 |
+| --- | --- | --- |
+| VuVLoop主块/尾组 | 未提交的`proveUnitVectorBroadcastSlices`及TileToInstr区间物化；`SplitBroadcastCoversPhysicalTailsAndBatchGaps`、`SplitBroadcastExecutesTailsAndBatchGaps`和broadcast-tail lit通过 | 按10/14号补齐未覆盖分支与受影响回归，完成canonical增量/no-op及产品集成验证；整除的2048目标不代签尾组覆盖 |
+| 输出恢复搬运融合 | 未提交的`fuseTransposeLayoutMovements`；`TransposeFusesPrivateLayoutConsumer`、`PermutedPhysicalMovementsCopyExactSourceBytes`通过；融合版本fresh no-card退出0，明确没有设备执行 | 复审与tail共享的改动，补齐当前版本检查后上板验证数值、guard、正常退出和实际搬运/总耗时，再提交 |
+| 累加器方向 | 整链转置已有实现及实卡数值证据；此前输出小颗粒GS造成的回退已有记录 | 接输出融合后的实际指令、搬运成本及必要实测，按05/10号完成采用方向的取舍，不把转置实现重新列为待开发 |
+| causal全可见前缀 | `AttentionVisibility.cpp`已有`splitFullyVisiblePrefix`草稿和05号合同补充；尚无该草稿的构建、回归或产品证据 | 方向取舍后补齐原迭代网格、空/单/多步、边界与state接续验证，沿普通串行产品路径完成验收及提交；不依赖先实现通用流水 |
+| 行状态复制 | 等字节序copy、初始化读取转交均已提交并通过实卡；发布复制已有通用实现，但目标残余不一定符合其条件 | 保留已完成结果；职责分拆后只复查残余的实际alias/use/effect，说明可消除项或必须保留的原因，再让流水消费相同优化结果 |
+
+tail与融合可以使用同一当前BF16产品包作集成验证，分别保留主机机制证据；组合计时不声称单项收益。
+该包的no-card只证明对应编译版本的构包路径，不能代签后来加入的causal草稿或最终工作区状态；
+后续源码变化影响产品时按变更重新验证。每项按职责提交，已有功能完成后再以该版本开展纯职责迁移。
+迁移只验证行为保持；通用流水新增行为及K/V重叠另按流水计划矩阵验收。最终健康样本和独立profile仍按本节完成合同执行。
 
 **Explp实现检查点**：统一映射及host近似reference已完成，BF16目标fresh source、合法输入、独立reference、package与no-card通过。
 16 Tile共64个静态指数调用点全部为 `wafer_tx81_elementwise_exp_lp`，每Tile含两处256元素行指数和两处65536元素score指数，
@@ -123,7 +143,7 @@ fresh no-card及三次普通实卡通过，耗时4.494/4.454/4.410ms，中位数
 fresh prepare为227.98s，峰值RSS 1,017,308KiB。初次夹具与环境错误及修正保留于[证据](../../docs/data/board-performance/attention-row-copy-20260922.json)。
 剩余行state的输入快照和循环state发布copy未删除：旧m还要参与alpha计算，不能把新旧状态直接合并；
 可进一步检查完整覆盖的逐元素计算能否直接读取copy源并写独立目标，目前只是待证明方向。VuVLoop主块/尾组仍未闭合。
-完成这部分后继续第4项输出恢复/整链方向，再推进第5项K/V重叠；没有重新打开tile/head搜索或原生转置。
+该检查点的后续安排已由顶部当前顺序取代；没有重新打开tile/head搜索或原生转置。
 
 **第3项初始化读取转交检查点（2026-09-22）**：上述待证明方向已按10号合同落实到同一StorageInitialization。
 物理映射/footprint相同、首个完整逐元素写入且区间内源未改写时，Max/Add直接读取旧source，保留独立的新destination；
@@ -132,7 +152,7 @@ fresh no-card及三次普通BF16实卡通过，耗时4.425/4.461/4.486ms，中�
 没有可确认的总耗时收益。7,340,032个输出指标与上一版相同；10752字节guard、16 Tile完成、厂商正常退出和日志健康均通过。
 20项直接回归含新增198种dtype/extent/Add-Max/结构组合，30项相关lit及完整513项Transforms回归全部通过。
 canonical增量及随后Ninja no-op通过，fresh prepare为230.78s、峰值RSS 1,027,692KiB。
-输入复制删除不代表行state的所有发布copy都可合并；分组tail、输出恢复/整链方向和K/V重叠继续按上方合同推进。
+输入复制删除不代表行state的所有发布copy都可合并；后续新增实现及其缺口见“已有改动的收尾与接续”。
 本包未追加profile，指令减少不代签瓶颈收益；[本轮证据](../../docs/data/board-performance/attention-initial-read-20260922.json)。
 
 #### Attention展开方向与VuVLoop实施方案

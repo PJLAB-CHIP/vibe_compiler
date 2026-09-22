@@ -1,8 +1,9 @@
 # Tile职责分拆与通用循环流水实施方案
 
 本计划归`board-testing`，状态和直接前置只由[progress](../progress.md)拥有。
-用户最新要求是先完成方案设计，再依次做职责分拆、通用流水优化。本文的文件布局和能力矩阵是实施目标，
-不能据此宣称代码已拆分、动态流水已接入或设备性能已改善。
+用户最新要求先完成已有部分实现，再开展尚未实现的优化。职责分拆与通用流水设计已完成，
+实施前先按[性能计划](board-workload-matrix.md#已有改动的收尾与接续)完成已有改动及方向取舍。
+本文的文件布局和能力矩阵是实施目标，不能据此宣称代码已拆分、动态流水已接入或设备性能已改善。
 稳定语义由[10号第9节](../10-compute-movement.md#9-循环流水与存储优化的职责边界)拥有，源码组织遵循18号，
 作用域及变换规则遵循19号，完成与内存分别遵循11/09号；本计划不建立第二套IR或同步协议。
 
@@ -18,8 +19,8 @@
 - 完成条件：先通过拆分的行为保持门禁，再通过通用流水矩阵及目标实卡；两部分分别提交和说明验证边界。
   只完成源码拆分不能标记通用流水或整个attention优化完成。
 
-此前已修改的tail、输出融合和causal prefix草稿保留为独立未完成改动。实施拆分前明确可构建的对照基线，
-记录现有差异及验证边界；不在拆分提交中混入新优化，也不丢弃已有工作。
+此前已修改的tail、输出融合和causal prefix草稿先分别补齐功能验证并提交，累加器方向结合输出融合结果完成取舍。
+职责拆分以这些已完成改动组成的版本为对照基线，记录代表IR和测试；不在拆分提交中混入新优化。
 
 ## 2. 已核实的问题及归属
 
@@ -48,7 +49,7 @@
 | `RotatingBuffers.cpp` | allocation preflight、槽创建、轮转view/select、最后槽及owner更新 | actual root＋loop＋显式multiplicity → actual allocations/SSA；循环变换 |
 | `StorageOptimization.cpp` | private scalar读取、GEMM/elementwise写回转交、private publication、last-use复用、loop destination确定 | actual use/alias/effect → 改写后的Tile IR；driver下游 |
 | 现有`StorageInitialization.cpp` | 保留已有初始化内容与覆盖证明 | actual private storage → 删除无观察者的初始化；存储优化 |
-| `MovementFusion.cpp` | 已有工作中的transpose＋layout融合按此归属接续，功能验收独立于纯拆分 | 两段实际movement → 一段等价movement；Tile→Instr |
+| `MovementFusion.cpp` | 从拆分前已验收的transpose＋layout融合实现迁入，保持行为 | 两段实际movement → 一段等价movement；Tile→Instr |
 | 现有`PhysicalMovementPlacement.cpp` | 保持搬运位置调整的职责 | actual movement/loop invariance → 移动后的operation；driver |
 | 现有`CurrentIRExecutablePipeline.cpp` | 组合上述变换并保留typed失败传播 | 同一candidate owner → 后续fanout/Instr；production driver |
 
@@ -138,7 +139,7 @@ none/search都接入同一实现，控制scope绑定依靠current typed coordina
 
 ### 4.5 Attention只作为上游适配和验收输入
 
-05号visibility按actual位置与原循环网格拆全可见前缀和边界段，前者移除位置mask，后者保留原mask。
+复用前序已完成的05号visibility拆分：按actual位置与原循环网格拆全可见前缀和边界段，前者移除位置mask，后者保留原mask。
 两段访问的并集必须等于原可见域，三项state按KV顺序接续。它生成普通SCF输入，
 LoadPipelining/LoopPipelining不读取causal/head标志，不识别固定256/2048。
 普通load→逐元素计算→store及load→GEMM→state也须经过同一入口，证明规则不依赖attention。
@@ -178,9 +179,15 @@ issue间隙、buffer及完成域；RDMA活动周期不是可直接扣除的总�
 
 ## 6. 提交及接续顺序
 
-1. 设计：同步本计划、10号合同、18号源码边界及progress；本次只交付这一步。
-2. 职责分拆：按第3节完成迁移和行为保持检查，独立提交。
-3. 通用流水：先共同输入/依赖与动态域，再条件、rotation/completion/SPM和driver接入；按完整矩阵验证后提交。
-4. attention适配与性能：闭合05号可见域、fresh no-card及实卡profile，记录实际收益；接回原输出恢复、方向选择等未完成优化。
+1. 已有实现收尾：先完成VuVLoop尾块与输出融合的回归和当前版本实卡，再根据实际输出成本完成累加器方向取舍。
+   两项可共用同一当前产品包验证，性能按组合结果报告；既有专项只对变动或未覆盖部分补测，不重复运行历史包。
+2. 已有上游草稿：完成05号causal前缀/边界拆分的构建、exact覆盖、state接续和产品验证，独立提交。
+   本步只生成普通串行循环；后续流水直接消费它，不再单独重做attention拆分。
+3. 职责分拆：按第3节完成迁移和行为保持检查，独立提交；对照基线包含前两步已经完成的功能。
+4. 剩余存储优化：按性能计划复查残余行状态发布复制，证明和处理仍可消除的部分，保留必要的旧值读取与独立目标。
+   已验收的等字节序copy与初始化读取转交不重新实现；这一阶段结果进入串行/流水的共同输入。
+5. 通用流水：先共同输入/依赖与动态域，再条件、rotation/completion/SPM和driver接入；按完整矩阵验证后提交。
+6. K/V接入及最终性能：复用第2步可见域与第4步存储结果，完成fresh no-card、实卡与独立profile，记录实际收益和剩余瓶颈。
 
-这份计划插入原attention优化主线，不取消其它已授权优化点；当前先完成设计，尚未开始按本方案拆源码。
+本次只调整接续顺序和验证边界，未执行新构建或板测；源码拆分与通用流水实现仍待前置完成。
+稳定设计不因排期改变；全部归同一board-testing，不新增work item，也不重新打开head/tile搜索。
