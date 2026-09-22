@@ -523,6 +523,14 @@ destination-style DDR load/store，跨Tile值变成matching peer send/recv与其
 
 ## 6. Tile-to-Instr Conversion
 
+Mapped elementwise的输入物化产生独立scratch，不继承`elementwise_into`目标subview的offset或parent stride。
+scratch保持目标shape与encoding、输入dtype，使用自有紧凑memref布局；原目标subview及其动态地址保持。
+原有physical traversal proof必须证明scratch到目标的逐元素遍历一致，再生成原GS/fill及CT指令。
+这修正临时allocation的storage身份，不改变映射、数值、布局选择或同步；不为未证明的非连续目标选择替代实现。
+输入为已闭合TileRegion的typed maps/SSA view，输出为verifier-valid Instr allocation、movement及compute，
+直接消费者仍为completion与actual SPM规划。覆盖1024/1025/1031、FP16/BF16/F32、静态/动态偏移、
+广播/置换和已知均匀fill，检查scratch独立且目标地址保留；原混合卷积及S16完整LM双dtype提供source到实卡witness。
+
 conversion按concrete typed op class使用DialectConversion/RewritePattern，生成：
 
 - RDMA、WDMA和GatherScatter movement；

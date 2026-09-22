@@ -2257,3 +2257,14 @@
 - 修复：递归同时传递base、剩余axes和当前`inner_bytes`，directional DMA的连续性检查使用同一payload基数。
 - 防复发：rank4的1024/1025/1031、F16/BF16/F32，独立执行实际SCF及descriptor并逐字节核对源地址和目标唯一覆盖。
   相同descriptor可能合并成SCF循环，测试不能只遍历静态GS site而遗漏动态执行。
+
+## 目标转交后的独立scratch不能继承view地址布局
+
+- 根因：逐元素发布消除把计算目标从private allocation转交到实际subview；下游mapped operand物化仍复制目标memref布局，
+  将view的动态offset带入新的独立allocation，产生缺少symbol operand的非法`memref.alloc`。
+  这是原case被后续跨stage优化触发的回归，不能因单独的转交测试通过就认为下游覆盖完整。
+- 修复：新scratch保持shape、dtype和memory encoding，使用独立紧凑memref布局；原目标subview及动态地址保持。
+  普通映射和uniform fill分支都先证明physical traversal一致，不能靠fill分支绕过不连续目标的合法性检查。
+- 防复发：以动态循环内实际“计算→copy发布”为输入，先运行目标转交，再经过Instr、completion和SPM规划；
+  覆盖三种dtype、1024/1025/1031及uniform/nonuniform，并检查目标仍为原view、scratch为独立allocation。
+  产品witness保留原混合卷积、S16完整LM和sigmoid三种长度的完整实卡，不将最小复现当作产品验收。

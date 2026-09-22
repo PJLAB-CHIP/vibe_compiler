@@ -821,9 +821,15 @@ public:
           return mlir::failure();
         sourceType = inputRewrite.predicateType;
       }
+      // This operand is new owned storage. An into destination may be a
+      // subview whose offset and parent strides belong only to that alias.
       inputRewrite.materializedType = mlir::MemRefType::get(
           resultType.getShape(), sourceType.getElementType(),
-          resultType.getLayout(), resultType.getMemorySpace());
+          mlir::MemRefLayoutAttrInterface{}, resultType.getMemorySpace());
+      if (mlir::failed(proveIdentityPhysicalTraversal(
+              rewriter, op, inputRewrite.materializedType, resultType,
+              descriptorCache, "materialized tile.elementwise operand")))
+        return mlir::failure();
       if (!inputRewrite.predicateType)
         inputRewrite.fillValue = getPrivateFillValue(input, op.getOperation());
       if (inputRewrite.fillValue) {
@@ -863,10 +869,6 @@ public:
         inputRewrite.descriptors.assign((*descriptors)->begin(),
                                         (*descriptors)->end());
       }
-      if (mlir::failed(proveIdentityPhysicalTraversal(
-              rewriter, op, inputRewrite.materializedType, resultType,
-              descriptorCache, "materialized tile.elementwise operand")))
-        return mlir::failure();
       inputRewrites.push_back(std::move(inputRewrite));
     }
 

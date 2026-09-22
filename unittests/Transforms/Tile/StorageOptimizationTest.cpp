@@ -1755,6 +1755,91 @@ TEST(StorageOptimizationTest, PrivateSnapshotForwardingKeepsSeparateGemmPsum) {
       }
 }
 
+TEST(StorageOptimizationTest, MappedPublicationIntoSubviewReachesMemoryPlanning) {
+  for (auto dtype : {"f16", "bf16", "f32"})
+    for (int64_t extent : {1024, 1025, 1031})
+      for (bool uniform : {false, true}) {
+        SCOPED_TRACE(::testing::Message() << dtype << '/' << extent << '/'
+                                          << uniform);
+        auto context = createContext();
+        const std::string memory = ", #wafer.memory<spm, tensor>>";
+        const std::string base = "memref<1x2x4x" + std::to_string(extent) +
+                                 "x" + dtype + memory;
+        const std::string owned = "memref<1x1x4x" + std::to_string(extent) +
+                                  "x" + dtype + memory;
+        const std::string view =
+            "memref<1x1x4x" + std::to_string(extent) + "x" + dtype +
+            ", strided<[" + std::to_string(8 * extent) + ", " +
+            std::to_string(4 * extent) + ", " + std::to_string(extent) +
+            ", 1], offset: ?>" + memory;
+        const std::string rhs = "memref<4x" + std::string(dtype) + memory;
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main() { wafer.tile.region() -> () {\n"
+               "%base = memref.alloc() : "
+            << base << "\n%rhs = memref.alloc() : " << rhs << '\n';
+        if (uniform)
+          out << "%two = arith.constant 2.0 : " << dtype
+              << "\nwafer.tile.fill %rhs, %two : " << rhs << ", " << dtype
+              << '\n';
+        out << "%c0 = arith.constant 0 : index\n"
+               "%c1 = arith.constant 1 : index\n"
+               "%c2 = arith.constant 2 : index\n"
+               "scf.for %i = %c0 to %c2 step %c1 {\n"
+               "%view = memref.subview %base[0, %i, 0, 0] [1, 1, 4, "
+            << extent << "] [1, 1, 1, 1] : " << base << " to " << view
+            << "\n%temporary = memref.alloc() : " << owned
+            << "\nwafer.tile.elementwise_into <add> %view, %rhs into "
+               "%temporary {indexing_maps = [affine_map<(a,b,c,d)->(a,b,c,d)>, "
+               "affine_map<(a,b,c,d)->(c)>, "
+               "affine_map<(a,b,c,d)->(a,b,c,d)>]} : "
+            << view << ", " << rhs << " into " << owned
+            << "\nwafer.tile.copy_into %temporary into %view : " << owned
+            << " into " << view << "\n} wafer.tile.yield } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module) << text;
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        mlir::memref::SubViewOp destination;
+        TileRegionOp region;
+        module->walk([&](mlir::memref::SubViewOp op) { destination = op; });
+        module->walk([&](TileRegionOp op) { region = op; });
+        ASSERT_TRUE(destination);
+        ASSERT_TRUE(mlir::succeeded(optimizeStorageForTest(*module)));
+        unsigned writers = 0, copies = 0;
+        module->walk([&](ComputeElementwiseIntoOp op) {
+          ++writers;
+          EXPECT_EQ(op.getDest(), destination.getResult());
+        });
+        module->walk([&](MoveCopyIntoOp) { ++copies; });
+        EXPECT_EQ(writers, 1u);
+        EXPECT_EQ(copies, 0u);
+        TileRegionToInstrLoweringSession session(*context);
+        ASSERT_TRUE(mlir::succeeded(convertTileRegionToInstr(region, session)));
+        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+        unsigned computes = 0;
+        module->walk([&](InstrElementwiseOp op) {
+          ++computes;
+          EXPECT_EQ(op.getDest(), destination.getResult());
+          ASSERT_EQ(op.getInputs().size(), 2u);
+          EXPECT_EQ(op.getInputs()[0], destination.getResult());
+          auto scratch =
+              op.getInputs()[1].getDefiningOp<mlir::memref::AllocOp>();
+          ASSERT_TRUE(scratch);
+          EXPECT_TRUE(scratch.getType().getLayout().isIdentity());
+          EXPECT_EQ(scratch.getType().getShape(),
+                    destination.getType().getShape());
+          EXPECT_EQ(scratch.getType().getElementType(),
+                    destination.getType().getElementType());
+        });
+        EXPECT_EQ(computes, 1u);
+        ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*module)));
+        EXPECT_TRUE(mlir::succeeded(
+            planSPMMemoryModule(*module, 0, 3 * 1024 * 1024, 16)));
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      }
+}
+
 TEST(StorageOptimizationTest, ElementwisePublicationPreservesOldDestination) {
   enum class Case {
     Direct,
