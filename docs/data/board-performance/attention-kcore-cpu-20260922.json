@@ -1,0 +1,796 @@
+{
+  "date": "2026-09-22",
+  "scope": "普通RISC-V CPU候选评估；四项全部撤回，无已确认性能收益",
+  "baseline_commit": "7395c355",
+  "baseline_samples_ms": [
+    3.852,
+    3.845,
+    3.878
+  ],
+  "baseline_median_ms": 3.852,
+  "historical_packages_rerun": false,
+  "trace_used_for_performance": false,
+  "runtime_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "compiler_sha256": "21dc3c1ce0195e80fd894d72fa2d6cec65cdd02bd071cac2c3ec9a3316a22a14",
+  "artifacts": "/data/vibe_compiler-validation/attention-closure-20260922",
+  "analysis_artifacts": "/data/vibe_compiler-validation/kcore-cpu-20260922",
+  "variants": [
+    {
+      "name": "cpu-inline",
+      "configuration": "CRT与kernel合并bitcode；LLVM O2；原标量ISA",
+      "adopted": false,
+      "samples_ms": [
+        4.346,
+        4.374,
+        4.305
+      ],
+      "median_ms": 4.346,
+      "elf_bytes": 208888,
+      "elf_sha256": "2589e310f945ee54101cd77cba77b336c71a4dc9928b77b258c8cdf7c54b76d4",
+      "manifest_sha256": "1eca253d395d1e28a4f4224d87872b64d60e8fbcabc603157c0a338cb52cc649",
+      "ir_comparison": {
+        "target-llvm": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        },
+        "instruction": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        }
+      },
+      "no_card_exit_status": 0,
+      "preparation_wall_time": "2:16.50",
+      "preparation_max_rss_kib": 893756,
+      "measurements": [
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "1eca253d395d1e28a4f4224d87872b64d60e8fbcabc603157c0a338cb52cc649",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=4346000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "1eca253d395d1e28a4f4224d87872b64d60e8fbcabc603157c0a338cb52cc649",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=4374000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "1eca253d395d1e28a4f4224d87872b64d60e8fbcabc603157c0a338cb52cc649",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=4305000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpu-compact",
+      "configuration": "CRT与kernel合并bitcode；LLVM Os；C908可表达标量features",
+      "adopted": false,
+      "samples_ms": [
+        4.156,
+        4.163,
+        4.075
+      ],
+      "median_ms": 4.156,
+      "elf_bytes": 170832,
+      "elf_sha256": "1f0f7f790afdebcb12863fb4403947a081d6814898bc164aede063fa4cf53daf",
+      "manifest_sha256": "8aa5e82b630eabd5e57bc702a84d96b5a3614c494289613b2cdb46fb13c4b4f9",
+      "ir_comparison": {
+        "target-llvm": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        },
+        "instruction": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        }
+      },
+      "no_card_exit_status": 0,
+      "preparation_wall_time": "2:29.58",
+      "preparation_max_rss_kib": 893924,
+      "measurements": [
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "8aa5e82b630eabd5e57bc702a84d96b5a3614c494289613b2cdb46fb13c4b4f9",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=4156000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "8aa5e82b630eabd5e57bc702a84d96b5a3614c494289613b2cdb46fb13c4b4f9",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=4163000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "8aa5e82b630eabd5e57bc702a84d96b5a3614c494289613b2cdb46fb13c4b4f9",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=4075000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpu-native",
+      "configuration": "厂商GCC CRT；仅LLVM kernel Os及C908标量features",
+      "adopted": false,
+      "samples_ms": [
+        3.987,
+        3.869,
+        3.925
+      ],
+      "median_ms": 3.925,
+      "elf_bytes": 130168,
+      "elf_sha256": "54802ca5e11eebf7d2ceb225d8f47a6177e70a62029a4e21812991803c4c795f",
+      "manifest_sha256": "5949f43858d5cb28a1c9c4759924e557ec9060dc41ceafc00a6764a1157ef26d",
+      "ir_comparison": {
+        "target-llvm": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        },
+        "instruction": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        }
+      },
+      "no_card_exit_status": 0,
+      "preparation_wall_time": "2:28.74",
+      "preparation_max_rss_kib": 892112,
+      "measurements": [
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "5949f43858d5cb28a1c9c4759924e557ec9060dc41ceafc00a6764a1157ef26d",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3987000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "5949f43858d5cb28a1c9c4759924e557ec9060dc41ceafc00a6764a1157ef26d",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3869000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "5949f43858d5cb28a1c9c4759924e557ec9060dc41ceafc00a6764a1157ef26d",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3925000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpu-issuer",
+      "configuration": "原工具链/优化级别；五类CRT helper直接调用同一个SDK __execute_*",
+      "adopted": false,
+      "samples_ms": [
+        3.927,
+        3.987,
+        3.871
+      ],
+      "median_ms": 3.927,
+      "elf_bytes": 130008,
+      "elf_sha256": "a47a5ffdadefe9c4d006f1b3a7b661c57813a89acbaf2b4f179eb996b46c46a6",
+      "manifest_sha256": "e3700fcf5d366832b08aa9bec6f858857b5773f834f01a03d914de2bf128e494",
+      "ir_comparison": {
+        "target-llvm": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        },
+        "instruction": {
+          "files": 16,
+          "all_identical_to_baseline": true
+        }
+      },
+      "no_card_exit_status": 0,
+      "preparation_wall_time": "2:13.66",
+      "preparation_max_rss_kib": 893412,
+      "measurements": [
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "e3700fcf5d366832b08aa9bec6f858857b5773f834f01a03d914de2bf128e494",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3927000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "e3700fcf5d366832b08aa9bec6f858857b5773f834f01a03d914de2bf128e494",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3987000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        },
+        {
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": null,
+            "search_width": null,
+            "search_trials": null,
+            "manifest_sha256": "e3700fcf5d366832b08aa9bec6f858857b5773f834f01a03d914de2bf128e494",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3871000"
+            ]
+          },
+          "health": {
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21"
+          }
+        }
+      ]
+    }
+  ],
+  "tail_qualification": {
+    "cpu-inline-tail": "fresh no-card通过；因主块退化取消板测",
+    "cpu-issuer-tail": "fresh no-card通过；因主块未获益取消板测"
+  },
+  "host_checks": {
+    "experimental_tools_lit": 26,
+    "experimental_component_ctest": 8,
+    "issuer_component_ctest": 7,
+    "issuer_tools_lit": 26,
+    "canonical_after_revert": "通过；生产源码与7395c355相同",
+    "restored_crt_and_device_link_lit": 2,
+    "canonical_noop": true
+  },
+  "cache_audit": {
+    "live_csr_read": false,
+    "firmware_csr_write": false,
+    "hardware_cache_capacity": "unknown",
+    "system_init": "D-cache未启用时MHCR |= 0x1fe；I-cache未启用时MHCR |= 1；MHINT |= 1 << 19 (ECC)",
+    "installed_binary_snapshot_sha256": "dcdc428b6fc78c6f6e070fa8e68e468942e1cc688315d41a8d4083be096907cf",
+    "sdk_elf_sha256": "c2702e5cdec1bd61ba4a25f84411452f3a7f1ddebd7405443e7f4924e70b75b6"
+  },
+  "experimental_patch_sha256": {
+    "cross-module-trial.patch": "c278d55f382e72ee682d59702e6177b32832588687b3304fce5ddf12200bda60",
+    "typed-issuer-trial.patch": "c27b299bf326a9f5dcf285dd388cc2d35ebc942efd7d9269fbaa1e8d1776371f"
+  }
+}

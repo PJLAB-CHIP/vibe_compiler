@@ -2,6 +2,30 @@
 
 ## 当前执行约束（2026-09-20用户修正）
 
+### RISC-V CPU指令准备优化
+
+用户授权优化普通程序CPU开销，trace不纳入目标；归board-testing，合同与覆盖见14号。
+2026-09-22本轮四个候选均完成fresh主块no-card和各三次健康普通实卡：跨模块O2、跨模块Os/C908、
+仅kernel Os/C908、已知engine直接SDK分派。中位数分别4.346/4.156/3.925/3.927ms，均未优于已有3.852ms记录。
+它们已全部撤回，不保留试验开关、第二套CRT编译或未采用测试fixture；生产代码保持7395c355。
+本轮未重跑历史包、未改算术/同步/布局/搜索、未发生设备fatal或timeout；结果与身份见
+[CPU候选评估](../../docs/board-performance-results.md#2026-09-22risc-v-cpu候选评估)。
+
+跨模块和SDK分派两个版本另已完成1031尾块fresh no-card，因主块不获益而不继续其板测；不能算尾块实卡通过。
+实验阶段26项Tools、Driver/CodeGen/Runtime/Target等门禁通过；最终全部撤回后核对源码身份和canonical/no-op。
+这轮完成的是四个候选的评估，CPU性能收益未闭合，不声明CPU已优化完。
+
+用户随后提出C908 cache配置方向，优先核对当前核的MHCR/MHINT、代码与栈的cacheable属性、
+单Tile热点代码工作集及CPU miss/stall计数。固件初始化已设置cache/写回/写分配/预测，
+不能把“打开cache”当作尚未实现的优化；实际CSR、容量及预取设置仍unknown，不写猜测配置。
+本项的静态证据与限制见同一性能记录。SDK packet构造调查接在该核对之后。
+
+随后核对SDK builder与issuer对packet的字段读写，区分每次变化的地址与循环不变量。
+已确认GS packet为128字节，CRT发射前清零，SDK `__execute_td`发射后又清零；直接缓存同一packet不能保留配置。
+后续若外提固定字段准备，必须在代码前补实际循环IR、唯一owner、可变字段及SDK调用合同；
+不能通过去掉未经证明的初始化、跳过SDK清理或增设全局可变缓存来实现。
+CPU发射区间也可能含引擎反压，本轮没有纯CPU周期测量，不把Primary减去引擎活动量当作可优化CPU成本。
+
 ### BF16 2048性能目标与通用修复合同
 
 用户将本轮性能目标指定为seqlen 2048，随后明确先只跑BF16，并要求通用pass改动必须分析根因和general适用性。

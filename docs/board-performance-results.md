@@ -16,6 +16,43 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-22：RISC-V CPU候选评估
+
+本轮只评估普通Kcore CPU控制程序，BF16 `[1,28,2048,128]`；关闭Host寄存器采集和设备trace。
+以7395c355的已有健康3.852/3.845/3.878ms记录作对照，不重跑历史包。
+四个候选分别重新从source构包并通过本轮no-card，各完成三次实卡；全部16份Instr和target LLVM与基线逐字节一致。
+
+| CPU变更 | 普通device elapsed，ms | 中位数，ms | 取舍 |
+| --- | --- | --- | --- |
+| CRT bitcode与kernel合并、LLVM O2 | 4.346 / 4.374 / 4.305 | 4.346 | 退化，撤回 |
+| 上述跨模块方案改为Os及C908可表达的标量features | 4.156 / 4.163 / 4.075 | 4.156 | 仍退化，撤回 |
+| 厂商GCC CRT不变，仅kernel Os及标量features | 3.987 / 3.869 / 3.925 | 3.925 | 未确认收益，撤回 |
+| 原工具链，仅省去已知engine的TsmExecute分派 | 3.927 / 3.987 / 3.871 | 3.927 | 未确认收益，撤回 |
+
+12次运行的7,340,032输出均无超阈值差异，cosine 0.9999981331、relative L2 0.00193234，
+10752字节guard、16 Tile完成、运行窗口日志和正常退出均健康。没有设备fatal/timeout。
+跨模块与直接分派两个候选另完成1031尾块fresh no-card；主块已不获益，不继续尾块板测，不记为尾块实卡通过。
+所有实验实现和临时fixture已撤回，生产代码与7395c355一致；这轮未取得新的性能优化收益。
+
+忙Tile原有2720次CRT命令调用，GS占1172次。跨模块常量传播确实消除了部分wrapper调用和固定参数分支，
+但同时改变CPU指令选择与代码体积：整个ELF从130168字节增至208888字节；Os版本为170832字节。
+不能只凭这些变化把退化归因于I-cache，也不能以消掉调用代签性能收益。
+直接SDK issuer实验保持packet、worker和发射函数一致，host oracle覆盖五种engine、三个worker及普通/profile返回值语义，
+主块仍无净收益。CPU调用区间可能包含MMIO反压；本轮没有纯CPU cycle或cache-miss读数，不能通过Primary减引擎活动量估算它。
+
+SDK反汇编确认：GS builder只填写部分字段，`__execute_td`会写出其它字段，且发射后清零128字节packet。
+CRT入口另清零一次；这是后续减少构造工作的切入点，但不能直接删初始化或缓存发射后的空packet。
+实验阶段26项Tools与8项Driver/CodeGen/Runtime/Target等CTest通过；直接分派最终26项Tools与7项相关CTest通过。
+撤回后canonical增量与无源码变化的Ninja no-op通过，恢复后的CRT/device-link两项检查通过。
+具体样本、数值、身份、no-card wall/RSS和外部实验artifact见[CPU候选证据](data/board-performance/attention-kcore-cpu-20260922.json)。
+
+用户随后提出cache配置方向。对发行Kcore binary与SDK ELF的静态核对确认，`SystemInit`在D-cache关闭时
+执行`MHCR |= 0x1fe`，在I-cache关闭时执行`MHCR |= 1`；SDK字段覆盖cache enable、写回、写分配及分支预测。
+发现的`MHINT`显式初始化是ECC bit19，不能据此推断其它bit的当前值，也不能证明预取开关状态。
+实际CSR、L1/L2容量、预取字段和代码/栈地址属性仍待确认；本轮没有改缓存寄存器。
+基线整个`.text`为111342字节，但其中`entry`合并16个Tile的分支，不能把整包大小当单核热点工作集。
+进一步判断应按单Tile实际路径统计热代码，并结合C908 CPU的miss/stall计数；当前NPU引擎PMU不提供这项证据。
+
 ## 2026-09-22：循环累加器保持NCx
 
 BF16 `[1,28,2048,128]`，当前新包三次无采集、无插桩实卡为 **3.852 / 3.845 / 3.878ms**，

@@ -79,14 +79,21 @@ void __AddVV(void *src0, void *src1, void *dst,
 但当前checkout没有这些定义，`op_fw_sim_if`的host CMake也只建立include-only INTERFACE target。附带instruction、
 common-util和Kcore archive都是RISC-V object，不能直接形成x86 wrapper/packet model。
 
-当前repo CRT使用per-op `TsmNew*`取得method table并填写栈上`Tsm*Instr`；GEMM由Wafer CRT按独立operand范围直接发射NE寄存器，
-其余普通指令调用`TsmExecute`，随后释放method table。它不调用
+当前repo CRT借用厂商`module_init/module_cleanup`管理的`g_intrinsic()` method table，并填写调用内的`Tsm*Instr`；
+GEMM由Wafer CRT按独立operand范围直接发射NE寄存器，其余普通指令调用`TsmExecute`，不逐指令分配或释放method table。它不调用
 operator-table入口`initTsmOpPointer_cmodel`。因此仅取得该initializer不足以host化当前CRT。只有tasks/17定义的external
 authorization/spec gate通过后，才可由许可兼容provider或经确认允许的独立规范实现host Tsm operator；此时`TsmExecute`
 必须在返回前完成decode或复制异步所需字段，绝不能保存caller栈指针。这种packet只证明其明确provenance下的CRT/builder路径，直到与RISC-V archive
 register trace、board capture或versioned vendor builder逐字段相关后，才可增加vendor-exact claim。target model的接入和
 gate由`tasks/17`/`tasks/16`拥有，不由本证据附件决定SystemC或其它实现技术。上述复制只针对`Tsm*Instr` bytes，不代表
 Direct DTE payload snapshot；DTE source具体读取时刻仍需vendor/board证据。
+
+`supported`的SDK静态证据：当前`instr_adapter.h`公开CT/NE/RDMA/WDMA/TDMA的`__execute_*`，
+`TsmExecute`通过packet类型分派到这些入口。`TsmDataMoveInstr`为128字节；`__datamove_gatherscatter`
+只填写该操作所需字段，而`__execute_td`仍会读取并写出其它TDMA字段，因此不能直接删除CRT初始化。
+`__execute_td`在发射与`debug_td_info`之后调用`memset(packet, 0, 128)`，返回值为1；
+下一次调用不能假设packet保留旧配置。以上来自当前SDK archive反汇编，不能外推其它版本或所有engine。
+直接分派的普通实卡实验未确认性能收益，生产仍使用原入口，见板端性能记录。
 
 ## Triton CRT 对照路径
 
