@@ -1,10 +1,15 @@
 # Physical Dataflow Current-IR实施计划
 
-## 2026-09 架构收敛施工合同（进行中）
+当前本计划只承接`production-host-readiness`的现版本主机矩阵。
+`mesh-communication-materialization`已退出独立待开发队列：已有实现与历史验收保留，
+现版本主机验证和实卡分别由Q53与`board-testing`拥有，不再次安排笼统的“通信边界复核”。
+提交、证据及归属见[通信任务调度收拢](../archive/mesh-communication-task-reconciliation.md)。
+
+## 2026-09 架构收敛合同与历史验证
 
 此前文档把若干实现结果过早写成“已闭合”，并将 FA/FD、Ring、AllToAll 等
-算法和 TX81 transport 混在同一层。本节是当前唯一有效的施工边界；旧的已闭合描述在对应
-实现和覆盖矩阵重新验证前只保留为历史索引。
+算法和 TX81 transport 混在同一层。下文保留当时的整改合同及验证边界；
+当前稳定语义由05--16号设计拥有，当前主机矩阵仍须按实际版本验收，不能由旧完成描述代签。
 
 ### Pipeline Contract
 
@@ -76,16 +81,16 @@ case 的完整日志和 typed stage，不用提前终止或历史输出代替结
 独立性、query-local layout 或 helper closure 冲突的表述，在对应实现重新物化并通过本矩阵前
 不得作为完成条件或 winner 合法性依据。
 
-Q52 的历史 current-IR mechanics 保留为前置；Q53 和 mesh communication 的原有
-`board-ready`标签在本轮架构复审中降级为待重新验证。真实设备仍不运行。
+Q52的历史current-IR mechanics保留为前置。2026-09-06架构复审开始时，Q53和mesh communication的原有
+`board-ready`曾降级为待重新验证；下述同日提交随后记录了该轮复审结果。这两段是历史先后关系，不是当前冲突状态。
 动态状态只读`tasks/progress.md`；
 第1--11项的施工、删除账本和验证记录见`tasks/archive/physical-dataflow-synthesis-q52-plan-history.md`；第12--15项的完成边界见
 `tasks/archive/completed-task-index.md`。
 稳定语义由05--16号编号设计拥有。
 
-当前直接项：`mesh-communication-materialization` 与 Q53 `production-host-readiness` 均达到
-`board-ready`；recursive-doubling、AllToAll、ReduceScatter、AllReduce 的 current-IR witness
-已重新审计并补齐通用 schedule boundary。真实板端仍未执行。
+2026-09-06提交`40b80b60`记录：`mesh-communication-materialization`与Q53 `production-host-readiness`达到
+当时版本的`board-ready`；recursive-doubling、AllToAll、ReduceScatter、AllReduce的current-IR witness
+已重新审计并补齐通用schedule boundary。该提交未执行真实板端；后续实卡由独立板测归档记录。
 
 ## Pipeline Contract
 
