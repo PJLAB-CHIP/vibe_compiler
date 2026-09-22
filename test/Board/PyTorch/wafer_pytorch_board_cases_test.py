@@ -934,6 +934,81 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             ["--optimization-policy=none"],
         )
 
+    def test_runner_forwards_explicit_target_model_numeric_policy(self) -> None:
+        required = [
+            "wafer_board_pytorch_test.py", "--case", "single-card-gemm",
+            "--wafer-compile", "wafer-compile-test", "--wafer-run", "wafer-run",
+            "--work-dir", "work",
+        ]
+        for policy in (None, "formal", "managed-reference"):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as directory:
+                options = [*required, "--target-model"]
+                if policy is not None:
+                    options.extend(["--target-model-numeric-policy", policy])
+                budgets = {"total": 67108864, "scratchpad": 16777216, "reorder": 16777216}
+                if policy == "managed-reference":
+                    for resource, value in budgets.items():
+                        options.extend([f"--target-model-max-onednn-{resource}-bytes", str(value)])
+                with mock.patch.object(sys, "argv", options):
+                    args = board_runner.parse_args()
+                tensor = torch.zeros((1, 2, 1031), dtype=torch.float16)
+                case = types.SimpleNamespace(
+                    num_partitions=1, inputs=(tensor,), gemm_dimensions=None,
+                    comparison_policy=cases.common.make_similarity_policy(torch.float16),
+                    export_program=mock.Mock(),
+                    materialize_expected_outputs=mock.Mock(return_value=(tensor,)),
+                )
+                step = pathlib.Path(directory)
+                with (
+                    mock.patch.object(board_runner, "run", return_value=types.SimpleNamespace(
+                        stdout="target model outputs matched; tiles=16\n"
+                               "wrote verified package with num-partitions=1 tiles=16",
+                        stderr="",
+                    )) as command,
+                    mock.patch.object(board_runner, "prepare_runtime_payloads",
+                                      return_value=([], {}, set(), {})),
+                ):
+                    board_runner.prepare_case_step(
+                        args, case, step_index=0, step_dir=step,
+                        source=step / "source", package=step / "package",
+                        dump_compiler_ir=None,
+                    )
+                arguments = command.call_args.args[0]
+                self.assertIn("--target-model", arguments)
+                option = "--target-model-numeric-policy"
+                if policy is None:
+                    self.assertNotIn(option, arguments)
+                else:
+                    self.assertEqual(arguments[arguments.index(option) + 1], policy)
+                for resource, value in budgets.items():
+                    option = f"--target-model-max-onednn-{resource}-bytes"
+                    if policy == "managed-reference":
+                        self.assertEqual(arguments[arguments.index(option) + 1], str(value))
+                    else:
+                        self.assertNotIn(option, arguments)
+                for role in ("input", "expected"):
+                    self.assertIn(f"0={step / 'model' / (role + '_0.npy')}", arguments)
+                for argument in cases.common.model_comparison_arguments(case.comparison_policy):
+                    self.assertIn(argument, arguments)
+        with (
+            mock.patch.object(sys, "argv", [*required, "--target-model-numeric-policy", "formal"]),
+            mock.patch("sys.stderr"),
+            self.assertRaises(SystemExit) as error,
+        ):
+            board_runner.parse_args()
+        self.assertEqual(error.exception.code, 2)
+        for options in (
+            ["--target-model", "--target-model-numeric-policy", "managed-reference"],
+            ["--target-model", "--target-model-max-onednn-total-bytes", "1"],
+        ):
+            with (
+                mock.patch.object(sys, "argv", [*required, *options]),
+                mock.patch("sys.stderr"),
+                self.assertRaises(SystemExit) as error,
+            ):
+                board_runner.parse_args()
+            self.assertEqual(error.exception.code, 2)
+
     def test_product_policies_ignore_communication_expectations(self) -> None:
         case = types.SimpleNamespace(
             num_partitions=1, allgather_payload_elements=1024,

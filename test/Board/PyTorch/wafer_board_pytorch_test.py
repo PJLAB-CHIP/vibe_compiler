@@ -68,6 +68,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--target-model", action="store_true",
                         help="compare full outputs through wafer-compile-test's functional model")
+    parser.add_argument("--target-model-numeric-policy",
+                        choices=("formal", "managed-reference"),
+                        help="explicit numeric policy for the existing target model")
+    for resource in ("total", "scratchpad", "reorder"):
+        parser.add_argument(f"--target-model-max-onednn-{resource}-bytes", type=int,
+                            help="explicit managed-reference backend memory budget")
     parser.add_argument("--target-model-max-scalar-evaluations", type=int, default=10000000)
     parser.add_argument("--target-model-max-fused-multiply-adds", type=int, default=1000000)
     parser.add_argument("--target-model-max-movement-bytes", type=int, default=536870912)
@@ -88,6 +94,15 @@ def parse_args() -> argparse.Namespace:
         help="explicit host compile deadline; defaults to 1800 seconds except in deep mode",
     )
     args = parser.parse_args()
+    if args.target_model_numeric_policy is not None and not args.target_model:
+        parser.error("--target-model-numeric-policy requires --target-model")
+    backend_budgets = [getattr(args, f"target_model_max_onednn_{resource}_bytes")
+                       for resource in ("total", "scratchpad", "reorder")]
+    if args.target_model_numeric_policy == "managed-reference":
+        if any(value is None or value <= 0 for value in backend_budgets):
+            parser.error("managed-reference requires positive total, scratchpad and reorder byte budgets")
+    elif any(value is not None for value in backend_budgets):
+        parser.error("oneDNN byte budgets require --target-model-numeric-policy managed-reference")
     if args.compile_timeout_seconds is None and args.search_mode != "deep":
         args.compile_timeout_seconds = COMPILE_TIMEOUT_SECONDS
     return args
@@ -1186,6 +1201,16 @@ def prepare_case_step(
             model_dir = step_dir / "model"
             model_dir.mkdir()
             compile_command.append("--target-model")
+            if args.target_model_numeric_policy is not None:
+                compile_command.extend([
+                    "--target-model-numeric-policy", args.target_model_numeric_policy,
+                ])
+            if args.target_model_numeric_policy == "managed-reference":
+                for resource in ("total", "scratchpad", "reorder"):
+                    option = f"target_model_max_onednn_{resource}_bytes"
+                    compile_command.extend([
+                        "--" + option.replace("_", "-"), str(getattr(args, option)),
+                    ])
             for role, tensors in (("input", case.inputs), ("expected", expected_outputs)):
                 for index, tensor in enumerate(tensors):
                     path = model_dir / f"{role}_{index}.npy"

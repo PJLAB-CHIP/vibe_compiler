@@ -142,6 +142,17 @@ raw相等。准备目录与输出目录必须互不包含，复用输出目录�
 本入口不实现缓存查找、安装SDK、设备重试、reset或编译策略fallback，设备资格继续使用原有显式参数。
 
 普通数值/性能case在算子合法输入域内生成数据；随机值必须满足分母、索引、mask及位置等实际语义约束。
+
+PyTorch runner的`--target-model-numeric-policy`显式转交生产compiler已有的`formal`或`managed-reference`选择，
+仅在`--target-model`下有效；未指定时沿用compiler默认。生产`ExpLp`使用17号既有managed-reference近似合同，
+因此probability-rounding与sliding-window的模型注册显式选择该后端；formal子集仍拒绝ExpLp。
+managed-reference同时显式传递原oneDNN total/scratchpad/reorder三个正值byte budget；缺失、非正或policy不匹配
+在runner参数解析时拒绝，避免先完成编译再发现调用合同不完整。该矩阵分别使用64/16/16 MiB，均为每primitive的主机内存上限。
+这只修复测试调用者遗漏的policy选择，不替换指令、不增加失败后的fallback、不改变dtype或比较阈值，
+也不把managed-reference通过记为设备逐bit精度证明。
+覆盖CLI选择与转交、无model时的显式选项拒绝，六项1024/1025/1031×FP16/BF16的完整source/model/no-card，
+以及sliding-window双dtype×none/search的既有模型入口；其输出直接由原完整PyTorch比较和wafer-run no-card消费。
+
 普通F32 division使用有限输入、绝对值不小于0.5的非零分母，并覆盖正负数及signed zero；
 NaN/Inf、零分母及负数开方等特殊域保留在显式primitive校准case，不混入普通性能输入。
 division的rank3、1024/1025/1031均检查输入域、完整reference有限及确定性，仍由同一source/package入口消费。

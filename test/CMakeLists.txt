@@ -186,12 +186,19 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
     )
   endfunction()
 
+  set(_wafer_managed_model_arguments
+    --target-model-numeric-policy managed-reference
+    --target-model-max-onednn-total-bytes 67108864
+    --target-model-max-onednn-scratchpad-bytes 16777216
+    --target-model-max-onednn-reorder-bytes 16777216)
   if(WAFER_ENABLE_SYSTEMC_MODEL)
     foreach(_wafer_probability_extent IN ITEMS 1024 1025 1031)
       wafer_add_pytorch_source_no_card_test(
-        attention-probability-rounding-${_wafer_probability_extent} float16 fp16 search target-model)
+        attention-probability-rounding-${_wafer_probability_extent} float16 fp16 search target-model
+        ${_wafer_managed_model_arguments})
       wafer_add_pytorch_source_no_card_test(
-        attention-probability-rounding-${_wafer_probability_extent} bfloat16 bf16 search target-model)
+        attention-probability-rounding-${_wafer_probability_extent} bfloat16 bf16 search target-model
+        ${_wafer_managed_model_arguments})
     endforeach()
     foreach(_wafer_outer_extent IN ITEMS 1024 1025 1031)
       wafer_add_pytorch_source_no_card_test(
@@ -434,14 +441,17 @@ if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
   foreach(_wafer_sliding_policy IN ITEMS none search)
     wafer_add_pytorch_source_no_card_test(
       attention-sliding-window float16 fp16 ${_wafer_sliding_policy} target-model
+      ${_wafer_managed_model_arguments}
       --target-model-max-fused-multiply-adds 200000000
       --target-model-max-scalar-evaluations 100000000)
     wafer_add_pytorch_source_no_card_test(
       attention-sliding-window bfloat16 bf16 ${_wafer_sliding_policy} target-model
+      ${_wafer_managed_model_arguments}
       --target-model-max-fused-multiply-adds 200000000
       --target-model-max-scalar-evaluations 100000000)
   endforeach()
   unset(_wafer_sliding_policy)
+  unset(_wafer_managed_model_arguments)
 
   foreach(_wafer_heterogeneous_policy IN ITEMS none search)
     wafer_add_pytorch_source_no_card_test(
