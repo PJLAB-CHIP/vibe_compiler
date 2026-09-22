@@ -766,3 +766,100 @@ pinned `DeadStoreElimination.cpp`明确按这三项检查；MLIR `MemRefUtils.cp
 | 旧source后续读取/更新；同block中间独立写入；动态loop/conditional内部 | 删除初始化copy，保留旧source与新dest各自后续值 |
 | 源或其alias在区间内更新/释放；未知effect；目标提前被读取或逃逸 | 保留原copy，不延迟读取旧内容 |
 | 真正布局置换或padding/footprint不同；首次consumer在子region；pipeline对象 | 不转交，保留现有合法路径 |
+
+## 9. 循环流水与存储优化的职责边界
+
+本节规定职责分拆及通用流水的目标合同，实现顺序、当前差距和验收矩阵见
+[实施计划](plans/tile-loop-pipelining.md)。源码owner遵循18号，MLIR scope与失效规则遵循19号。
+现有`ExecutionStructure`是driver调用的变换集合，不能将其名称当作一个已注册的atomic pass。
+
+### 输入、输出与直接消费者
+
+- 输入：candidate-owned、layout和movement已确定的TileModule/TileRegion；循环边界、DPS destination、
+  实际allocation/view/alias、effect与loop-carried SSA均已存在。动态循环次数不要求动态buffer shape。
+- 当前职责：存储优化确定合法的destination复用；load流水选择读取current依赖；循环变换消费显式stage选择；
+  轮转buffer变换创建真实槽及选择关系。每个变换只修改其实际owner内的IR。
+- 输出：verifier-valid的同层Tile/SCF/memref IR，包含真实prologue/kernel/epilogue、读写与槽复用关系。
+  选择、证明工作表和clone映射仅存活于本次transaction，不作为下游事实源。
+- 下游：原Tile→Instr、worker/order与fresh completion、唯一actual SPM/DDR规划、target和package路径。
+- 用户入口：production none/search调用同一变换实现；focused工具如暴露pass，仅包装相同实现。
+- 非目标：不扩大head/tile搜索预算，不修改数值图、dtype或target ABI，不实现跨Tile通信协议重排、任意while循环
+  或动态SPM分配，不在流水层插入attention规则、原生转置、默认drain或offset估算准入。
+- 完成条件：普通逐块计算与attention均由同一入口产生合法流水，矩阵中的动态边界、条件、alias与tail有直接下游证据；
+  最终优化收益按普通实卡总耗时及独立profile确认。仅生成双buffer或编译通过不构成性能验收。
+
+### 职责和执行顺序
+
+存储优化拥有private scalar读取、完整写回转交、last-use复用及loop-carried destination确定；
+初始化内容证明仍由StorageInitialization拥有。搬运融合拥有permutation与physical layout关系的合成；
+movement placement拥有已有搬运的位置调整。它们均不选择流水stage或生成prologue。
+LoopPipelining拥有选定schedule的SSA/effect legality及机械循环变换；LoadPipelining只形成提前读取的选择并调用同一变换；
+RotatingBuffers只把显式槽选择变为allocation/view/select及typed owner，不决定SPM offset、worker或wait。
+
+职责迁移先保持原调用顺序与行为。通用流水接入后的顺序固定为：
+
+```text
+layout/movement已闭合的actual Tile IR
+  → 存储优化、搬运融合/placement与必要的destination确定
+  → verifier、owner更新；从新IR重新发现load及依赖
+  → 显式stage/轮转槽选择
+  → 同一candidate transaction内物化槽和循环
+  → verifier、owner更新和fresh analysis
+  → Tile→Instr → worker/order/completion → actual SPM/target
+```
+
+存储变化后不得复用旧operation列表、alias或pipeline choice。不得让有复制的串行输入产生候选、再只在串行分支删复制；
+串行与流水比较须从相同的已优化输入分出，成功候选持有实际变换后的IR。搜索作用域跟随现有typed iteration coordinates；
+循环拆分须通过显式clone mapping更新当前选择的绑定，不按遍历序号或symbol恢复。
+
+### 通用循环和条件合同
+
+1. 消费`scf.for`的`lower/upper/step` SSA，不要求静态trip count、零起点或单位步长。
+   支持静态及loop-invariant动态边界；step可为任意已证明为正的静态值或loop-invariant SSA。
+   迭代域是`lower + n * step < upper`；边界运算必须证明可表示，不能让预取索引溢出后越界。
+2. 空循环不执行load/compute/store，result保持init；单步只执行一次真实读取和计算；不足stage数的短循环
+   按其真实域处理。多步steady state提前issue下一块读取，末尾不issue不存在的下一块。
+   条件只保护实际执行域，不新增对Q/K/V等数值输入的防御分支。
+3. stage选择读取current SSA和实际访问关系，分别证明同迭代依赖、loop-carried依赖及跨迭代RAW/WAR/WAW。
+   地址依赖当前计算结果时，不把该读取提前；额外observer、部分覆盖或逃逸alias必须纳入证明。
+   可证明不相交的subview和只读共享源不因根allocation相同而一律拒绝。
+4. 不因body含region就整环拒绝。对`scf.if`先分类：循环不变条件只有可安全提前求值、保持state/effect时才可外提；
+   迭代相关条件必须随对应迭代的stage一起搬动，conditional load不变成无条件load。
+   分支结果从实际taken path接续，未执行分支不得制造可被读取的假数据。
+   子region的依赖/effect递归可解释时作为整体调度，不在未选定的子loop内部另排stage。
+5. 嵌套loop在选定scope内变换。需要改写父block时用最近允许修改该block的owner，而不是由ForOp pass替换自身root。
+   多个独立load可共用一个计算stage；stage数和slot数是显式选择，不是固定双buffer协议。
+   本轮自动选择优先提前一轮，保留已有多stage/finite-unroll能力，不开启无界schedule搜索。
+
+query将候选、不适用、证明超出工作预算和compiler contract failure区分为typed结果；未选中时保留合法原IR。
+已选candidate的物化失败则销毁该transaction并向既有controller报告，不在lowering中静默换成串行实现。
+动态次数在IR中保留SSA；统计中的未知次数使用显式unknown，不能用0伪装静态计数，更不能据此决定合法性。
+
+### 唯一变换路径与buffer/completion
+
+复用[MLIR SCF pipeliner](https://mlir.llvm.org/doxygen/structmlir_1_1scf_1_1PipeliningOption.html)的显式schedule、
+prologue/epilogue及dynamic predication接口，具体实现以仓库pinned源码和测试为准。
+Wafer补充typed effects、buffer ownership和边界predicate，不另建attention专用pipeliner。
+static与dynamic形态共用stage/依赖验证；可证明成立的predicate直接消除，其余同条件操作按合法scope合并，
+避免机械地给每条计算套if。不能仅设置`supportDynamicLoops`就宣称闭合，还须验证短循环、yield初值及最后访问。
+
+轮转槽由实际load destination及选择建立，每个新增allocation在创建时记录其typed owner。
+槽复用必须晚于该槽上一轮的最后读取/完成义务；循环后的observer引用实际最后一次产生的槽，
+不能沿用只适合静态trip count的常数索引。新增allocation、view、effect和control flow进入同一个actual SPM规划。
+SPM容量不够由controller处理typed capacity反馈，本层不按shape估算裁剪、retile或静默减少槽数。
+
+流水只改变合法issue次序，不自行发wait/join。最终Instr完成阶段消费实际worker、effect、range、lifetime和control flow，
+按11号生成必要同步；同worker issue order足够时不加逐块join，Direct-DTE token与NCC participant保持不同完成域。
+已有[跨engine重叠证据](../docs/tx81-current-profile-hardware-behavior.md)
+说明存在实现空间，不代表任意shape或buffer放置都能获得相同收益。
+
+### Attention适配与范围分类
+
+causal全可见域与边界域拆分由05号temporal/visibility实现拥有，读取actual query/key位置、块shape、valid end和原循环网格；
+输出普通SCF循环及真实DPS state接续。全可见前缀可以为空或一步，边界段保留mask；通用流水只看其普通依赖。
+在通用层匹配causal标志、head数量、256/2048或attention名称均不符合本合同。
+
+当前静态trip count限制、region一票拒绝、固定最后槽和零值统计是软件覆盖不足；pinned helper的predication接口约束也是软件适配边界。
+跨Tile消息协议重排及loop-carried通信token属于尚未闭合的其它完成域，不能局部克隆后假定安全；这不是硬件不支持流水的结论。
+DMA字段范围、GS分段和已排除的原生transpose入口继续服从对应硬件事实源。无法证明的alias/effect保持unknown，
+不给它附加“硬件不支持”标签，也不用额外全局同步代替缺失证明。

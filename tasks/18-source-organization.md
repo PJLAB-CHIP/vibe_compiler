@@ -180,6 +180,25 @@ value/use layout assignment、output DPS、唯一One-Shot Bufferization、layout
 relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
 `WaferTransforms`；umbrella只组合公开transform components和Instr/Module passes，不能用static archive链接顺序掩盖component cycle。
 
+### Tile循环流水和存储变换的源码粒度
+
+10号循环流水合同按下列职责组织，迁移步骤和当前覆盖见[实施计划](plans/tile-loop-pipelining.md)。
+这是目标owner边界，不能以本文的文件名代签迁移已经完成；实现状态只由progress拥有。
+
+| 源码职责 | 文件归属 | 依赖边界 |
+| --- | --- | --- |
+| 选定stage的依赖验证与SCF循环变换 | `Transforms/Tile/LoopPipelining.cpp` | current IR、标准interfaces和pinned SCF；不消费attention语义 |
+| load地址/use资格与提前读取选择 | `Transforms/Tile/LoadPipelining.cpp` | 只读当前图形成局部choice，调用同一loop/rotation实现 |
+| 实际槽与轮转访问 | `Transforms/Tile/RotatingBuffers.cpp` | current allocation/loop、typed owner；不规划物理offset |
+| destination与copy复用 | `Transforms/Tile/StorageOptimization.cpp` | fresh use/alias/effect；初始化证明复用StorageInitialization |
+| 已选layout下的搬运合成 | `Transforms/Tile/MovementFusion.cpp` | current permutation及physical relation；不选择流水stage |
+| 搬运位置调整 | 现有`Transforms/Tile/PhysicalMovementPlacement.cpp` | 当前不变性与effect证明 |
+| 阶段编排与失败传播 | 现有`Driver/CurrentIRExecutablePipeline.cpp` | 同一candidate owner；不内嵌leaf算法 |
+
+上述Tile文件由同一`WaferTileTransforms`显式注册；不为拆文件创建新library或每个helper一个public API。
+当前调用内的proof/choice结构保持private，需要被多个owner复用的稳定只读事实才归Analysis。
+源码与测试按职责一起迁移；旧万能header/入口在直接消费者切换后删除，不保留兼容wrapper。
+
 ### 4.3 Conversion与CodeGen
 
 - StableHLO legalization只在`Conversion/StableHLOToLinalg`；conversion前后的同层normalization分别回到
