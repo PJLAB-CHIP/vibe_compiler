@@ -4,8 +4,10 @@
 
 #include "Wafer/InitWaferDialects.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/SubsetInsertionOpInterfaceImpl.h"
 #include "mlir/Parser/Parser.h"
@@ -19,13 +21,92 @@ namespace {
 
 std::unique_ptr<mlir::MLIRContext> createContext() {
   mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+  registry.insert<mlir::affine::AffineDialect, mlir::arith::ArithDialect,
+                  mlir::func::FuncDialect, mlir::scf::SCFDialect,
                   mlir::tensor::TensorDialect>();
   wafer::registerWaferCoreDialects(registry);
   mlir::tensor::registerSubsetOpInterfaceExternalModels(registry);
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
+}
+
+TEST(TensorResultIndexingTest, ParameterizedLoopGridUsesAffineCoordinates) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @grid() {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 528 : index
+    %step = arith.constant 24 : index
+    scf.for %iv = %lower to %upper step %step {
+      %base = arith.constant 480 : index
+      %factor = arith.constant 2 : index
+      %product = arith.muli %iv, %factor : index
+      %sum = arith.addi %product, %base : index
+      %reverse = arith.addi %base, %product : index
+      %nonlinear_arith = arith.muli %iv, %iv : index
+      %translated = affine.apply affine_map<(d0) -> (d0 + 480)>(%iv)
+      %scaled = affine.apply affine_map<(d0) -> (d0 * 2 + 480)>(%iv)
+      %nonlinear = affine.apply affine_map<(d0) -> (d0 floordiv 2 + 480)>(%iv)
+      %composed = affine.apply affine_map<(d0) -> (d0 + 8)>(%sum)
+      scf.yield
+    }
+    return
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::affine::AffineApplyOp, 4> applies;
+  llvm::SmallVector<mlir::arith::AddIOp, 2> additions;
+  llvm::SmallVector<mlir::arith::MulIOp, 2> products;
+  mlir::scf::ForOp loop;
+  module->walk(
+      [&](mlir::affine::AffineApplyOp apply) { applies.push_back(apply); });
+  module->walk([&](mlir::arith::AddIOp add) { additions.push_back(add); });
+  module->walk(
+      [&](mlir::arith::MulIOp multiply) { products.push_back(multiply); });
+  module->walk([&](mlir::scf::ForOp current) { loop = current; });
+  ASSERT_EQ(applies.size(), 4u);
+  ASSERT_EQ(additions.size(), 2u);
+  ASSERT_EQ(products.size(), 2u);
+  ASSERT_TRUE(loop);
+  auto plain = queryTensorLoopGrid(loop.getInductionVar()).grid;
+  auto translated = queryTensorLoopGrid(applies[0].getResult()).grid;
+  auto scaled = queryTensorLoopGrid(applies[1].getResult()).grid;
+  ASSERT_TRUE(plain);
+  ASSERT_TRUE(translated);
+  ASSERT_TRUE(scaled);
+  EXPECT_EQ(plain->step, 24);
+  EXPECT_EQ(translated->lower, 480);
+  EXPECT_EQ(translated->step, 24);
+  EXPECT_EQ(scaled->lower, 480);
+  EXPECT_EQ(scaled->step, 48);
+  EXPECT_EQ(getTensorLoopGridFloor(*scaled, 512), 480);
+  EXPECT_EQ(getTensorLoopGridCeil(*scaled, 512), 528);
+  EXPECT_EQ(getTensorLoopIndex(*scaled, 528), 24);
+  for (auto add : additions) {
+    auto equivalent = queryTensorLoopGrid(add.getResult()).grid;
+    ASSERT_TRUE(equivalent);
+    EXPECT_EQ(equivalent->lower, scaled->lower);
+    EXPECT_EQ(equivalent->step, scaled->step);
+  }
+  auto composed = queryTensorLoopGrid(applies[3].getResult()).grid;
+  ASSERT_TRUE(composed);
+  EXPECT_EQ(composed->lower, 488);
+  EXPECT_EQ(composed->step, 48);
+  EXPECT_EQ(queryTensorLoopGrid(applies[2].getResult()).status,
+            TensorResultIndexingStatus::Unsupported);
+  EXPECT_EQ(queryTensorLoopGrid(products[1].getResult()).status,
+            TensorResultIndexingStatus::Unsupported);
+  IndexRelationLimits bounded;
+  bounded.maxVariables = 1;
+  EXPECT_EQ(queryTensorLoopGrid(loop.getInductionVar(), bounded).status,
+            TensorResultIndexingStatus::Exact);
+  EXPECT_EQ(queryTensorLoopGrid(applies[0].getResult(), bounded).status,
+            TensorResultIndexingStatus::ResourceExhausted);
 }
 
 TEST(TensorResultIndexingTest, ComposedViewsKeepASelectedColumnWindowCompact) {

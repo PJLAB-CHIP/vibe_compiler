@@ -18,6 +18,7 @@
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -29,9 +30,12 @@
 
 #include "gtest/gtest.h"
 
+#include <array>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -85,6 +89,36 @@ TileRegionOp findRegion(mlir::ModuleOp module) {
   TileRegionOp result;
   module.walk([&](TileRegionOp region) { result = region; });
   return result;
+}
+
+llvm::SmallVector<mlir::tensor::ExtractSliceOp>
+findTestAssemblyReads(TileRegionOp region) {
+  llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
+  region.walk([&](mlir::tensor::ExtractSliceOp read) {
+    auto query = queryLocalTensorAssemblyRead(read);
+    EXPECT_NE(query.kind, TensorAssemblyOpportunityKind::BrokenContract)
+        << query.detail;
+    EXPECT_NE(query.kind, TensorAssemblyOpportunityKind::ResourceExhausted)
+        << query.detail;
+    if (query.kind == TensorAssemblyOpportunityKind::Available)
+      reads.push_back(read);
+  });
+  return reads;
+}
+
+TensorAssemblyOpportunity queryTestAssemblyReads(TileRegionOp region) {
+  return {findTestAssemblyReads(region).empty()
+              ? TensorAssemblyOpportunityKind::NotApplicable
+              : TensorAssemblyOpportunityKind::Available,
+          {}};
+}
+
+mlir::FailureOr<TemporalTilingStatistics>
+materializeTestAssemblyReads(TileRegionOp region,
+                             StructuredMaterializationRelations &relations,
+                             TemporalTilingFailure *failure) {
+  return materializeLocalTensorAssemblyReads(
+      region, findTestAssemblyReads(region), relations, failure);
 }
 
 TemporalChoice selectTileSizes(const TemporalDomain &domain,
@@ -1452,6 +1486,304 @@ TEST(TemporalTilingTest, ConcatInsertChainBuildsOnlyRequestedConsumerTile) {
       });
       EXPECT_LE(fullAllocations, 1u);
       EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
+    }
+  }
+}
+
+void expectTemporalSPM(mlir::OwningOpRef<mlir::ModuleOp> module,
+                       StructuredMaterializationRelations &relations);
+
+TEST(TemporalTilingTest, ParametricDemandCrossesTwoAssemblyAxes) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    const int64_t tail = extent - 512;
+    std::string body;
+    llvm::raw_string_ostream stream(body);
+    for (int64_t row : {int64_t{0}, int64_t{512}})
+      for (int64_t column : {int64_t{0}, int64_t{64}})
+        stream << "      %piece" << row << "_" << column
+               << " = tensor.extract_slice %arg[0, " << row << ", " << column
+               << "] [2, " << (row ? tail : 512)
+               << ", 64] [1, 1, 1] : tensor<2x" << extent
+               << "x128xf16> to tensor<2x" << (row ? tail : 512)
+               << "x64xf16>\n";
+    stream << "      %empty = tensor.empty() : tensor<2x" << extent
+           << "x128xf16>\n";
+    std::string previous = "empty";
+    for (int64_t row : {int64_t{0}, int64_t{512}})
+      for (int64_t column : {int64_t{0}, int64_t{64}}) {
+        stream << "      %insert" << row << "_" << column
+               << " = tensor.insert_slice %piece" << row << "_" << column
+               << " into %" << previous << "[0, " << row << ", " << column
+               << "] [2, " << (row ? tail : 512)
+               << ", 64] [1, 1, 1] : tensor<2x" << (row ? tail : 512)
+               << "x64xf16> into tensor<2x" << extent << "x128xf16>\n";
+        previous =
+            "insert" + std::to_string(row) + "_" + std::to_string(column);
+      }
+    stream << "      %requested = tensor.extract_slice %insert512_64"
+              "[0, 0, 48] [2, "
+           << extent << ", 64] [1, 1, 1] : tensor<2x" << extent
+           << "x128xf16> to tensor<2x" << extent << "x64xf16>\n"
+           << "      %result_empty = tensor.empty() : tensor<2x" << extent
+           << "x64xf16>\n"
+              "      %value = linalg.generic {\n"
+              "        indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, "
+              "affine_map<(b,m,n)->(b,m,n)>],\n"
+              "        iterator_types = [\"parallel\", \"parallel\", "
+              "\"parallel\"]}\n"
+              "        ins(%requested : tensor<2x"
+           << extent << "x64xf16>) outs(%result_empty : tensor<2x" << extent
+           << "x64xf16>) {\n"
+              "      ^bb0(%x: f16, %old: f16):\n"
+              "        %sum = arith.addf %x, %x : f16\n"
+              "        linalg.yield %sum : f16\n"
+              "      } -> tensor<2x"
+           << extent << "x64xf16>";
+    auto module =
+        parseModule(*context, stream.str(),
+                    "tensor<2x" + std::to_string(extent) + "x128xf16>",
+                    "tensor<2x" + std::to_string(extent) + "x64xf16>");
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    mlir::tensor::ExtractSliceOp requestedSlice;
+    region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+      if (slice.getSource().getDefiningOp<mlir::tensor::InsertSliceOp>() &&
+          slice.getStaticSizes() == llvm::ArrayRef<int64_t>({2, extent, 64}))
+        requestedSlice = slice;
+    });
+    ASSERT_TRUE(requestedSlice);
+    auto query = queryTemporalConcatAssembly(requestedSlice.getSourceMutable());
+    ASSERT_TRUE(query.isExact()) << query.detail;
+    EXPECT_EQ(query.segments.size(), 4u);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = selectTileSizes(*domain.domain, {2, 48, 32});
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    TemporalTilingFailure failure;
+    auto tiled =
+        applyTemporalTiling({{*domain.domain, choice}}, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(tiled)) << failure.detail;
+    EXPECT_GT(tiled->tileLocalAssemblies, 0u);
+    EXPECT_GT(tiled->specializedConcatBoundaries, 0u);
+    EXPECT_GE(tiled->assembledSegments, tiled->tileLocalAssemblies);
+    EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    expectTemporalSPM(std::move(module), relations);
+  }
+}
+
+TEST(TemporalTilingTest, AssemblyReadFamiliesUnionBoundariesAndHoistIndices) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (bool shiftedFirst : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(shiftedFirst);
+      auto context = createContext();
+      const std::string full =
+          "tensor<2x" + std::to_string(extent) + "x128xf16>";
+      std::string body;
+      llvm::raw_string_ostream os(body);
+      os << "      %empty = tensor.empty() : " << full << "\n";
+      std::string previous = "empty";
+      for (int64_t row : {int64_t{0}, int64_t{512}})
+        for (int64_t column : {int64_t{0}, int64_t{64}}) {
+          std::string id = std::to_string(row) + "_" + std::to_string(column);
+          std::string piece = "tensor<2x" +
+                              std::to_string(row ? extent - 512 : 512) +
+                              "x64xf16>";
+          os << "      %p" << id << " = tensor.extract_slice %arg[0, " << row
+             << ", " << (64 - column) << "] [2, " << (row ? extent - 512 : 512)
+             << ", 64] [1, 1, 1] : " << full << " to " << piece << "\n"
+             << "      %a" << id << " = tensor.insert_slice %p" << id
+             << " into %" << previous << "[0, " << row << ", " << column
+             << "] [2, " << (row ? extent - 512 : 512)
+             << ", 64] [1, 1, 1] : " << piece << " into " << full << "\n";
+          previous = "a" + id;
+        }
+      // Leave a defined suffix in the output. The shifted read needs eight
+      // extra rows; the consumer still visits many full 32-row windows.
+      const int64_t upper = (extent - 8) / 32 * 32;
+      os << "      %c0 = arith.constant 0 : index\n"
+            "      %c1 = arith.constant 1 : index\n"
+            "      %c2 = arith.constant 2 : index\n"
+            "      %c8 = arith.constant 8 : index\n"
+            "      %c32 = arith.constant 32 : index\n"
+         << "      %end = arith.constant " << upper << " : index\n"
+         << "      %value = scf.for %iv = %c0 to %end step %c32 "
+            "iter_args(%state = %arg) -> ("
+         << full << ") {\n"
+         << "        %next = scf.for %j = %c0 to %c2 step %c1 iter_args(%old = "
+            "%state) -> ("
+         << full
+         << ") {\n"
+            "          %offset = arith.addi %iv, %c8 : index\n";
+      for (int input :
+           shiftedFirst ? std::array<int, 2>{1, 0} : std::array<int, 2>{0, 1})
+        os << "          %read" << input << " = tensor.extract_slice %"
+           << previous << "[0, %" << (input ? "offset" : "iv")
+           << ", 48] [2, 32, 48] [1, 1, 1] : " << full
+           << " to tensor<2x32x48xf16>\n";
+      os << R"mlir(
+          %out = tensor.empty() : tensor<2x32x48xf16>
+          %sum = linalg.generic {
+            indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>],
+            iterator_types = ["parallel", "parallel", "parallel"]}
+            ins(%read0, %read1 : tensor<2x32x48xf16>, tensor<2x32x48xf16>) outs(%out : tensor<2x32x48xf16>) {
+          ^bb0(%x: f16, %y: f16, %z: f16):
+            %v = arith.addf %x, %y : f16
+            linalg.yield %v : f16
+          } -> tensor<2x32x48xf16>
+)mlir"
+         << "          %updated = tensor.insert_slice %sum into %old[0, %iv, "
+            "0] [2, 32, 48] [1, 1, 1] : tensor<2x32x48xf16> into "
+         << full << "\n"
+         << "          scf.yield %updated : " << full << "\n        }\n"
+         << "        scf.yield %next : " << full << "\n      }\n";
+      auto module = parseModule(*context, body, full, full);
+      ASSERT_TRUE(module);
+      auto region = findRegion(*module);
+      StructuredMaterializationRelations relations;
+      relations.structuralOutputs.push_back({0, region.getResult(0)});
+      TemporalTilingFailure failure;
+      auto localized =
+          materializeTestAssemblyReads(region, relations, &failure);
+      ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
+
+      // Evaluate the actual subset SSA, independently of the demand/grid
+      // analysis. Every dynamic consumer element must reach its original
+      // row and the exchanged column half. An empty or wrong source fails.
+      llvm::DenseMap<mlir::Value, int64_t> indices;
+      std::function<std::optional<int64_t>(mlir::OpFoldResult)> evaluate;
+      evaluate = [&](mlir::OpFoldResult value) -> std::optional<int64_t> {
+        if (auto constant = mlir::getConstantIntValue(value))
+          return constant;
+        auto ssa = mlir::cast<mlir::Value>(value);
+        if (auto it = indices.find(ssa); it != indices.end())
+          return it->second;
+        auto *op = ssa.getDefiningOp();
+        if (!op)
+          return std::nullopt;
+        if (mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp,
+                      mlir::arith::MulIOp>(op)) {
+          auto left = evaluate(op->getOperand(0)),
+               right = evaluate(op->getOperand(1));
+          if (!left || !right)
+            return std::nullopt;
+          if (mlir::isa<mlir::arith::AddIOp>(op))
+            return *left + *right;
+          if (mlir::isa<mlir::arith::SubIOp>(op))
+            return *left - *right;
+          return *left * *right;
+        }
+        if (auto apply = mlir::dyn_cast<mlir::affine::AffineApplyOp>(op)) {
+          llvm::SmallVector<mlir::Attribute> constants, results;
+          for (auto operand : apply.getOperands()) {
+            auto index = evaluate(operand);
+            if (!index)
+              return std::nullopt;
+            constants.push_back(mlir::IntegerAttr::get(
+                mlir::IndexType::get(context.get()), *index));
+          }
+          if (mlir::failed(
+                  apply.getAffineMap().constantFold(constants, results)))
+            return std::nullopt;
+          return mlir::cast<mlir::IntegerAttr>(results.front()).getInt();
+        }
+        return std::nullopt;
+      };
+      using Coordinate = std::array<int64_t, 3>;
+      std::function<std::optional<Coordinate>(mlir::Value, Coordinate)> origin;
+      origin = [&](mlir::Value value,
+                   Coordinate point) -> std::optional<Coordinate> {
+        if (value == region.getBody().front().getArgument(0))
+          return point;
+        if (auto slice = value.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+          for (unsigned axis = 0; axis < 3; ++axis) {
+            auto offset = evaluate(slice.getMixedOffsets()[axis]);
+            auto stride = evaluate(slice.getMixedStrides()[axis]);
+            if (!offset || !stride)
+              return std::nullopt;
+            point[axis] = *offset + point[axis] * *stride;
+          }
+          return origin(slice.getSource(), point);
+        }
+        if (auto insert = value.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
+          Coordinate relative;
+          bool inside = true;
+          for (unsigned axis = 0; axis < 3; ++axis) {
+            auto offset = evaluate(insert.getMixedOffsets()[axis]);
+            auto size = evaluate(insert.getMixedSizes()[axis]);
+            auto stride = evaluate(insert.getMixedStrides()[axis]);
+            if (!offset || !size || stride != 1)
+              return std::nullopt;
+            relative[axis] = point[axis] - *offset;
+            inside &= relative[axis] >= 0 && relative[axis] < *size;
+          }
+          return inside ? origin(insert.getSource(), relative)
+                        : origin(insert.getDest(), point);
+        }
+        return std::nullopt;
+      };
+      uint64_t checked = 0;
+      std::vector<unsigned> rowVisits(upper, 0);
+      region.walk([&](mlir::linalg::GenericOp compute) {
+        ASSERT_EQ(compute.getDpsInputs().size(), 2u);
+        mlir::tensor::InsertSliceOp publication;
+        for (auto *user : compute->getUsers())
+          if (auto insert = mlir::dyn_cast<mlir::tensor::InsertSliceOp>(user))
+            publication = insert;
+        ASSERT_TRUE(publication);
+        llvm::SmallVector<mlir::scf::ForOp> loops;
+        for (auto *parent = compute->getParentOp(); parent != region;
+             parent = parent->getParentOp()) {
+          auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+          ASSERT_TRUE(loop);
+          loops.push_back(loop);
+        }
+        std::reverse(loops.begin(), loops.end());
+        std::function<void(unsigned)> visit = [&](unsigned level) {
+          if (level < loops.size()) {
+            auto loop = loops[level];
+            auto lower = evaluate(loop.getLowerBound()),
+                 upper = evaluate(loop.getUpperBound()),
+                 step = evaluate(loop.getStep());
+            ASSERT_TRUE(lower && upper && step);
+            for (int64_t iv = *lower; iv < *upper; iv += *step) {
+              indices[loop.getInductionVar()] = iv;
+              visit(level + 1);
+            }
+            return;
+          }
+          auto row = evaluate(publication.getMixedOffsets()[1]);
+          ASSERT_TRUE(row);
+          ASSERT_GE(*row, 0);
+          ASSERT_LE(*row + 32, upper);
+          for (int64_t r = 0; r < 32; ++r)
+            ++rowVisits[*row + r];
+          for (unsigned input = 0; input < 2; ++input)
+            for (int64_t batch = 0; batch < 2; ++batch)
+              for (int64_t r = 0; r < 32; ++r)
+                for (int64_t c = 0; c < 48; ++c) {
+                  auto actual =
+                      origin(compute.getDpsInputs()[input], {batch, r, c});
+                  ASSERT_TRUE(actual);
+                  EXPECT_EQ(*actual, (Coordinate{batch, *row + r + input * 8,
+                                                 (48 + c + 64) % 128}));
+                  ++checked;
+                }
+        };
+        visit(0);
+      });
+      EXPECT_EQ(checked, uint64_t(upper / 32 * 2 * 2 * 2 * 32 * 48));
+      // Every original output row is visited once per invariant-loop
+      // iteration; a duplicated segment cannot hide a missing segment.
+      for (auto visits : rowVisits)
+        EXPECT_EQ(visits, 2u);
+      expectTemporalSPM(std::move(module), relations);
     }
   }
 }
@@ -4252,10 +4584,307 @@ module {
                     (llvm::ArrayRef<int64_t>{2, extent, 64}));
         });
         EXPECT_EQ(sharedPieces, 2u);
+        {
+          mlir::IRMapping mapping;
+          auto localModule =
+              mlir::OwningOpRef<mlir::ModuleOp>(mlir::cast<mlir::ModuleOp>(
+                  module->getOperation()->clone(mapping)));
+          StructuredMaterializationRelations localRelations;
+          for (const auto &output : relations.structuralOutputs)
+            localRelations.structuralOutputs.push_back(
+                {output.outputIndex, mapping.lookup(output.endpoint)});
+          auto opportunity = queryTestAssemblyReads(findRegion(*localModule));
+          ASSERT_EQ(opportunity.kind, TensorAssemblyOpportunityKind::Available)
+              << opportunity.detail;
+          auto localized = materializeTestAssemblyReads(
+              findRegion(*localModule), localRelations, &failure);
+          ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+          EXPECT_GT(localized->tileLocalAssemblies, 0u);
+          auto remaining = findTestAssemblyReads(findRegion(*localModule));
+          ASSERT_EQ(remaining.size(), extent == 1024 ? 0u : 1u);
+          for (auto read : remaining) {
+            // Canonicalization exposes a disjoint read of the output
+            // recurrence's old destination. This is a different assembly
+            // from the selected 128-column input and keeps its own choice.
+            EXPECT_EQ(read.getSourceType().getShape(),
+                      (llvm::ArrayRef<int64_t>{2, extent, 96}));
+            EXPECT_EQ(read.getStaticOffsets(),
+                      (llvm::ArrayRef<int64_t>{0, 1024, 48}));
+            EXPECT_EQ(read.getStaticSizes(),
+                      (llvm::ArrayRef<int64_t>{2, extent - 1024, 48}));
+            auto update =
+                read.getSource().getDefiningOp<mlir::tensor::InsertSliceOp>();
+            ASSERT_TRUE(update);
+            analysis::StaticRectangularIndexSet demand{{0, 1024, 48},
+                                                       {2, extent - 1024, 48}};
+            auto source =
+                analysis::queryTensorAssemblyDemand(read.getSource(), demand);
+            ASSERT_TRUE(source.isExact()) << source.detail;
+            ASSERT_EQ(source.pieces.size(), 1u);
+            EXPECT_EQ(source.pieces.front().source, update.getDest());
+            EXPECT_EQ(source.pieces.front().sourceWindow.offsets,
+                      demand.offsets);
+          }
+          unsigned observablePieces = 0;
+          findRegion(*localModule)
+              .walk([&](mlir::tensor::InsertSliceOp insert) {
+                if (insert.getDestType().getShape().back() == 128 &&
+                    insert->getParentOp() ==
+                        findRegion(*localModule).getOperation())
+                  ++observablePieces;
+              });
+          EXPECT_EQ(observablePieces, intermediate ? 1u : 2u);
+          expectTemporalSPM(std::move(localModule), localRelations);
+        }
         expectTemporalSPM(std::move(module), relations);
       }
     }
   }
+}
+
+TEST(TemporalTilingTest, ExplicitLocalAssemblyPreservesOverlappingReads) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    std::string text = R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%input: tensor<2xEXTENTx128xf16>)
+        -> (tensor<2xEXTENTx128xf16>, tensor<2xEXTENTx64xf16>, tensor<2xEXTENTx64xf16>) {
+      %result:3 = wafer.tile.region(%input : tensor<2xEXTENTx128xf16>)
+          -> (tensor<2xEXTENTx128xf16>, tensor<2xEXTENTx64xf16>, tensor<2xEXTENTx64xf16>) {
+      ^bb0(%arg: tensor<2xEXTENTx128xf16>):
+        %left = tensor.extract_slice %arg[0, 0, 0] [2, EXTENT, 64] [1, 1, 1]
+          : tensor<2xEXTENTx128xf16> to tensor<2xEXTENTx64xf16>
+        %right = tensor.extract_slice %arg[0, 0, 64] [2, EXTENT, 64] [1, 1, 1]
+          : tensor<2xEXTENTx128xf16> to tensor<2xEXTENTx64xf16>
+        %a = tensor.insert_slice %right into %arg[0, 0, 0] [2, EXTENT, 64] [1, 1, 1]
+          : tensor<2xEXTENTx64xf16> into tensor<2xEXTENTx128xf16>
+        %b = tensor.insert_slice %left into %a[0, 0, 64] [2, EXTENT, 64] [1, 1, 1]
+          : tensor<2xEXTENTx64xf16> into tensor<2xEXTENTx128xf16>
+        %first = tensor.extract_slice %b[0, 0, 48] [2, EXTENT, 64] [1, 1, 1]
+          : tensor<2xEXTENTx128xf16> to tensor<2xEXTENTx64xf16>
+        %second = tensor.extract_slice %b[0, 0, 56] [2, EXTENT, 64] [1, 1, 1]
+          : tensor<2xEXTENTx128xf16> to tensor<2xEXTENTx64xf16>
+        wafer.tile.yield %b, %first, %second : tensor<2xEXTENTx128xf16>, tensor<2xEXTENTx64xf16>, tensor<2xEXTENTx64xf16>
+      }
+      return %result#0, %result#1, %result#2 : tensor<2xEXTENTx128xf16>, tensor<2xEXTENTx64xf16>, tensor<2xEXTENTx64xf16>
+    }
+  }
+}
+)mlir";
+    size_t position;
+    while ((position = text.find("EXTENT")) != std::string::npos)
+      text.replace(position, 6, std::to_string(extent));
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        text, mlir::ParserConfig(context.get()));
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    StructuredMaterializationRelations relations;
+    for (unsigned index = 0; index < 3; ++index)
+      relations.structuralOutputs.push_back({index, region.getResult(index)});
+    auto opportunity = queryTestAssemblyReads(region);
+    ASSERT_EQ(opportunity.kind, TensorAssemblyOpportunityKind::Available)
+        << opportunity.detail;
+    // Each alternative localizes exactly one observer of the same shared
+    // assembly. The other read and the full observable result stay shared.
+    for (unsigned selectedIndex : {0u, 1u}) {
+      mlir::IRMapping mapping;
+      auto mixed = mlir::OwningOpRef<mlir::ModuleOp>(
+          mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(mapping)));
+      auto mixedRegion = findRegion(*mixed);
+      auto reads = findTestAssemblyReads(mixedRegion);
+      ASSERT_EQ(reads.size(), 2u);
+      auto keptOffset = reads[1 - selectedIndex].getStaticOffsets().back();
+      StructuredMaterializationRelations mixedRelations;
+      for (const auto &output : relations.structuralOutputs)
+        mixedRelations.structuralOutputs.push_back(
+            {output.outputIndex, mapping.lookup(output.endpoint)});
+      TemporalTilingFailure mixedFailure;
+      auto changed = materializeLocalTensorAssemblyReads(
+          mixedRegion, {reads[selectedIndex]}, mixedRelations, &mixedFailure);
+      ASSERT_TRUE(mlir::succeeded(changed)) << mixedFailure.detail;
+      EXPECT_EQ(changed->tileLocalAssemblies, 1u);
+      auto remaining = findTestAssemblyReads(mixedRegion);
+      ASSERT_EQ(remaining.size(), 1u);
+      EXPECT_EQ(remaining.front().getStaticOffsets().back(), keptOffset);
+      auto published =
+          mixedRegion.getBody().front().getTerminator()->getOperand(0);
+      EXPECT_EQ(remaining.front().getSource(), published);
+      expectTemporalSPM(std::move(mixed), mixedRelations);
+    }
+    TemporalTilingFailure failure;
+    auto localized = materializeTestAssemblyReads(region, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+    EXPECT_EQ(localized->tileLocalAssemblies, 2u);
+    EXPECT_EQ(queryTestAssemblyReads(region).kind,
+              TensorAssemblyOpportunityKind::NotApplicable);
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    expectTemporalSPM(std::move(module), relations);
+  }
+}
+
+TEST(TemporalTilingTest, AssemblyReadFailuresAreTypedAndLeaveIRUnchanged) {
+  auto context = createContext();
+  auto module = parseModule(*context, R"mlir(
+      %part = tensor.extract_slice %arg[0, 0, 0] [2, 1025, 64] [1, 1, 1]
+        : tensor<2x1025x128xf16> to tensor<2x1025x64xf16>
+      %empty = tensor.empty() : tensor<2x1025x128xf16>
+      %assembly = tensor.insert_slice %part into %empty[0, 0, 0] [2, 1025, 64] [1, 1, 1]
+        : tensor<2x1025x64xf16> into tensor<2x1025x128xf16>
+      %defined = tensor.extract_slice %assembly[0, 0, 16] [2, 1025, 32] [1, 1, 1]
+        : tensor<2x1025x128xf16> to tensor<2x1025x32xf16>
+      %undefined = tensor.extract_slice %assembly[0, 0, 48] [2, 1025, 32] [1, 1, 1]
+        : tensor<2x1025x128xf16> to tensor<2x1025x32xf16>
+      %strided = tensor.extract_slice %assembly[0, 0, 0] [2, 1025, 32] [1, 1, 2]
+        : tensor<2x1025x128xf16> to tensor<2x1025x32xf16>
+      %value = tensor.insert_slice %defined into %arg[0, 0, 0] [2, 1025, 32] [1, 1, 1]
+        : tensor<2x1025x32xf16> into tensor<2x1025x128xf16>
+)mlir",
+                            "tensor<2x1025x128xf16>", "tensor<2x1025x128xf16>");
+  ASSERT_TRUE(module);
+  auto region = findRegion(*module);
+  llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
+  region.walk(
+      [&](mlir::tensor::ExtractSliceOp read) { reads.push_back(read); });
+  ASSERT_EQ(reads.size(), 4u);
+  EXPECT_EQ(queryLocalTensorAssemblyRead(reads[0]).kind,
+            TensorAssemblyOpportunityKind::NotApplicable);
+  EXPECT_EQ(queryLocalTensorAssemblyRead(reads[1]).kind,
+            TensorAssemblyOpportunityKind::Available);
+  EXPECT_EQ(queryLocalTensorAssemblyRead(reads[2]).kind,
+            TensorAssemblyOpportunityKind::Unsupported);
+  EXPECT_EQ(queryLocalTensorAssemblyRead(reads[3]).kind,
+            TensorAssemblyOpportunityKind::Unsupported);
+  analysis::IndexRelationLimits limits;
+  limits.maxRectangularPieces = 0;
+  EXPECT_EQ(queryLocalTensorAssemblyRead(reads[1], limits).kind,
+            TensorAssemblyOpportunityKind::ResourceExhausted);
+  EXPECT_EQ(queryLocalTensorAssemblyRead({}).kind,
+            TensorAssemblyOpportunityKind::BrokenContract);
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  auto print = [&] {
+    std::string result;
+    llvm::raw_string_ostream os(result);
+    module->print(os);
+    return result;
+  };
+  auto before = print();
+  TemporalTilingFailure failure;
+  auto rejected = materializeLocalTensorAssemblyReads(
+      region, {reads[1], reads[2]}, relations, &failure);
+  EXPECT_TRUE(mlir::failed(rejected));
+  EXPECT_EQ(failure.kind, TemporalTilingFailureKind::Unsupported);
+  EXPECT_EQ(print(), before);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST(TemporalTilingTest,
+     ExplicitLocalAssemblyReadsPartialLastWriterAndOldValue) {
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%base: tensor<1x1031x8xf16>,
+                     %first: tensor<400x8xf16>, %last: tensor<300x8xf16>)
+        -> tensor<1x1025x8xf16> {
+      %result = wafer.tile.region(%base, %first, %last : tensor<1x1031x8xf16>, tensor<400x8xf16>, tensor<300x8xf16>)
+          -> (tensor<1x1025x8xf16>) {
+      ^bb0(%old: tensor<1x1031x8xf16>, %a: tensor<400x8xf16>, %b: tensor<300x8xf16>):
+        %initial = tensor.insert_slice %a into %old[0, 200, 0] [1, 400, 8] [1, 1, 1]
+          : tensor<400x8xf16> into tensor<1x1031x8xf16>
+        %updated = tensor.insert_slice %b into %initial[0, 300, 0] [1, 300, 8] [1, 1, 1]
+          : tensor<300x8xf16> into tensor<1x1031x8xf16>
+        %selected = tensor.extract_slice %updated[0, 3, 0] [1, 1025, 8] [1, 1, 1]
+          : tensor<1x1031x8xf16> to tensor<1x1025x8xf16>
+        wafer.tile.yield %selected : tensor<1x1025x8xf16>
+      }
+      return %result : tensor<1x1025x8xf16>
+    }
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(module);
+  auto region = findRegion(*module);
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  ASSERT_EQ(queryTestAssemblyReads(region).kind,
+            TensorAssemblyOpportunityKind::Available);
+  TemporalTilingFailure failure;
+  auto localized = materializeTestAssemblyReads(region, relations, &failure);
+  ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+  EXPECT_EQ(localized->tileLocalAssemblies, 1u);
+  EXPECT_EQ(localized->assembledSegments, 4u);
+  EXPECT_EQ(queryTestAssemblyReads(region).kind,
+            TensorAssemblyOpportunityKind::NotApplicable);
+  unsigned sourceReads[3] = {};
+  region.walk([&](mlir::tensor::ExtractSliceOp slice) {
+    for (unsigned index = 0; index < 3; ++index)
+      if (slice.getSource() == region.getBody().front().getArgument(index))
+        ++sourceReads[index];
+  });
+  EXPECT_EQ(sourceReads[0], 2u);
+  EXPECT_EQ(sourceReads[1], 1u);
+  // The whole last-writer source folds to its SSA value without an extract.
+  EXPECT_EQ(sourceReads[2], 0u);
+  unsigned lastWriterPieces = 0;
+  region.walk([&](mlir::tensor::InsertSliceOp insert) {
+    if (insert.getSource() == region.getBody().front().getArgument(2)) {
+      ++lastWriterPieces;
+      EXPECT_EQ(insert.getStaticOffsets()[1], 297);
+    }
+  });
+  EXPECT_EQ(lastWriterPieces, 1u);
+  expectTemporalSPM(std::move(module), relations);
+}
+
+TEST(TemporalTilingTest, ExplicitLocalAssemblyCrossesAStaticViewChain) {
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.tile.module card_id = 0 tile_id = 0 {
+    func.func @entry(%base: tensor<1x1031x8xf16>,
+                     %first: tensor<400x8xf16>, %last: tensor<300x8xf16>)
+        -> tensor<1025x2x4xf16> {
+      %result = wafer.tile.region(%base, %first, %last : tensor<1x1031x8xf16>, tensor<400x8xf16>, tensor<300x8xf16>)
+          -> (tensor<1025x2x4xf16>) {
+      ^bb0(%old: tensor<1x1031x8xf16>, %a: tensor<400x8xf16>, %b: tensor<300x8xf16>):
+        %initial = tensor.insert_slice %a into %old[0, 200, 0] [1, 400, 8] [1, 1, 1]
+          : tensor<400x8xf16> into tensor<1x1031x8xf16>
+        %updated = tensor.insert_slice %b into %initial[0, 300, 0] [1, 300, 8] [1, 1, 1]
+          : tensor<300x8xf16> into tensor<1x1031x8xf16>
+        %flat = tensor.collapse_shape %updated [[0, 1], [2]]
+          : tensor<1x1031x8xf16> into tensor<1031x8xf16>
+        %view = tensor.expand_shape %flat [[0], [1, 2]] output_shape [1031, 2, 4]
+          : tensor<1031x8xf16> into tensor<1031x2x4xf16>
+        %selected = tensor.extract_slice %view[3, 0, 0] [1025, 2, 4] [1, 1, 1]
+          : tensor<1031x2x4xf16> to tensor<1025x2x4xf16>
+        wafer.tile.yield %selected : tensor<1025x2x4xf16>
+      }
+      return %result : tensor<1025x2x4xf16>
+    }
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(module);
+  auto region = findRegion(*module);
+  StructuredMaterializationRelations relations;
+  relations.structuralOutputs.push_back({0, region.getResult(0)});
+  ASSERT_EQ(queryTestAssemblyReads(region).kind,
+            TensorAssemblyOpportunityKind::Available);
+  TemporalTilingFailure failure;
+  auto localized = materializeTestAssemblyReads(region, relations, &failure);
+  ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+  EXPECT_EQ(localized->tileLocalAssemblies, 1u);
+  EXPECT_EQ(localized->assembledSegments, 4u);
+  EXPECT_EQ(queryTestAssemblyReads(region).kind,
+            TensorAssemblyOpportunityKind::NotApplicable);
+  expectTemporalSPM(std::move(module), relations);
 }
 
 TEST(TemporalTilingTest, AssemblyLocalizationPreservesInvariantAxisReuse) {

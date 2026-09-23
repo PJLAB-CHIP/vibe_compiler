@@ -76,8 +76,9 @@ struct TemporalPrefix : llvm::FoldingSetNode {
   std::vector<TemporalChoice> choices;
   CurrentCandidate tiled;
   bool canMerge = false;
-  std::array<std::shared_ptr<const LayoutInput>, 4> layouts;
-  std::array<std::array<std::shared_ptr<const CurrentCandidate>, 2>, 4>
+  std::array<std::shared_ptr<const LayoutInput>, 8> layouts;
+  std::array<bool, 8> localAssemblyOpportunities{};
+  std::array<std::array<std::shared_ptr<const CurrentCandidate>, 2>, 8>
       prepared;
 
   static void profile(llvm::FoldingSetNodeID &id, mlir::Operation *parent,
@@ -424,6 +425,11 @@ struct PipelineScope {
   }
 };
 
+enum class TensorAssemblyImplementation : uint8_t {
+  KeepShared,
+  LocalizeReads,
+};
+
 struct ImplementationChoice {
   BoundaryMovementOptions options;
   bool recursive = false;
@@ -433,6 +439,8 @@ struct ImplementationChoice {
   llvm::SmallVector<PipelineScope, 4> pipelineScopes;
   bool merged = false;
   bool cpuScalars = false;
+  TensorAssemblyImplementation assembly =
+      TensorAssemblyImplementation::KeepShared;
   LayoutMaterializationPlacement placement =
       LayoutMaterializationPlacement::FirstUse;
   std::optional<AccessReuseIntent> reuse;
@@ -451,7 +459,8 @@ struct ImplementationChoice {
                           return llvm::is_contained(b.pipelineScopes, scope);
                         }) &&
            a.merged == b.merged && a.cpuScalars == b.cpuScalars &&
-           a.placement == b.placement && a.reuse == b.reuse;
+           a.assembly == b.assembly && a.placement == b.placement &&
+           a.reuse == b.reuse;
   }
 };
 
@@ -565,12 +574,14 @@ public:
     auto &temporal = *pending;
     auto &attempt = temporal.region;
     if (!attempt.lowered) {
+      if (attempt.layoutInput && attempt.localAssemblyAvailable)
+        discoverLocalAssembly(temporal);
       auto prepared = prepareRegion(temporal, attempt);
       if (auto *failure = std::get_if<ExecutableCompilationResult>(&prepared))
         return finish(std::move(*failure));
       return yield();
     }
-    const auto choice = current().choice;
+    const auto choice = temporal.choice;
     std::string detail;
     mlir::IRMapping mapping;
     auto candidate = cloneCandidate(*attempt.lowered, mapping, detail);
@@ -828,6 +839,9 @@ public:
                          "search-capacity-feedback", capacityFeedback.detail));
     if (choice.pipeline && compiled.isAccepted())
       support::addCompileCounter("search", "pipeline-accepted", 1);
+    if (choice.assembly == TensorAssemblyImplementation::LocalizeReads &&
+        compiled.isAccepted())
+      support::addCompileCounter("search", "local-assembly-accepted", 1);
     if (statistics && choice.reuse && compiled.isAccepted()) {
       ++statistics->accessReuseAccepted;
       if (llvm::any_of(choice.reuse->selections, [](const auto &action) {
@@ -876,7 +890,9 @@ public:
         auto duration = known->estimatedDurationPicoseconds;
         if (support::getActiveCompileTimingSession())
           diagnostics << "wafer-compile: accepted-candidate pipeline="
-                      << choice.pipeline
+                      << choice.pipeline << " local_assembly="
+                      << (choice.assembly ==
+                          TensorAssemblyImplementation::LocalizeReads)
                       << " estimated_picoseconds=" << duration << '\n';
         current().bestDuration =
             current().bestDuration ? std::min(*current().bestDuration, duration)
@@ -942,29 +958,46 @@ private:
         LayoutMaterializationPlacement::FirstUse;
     bool merged = false;
     bool cpuScalars = false;
-    unsigned layoutIndex() const { return 2 * merged + cpuScalars; }
+    TensorAssemblyImplementation assembly =
+        TensorAssemblyImplementation::KeepShared;
+    bool localAssemblyAvailable = false;
+    unsigned layoutIndex() const {
+      return 4 * (assembly == TensorAssemblyImplementation::LocalizeReads) +
+             2 * merged + cpuScalars;
+    }
   };
   struct TemporalAttempt {
     std::vector<TemporalChoice> choices;
     std::shared_ptr<TemporalPrefix> prefix;
+    ImplementationChoice choice;
     RegionAttempt region;
   };
 
   ImplementationBranch &current() { return *implementations[*active]; }
 
+  void discoverLocalAssembly(const TemporalAttempt &temporal) {
+    if (!temporal.region.localAssemblyAvailable ||
+        temporal.choice.assembly != TensorAssemblyImplementation::KeepShared)
+      return;
+    auto sibling = temporal.choice;
+    sibling.assembly = TensorAssemblyImplementation::LocalizeReads;
+    discover(std::move(sibling), temporal.choices);
+  }
+
   bool discover(ImplementationChoice choice,
                 const std::vector<TemporalChoice> &point,
                 long double priority = 0) {
     if (support::getActiveCompileTimingSession())
-      diagnostics << "wafer-compile: discovered-implementation structural="
-                  << explorationStratum << " from_implementation=" << *active
-                  << " attempt="
-                  << (statistics ? statistics->temporalCandidateActualizations
-                                 : 0)
-                  << " pipeline=" << choice.pipeline << " invariant="
-                  << (choice.placement ==
-                      LayoutMaterializationPlacement::LoopInvariant)
-                  << '\n';
+      diagnostics
+          << "wafer-compile: discovered-implementation structural="
+          << explorationStratum << " from_implementation=" << *active
+          << " attempt="
+          << (statistics ? statistics->temporalCandidateActualizations : 0)
+          << " pipeline=" << choice.pipeline << " invariant="
+          << (choice.placement == LayoutMaterializationPlacement::LoopInvariant)
+          << " local_assembly="
+          << (choice.assembly == TensorAssemblyImplementation::LocalizeReads)
+          << '\n';
     for (const auto &branch : implementations)
       if (branch->choice == choice) {
         if (branch->state == BranchState::Waiting) {
@@ -1003,6 +1036,8 @@ private:
     count("structural-stratum", explorationStratum);
     count("merged", selected.merged);
     count("cpu-scalars", selected.cpuScalars);
+    count("local-assembly",
+          selected.assembly == TensorAssemblyImplementation::LocalizeReads);
     count("invariant",
           selected.placement == LayoutMaterializationPlacement::LoopInvariant);
     count("pipeline", selected.pipeline);
@@ -1031,6 +1066,9 @@ private:
     branch.state = BranchState::Active;
     if (branch.choice.reuse && statistics)
       ++statistics->accessReuseBranchesStarted;
+    if (branch.choice.assembly == TensorAssemblyImplementation::LocalizeReads)
+      support::addCompileCounter("search", "local-assembly-branches-started",
+                                 1);
     active = index;
   }
 
@@ -1318,8 +1356,10 @@ private:
     TemporalAttempt attempt;
     attempt.choices = std::move(choices);
     attempt.prefix = std::move(prefix);
+    attempt.choice = current().choice;
     attempt.region.merged = current().choice.merged;
     attempt.region.cpuScalars = current().choice.cpuScalars;
+    attempt.region.assembly = current().choice.assembly;
     attempt.region.placement = current().choice.placement;
     if (statistics) {
       statistics->mergedRegionCandidates += attempt.region.merged;
@@ -1327,6 +1367,9 @@ private:
     }
     attempt.region.layoutInput =
         attempt.prefix->layouts[attempt.region.layoutIndex()];
+    attempt.region.localAssemblyAvailable =
+        attempt.prefix
+            ->localAssemblyOpportunities[attempt.region.layoutIndex()];
     if (attempt.region.layoutInput && statistics)
       ++statistics->layoutPrefixHits;
     pending.emplace(std::move(attempt));
@@ -1367,6 +1410,66 @@ private:
                         ? ExecutableCompilationStatus::UnsupportedFailure
                         : ExecutableCompilationStatus::CompilerFailure,
                     "search-attention-decomposition", attentionFailure.detail);
+      llvm::SmallVector<
+          std::pair<TileRegionOp,
+                    llvm::SmallVector<mlir::tensor::ExtractSliceOp>>,
+          16>
+          assemblyRegions;
+      TensorAssemblyOpportunity queryFailure;
+      candidate->module->walk([&](TileRegionOp region) {
+        llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
+        region.walk([&](mlir::tensor::ExtractSliceOp read) {
+          auto opportunity = queryLocalTensorAssemblyRead(read);
+          switch (opportunity.kind) {
+          case TensorAssemblyOpportunityKind::Available:
+            reads.push_back(read);
+            break;
+          case TensorAssemblyOpportunityKind::NotApplicable:
+            break;
+          case TensorAssemblyOpportunityKind::Unsupported:
+            support::addCompileCounter("search", "unsupported-assembly-reads",
+                                       1);
+            break;
+          case TensorAssemblyOpportunityKind::ResourceExhausted:
+            support::addCompileCounter("search", "indeterminate-assembly-reads",
+                                       1);
+            break;
+          case TensorAssemblyOpportunityKind::BrokenContract:
+            queryFailure = std::move(opportunity);
+            break;
+          }
+        });
+        if (!reads.empty())
+          assemblyRegions.push_back({region, std::move(reads)});
+      });
+      if (queryFailure.kind == TensorAssemblyOpportunityKind::BrokenContract)
+        return fail(ExecutableCompilationStatus::CompilerFailure,
+                    "search-tensor-assembly-query", queryFailure.detail);
+      attempt.localAssemblyAvailable = !assemblyRegions.empty();
+      discoverLocalAssembly(temporal);
+      if (attempt.assembly == TensorAssemblyImplementation::LocalizeReads) {
+        if (assemblyRegions.empty())
+          return fail(ExecutableCompilationStatus::UnsupportedFailure,
+                      "search-tensor-assembly-query",
+                      "selected local assembly has no current eligible read");
+        for (const auto &[region, reads] : assemblyRegions) {
+          TemporalTilingFailure assemblyFailure;
+          auto localized = materializeLocalTensorAssemblyReads(
+              region, reads, candidate->relations, &assemblyFailure);
+          if (mlir::failed(localized))
+            return fail(assemblyFailure.kind ==
+                                TemporalTilingFailureKind::ResourceExhausted
+                            ? ExecutableCompilationStatus::IndeterminateFailure
+                        : assemblyFailure.kind ==
+                                TemporalTilingFailureKind::Unsupported
+                            ? ExecutableCompilationStatus::UnsupportedFailure
+                            : ExecutableCompilationStatus::CompilerFailure,
+                        "search-tensor-assembly-materialization",
+                        assemblyFailure.detail);
+          support::addCompileCounter("search", "local-assembly-reads",
+                                     localized->tileLocalAssemblies);
+        }
+      }
       ExternalBufferLayout external;
       external.layout = options.externalLayout;
       for (const auto &input : program.distributedInputs)
@@ -1394,7 +1497,7 @@ private:
         support::addCompileCounter("search", "cpu-scalar-materializations",
                                    *materialized);
       } else if (cpuAvailable) {
-        auto sibling = current().choice;
+        auto sibling = temporal.choice;
         sibling.cpuScalars = true;
         discover(std::move(sibling), temporal.choices);
       }
@@ -1411,6 +1514,8 @@ private:
       attempt.layoutInput = std::make_shared<LayoutInput>(LayoutInput{
           std::move(*candidate), std::move(query.query), std::move(first)});
       temporal.prefix->layouts[attempt.layoutIndex()] = attempt.layoutInput;
+      temporal.prefix->localAssemblyOpportunities[attempt.layoutIndex()] =
+          attempt.localAssemblyAvailable;
       return RegionPreparationYielded{};
     }
     const auto &input = *attempt.layoutInput;
@@ -1483,7 +1588,7 @@ private:
     if (distributed.brokenContract)
       return fail(ExecutableCompilationStatus::CompilerFailure,
                   "search-movement-domain", distributed.detail);
-    const auto &selected = current().choice;
+    const auto &selected = temporal.choice;
     if ((selected.recursive && !recursive.isAvailable()) ||
         (selected.allToAll && !distributed.dimensionOrderedAllToAll) ||
         (selected.reduction && !distributed.distributedReduction))
@@ -1495,13 +1600,13 @@ private:
         (input.query->hasLoopInvariantPlacement(input.assignment) ||
          hasInvariantPhysicalMovement(
              candidate->module.get().getOperation()))) {
-      auto sibling = current().choice;
+      auto sibling = temporal.choice;
       sibling.placement = LayoutMaterializationPlacement::LoopInvariant;
       discover(std::move(sibling), temporal.choices);
     }
-    if (distributed.sharedDDR && current().choice.options.transport !=
+    if (distributed.sharedDDR && temporal.choice.options.transport !=
                                      BoundaryMovementTransport::SharedDDR) {
-      auto sibling = current().choice;
+      auto sibling = temporal.choice;
       sibling.options.transport = BoundaryMovementTransport::SharedDDR;
       sibling.options.allGather = CompleteAllGatherAlgorithm::Ring;
       sibling.options.allToAll = CompleteAllToAllAlgorithm::Direct;
@@ -1515,7 +1620,7 @@ private:
           (allToAll && !distributed.dimensionOrderedAllToAll) ||
           (reduce && !distributed.distributedReduction))
         continue;
-      auto sibling = current().choice;
+      auto sibling = temporal.choice;
       sibling.options.transport = BoundaryMovementTransport::Peer;
       sibling.recursive = gather;
       sibling.allToAll = allToAll;
@@ -1585,6 +1690,7 @@ private:
   finish(ExecutableCompilationResult compiled,
          std::optional<analysis::SearchObjective> objective = std::nullopt) {
     recordOwnership();
+    const auto completedChoice = pending ? pending->choice : current().choice;
     pending.reset();
     const auto status = classifyActualStatus(compiled.status);
     if (status == ActualCandidateStatus::CompilerBug ||
@@ -1602,6 +1708,9 @@ private:
     }
     if (!compiled.isAccepted() && support::getActiveCompileTimingSession())
       diagnostics << "wafer-compile: rejected-candidate gate=" << compiled.gate
+                  << " local_assembly="
+                  << (completedChoice.assembly ==
+                      TensorAssemblyImplementation::LocalizeReads)
                   << " detail=" << compiled.detail << '\n';
     ActualCandidateResult result;
     result.status = status;

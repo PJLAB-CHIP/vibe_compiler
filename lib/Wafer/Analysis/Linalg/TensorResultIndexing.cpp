@@ -3,8 +3,12 @@
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/SubsetOpInterface.h"
 
@@ -33,6 +37,173 @@ fromRelationFailure(const IndexRelationResult &result) {
 }
 
 } // namespace
+
+namespace {
+
+struct LinearLoopIndex {
+  mlir::Value induction;
+  int64_t base = 0;
+  int64_t scale = 1;
+};
+
+std::optional<LinearLoopIndex>
+parseLinearLoopIndex(mlir::Value value, const IndexRelationLimits &limits,
+                     TensorResultIndexingStatus &status, unsigned depth = 0) {
+  if (!value)
+    return std::nullopt;
+  if (depth >= limits.maxVariables) {
+    status = TensorResultIndexingStatus::ResourceExhausted;
+    return std::nullopt;
+  }
+  if (auto apply = value.getDefiningOp<mlir::affine::AffineApplyOp>()) {
+    auto map = apply.getAffineMap();
+    if (map.getNumDims() != 1 || map.getNumSymbols() != 0 ||
+        apply.getMapOperands().size() != 1)
+      return std::nullopt;
+    auto dim = mlir::getAffineDimExpr(0, value.getContext());
+    auto zero = mlir::getAffineConstantExpr(0, value.getContext());
+    auto one = mlir::getAffineConstantExpr(1, value.getContext());
+    auto atZero = mlir::dyn_cast<mlir::AffineConstantExpr>(
+        mlir::simplifyAffineExpr(map.getResult(0).replace(dim, zero), 1, 0));
+    auto atOne = mlir::dyn_cast<mlir::AffineConstantExpr>(
+        mlir::simplifyAffineExpr(map.getResult(0).replace(dim, one), 1, 0));
+    int64_t scale = 0;
+    if (!atZero || !atOne ||
+        llvm::SubOverflow(atOne.getValue(), atZero.getValue(), scale) ||
+        scale <= 0)
+      return std::nullopt;
+    int64_t base = atZero.getValue();
+    auto expected =
+        dim * mlir::getAffineConstantExpr(scale, value.getContext()) +
+        mlir::getAffineConstantExpr(base, value.getContext());
+    if (mlir::simplifyAffineExpr(map.getResult(0) - expected, 1, 0) != zero)
+      return std::nullopt;
+    auto inner = parseLinearLoopIndex(apply.getMapOperands().front(), limits,
+                                      status, depth + 1);
+    int64_t scaledBase = 0, composedBase = 0, composedScale = 0;
+    if (!inner || llvm::MulOverflow(scale, inner->base, scaledBase) ||
+        llvm::AddOverflow(base, scaledBase, composedBase) ||
+        llvm::MulOverflow(scale, inner->scale, composedScale))
+      return std::nullopt;
+    return LinearLoopIndex{inner->induction, composedBase, composedScale};
+  }
+  if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
+    auto constant = mlir::getConstantIntValue(add.getLhs());
+    mlir::Value other = add.getRhs();
+    if (!constant) {
+      constant = mlir::getConstantIntValue(add.getRhs());
+      other = add.getLhs();
+    }
+    auto inner = constant
+                     ? parseLinearLoopIndex(other, limits, status, depth + 1)
+                     : std::nullopt;
+    int64_t base = 0;
+    if (!inner || llvm::AddOverflow(inner->base, *constant, base))
+      return std::nullopt;
+    return LinearLoopIndex{inner->induction, base, inner->scale};
+  }
+  if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>()) {
+    auto constant = mlir::getConstantIntValue(multiply.getLhs());
+    mlir::Value other = multiply.getRhs();
+    if (!constant) {
+      constant = mlir::getConstantIntValue(multiply.getRhs());
+      other = multiply.getLhs();
+    }
+    auto inner = constant && *constant > 0
+                     ? parseLinearLoopIndex(other, limits, status, depth + 1)
+                     : std::nullopt;
+    int64_t base = 0, scale = 0;
+    if (!inner || llvm::MulOverflow(inner->base, *constant, base) ||
+        llvm::MulOverflow(inner->scale, *constant, scale))
+      return std::nullopt;
+    return LinearLoopIndex{inner->induction, base, scale};
+  }
+  return LinearLoopIndex{value, 0, 1};
+}
+
+} // namespace
+
+TensorLoopGridResult queryTensorLoopGrid(mlir::OpFoldResult offset,
+                                         const IndexRelationLimits &limits) {
+  auto value = mlir::dyn_cast<mlir::Value>(offset);
+  auto status = TensorResultIndexingStatus::Unsupported;
+  auto linear = parseLinearLoopIndex(value, limits, status);
+  if (!linear)
+    return {status, std::nullopt,
+            status == TensorResultIndexingStatus::ResourceExhausted
+                ? "loop index expression exceeded its work bound"
+                : "offset is not one supported linear induction expression"};
+  int64_t base = linear->base;
+  int64_t scale = linear->scale;
+  mlir::Value induction = linear->induction;
+  auto argument = induction ? mlir::dyn_cast<mlir::BlockArgument>(induction)
+                            : mlir::BlockArgument{};
+  auto loop = argument && argument.getOwner()
+                  ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+                        argument.getOwner()->getParentOp())
+                  : mlir::scf::ForOp{};
+  if (!loop || argument != loop.getInductionVar())
+    return {TensorResultIndexingStatus::Unsupported, std::nullopt,
+            "loop grid requires a positive bounded static induction range"};
+  auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+  auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+  auto step = mlir::getConstantIntValue(loop.getStep());
+  int64_t scaledLower = 0, scaledUpper = 0, coordinateStep = 0;
+  int64_t coordinateLower = 0, coordinateUpper = 0;
+  if (!lower || !upper || !step || *step <= 0 ||
+      llvm::MulOverflow(*lower, scale, scaledLower) ||
+      llvm::MulOverflow(*upper, scale, scaledUpper) ||
+      llvm::MulOverflow(*step, scale, coordinateStep) ||
+      llvm::AddOverflow(scaledLower, base, coordinateLower) ||
+      llvm::AddOverflow(scaledUpper, base, coordinateUpper) ||
+      coordinateLower < 0 || coordinateUpper <= coordinateLower)
+    return {TensorResultIndexingStatus::Unsupported, std::nullopt,
+            "loop grid requires a positive bounded static induction range"};
+  return {TensorResultIndexingStatus::Exact,
+          TensorLoopGrid{value, induction, base, scale, coordinateLower,
+                         coordinateUpper, coordinateStep},
+          {}};
+}
+
+std::optional<int64_t> getTensorLoopIndex(const TensorLoopGrid &grid,
+                                          int64_t coordinate) {
+  int64_t relative = 0;
+  if (llvm::SubOverflow(coordinate, grid.base, relative) ||
+      relative % grid.scale != 0)
+    return std::nullopt;
+  return relative / grid.scale;
+}
+
+std::optional<int64_t> getTensorLoopGridFloor(const TensorLoopGrid &grid,
+                                              int64_t coordinate) {
+  if (coordinate < grid.lower || coordinate >= grid.upper)
+    return std::nullopt;
+  int64_t delta = coordinate - grid.lower;
+  int64_t multiple = 0;
+  int64_t value = 0;
+  if (llvm::MulOverflow(delta / grid.step, grid.step, multiple) ||
+      llvm::AddOverflow(grid.lower, multiple, value) || value < grid.lower ||
+      value >= grid.upper)
+    return std::nullopt;
+  return value;
+}
+
+std::optional<int64_t> getTensorLoopGridCeil(const TensorLoopGrid &grid,
+                                             int64_t coordinate) {
+  if (coordinate <= grid.lower)
+    return grid.lower;
+  if (coordinate >= grid.upper)
+    return std::nullopt;
+  int64_t delta = coordinate - grid.lower;
+  int64_t rounded = 0;
+  int64_t multiple = 0;
+  int64_t value = 0;
+  if (llvm::AddOverflow(delta, grid.step - 1, rounded) ||
+      llvm::MulOverflow(rounded / grid.step, grid.step, multiple) ||
+      llvm::AddOverflow(grid.lower, multiple, value) || value >= grid.upper)
+    return std::nullopt;
+  return value;
+}
 
 TensorViewIndexingResult
 deriveTensorViewIndexing(mlir::Value value, const IndexRelationLimits &limits) {

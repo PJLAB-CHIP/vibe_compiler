@@ -3,8 +3,10 @@
 #ifndef WAFER_TRANSFORMS_LINALG_TEMPORALTILING_H
 #define WAFER_TRANSFORMS_LINALG_TEMPORALTILING_H
 
+#include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -14,9 +16,25 @@
 
 namespace wafer {
 
+enum class TensorAssemblyOpportunityKind : uint8_t {
+  Available,
+  NotApplicable,
+  Unsupported,
+  ResourceExhausted,
+  BrokenContract,
+};
+
+struct TensorAssemblyOpportunity {
+  TensorAssemblyOpportunityKind kind =
+      TensorAssemblyOpportunityKind::NotApplicable;
+  std::string detail;
+};
+
 enum class TemporalTilingFailureKind : uint8_t {
   None,
+  Unsupported,
   BrokenContract,
+  ResourceExhausted,
   CompilerFailure,
 };
 
@@ -54,6 +72,21 @@ mlir::FailureOr<TemporalTilingStatistics>
 applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
                     StructuredMaterializationRelations &relations,
                     TemporalTilingFailure *failure = nullptr);
+
+/// Inspect one actual Tensor subset after structural expansion. Unsupported
+/// and exhausted proofs remain distinct from a read with no assembly source.
+/// Handles borrow the current unchanged IR epoch.
+TensorAssemblyOpportunity
+queryLocalTensorAssemblyRead(mlir::tensor::ExtractSliceOp read,
+                             const analysis::IndexRelationLimits &limits =
+                                 analysis::IndexRelationLimits());
+
+/// Explicit local implementation of current assembly reads. Keep the shared
+/// value and its other observers intact. On failure, discard the candidate.
+mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
+    TileRegionOp region, llvm::ArrayRef<mlir::tensor::ExtractSliceOp> reads,
+    StructuredMaterializationRelations &relations,
+    TemporalTilingFailure *failure = nullptr);
 
 } // namespace wafer
 

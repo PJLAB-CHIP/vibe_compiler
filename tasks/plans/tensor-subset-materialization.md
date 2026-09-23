@@ -14,8 +14,38 @@ fresh no-card编译实际完成42次候选，全部为actual SPM capacity拒绝�
 rank3的1024/1025/1031多轴来源、重叠拒绝及原Temporal矩阵通过。随后接入静态实际窗口查询，
 按last-writer分出insert源及旧destination需求；rank reduction、覆盖重叠、预算失败和`tensor.empty`未定义读取已有定向测试。
 Spatial的实际4 Tile、1025行跨512边界用同一查询只生成255+1行紧凑输入片段并通过stage verifier；
-完整尺寸的insert仅用于observable输出发布。当前静态Spatial路径已接入，Temporal动态分段、共同生成入口、
-显式共享/局部候选、fresh产品及板测仍未完成，不能签长LM board-ready。
+完整尺寸的insert仅用于observable输出发布。当前静态Spatial路径已接入；Temporal新增有界`scf.for`坐标查询，
+识别裸IV及`affine.apply`表达的`base + iv * scale`，并拒绝非线性式。多轴完整assembly的参数化窗口
+按实际来源边界有限切分循环，每个区间先证明片段覆盖、无重叠与恒定形态；单来源直接切片，跨来源才组装。
+1024/1025/1031的真实Temporal循环到bufferization、Instr与实际SPM已通过，Spatial/Temporal复用静态
+片段组装。动态partial insert、透明view链的共同需求生成、显式共享/局部候选、fresh产品及板测仍未完成，
+不能签长LM board-ready。
+
+审查后的修复顺序：先补同一循环内不同 offset 读取的分段并集、内层定义索引的支配关系反例，
+统一收集分段点并在合法位置重建已证明的线性索引；再将局部物化选择收敛到实际读取组，
+移除借用共享分支状态的配对尝试。各实现独立拥有 proposal、容量反馈和预算生命周期，
+retile 后重新查询当前读取，不通过全局开关或遍历序号恢复选择。查询的 Unsupported、
+ResourceExhausted 和 BrokenContract 必须保留到调用者；删除1031局部候选测试的绕过条件。
+以上属于原合同修复，仍须覆盖第6节的 mixed 共享/局部实现及真实产品路径。
+
+本轮已落实的修复：
+
+- 分段先收集同一循环中全部所选读取的边界并集，再按内层到外层拆分；新读使用同次clone的`IRMapping`绑定。
+- 不变内层提升先证明source和induction支配插入点，必要时在该点重建已证明的线性offset。
+- 查询改为单个实际`extract_slice`的typed结果；物化接口只接收明确选中的读取列表，首次mutation前完成整批preflight。
+  保留共享值、未选读取和输出递推的旧destination；不再循环扫描整个Region直到所有机会消失。
+- 临时配对attempt已删除，局部实现重新进入独立`ImplementationBranch`，沿用既有预算和容量反馈入口。
+
+仍未闭合：Driver的实现描述仍为整体共享/局部二选一，尚未按06号保存assembly/use-family的完整选择、组合和
+跨retile重新查询合同；不能把变换接口的mixed选择测试视为搜索已支持mixed候选。动态partial insert与参数化view的
+共同生成、纯片段生成与producer tiler的最终解耦、全部typed工作预算、独立分支的专项standard/deep生命周期验证、
+fresh产品及板测也仍待完成。
+本轮暂不推进LM资格或性能签发，先完成上述设计缺口。
+
+本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
+Driver 151项组件单测全部实际通过，共831项，无跳过。随后补强组合反例的逐行执行覆盖计数，六组输入重新通过，
+再次通过canonical增量与no-op；未改变production代码。`git diff --check`通过，Wafer-owned源码目录无Python缓存。
+这些证据只覆盖本检查点，不表示上述剩余设计合同或板端资格已经闭合。
 
 本检查点的已执行覆盖（未列部分仍按第6节验收）：
 
@@ -25,6 +55,11 @@ Spatial的实际4 Tile、1025行跨512边界用同一查询只生成255+1行紧�
 | 1025行部分insert、覆盖重叠与旧destination | `AssemblyDemandUsesLastWriterAndReadsOnlyTheOldDestinationRemainder`通过；200至799行逐行恰一owner，紧预算返回ResourceExhausted | 静态需求供Spatial物化；未代签动态Temporal |
 | rank reduction及未定义旧destination | `AssemblyDemandPreservesRankReducedSourceCoordinates`通过；source窗口为二维，实际读取`tensor.empty`返回Unsupported | Spatial在首次物化前查询 |
 | 1025行、4 Tile、跨512边界 | `SelectedAssemblyWindowUsesOnlyItsCurrentSourcePieces`通过；Tile内255+1行的源/结果坐标精确，module verifier通过 | Spatial TileRegion；layout/Instr/SPM仍待覆盖 |
+| 1024/1025/1031行、两个分片轴、参数化Temporal多block及tail | `ParametricDemandCrossesTwoAssemblyAxes`通过；按边界有限分段，局部组装无Tensor条件合流；`ParameterizedLoopGridUsesAffineCoordinates`覆盖裸IV、平移、倍乘及非线性拒绝 | 真实Temporal TileRegion→bufferization→Instr→SPM，本轮执行通过 |
+| 1024/1025/1031行、同一循环内`iv`与`iv+8`、两种读取顺序、不变内层定义offset | `AssemblyReadFamiliesUnionBoundariesAndHoistIndices`先复现原失败，修复后六组通过；独立解释实际subset SSA，逐动态实例、逐元素核对交换列半区后的原始来源坐标；无Tensor条件合流 | verifier、bufferization、Instr和actual SPM全部实际执行 |
+| 1024/1025行、共享assembly的两个重叠观察者及full-use，分别只选择第一个/第二个 | `ExplicitLocalAssemblyPreservesOverlappingReads`通过；每个mixed分支仅改写一个读取，另一个继续读取原发布值；同时保留双局部选择 | 每个实际分支均经过bufferization、Instr和SPM；未代签Driver mixed搜索 |
+| 1024/1025/1031、Joint/Independent、完整值/中间快照观察者 | `AssemblyLocalizationRetainsObservableSharedValues`恢复1031并通过；原观察者保持，尾块新暴露的输出递推读取单独证明来自旧destination | 共享与局部分支均实际进入Instr/SPM |
+| 正常叶子、未定义旧值、非单位stride、受限关系/索引查询、无效选择 | `AssemblyReadFailuresAreTypedAndLeaveIRUnchanged`与`ParameterizedLoopGridUsesAffineCoordinates`通过；NotApplicable、Unsupported、ResourceExhausted、BrokenContract分开；整批preflight失败前后IR一致 | verifier有效，无半修改；不伪造capacity结果 |
 
 ## 1. 输入、输出与范围
 

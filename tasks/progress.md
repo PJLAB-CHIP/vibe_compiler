@@ -21,7 +21,10 @@
 2026-09-23接续完整单层LLaMA2长序列：当前S1024 FP16的正式fresh no-card编译复现42/42个actual SPM
 capacity拒绝，未生成package。只读首候选诊断同时见完整MLP权重及K/V状态allocation，不能仅归因于attention
 内部块大小。已按Tensor子集物化计划拆开纯来源/覆盖分析与Temporal融合职责，并接通静态Spatial窗口的
-last-writer局部物化；Temporal动态窗口、共同生成入口、显式共享选择、四项性能保护及S1024/1025实卡仍待完成。
+last-writer局部物化；Temporal已接通有界线性循环的多轴完整assembly窗口，按实际来源边界分段，
+与Spatial共用静态片段组装。部分insert的动态Temporal需求、显式共享选择、四项性能保护及S1024/1025实卡仍待完成。
+审查后已修正多读取分段遗漏与提升索引的支配关系，局部物化接口改为只处理明确选中的读取，并恢复1031覆盖。
+临时配对attempt已移除；Driver的读取组身份、跨retile选择与独立预算专项验证尚未闭合，不能以全局共享/局部开关代签设计。
 此检查点不改变`board-testing`的`doing`状态，细节见
 [子集物化计划](plans/tensor-subset-materialization.md)。
 
@@ -62,7 +65,8 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 
 2026-09-23最新要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
 06/08/18号边界与[实施计划](plans/tensor-subset-materialization.md)已同步；纯来源/覆盖分析已拆分，
-静态Spatial窗口已用实际来源物化；Temporal动态窗口、共同生成入口和共享选择、fresh产品及实卡尚未完成。
+静态Spatial窗口已用实际来源物化；Temporal有界线性循环的多轴完整assembly窗口及共用静态片段组装已接通，
+动态partial insert与共享选择、fresh产品及实卡尚未完成。
 后续顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；仍归`board-testing`，
 不新增队列项，不把扩展AccessReuse中间存储资格列为前置，不重开attention专项优化。
 任一保护项回退或不可比，整改不得签完成；固定case、seed、预算、guard、健康样本和比较门槛见实施计划第7节。

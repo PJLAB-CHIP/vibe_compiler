@@ -96,6 +96,35 @@ TensorViewIndexingResult deriveTensorViewIndexing(
     mlir::Value value,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
+/// A current bounded scf.for coordinate, optionally translated by one exact
+/// positive affine scale and static origin. The grid describes actual loop
+/// instances; it does not select placement, storage, or future iterations.
+struct TensorLoopGrid {
+  mlir::Value offset;
+  mlir::Value induction;
+  int64_t base = 0;
+  int64_t scale = 1;
+  int64_t lower = 0;
+  int64_t upper = 0;
+  int64_t step = 0;
+};
+
+struct TensorLoopGridResult {
+  TensorResultIndexingStatus status = TensorResultIndexingStatus::Unsupported;
+  std::optional<TensorLoopGrid> grid;
+  std::string detail;
+};
+
+TensorLoopGridResult
+queryTensorLoopGrid(mlir::OpFoldResult offset,
+                    const IndexRelationLimits &limits = IndexRelationLimits());
+std::optional<int64_t> getTensorLoopGridFloor(const TensorLoopGrid &grid,
+                                              int64_t coordinate);
+std::optional<int64_t> getTensorLoopGridCeil(const TensorLoopGrid &grid,
+                                             int64_t coordinate);
+std::optional<int64_t> getTensorLoopIndex(const TensorLoopGrid &grid,
+                                          int64_t coordinate);
+
 /// Prove both the exact dense source window and its local row-major order.
 /// Equal element counts alone do not authorize reshaping a selected tile.
 StaticRectangularIndexSetResult getTensorViewTileSource(

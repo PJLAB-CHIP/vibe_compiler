@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Linalg/SpatialRegionMaterialization.h"
 
 #include "OnlineAttentionMaterialization.h"
+#include "TensorAssemblyMaterialization.h"
 #include "Wafer/Transforms/Linalg/ContractionAccumulation.h"
 
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
@@ -1772,7 +1773,7 @@ struct GroupBuilder {
         return mlir::failure();
       auto compactType = mlir::RankedTensorType::get(
           requested.sizes, type.getElementType(), type.getEncoding());
-      mlir::Value assembled;
+      llvm::SmallVector<compiler::detail::TensorAssemblyTilePiece, 4> pieces;
       for (const auto &piece : demand.pieces) {
         auto source = materializeCompactSupportTile(
             piece.source, piece.sourceWindow, fragments);
@@ -1783,26 +1784,10 @@ struct GroupBuilder {
             type.getEncoding());
         mlir::Value tile =
             reshapeStaticTensorTile(builder, value.getLoc(), *source, pieceType);
-        if (demand.pieces.size() == 1 &&
-            piece.resultWindow.offsets == requested.offsets &&
-            piece.resultWindow.sizes == requested.sizes)
-          return tile;
-        if (!assembled)
-          assembled = builder.create<mlir::tensor::EmptyOp>(
-              value.getLoc(), compactType.getShape(),
-              compactType.getElementType(), compactType.getEncoding());
-        llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
-        for (auto [offset, origin, size] : llvm::zip_equal(
-                 piece.resultWindow.offsets, requested.offsets,
-                 piece.resultWindow.sizes)) {
-          offsets.push_back(builder.getIndexAttr(offset - origin));
-          sizes.push_back(builder.getIndexAttr(size));
-          strides.push_back(builder.getIndexAttr(1));
-        }
-        assembled = builder.create<mlir::tensor::InsertSliceOp>(
-            value.getLoc(), tile, assembled, offsets, sizes, strides);
+        pieces.push_back({tile, piece.resultWindow});
       }
-      return assembled;
+      return compiler::detail::materializeTensorAssemblyTile(
+          builder, value.getLoc(), compactType, requested, pieces);
     }
 
     mlir::Value full;
