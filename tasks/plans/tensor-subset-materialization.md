@@ -48,8 +48,15 @@ Driver父SSA/读取组修复的主机检查：Planning组件、Transforms 540项
 补强后的retile、standard mixed/cache与deep专项通过，canonical完整增量和后续Ninja no-op通过。
 源码/IR组织检查及`git diff --check`通过；这些结果不代签后续产品门槛。
 
-仍未闭合：动态partial insert与参数化view的共同生成、纯片段生成与producer tiler的最终解耦、
-全部typed工作预算、共享/局部的actual容量反馈专项、fresh产品及板测。
+随后已拆开纯片段生成与计算融合调用：生成只接收来源/窗口并返回实际source `extract_slice`，
+Temporal按原assembly SSA及明确选择的producer消费这些读取。显式局部物化不再构造或调用producer tiler；
+Independent路径保留原计算位置。现有动态生成仍在Temporal文件内，共同生成文件的最终归属尚待下述参数化需求迁移。
+TemporalTiling的54项测试（含计算来源反例）及新增容量对照实际通过；后者对1024/1031的同一当前Tensor父IR分别保留共享或
+实际局部化，两条路径都进入Instr/completion/SPM：共享得到带actual oversized demand的typed容量拒绝，局部生成合法offsets。
+重构后的Driver standard mixed/cache专项、canonical完整增量和后续Ninja no-op通过。
+
+仍未闭合：动态partial insert与参数化view的共同生成及独立文件归属、全部typed工作预算、
+共享/局部的controller容量反馈专项、fresh产品及板测。
 本轮暂不推进LM资格或性能签发，先完成上述设计缺口。
 
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
@@ -74,6 +81,8 @@ Driver 151项组件单测全部实际通过，共831项，无跳过。随后补�
 | 128/64行retile、loop-order置换和full extent | `AssemblyReadChoiceBindsFreshRetiledMainAndTail`通过；main/tail重新绑定，消失scope不能由其它读取替代 | 选中成员实际进入Instr/SPM |
 | 16 Tile、1024/1025/1031、共享与局部组合 | `AssemblyGroupsHaveIndependentActualImplementations`通过；standard 8/42独立启动并接受mixed候选；1031的cache 0/1/8实际trace和executable IR一致 | 实际Driver搜索、SPM与accepted owner |
 | 16 Tile、1031、deep预算收尾 | `AssemblyImplementationFinishesItsChargedDeepProcess`通过；width/trials=6/6，六方案全部完成、实际求值多于六次，局部分支accepted且缺失选择typed拒绝 | 独立proposal、计费与完整有限内搜；capacity反馈另行验收 |
+| 1024/1031、共享assembly的实际计算来源 | `LocalAssemblyDoesNotRetileItsComputedSource`通过；来源乘法恰一个、原owner/scope保留，局部化没有producer fusion | 多块/tail的实际Instr/SPM |
+| 1024/1031、两组重叠窗口、同一父IR的共享/局部选择 | `SharedAndLocalAssemblyUseActualCapacityResults`通过；共享actual oversized demand容量拒绝，局部actual offsets合法 | 同一completion-closed Instr→唯一SPM规划；Driver/controller定向反馈仍待 |
 
 ## 1. 输入、输出与范围
 
@@ -103,7 +112,7 @@ S1025 还存在独立的 packed-i1 非 byte 对齐写回限制。后者不能由
 | `TemporalDomain.cpp::queryTemporalConcatAssembly` 混合覆盖分析与 `derivedProducer` 计算融合资格 | 纯来源/覆盖证明进入 `Analysis/Linalg`；计算融合仍由 Temporal fusion 查询消费 |
 | `getConcatPartitionDimension` 只接受单轴拼接，`getCanonicalLoopGrid` 要求裸 IV | 多维需求与参数化循环关系由同一索引分析描述；生成器按能力返回明确结果 |
 | `queryAssemblySliceReuse` / `canSpecializeConcatSlices` 混合生成条件、full-use、重复读取和放置 | 生成 preflight 与实际 use-family 的共享选择分离；不把性能取舍当语义不合法 |
-| `fuseConcatSlices` 还调用 `producerTiling.materialize` | 纯片段物化只暴露 source subset；Temporal 的计算融合 owner 再消费这些 subset |
+| Temporal的纯片段生成与计算融合原先同处一个函数 | 已由实际source subset隔开：`materializeAssemblySlices`只生成，`fuseAssemblySources`消费明确的assembly/producer选择；共同文件迁移仍待 |
 | 普通切分后与融合归约后各自发现局部化机会，检查顺序不同 | 同一当前 subset 查询/物化实现，rewrite 后更新工作集；最终 Tensor 边界统一检查 |
 | Spatial 的 `materializeCompactSupportTile` 与 Temporal 分别生成 view/片段 | 共享索引映射和片段生成；Spatial endpoint 绑定、Temporal 循环与计算融合各自保留 |
 | `AccessReuse` 在 BoundaryMovement 后识别实际 load，当前要求函数输入身份 | 本项保持其合同；不让它修复上游 Tensor 拼接 |

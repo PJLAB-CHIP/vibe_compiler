@@ -1492,7 +1492,9 @@ TEST(TemporalTilingTest, ConcatInsertChainBuildsOnlyRequestedConsumerTile) {
 }
 
 void expectTemporalSPM(mlir::OwningOpRef<mlir::ModuleOp> module,
-                       StructuredMaterializationRelations &relations);
+                       StructuredMaterializationRelations &relations,
+                       TileMemoryPlanningFailureKind expected =
+                           TileMemoryPlanningFailureKind::None);
 
 TEST(TemporalTilingTest, ParametricDemandCrossesTwoAssemblyAxes) {
   for (int64_t extent : {1024, 1025, 1031}) {
@@ -3304,7 +3306,8 @@ TEST(TemporalTilingTest, CoupledStateFinalizesInsideOutputTile) {
 // The input is structural current IR, and every positive below reaches actual
 // Instr/completion/SPM. No estimated footprint substitutes for the allocator.
 void expectTemporalSPM(mlir::OwningOpRef<mlir::ModuleOp> module,
-                       StructuredMaterializationRelations &relations) {
+                       StructuredMaterializationRelations &relations,
+                       TileMemoryPlanningFailureKind expected) {
   auto &context = *module->getContext();
   auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
   ASSERT_TRUE(layout.succeeded()) << layout.detail;
@@ -3327,7 +3330,16 @@ void expectTemporalSPM(mlir::OwningOpRef<mlir::ModuleOp> module,
       convertBufferizationCopiesToInstr(*tile.module, session)));
   ASSERT_TRUE(mlir::succeeded(rebuildRequiredNCCJoins(*tile.module)));
   TileMemoryPlanningFailure failure;
-  auto planned = planTileMemory(std::move(tile.module), &failure);
+  auto planned = planTileMemory(std::move(tile.module), &failure, nullptr,
+                                /*emitSPMCapacityDiagnostics=*/false);
+  if (expected == TileMemoryPlanningFailureKind::SPMAllocation) {
+    ASSERT_TRUE(mlir::failed(planned));
+    EXPECT_EQ(failure.kind, expected);
+    EXPECT_TRUE(failure.spmCapacityOverflow);
+    EXPECT_GT(failure.spmDemandCount, 0u);
+    EXPECT_FALSE(failure.spmIndividuallyOversizedDemands.empty());
+    return;
+  }
   ASSERT_TRUE(mlir::succeeded(planned)) << failure.spmLargestDemandBytes;
   EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
 }
@@ -4739,6 +4751,67 @@ TEST(TemporalTilingTest, AssemblyReadChoiceBindsFreshRetiledMainAndTail) {
   }
 }
 
+TEST(TemporalTilingTest, LocalAssemblyDoesNotRetileItsComputedSource) {
+  for (int64_t extent : {1024, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    auto module = parseObservedAssembly(*context, extent, false);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = selectTileSizes(*domain.domain, {2, 128, 48});
+    StructuredMaterializationRelations relations;
+    for (unsigned index = 0; index < 2; ++index)
+      relations.structuralOutputs.push_back({index, region.getResult(index)});
+    TemporalTilingFailure failure;
+    ASSERT_TRUE(mlir::succeeded(applyTemporalTiling(
+        {{*domain.domain, choice}}, relations, &failure)))
+        << failure.detail;
+
+    // A current computation supplies the shared assembly. Localizing reads
+    // is authorized; duplicating or retiling this source computation is not.
+    mlir::IRRewriter rewriter(context.get());
+    rewriter.setInsertionPointToStart(&region.getBody().front());
+    auto input = region.getBody().getArgument(0);
+    auto type = mlir::cast<mlir::RankedTensorType>(input.getType());
+    auto empty = rewriter.create<mlir::tensor::EmptyOp>(
+        region.getLoc(), type.getShape(), type.getElementType());
+    auto identity = rewriter.getMultiDimIdentityMap(3);
+    auto producer = rewriter.create<mlir::linalg::GenericOp>(
+        region.getLoc(), mlir::TypeRange{type}, mlir::ValueRange{input},
+        mlir::ValueRange{empty},
+        llvm::ArrayRef<mlir::AffineMap>{identity, identity},
+        llvm::ArrayRef<mlir::utils::IteratorType>{
+            mlir::utils::IteratorType::parallel,
+            mlir::utils::IteratorType::parallel,
+            mlir::utils::IteratorType::parallel},
+        [&](mlir::OpBuilder &builder, mlir::Location location,
+            mlir::ValueRange args) {
+          auto squared =
+              builder.create<mlir::arith::MulFOp>(location, args[0], args[0]);
+          builder.create<mlir::linalg::YieldOp>(location, squared.getResult());
+        });
+    rewriter.replaceAllUsesExcept(input, producer.getResult(0), producer);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    auto reads = findTestAssemblyReads(region);
+    ASSERT_FALSE(reads.empty());
+    auto localized =
+        materializeLocalTensorAssemblyReads(region, reads, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+    EXPECT_GT(localized->tileLocalAssemblies, 0u);
+    EXPECT_EQ(localized->fusedProducers, 0u);
+    // Boundary splitting may clone consumer syntax into disjoint intervals.
+    // The source computation itself must keep its original owner and scope.
+    EXPECT_EQ(countOps<mlir::arith::MulFOp>(region), 1u);
+    region.walk([&](mlir::arith::MulFOp multiply) {
+      EXPECT_EQ(multiply->getParentOp(), producer.getOperation());
+      EXPECT_EQ(multiply->getParentOp()->getParentOp(), region.getOperation());
+    });
+    expectTemporalSPM(std::move(module), relations);
+  }
+}
+
 TEST(TemporalTilingTest, ExplicitLocalAssemblyPreservesOverlappingReads) {
   for (int64_t extent : {1024, 1025}) {
     SCOPED_TRACE(extent);
@@ -4818,6 +4891,74 @@ module {
               TensorAssemblyOpportunityKind::NotApplicable);
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
     expectTemporalSPM(std::move(module), relations);
+  }
+}
+
+TEST(TemporalTilingTest, SharedAndLocalAssemblyUseActualCapacityResults) {
+  for (int64_t extent : {1024, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    std::string body = R"mlir(
+      %left = tensor.extract_slice %arg[0, 0, 0] [2, EXTENT, 1024] [1, 1, 1]
+        : tensor<2xEXTENTx2048xf16> to tensor<2xEXTENTx1024xf16>
+      %right = tensor.extract_slice %arg[0, 0, 1024] [2, EXTENT, 1024] [1, 1, 1]
+        : tensor<2xEXTENTx2048xf16> to tensor<2xEXTENTx1024xf16>
+      %empty = tensor.empty() : tensor<2xEXTENTx2048xf16>
+      %a = tensor.insert_slice %right into %empty[0, 0, 0] [2, EXTENT, 1024] [1, 1, 1]
+        : tensor<2xEXTENTx1024xf16> into tensor<2xEXTENTx2048xf16>
+      %b = tensor.insert_slice %left into %a[0, 0, 1024] [2, EXTENT, 1024] [1, 1, 1]
+        : tensor<2xEXTENTx1024xf16> into tensor<2xEXTENTx2048xf16>
+      %first = tensor.extract_slice %b[0, 0, 1000] [2, EXTENT, 96] [1, 1, 1]
+        : tensor<2xEXTENTx2048xf16> to tensor<2xEXTENTx96xf16>
+      %second = tensor.extract_slice %b[0, 0, 1048] [2, EXTENT, 96] [1, 1, 1]
+        : tensor<2xEXTENTx2048xf16> to tensor<2xEXTENTx96xf16>
+      %out = tensor.empty() : tensor<2xEXTENTx96xf16>
+      %value = linalg.generic {
+        indexing_maps = [affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>],
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%first, %second : tensor<2xEXTENTx96xf16>, tensor<2xEXTENTx96xf16>)
+        outs(%out : tensor<2xEXTENTx96xf16>) {
+      ^bb0(%x: f16, %y: f16, %old: f16):
+        %sum = arith.addf %x, %y : f16
+        linalg.yield %sum : f16
+      } -> tensor<2xEXTENTx96xf16>
+    )mlir";
+    for (size_t at; (at = body.find("EXTENT")) != std::string::npos;)
+      body.replace(at, 6, std::to_string(extent));
+    auto module = parseModule(
+        *context, body, "tensor<2x" + std::to_string(extent) + "x2048xf16>",
+        "tensor<2x" + std::to_string(extent) + "x96xf16>");
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    auto domain = buildTemporalDomain(region);
+    ASSERT_TRUE(domain.succeeded());
+    auto choice = selectTileSizes(*domain.domain, {2, 128, 48});
+    StructuredMaterializationRelations sharedRelations;
+    sharedRelations.structuralOutputs.push_back({0, region.getResult(0)});
+    TemporalTilingFailure failure;
+    ASSERT_TRUE(mlir::succeeded(applyTemporalTiling(
+        {{*domain.domain, choice}}, sharedRelations, &failure)))
+        << failure.detail;
+    auto reads = findTestAssemblyReads(region);
+    ASSERT_FALSE(reads.empty());
+    mlir::IRMapping mapping;
+    auto local = mlir::OwningOpRef<mlir::ModuleOp>(
+        mlir::cast<mlir::ModuleOp>(module->getOperation()->clone(mapping)));
+    StructuredMaterializationRelations localRelations;
+    localRelations.structuralOutputs.push_back(
+        {0, mapping.lookup(sharedRelations.structuralOutputs.front().endpoint)});
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp> selected;
+    for (auto read : reads)
+      selected.push_back(mlir::cast<mlir::tensor::ExtractSliceOp>(
+          mapping.lookup(read.getOperation())));
+    auto localized = materializeLocalTensorAssemblyReads(
+        findRegion(*local), selected, localRelations, &failure);
+    ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+    EXPECT_GT(localized->tileLocalAssemblies, 0u);
+    ASSERT_NO_FATAL_FAILURE(expectTemporalSPM(
+        std::move(module), sharedRelations,
+        TileMemoryPlanningFailureKind::SPMAllocation));
+    ASSERT_NO_FATAL_FAILURE(expectTemporalSPM(std::move(local), localRelations));
   }
 }
 
