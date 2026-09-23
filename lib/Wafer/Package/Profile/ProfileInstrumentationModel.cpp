@@ -113,6 +113,8 @@ llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture) {
     return "count";
   case ProfileCaptureKind::Trace:
     return "trace";
+  case ProfileCaptureKind::Timing:
+    return "timing";
   }
   llvm_unreachable("unknown profile capture kind");
 }

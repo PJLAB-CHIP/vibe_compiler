@@ -1,4 +1,11 @@
 # RUN: %python %S/wafer_device_link_parallel_test.py %wafer_src_root/tools/wafer_device_link.py
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py --llvm-ir %S/Inputs/minimal-timing-target-kernel.ll --output %t.timing.so --profile-capture timing --print-commands | FileCheck %s --check-prefix=TIMING-CAPTURE --implicit-check-not=WAFER_TX81_PROFILE_TRACE_CRT
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py --llvm-ir %S/Inputs/minimal-timing-target-kernel.ll --output %t.timing.so --profile-capture timing
+# RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm %t.timing.so | FileCheck %s --check-prefix=TIMING-SYMBOLS --implicit-check-not=wafer_tx81_profile_site --implicit-check-not=wafer_profile_execute_ncc --implicit-check-not=wafer_profile_wait_ncc
+# TIMING-CAPTURE: -DWAFER_TX81_PROFILE_TIMING_CRT=1
+# TIMING-SYMBOLS-DAG: U csi_tick_get_us
+# TIMING-SYMBOLS-DAG: t wafer_tx81_profile_entry_begin_from_config
+# TIMING-SYMBOLS-DAG: t wafer_tx81_profile_entry_end
 # RUN: %python -c 'from pathlib import Path; import shutil; root=Path("%t.crt source"); root.mkdir(exist_ok=True); shutil.copyfile("%wafer_src_root/runtime/crt/src/wafer_tx81_crt.c", root / "configured.c"); Path("%t.fixed.c").write_text("#include WAFER_CRT_SOURCE\n")'
 # RUN: %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll --output %t.fixed.so \

@@ -341,8 +341,10 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             export_program=lambda _path: None,
             comparison_policy=cases.ATTENTION_COMPARISON,
         )
-        for profile, guards in ((False, False), (True, False), (False, True), (True, True)):
-            with self.subTest(profile=profile, guards=guards), tempfile.TemporaryDirectory() as directory:
+        for profile, guards, timing in ((False, False, False), (True, False, False),
+                                        (False, True, False), (True, True, False),
+                                        (True, False, True), (True, True, True)):
+            with self.subTest(profile=profile, guards=guards, timing=timing), tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
                 argv = [
                     "runner", "--case", "attention-prefill", "--wafer-compile", "compile",
@@ -350,7 +352,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     "--expected-runtime-version", "1300", "--expected-device-name", "device",
                     "--expected-pci-bus-id", "bus", "--expected-tile-count", "16",
                     "--expected-runtime-library-sha256", "digest", "--completion-timeout-ms", "7000",
-                ] + (["--profile"] if profile else []) + (["--memory-guards"] if guards else [])
+                ] + (["--profile"] if profile else []) + (["--memory-guards"] if guards else []) + (["--kernel-timing"] if timing else [])
                 with (
                     mock.patch.object(sys, "argv", argv),
                     mock.patch.dict(os.environ, {"WAFER_EXECUTE_HARDWARE_TESTS": "1"}),
@@ -376,7 +378,9 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 self.assertIn("--board", command)
                 self.assertEqual("--memory-guards" in command, guards)
                 self.assertEqual(command[command.index("--completion-timeout-ms") + 1], "7000")
-                self.assertEqual(launch.kwargs["timeout_seconds"], None if profile else 67)
+                self.assertEqual("--kernel-timing" in no_card.args[0], timing)
+                self.assertEqual("--kernel-timing" in command, timing)
+                self.assertEqual(launch.kwargs["timeout_seconds"], None if profile and not timing else 67)
 
     def test_compact_contribution_assembly_preserves_sources_and_global_window(self):
         # The full input has extent 1025; this is its real 64-element Tile 1 tail shard.
@@ -743,7 +747,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             wafer_run=pathlib.Path("wafer-run"),
             work_dir=pathlib.Path("work"),
             dump_compiler_ir=None,
-            compile_timing=False, profile=False, profile_trace_event_limit=None,
+            compile_timing=False, profile=False, kernel_timing=False, profile_trace_event_limit=None,
             capture_registers=False,
             board_diagnose_tool=None,
             optimization_policy="none",
@@ -896,7 +900,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             target_model=False,
             compile_timeout_seconds=1800,
             wafer_compile=pathlib.Path("wafer-compile"),
-            compile_timing=False, profile=False, profile_trace_event_limit=None,
+            compile_timing=False, profile=False, kernel_timing=False, profile_trace_event_limit=None,
             optimization_policy="none",
             qualify_communication=None,
         )
@@ -1024,7 +1028,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 external_layout="tensor", search_trials=126 if policy == "search" else None,
                 compile_timeout_seconds=2400,
                 wafer_compile=pathlib.Path("wafer-compile"), compile_timing=False,
-                profile=False, profile_trace_event_limit=None,
+                profile=False, kernel_timing=False, profile_trace_event_limit=None,
                 optimization_policy=policy, qualify_communication=None,
                 target_model=False,
             )

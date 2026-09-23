@@ -37,6 +37,13 @@ Pipeline position:
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
+### Kernel 本体计时
+
+目标LLVM的显式 `timing` capture与Count/Trace共用entry参数和首尾插入位置，但不收集site或改写命令/等待。
+Device link为该capture选择只含首尾记录的CRT实现，使用厂商已导出的 `csi_tick_get_us`；
+输出64字节ProfileRecord由15号唯一decoder消费，计时边界及覆盖以15号为准。
+Ordinary不增加record参数或hook，原Count/Trace路径保持。
+
 ### 同值填充的 CT 实现
 
 输入为 verified `wafer.instr.fill` 的实际 destination、scalar storage bits、fill domain 与 worker；

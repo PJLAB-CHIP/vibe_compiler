@@ -391,11 +391,12 @@ struct ProfileCapturePackageMetadata {
 };
 
 struct ProfileCapturePackages {
-  std::array<ProfileCapturePackageMetadata, 2> captures;
+  std::array<ProfileCapturePackageMetadata, 3> captures;
 };
 
-static constexpr std::array<ProfileCaptureKind, 2> kProfileCaptures = {
-    ProfileCaptureKind::Count, ProfileCaptureKind::Trace};
+static constexpr std::array<ProfileCaptureKind, 3> kProfileCaptures = {
+    ProfileCaptureKind::Count, ProfileCaptureKind::Trace,
+    ProfileCaptureKind::Timing};
 
 static mlir::LogicalResult stageCapturePackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -725,7 +726,8 @@ llvm::Expected<BoundProfileInstrumentation> bindProfileInstrumentation(
   llvm::sys::path::append(capturesRoot, "captures");
   if (llvm::Error error = verifyExactDirectory(
           capturesRoot, {{"count", llvm::sys::fs::file_type::directory_file},
-                         {"trace", llvm::sys::fs::file_type::directory_file}}))
+                         {"trace", llvm::sys::fs::file_type::directory_file},
+                         {"timing", llvm::sys::fs::file_type::directory_file}}))
     return std::move(error);
 
   llvm::SmallString<256> activationPath(instrumentationRoot);

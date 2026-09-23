@@ -12,6 +12,15 @@
 # RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --profile-trace-event-limit 0 2>&1 | FileCheck %s --check-prefix=ZERO-LIMIT
 # RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --profile-trace-event-limit 209706 2>&1 | FileCheck %s --check-prefix=OVER-LIMIT
 # RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.ordinary --no-card --profile-trace-event-limit 1024 2>&1 | FileCheck %s --check-prefix=NO-PROFILE
+# RUN: %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog --kernel-timing | FileCheck %s --check-prefix=TIMING
+# RUN: %wafer_obj_root/bin/wafer-run --package-dir %t.tail/delivery/package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog --kernel-timing | FileCheck %s --check-prefix=TIMING
+# RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.ordinary --no-card --kernel-timing 2>&1 | FileCheck %s --check-prefix=NO-TIMING
+# RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --kernel-timing --profile-trace-event-limit 1 2>&1 | FileCheck %s --check-prefix=TIMING-CONFLICT
+# TIMING: profile_instrumentation: ready cards=1 tiles=16 captures=3
+# TIMING: kernel_timing: ready record_bytes=64 scope=main-entry aggregation=max-tile-duration
+# TIMING: board_execution: false
+# NO-TIMING: --kernel-timing requires sibling profile instrumentation
+# TIMING-CONFLICT: --kernel-timing cannot be combined with --profile-trace-event-limit
 # RUN: not %wafer_compile_test --input-program-dir %t.peer/source --output-dir %t.invalid --num-partitions=1 --optimization-policy=search --test-communication-candidate=peer --profile 2>&1 | FileCheck %s --check-prefix=INVALID
 
 # PEER: performance_no_card: peer extent=1024 sends_per_tile=15 profile_ready=true numeric_reference=false

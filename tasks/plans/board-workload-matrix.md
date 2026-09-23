@@ -1,5 +1,29 @@
 # 扩展板测矩阵与三轮性能调优
 
+## Kernel 本体轻量计时（2026-09-23）
+
+用户授权的本项已完成。稳定pipeline边界、非目标和覆盖矩阵在15号“Kernel 本体轻量计时”；
+同一accepted编译结果增加 `timing` capture，目标entry首尾调用厂商微秒时钟，普通completion保持。
+`wafer-run --kernel-timing`只执行一次该capture；默认关闭，不启用site hook、PMU或Trace等待替代。
+每Tile64字节record沿原typed参数、allocation与readback路径传递，按manifest实际launch slot/物理Tile映射解码。
+
+本轮完成的检查：
+
+- CodeGen、Runtime、Package、RunBoardIO、Driver完整单测及PyTorch caller单测；首尾hook、连续绑定、损坏record、
+  全16 Tile、不同本地时钟原点、单次invocation与正常输出路径均实际覆盖。
+- 四项直接lit通过，无skip/unsupported：communication-profile、device-link、install-components、wafer-run。
+  正式rank3/4、1024/1025 source进入capture构包及no-card；普通package逐byte不变。
+- 初轮暴露的capture目录校验遗漏、fixture目录复用及固定Trace record大小均已修复，相关完整单测和fresh产品复测通过。
+- 原seed、standard 8/42、BF16、NCx I/O和guard下，两项重新生成source/reference/package、通过no-card，
+  然后各三次顺序实卡。每次系统占用检查通过，全部输出比较、guard及厂商正常清理通过，无fatal/timeout。
+- canonical完整增量构建通过，随后构建为Ninja no-op。
+
+GEMM M=N4096/K1024的最长Tile main-entry中位数1.801ms，attention `[1,28,2048,128]`为2.461ms；
+同次外层event分别3.158/3.579ms。GEMM独立prepare phase在本体之外，event覆盖prepare+main；
+不将两者差值全部称为launch开销，不将计时口径变化签成算法加速。
+明细、身份及限制见[性能记录](../../docs/board-performance-results.md#2026-09-23kernel-本体轻量计时)，
+使用见[计时文档](../../docs/kernel-timing.md)。本项不重开attention优化或代签Tensor子集物化整改。
+
 ## 直接 NCx I/O 的复用与搬运整改（2026-09-23）
 
 用户已授权接续此项，取代下方前轮测量结束时“不自动启动优化”的限制；仍不启动 Tensor 子集物化整改。

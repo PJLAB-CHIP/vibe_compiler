@@ -1119,6 +1119,44 @@ TEST(TargetCodeGenTest,
             std::string::npos);
 }
 
+TEST(TargetCodeGenTest, KernelTimingBracketsEveryReturnWithoutSiteHooks) {
+  // This scalar ABI fixture isolates control-flow bracketing; tensor programs
+  // reach the same instrumentation after the ordinary target lowering.
+  using namespace wafer::compiler::detail;
+  llvm::LLVMContext context;
+  llvm::Module module("timing-returns", context);
+  auto *entry = llvm::Function::Create(
+      llvm::FunctionType::get(
+          llvm::Type::getVoidTy(context),
+          {llvm::Type::getInt1Ty(context), llvm::Type::getInt64Ty(context)},
+          false),
+      llvm::GlobalValue::ExternalLinkage, "main", module);
+  auto *begin = llvm::BasicBlock::Create(context, "begin", entry);
+  auto *left = llvm::BasicBlock::Create(context, "left", entry);
+  auto *right = llvm::BasicBlock::Create(context, "right", entry);
+  llvm::IRBuilder<>(begin).CreateCondBr(entry->getArg(0), left, right);
+  llvm::IRBuilder<>(left).CreateRetVoid();
+  auto *returnRight = llvm::IRBuilder<>(right).CreateRetVoid();
+  auto error =
+      instrumentProfileTargetModule(module, "main", ProfileCaptureKind::Timing);
+  ASSERT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
+  error = verifyProfileTargetModuleInstrumentation(module, "main",
+                                                   ProfileCaptureKind::Timing);
+  ASSERT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
+  EXPECT_EQ(module.getFunction("wafer_tx81_profile_entry_begin_from_config")
+                ->getNumUses(),
+            1u);
+  EXPECT_EQ(module.getFunction("wafer_tx81_profile_entry_end")->getNumUses(),
+            2u);
+  EXPECT_EQ(module.getFunction("wafer_tx81_profile_site_begin"), nullptr);
+  EXPECT_EQ(module.getFunction("wafer_tx81_profile_site_end"), nullptr);
+  returnRight->getPrevNode()->eraseFromParent();
+  error = verifyProfileTargetModuleInstrumentation(module, "main",
+                                                   ProfileCaptureKind::Timing);
+  ASSERT_TRUE(static_cast<bool>(error));
+  llvm::consumeError(std::move(error));
+}
+
 TEST(TargetCodeGenTest, MultiTileLaunchValidationRejectsMismatchedSchemas) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> mismatchedSchema =
       makeRuntimeLaunchModules(makeKernelLaunch(wafer::KernelLaunchForm::Grid),
@@ -1866,7 +1904,7 @@ TEST(TargetCodeGenTest,
 }
 
 TEST(TargetCodeGenTest,
-     ProfileTraceCaptureCompilesAndPackagesEveryQualifiedKernelForm) {
+     ProfileTraceAndTimingCaptureCompileAndPackageEveryQualifiedKernelForm) {
   llvm::Expected<wafer::compiler::TargetToolchain> toolchain =
       makeTestToolchain();
   ASSERT_TRUE(static_cast<bool>(toolchain))
@@ -1880,142 +1918,158 @@ TEST(TargetCodeGenTest,
       pathInDirectory(temporaryDirectory, "source");
   ASSERT_FALSE(llvm::sys::fs::create_directories(sourceDirectory));
 
-  constexpr wafer::compiler::detail::ProfileCaptureKind capture =
-      wafer::compiler::detail::ProfileCaptureKind::Trace;
-  for (const SharedKernelTransportScenario &scenario :
-       kOrthogonalSharedKernelTransportScenarios) {
-    wafer::RuntimeLaunchContract launch = makeKernelLaunch(scenario.form);
+  for (auto capture : {wafer::compiler::detail::ProfileCaptureKind::Trace,
+                       wafer::compiler::detail::ProfileCaptureKind::Timing}) {
     SCOPED_TRACE(
-        (wafer::stringifyKernelLaunchForm(scenario.form) + ":" +
-         (scenario.transport == wafer::TransportContract::DirectDTE
-              ? "direct-dte"
-              : "none"))
-            .str());
-    llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVM =
-        makeProfileRuntimeLaunchModules(launch, capture, scenario.transport);
-    ASSERT_TRUE(static_cast<bool>(targetLLVM))
-        << llvm::toString(targetLLVM.takeError());
-    llvm::SmallString<256> outputDirectory = pathInDirectory(
-        temporaryDirectory, (llvm::Twine("targetModules-") +
-                             wafer::stringifyKernelLaunchForm(scenario.form))
-                                .str());
-    std::string diagnosticsStorage;
-    llvm::raw_string_ostream diagnostics(diagnosticsStorage);
-    llvm::Expected<wafer::compiler::LinkedTargetModules> targetModules =
-        wafer::compiler::detail::linkTargetLLVMModulesImpl(
-            *targetLLVM, outputDirectory, *toolchain, diagnostics, capture);
-    ASSERT_TRUE(static_cast<bool>(targetModules))
-        << diagnosticsStorage << llvm::toString(targetModules.takeError());
-    EXPECT_EQ(targetModules->getModules().size(), 1u);
-    ASSERT_EQ(targetModules->getTileInterfaces().size(), 16u);
-    for (const wafer::compiler::VerifiedTargetTileInterface &tileInterface :
-         targetModules->getTileInterfaces()) {
-      ASSERT_FALSE(tileInterface.getTileEntryArguments().empty());
-      const wafer::compiler::TileEntryArgument &profileSlot =
-          tileInterface.getTileEntryArguments().back();
-      EXPECT_EQ(profileSlot.kind,
-                wafer::compiler::TileEntryArgumentKind::ProfileRecord);
-      EXPECT_EQ(profileSlot.resourceIndex, 0);
-      EXPECT_EQ(profileSlot.byteSize, WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
-      EXPECT_FALSE(static_cast<bool>(
-          wafer::compiler::detail::verifyProfileCaptureTileEntryArguments(
-              tileInterface.getTileEntryArguments(), capture)));
-    }
+        wafer::compiler::detail::stringifyProfileCaptureKind(capture).str());
+    for (const SharedKernelTransportScenario &scenario :
+         kOrthogonalSharedKernelTransportScenarios) {
+      wafer::RuntimeLaunchContract launch = makeKernelLaunch(scenario.form);
+      SCOPED_TRACE((wafer::stringifyKernelLaunchForm(scenario.form) + ":" +
+                    (scenario.transport == wafer::TransportContract::DirectDTE
+                         ? "direct-dte"
+                         : "none"))
+                       .str());
+      llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVM =
+          makeProfileRuntimeLaunchModules(launch, capture, scenario.transport);
+      ASSERT_TRUE(static_cast<bool>(targetLLVM))
+          << llvm::toString(targetLLVM.takeError());
+      llvm::SmallString<256> outputDirectory = pathInDirectory(
+          temporaryDirectory,
+          (llvm::Twine("targetModules-") +
+           wafer::stringifyKernelLaunchForm(scenario.form) + "-" +
+           wafer::compiler::detail::stringifyProfileCaptureKind(capture))
+              .str());
+      std::string diagnosticsStorage;
+      llvm::raw_string_ostream diagnostics(diagnosticsStorage);
+      llvm::Expected<wafer::compiler::LinkedTargetModules> targetModules =
+          wafer::compiler::detail::linkTargetLLVMModulesImpl(
+              *targetLLVM, outputDirectory, *toolchain, diagnostics, capture);
+      ASSERT_TRUE(static_cast<bool>(targetModules))
+          << diagnosticsStorage << llvm::toString(targetModules.takeError());
+      EXPECT_EQ(targetModules->getModules().size(), 1u);
+      ASSERT_EQ(targetModules->getTileInterfaces().size(), 16u);
+      for (const wafer::compiler::VerifiedTargetTileInterface &tileInterface :
+           targetModules->getTileInterfaces()) {
+        ASSERT_FALSE(tileInterface.getTileEntryArguments().empty());
+        const wafer::compiler::TileEntryArgument &profileSlot =
+            tileInterface.getTileEntryArguments().back();
+        EXPECT_EQ(profileSlot.kind,
+                  wafer::compiler::TileEntryArgumentKind::ProfileRecord);
+        EXPECT_EQ(profileSlot.resourceIndex, 0);
+        EXPECT_EQ(
+            profileSlot.byteSize,
+            wafer::compiler::detail::getProfileCaptureRecordBytes(capture));
+        EXPECT_FALSE(static_cast<bool>(
+            wafer::compiler::detail::verifyProfileCaptureTileEntryArguments(
+                tileInterface.getTileEntryArguments(), capture)));
+      }
 
-    llvm::Expected<wafer::compiler::DeviceExecutable> executable =
-        makeProfileDeviceExecutable(launch, scenario.transport);
-    ASSERT_TRUE(static_cast<bool>(executable))
-        << llvm::toString(executable.takeError());
-    llvm::SmallString<256> packageDirectory = pathInDirectory(
-        temporaryDirectory, (llvm::Twine("package-") +
-                             wafer::stringifyKernelLaunchForm(scenario.form))
-                                .str());
-    llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-        wafer::compiler::detail::writePackage(sourceDirectory, *executable,
-                                              *targetModules, packageDirectory,
-                                              diagnostics, std::nullopt);
-    ASSERT_TRUE(static_cast<bool>(package))
-        << diagnosticsStorage << llvm::toString(package.takeError());
-    // Unlike immutable entry-local inputs, caller-visible port declarations
-    // must still agree, including logical global shape (not just bytes).
-    auto inconsistentExecutable = makeProfileDeviceExecutable(
-        launch, scenario.transport, /*mismatchedExternalShape=*/true);
-    ASSERT_TRUE(static_cast<bool>(inconsistentExecutable))
-        << llvm::toString(inconsistentExecutable.takeError());
-    auto rejected = wafer::compiler::detail::writePackage(
-        sourceDirectory, *inconsistentExecutable, *targetModules,
-        pathInDirectory(temporaryDirectory,
-                        (llvm::Twine("inconsistent-") +
-                         wafer::stringifyKernelLaunchForm(scenario.form))
-                            .str()),
-        diagnostics, std::nullopt);
-    ASSERT_FALSE(static_cast<bool>(rejected));
-    EXPECT_NE(llvm::toString(rejected.takeError()).find("external port domain"),
-              std::string::npos);
-    const wafer::runtime::PackageManifest &manifest = package->getManifest();
-    EXPECT_EQ(manifest.launch, launch);
-    EXPECT_EQ(manifest.cardCount, 1);
-    EXPECT_EQ(manifest.tileCount, 16);
-    EXPECT_EQ(manifest.modules.size(), 1u);
-    ASSERT_EQ(manifest.entries.size(), 16u);
-    const wafer::runtime::ExternalPortRecord &sharedInput =
-        manifest.inputs.front();
-    ASSERT_EQ(manifest.inputs.size(), 1u);
-    EXPECT_EQ(sharedInput.roleIndex, 0);
-    wafer::runtime::RuntimeEnvironment noCardEnvironment{
-        manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat};
-    const wafer::KernelRuntimeLaunchContract &kernel =
-        manifest.launch.getKernel();
-    noCardEnvironment.supportedKernelLaunchForms = {kernel.form};
-    noCardEnvironment.supportedKernelEntryABIs = {kernel.entryABI};
-    noCardEnvironment.supportsDirectDTE =
-        scenario.transport == wafer::TransportContract::DirectDTE;
-    noCardEnvironment.directDTEStatusABI =
-        wafer::runtime::kDirectDTEStatusABI.str();
-    noCardEnvironment.supportsHostWatchdog = true;
-    std::vector<wafer::runtime::RuntimeInvocationBinding> noCardBindings;
-    for (const wafer::runtime::ExternalPortRecord &port : manifest.inputs)
-      noCardBindings.push_back({port.id, port.bytes, port.alignment});
-    llvm::Expected<wafer::runtime::RuntimeInvocationPlan> noCardPlan =
-        wafer::runtime::planRuntimeInvocation(*package, noCardBindings,
-                                              noCardEnvironment);
-    ASSERT_TRUE(static_cast<bool>(noCardPlan))
-        << llvm::toString(noCardPlan.takeError());
-    ASSERT_EQ(noCardPlan->tiles.size(), 16u);
-    EXPECT_TRUE(llvm::all_of(noCardPlan->tiles, [&](const auto &tile) {
-      return !tile.argumentAddresses.empty() &&
-             tile.argumentAddresses.front().base ==
-                 wafer::runtime::RuntimeArgumentAddressBase::Invocation;
-    }));
-    EXPECT_EQ(
-        llvm::count_if(
-            manifest.entries,
-            [](const auto &entry) {
-              return llvm::any_of(entry.arguments, [](const auto &argument) {
-                if (const auto *profile =
-                        std::get_if<wafer::runtime::ProfileRecordArgument>(
-                            &argument.reference))
-                  return profile->bytes ==
-                         WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
-                return false;
-              });
-            }),
-        16);
-    for (const wafer::runtime::PackageEntrypointRecord &entry :
-         manifest.entries) {
-      ASSERT_FALSE(entry.arguments.empty());
-      EXPECT_TRUE(std::holds_alternative<wafer::runtime::ExternalInputArgument>(
-          entry.arguments.front().reference));
-      EXPECT_TRUE(std::holds_alternative<wafer::runtime::ProfileRecordArgument>(
-          entry.arguments.back().reference));
-      EXPECT_EQ(std::get<wafer::runtime::ProfileRecordArgument>(
-                    entry.arguments.back().reference)
-                    .bytes,
-                WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
+      llvm::Expected<wafer::compiler::DeviceExecutable> executable =
+          makeProfileDeviceExecutable(launch, scenario.transport);
+      ASSERT_TRUE(static_cast<bool>(executable))
+          << llvm::toString(executable.takeError());
+      llvm::SmallString<256> packageDirectory = pathInDirectory(
+          temporaryDirectory,
+          (llvm::Twine("package-") +
+           wafer::stringifyKernelLaunchForm(scenario.form) + "-" +
+           wafer::compiler::detail::stringifyProfileCaptureKind(capture))
+              .str());
+      llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+          wafer::compiler::detail::writePackage(
+              sourceDirectory, *executable, *targetModules, packageDirectory,
+              diagnostics, std::nullopt);
+      ASSERT_TRUE(static_cast<bool>(package))
+          << diagnosticsStorage << llvm::toString(package.takeError());
+      // Unlike immutable entry-local inputs, caller-visible port declarations
+      // must still agree, including logical global shape (not just bytes).
+      auto inconsistentExecutable = makeProfileDeviceExecutable(
+          launch, scenario.transport, /*mismatchedExternalShape=*/true);
+      ASSERT_TRUE(static_cast<bool>(inconsistentExecutable))
+          << llvm::toString(inconsistentExecutable.takeError());
+      auto rejected = wafer::compiler::detail::writePackage(
+          sourceDirectory, *inconsistentExecutable, *targetModules,
+          pathInDirectory(
+              temporaryDirectory,
+              (llvm::Twine("inconsistent-") +
+               wafer::stringifyKernelLaunchForm(scenario.form) + "-" +
+               wafer::compiler::detail::stringifyProfileCaptureKind(capture))
+                  .str()),
+          diagnostics, std::nullopt);
+      ASSERT_FALSE(static_cast<bool>(rejected));
+      EXPECT_NE(
+          llvm::toString(rejected.takeError()).find("external port domain"),
+          std::string::npos);
+      const wafer::runtime::PackageManifest &manifest = package->getManifest();
+      EXPECT_EQ(manifest.launch, launch);
+      EXPECT_EQ(manifest.cardCount, 1);
+      EXPECT_EQ(manifest.tileCount, 16);
+      EXPECT_EQ(manifest.modules.size(), 1u);
+      ASSERT_EQ(manifest.entries.size(), 16u);
+      const wafer::runtime::ExternalPortRecord &sharedInput =
+          manifest.inputs.front();
+      ASSERT_EQ(manifest.inputs.size(), 1u);
+      EXPECT_EQ(sharedInput.roleIndex, 0);
+      wafer::runtime::RuntimeEnvironment noCardEnvironment{
+          manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat};
+      const wafer::KernelRuntimeLaunchContract &kernel =
+          manifest.launch.getKernel();
+      noCardEnvironment.supportedKernelLaunchForms = {kernel.form};
+      noCardEnvironment.supportedKernelEntryABIs = {kernel.entryABI};
+      noCardEnvironment.supportsDirectDTE =
+          scenario.transport == wafer::TransportContract::DirectDTE;
+      noCardEnvironment.directDTEStatusABI =
+          wafer::runtime::kDirectDTEStatusABI.str();
+      noCardEnvironment.supportsHostWatchdog = true;
+      std::vector<wafer::runtime::RuntimeInvocationBinding> noCardBindings;
+      for (const wafer::runtime::ExternalPortRecord &port : manifest.inputs)
+        noCardBindings.push_back({port.id, port.bytes, port.alignment});
+      llvm::Expected<wafer::runtime::RuntimeInvocationPlan> noCardPlan =
+          wafer::runtime::planRuntimeInvocation(*package, noCardBindings,
+                                                noCardEnvironment);
+      ASSERT_TRUE(static_cast<bool>(noCardPlan))
+          << llvm::toString(noCardPlan.takeError());
+      ASSERT_EQ(noCardPlan->tiles.size(), 16u);
+      EXPECT_TRUE(llvm::all_of(noCardPlan->tiles, [&](const auto &tile) {
+        return !tile.argumentAddresses.empty() &&
+               tile.argumentAddresses.front().base ==
+                   wafer::runtime::RuntimeArgumentAddressBase::Invocation;
+      }));
       EXPECT_EQ(
-          std::holds_alternative<
-              wafer::runtime::DirectDTETransportRequirements>(entry.transport),
-          scenario.transport == wafer::TransportContract::DirectDTE);
+          llvm::count_if(
+              manifest.entries,
+              [capture](const auto &entry) {
+                return llvm::any_of(entry.arguments, [capture](
+                                                         const auto &argument) {
+                  if (const auto *profile =
+                          std::get_if<wafer::runtime::ProfileRecordArgument>(
+                              &argument.reference))
+                    return profile->bytes ==
+                           wafer::compiler::detail::
+                               getProfileCaptureRecordBytes(capture);
+                  return false;
+                });
+              }),
+          16);
+      for (const wafer::runtime::PackageEntrypointRecord &entry :
+           manifest.entries) {
+        ASSERT_FALSE(entry.arguments.empty());
+        EXPECT_TRUE(
+            std::holds_alternative<wafer::runtime::ExternalInputArgument>(
+                entry.arguments.front().reference));
+        EXPECT_TRUE(
+            std::holds_alternative<wafer::runtime::ProfileRecordArgument>(
+                entry.arguments.back().reference));
+        EXPECT_EQ(
+            std::get<wafer::runtime::ProfileRecordArgument>(
+                entry.arguments.back().reference)
+                .bytes,
+            wafer::compiler::detail::getProfileCaptureRecordBytes(capture));
+        EXPECT_EQ(std::holds_alternative<
+                      wafer::runtime::DirectDTETransportRequirements>(
+                      entry.transport),
+                  scenario.transport == wafer::TransportContract::DirectDTE);
+      }
     }
   }
 }

@@ -194,6 +194,8 @@ llvm::Expected<ProfileCaptureKind> parseCaptureKind(llvm::StringRef value,
     return ProfileCaptureKind::Count;
   if (value == "trace")
     return ProfileCaptureKind::Trace;
+  if (value == "timing")
+    return ProfileCaptureKind::Timing;
   return invalid(context + " is not a supported capture kind");
 }
 
@@ -203,6 +205,8 @@ uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
     return kCountRecordBytes;
   case ProfileCaptureKind::Trace:
     return kTraceRecordBytes;
+  case ProfileCaptureKind::Timing:
+    return WAFER_TX81_KERNEL_TIMING_RECORD_BYTES;
   }
   llvm_unreachable("unknown profile capture kind");
 }
@@ -326,13 +330,14 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
       requireArray(root, "capture_packages", "profile plan");
   if (!captures)
     return captures.takeError();
-  if ((*captures)->size() != 2)
-    return invalid("profile plan must contain exactly two capture packages");
+  if ((*captures)->size() != 3)
+    return invalid("profile plan must contain exactly three capture packages");
   if (llvm::Error error =
           accountRecords((*captures)->size(), totalRecords, limits))
     return std::move(error);
-  const std::array<ProfileCaptureKind, 2> expectedOrder = {
-      ProfileCaptureKind::Count, ProfileCaptureKind::Trace};
+  const std::array<ProfileCaptureKind, 3> expectedOrder = {
+      ProfileCaptureKind::Count, ProfileCaptureKind::Trace,
+      ProfileCaptureKind::Timing};
   for (auto [index, value] : llvm::enumerate(**captures)) {
     std::string context =
         "profile plan.capture_packages[" + std::to_string(index) + "]";
@@ -1072,7 +1077,8 @@ resolveCapturePackageReference(llvm::StringRef instrumentationRoot,
   llvm::SmallVector<llvm::StringRef, 4> components;
   reference.split(components, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/true);
   if (components.size() != 2 || components[0] != "captures" ||
-      (components[1] != "count" && components[1] != "trace"))
+      (components[1] != "count" && components[1] != "trace" &&
+       components[1] != "timing"))
     return invalid("profile capture package_ref is not canonical");
   llvm::SmallString<256> candidate(instrumentationRoot);
   llvm::sys::path::append(candidate, reference);
@@ -1101,7 +1107,8 @@ findCapturePackage(llvm::ArrayRef<RawCapturePackage> packages,
 llvm::Error verifyProfileGraph(const RawPlan &plan,
                                llvm::ArrayRef<ProfileTileSiteMap> siteMap) {
   for (ProfileCaptureKind capture :
-       {ProfileCaptureKind::Count, ProfileCaptureKind::Trace}) {
+       {ProfileCaptureKind::Count, ProfileCaptureKind::Trace,
+        ProfileCaptureKind::Timing}) {
     const RawCapturePackage *capturePackage =
         findCapturePackage(plan.capturePackages, capture);
     if (!capturePackage)
@@ -1109,7 +1116,8 @@ llvm::Error verifyProfileGraph(const RawPlan &plan,
     std::string captureName = stringifyProfileCaptureKind(capture).str();
     std::string reference = "captures/" + captureName;
     if (capturePackage->packageReference != reference)
-      return invalid("profile capture package_ref is not canonical");
+      return invalid("profile capture package_ref is not canonical: expected " +
+                     reference + ", got " + capturePackage->packageReference);
   }
 
   if (siteMap.size() != static_cast<size_t>(kProfileInstrumentationTileCount))

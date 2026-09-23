@@ -406,9 +406,38 @@ runtime不拥有request queue、continuous batching、prefix/KV policy、tokeniz
 
 ## 8. Profile
 
+### Kernel 本体轻量计时
+
+输入为同一个 accepted `DeviceExecutable`，在目标 LLVM entry 第一处和每个 return 前插入首尾 hook；
+输出为 profile instrumentation 中的 `timing` capture package，以及每 Tile 一个64字节的 typed timing record。
+直接下游为 `wafer-run --kernel-timing` 的普通 board invocation、record decoder与文本结果；
+用户由 `wafer-compile --profile` 生成 capture，runtime 显式选择 timing 时只执行它一次，
+不执行 Primary/Count/Trace 协议。普通执行和原完整 profile 协议保持，capture canonical order 为 count、trace、timing。
+
+Timing CRT只保留首尾 hook，NCC/DTE发射、等待与固定参数准备使用生产实现；不包含site hook、PMU访问或轮询替代。
+起点在record配置读取之后、实际entry工作之前，终点在原entry全部工作与原terminal completion之后、record写回之前。
+时间取厂商 `csi_tick_get_us()`，字段明确为 `entry_begin_us/entry_end_us`，不混用已有cycle字段或猜测CPU频率。
+Record沿原ProfileRecord typed allocation/argument/readback路径传递，具有独立magic、exact大小、Tile身份及完成guard。
+Host校验完整16 Tile、单调端点、保留字段及kind；异常不发布计时。无额外join、barrier、launch、reset或retry。
+
+输出每Tile duration和最大duration，名称明确为最长Tile的main-entry本体时间。它包含entry内部CPU构造/提交、
+DMA、计算、通信和必要等待；不包含外层派发、入口wrapper及record配置/回传，也不包含独立transport prepare phase。
+可同时输出原stream event（包含全部launch phases）作不同口径对照，不把差值全部命名为启动开销。
+没有当前target共同时间原点的证据时，不计算跨Tile的 `max(end)-min(begin)`，不宣称最长Tile等于全卡跨度。
+非目标为算子优化、修改厂商固件/runtime、改变completion或clock配置、对完整Trace耗时作常数扣减。
+完成要求为下表主机、fresh产品/no-card及指定BF16两项实卡完整数值、guard、正常退出与计时记录通过。
+
+| 输入等价类 / 分支 | exact 输出及直接下游 | 失败边界 |
+| --- | --- | --- |
+| LLVM多return、rank3+且主轴1024/1025、多Tile及tail | 每entry一次begin、每return一次end、无site hook；正式target/link/package | 缺失hook、错误slot及capture尺寸拒绝 |
+| 64字节Timing / Count / Trace | 同一配置路径、timing首尾时间与完成guard；decoder输出明确微秒 | 截断、kind/Tile/guard/reserved错误、倒退时钟拒绝 |
+| 连续调用、配置非法、16 Tile不同duration | 独立绑定、无旧record写入、all-and-only Tile与最长duration | 缺失/重复Tile、未完成record拒绝 |
+| CLI no-card / board | timing仅一次invocation、原completion及数值输出路径；与event分列 | 无sibling或同时请求trace limit提前拒绝 |
+| BF16 GEMM M=N4096/K1024及causal attention `[1,28,2048,128]` | fresh source/reference/package/no-card；Cluster prepare+main和Grid main；完整数值/guard、各三次健康timing | 设备异常即停；不以历史记录或host模型签实卡 |
+
 Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor materialization和program-data bytes：
 
-- ordinary/count/trace package的TargetTensor identity、offset和digest关系一致；
+- ordinary/count/trace/timing package的TargetTensor identity、offset和digest关系一致；
 - profile record只作为entry-local typed requirement增加；
 - profile不得触发parameter/constant再次转换；
 - activation/site map使用独立typed合同，不成为普通执行manifest字段；

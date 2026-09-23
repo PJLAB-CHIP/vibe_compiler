@@ -55,6 +55,7 @@ inline constexpr llvm::StringLiteral kProfileStaticCostModelScope =
 enum class ProfileCaptureKind {
   Count,
   Trace,
+  Timing,
 };
 
 enum class ProfileTSMEngine {

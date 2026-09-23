@@ -86,6 +86,13 @@ module {
   EXPECT_EQ(prepared->slots[0].kind, TileEntryArgumentKind::ExternalInput);
   EXPECT_EQ(prepared->defaultDDRArenaArgumentIndex, 1);
   EXPECT_EQ(prepared->profileRecordArgumentIndex, 2);
+  auto timed = detail::prepareTargetABI(tile, *config, false,
+                                        detail::ProfileCaptureKind::Timing);
+  ASSERT_TRUE(mlir::succeeded(timed));
+  ASSERT_EQ(timed->slots.size(), 3u);
+  EXPECT_EQ(timed->profileRecordArgumentIndex, 2);
+  EXPECT_EQ(timed->slots.back().byteSize,
+            WAFER_TX81_KERNEL_TIMING_RECORD_BYTES);
   auto original = tile.getModule().lookupSymbol<mlir::func::FuncOp>("main");
   EXPECT_EQ(original.getNumArguments(), 2u);
   EXPECT_TRUE(original.getArgument(0).use_empty());

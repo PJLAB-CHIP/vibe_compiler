@@ -13,11 +13,41 @@
 ## 计时口径
 
 - Primary：生产package的device elapsed time，使用TX stream events。它是本记录比较端到端耗时的指标。
+- Kernel timing：显式轻量capture的最长Tile main-entry duration，使用厂商微秒时钟，只在entry首尾采样。
+  包含内部CPU、搬运、计算、通信及必要等待；独立prepare phase与外层派发在区间外。不能与Primary混作同一指标。
 - Engine PMU：另一轮Trace中每Tile的CT/NE/RDMA/WDMA/TDMA累计执行ns。存在重叠，不包含完整的控制与等待过程；不能相加、
   从Primary相减，或据其单独判断端到端热点。
 - Trace：本Tile的Kcore `rdcycle`区间，可定位调用、发指令和等待。未校准周期频率及跨Tile时钟，不换算为Primary的ms；
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
+
+## 2026-09-23：Kernel 本体轻量计时
+
+本轮新增显式 `--kernel-timing`，默认关闭。使用同一accepted编译结果生成的timing capture，
+每Tile只在main entry首尾读取厂商 `csi_tick_get_us()`，不启用site hook、PMU、Trace等待替代或Host寄存器采集。
+输入为原BF16、NCx I/O两项，保留seed20260803/20260922、standard width8/trials42、数值合同和guard。
+两项均fresh生成source/reference/package、通过no-card，再各三次顺序实卡。
+
+| case | 最长Tile本体三次（ms） | 本体中位数（ms） | 同次event三次（ms） | event中位数（ms） |
+| --- | --- | ---: | --- | ---: |
+| M=N4096、K1024、batch1 GEMM | 1.843 / 1.801 / 1.794 | 1.801 | 3.107 / 3.201 / 3.158 | 3.158 |
+| causal attention `[1,28,2048,128]` | 2.470 / 2.461 / 2.448 | 2.461 | 3.610 / 3.427 / 3.579 | 3.579 |
+
+GEMM为Cluster prepare+main，计时仅包住main entry，event覆盖两个phase；最长Tile均为12。
+Attention为Grid main，最长Tile依次为10、6、3。两项均读取全部16 Tile，按manifest的物理Tile身份检查和汇总，
+不把不同Tile的时间戳放在未经校准的共同时间线上。
+
+六次完整数值、guard及正常厂商清理通过，系统占用检查通过且无fatal/timeout。
+GEMM全部16,777,216元素沿用相似度合同，cosine 0.9999999973703549、relative L2 0.0000725277、逐点超差99个；
+attention全部7,340,032元素逐点超差0个、relative L2 0.00193234。每次guard分别检查28032和21824 B，包含capture资源。
+boot、driver与runtime身份和前轮一致；本轮ELF确认只有首尾计时hook，没有site hook和Trace NCC wrapper。
+
+这次实现改变测量区间，没有优化算子：本体包含entry内CPU指令构造/提交、DMA、运算、通信和必要等待；
+外层参数解码、派发、返回通知、record配置/回传及独立prepare在区间外。
+不把event与本体的差值全部归为launch，不把最长Tile本地duration称作全卡跨度。
+时钟分辨率为1微秒，首尾函数与采样仍有少量扰动。
+主机门禁、每Tile样本、完整数值审计、命令与artifact身份见
+[本轮证据](data/board-performance/kernel-timing-20260923.json)；使用与计时事实见[计时文档](kernel-timing.md)。
 
 ## 2026-09-23：NCx 输入复用与直接 DMA 整改
 

@@ -45,6 +45,21 @@
 #define WAFER_TX81_PROFILER_MIN_BUFFER_BYTES 832U
 #define WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES UINT64_C(16777216)
 
+/* Timing is a separate, one-cache-line record in the same capture ABI.
+ * Endpoints use the vendor microsecond timer, never the raw cycle fields. */
+#define WAFER_TX81_KERNEL_TIMING_RECORD_BYTES 64U
+#define WAFER_TX81_KERNEL_TIMING_RECORD_MAGIC UINT64_C(0x314d495452505757)
+
+typedef struct WaferTx81KernelTimingRecord {
+  uint64_t magic;
+  uint32_t record_bytes;
+  uint32_t tile_id;
+  uint64_t entry_begin_us;
+  uint64_t entry_end_us;
+  uint64_t reserved[3];
+  uint64_t completion_guard;
+} WaferTx81KernelTimingRecord;
+
 #define WAFER_TX81_PROFILER_WORKERS 3U
 #define WAFER_TX81_PROFILER_QUEUES 5U
 #define WAFER_TX81_PROFILER_PMU64_COUNTERS 8U
@@ -86,6 +101,7 @@ enum WaferTx81ProfilerTraceState {
 enum WaferTx81ProfilerEntryFlag {
   WAFER_TX81_PROFILER_ENTRY_TRACE_ENABLED = UINT32_C(1) << 0,
   WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY = UINT32_C(1) << 1,
+  WAFER_TX81_PROFILER_ENTRY_TIMING_ONLY = UINT32_C(1) << 2,
 };
 
 enum WaferTx81ProfilerRecordFlag {
@@ -263,6 +279,9 @@ typedef struct WaferTx81ProfilerRecordHeader {
 #define WAFER_TX81_PROFILER_STATIC_ASSERT _Static_assert
 #endif
 
+WAFER_TX81_PROFILER_STATIC_ASSERT(sizeof(WaferTx81KernelTimingRecord) ==
+                                      WAFER_TX81_KERNEL_TIMING_RECORD_BYTES,
+                                  "TX81 kernel timing record ABI size changed");
 WAFER_TX81_PROFILER_STATIC_ASSERT(
     sizeof(WaferTx81ProfilerLaunchConfig) ==
         WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES,

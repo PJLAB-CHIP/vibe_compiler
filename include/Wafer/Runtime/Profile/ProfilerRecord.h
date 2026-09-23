@@ -8,6 +8,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -27,7 +28,23 @@ struct Tx81ProfilerRecord {
 enum class Tx81ProfilerCaptureKind {
   Count,
   Trace,
+  Timing,
 };
+
+struct Tx81KernelTimingSummary {
+  std::array<uint64_t, WAFER_TX81_PROFILER_TILE_COUNT> tileMicroseconds{};
+  uint32_t longestTile = 0;
+  uint64_t longestTileMicroseconds = 0;
+};
+
+/// Decode the entry-only microsecond record. It has no events or PMU state.
+llvm::Expected<WaferTx81KernelTimingRecord>
+decodeTx81KernelTimingRecord(llvm::ArrayRef<uint8_t> bytes);
+
+/// Require all-and-only physical Tiles, then report the longest local span.
+/// The clocks need not have a common origin; this is not a global time span.
+llvm::Expected<Tx81KernelTimingSummary>
+summarizeTx81KernelTiming(llvm::ArrayRef<WaferTx81KernelTimingRecord> records);
 
 /// Returns the event capacity of one aligned ABI record.
 llvm::Expected<uint32_t> getTx81ProfilerEventCapacity(uint64_t recordBytes);

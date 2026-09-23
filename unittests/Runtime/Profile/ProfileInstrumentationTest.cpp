@@ -386,9 +386,10 @@ protected:
     };
     std::vector<CaptureFixture> captures;
     for (auto [name, recordBytes] :
-         std::array<std::pair<llvm::StringRef, uint64_t>, 2>{
+         std::array<std::pair<llvm::StringRef, uint64_t>, 3>{
              {{"count", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
-              {"trace", WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES}}}) {
+              {"trace", WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES},
+              {"timing", WAFER_TX81_KERNEL_TIMING_RECORD_BYTES}}}) {
       std::string reference = ("captures/" + name).str();
       llvm::SmallString<256> capturePath(instrumentation);
       llvm::sys::path::append(capturePath, reference);
@@ -569,7 +570,7 @@ TEST_F(ProfileInstrumentationTest,
             manifestDigest(primary));
   EXPECT_EQ(loaded->getCardCount(), 1);
   EXPECT_EQ(loaded->getTileCount(), 16);
-  EXPECT_EQ(loaded->getCaptures().size(), 2u);
+  EXPECT_EQ(loaded->getCaptures().size(), 3u);
   EXPECT_EQ(loaded->getSiteMap().size(), 16u);
   EXPECT_EQ(loaded->getSiteCount(), 80u);
   const auto &profiledPackage = loaded->getProfiledPackage();
@@ -599,7 +600,8 @@ TEST_F(ProfileInstrumentationTest,
   EXPECT_EQ(trace->getRecordABI(), wafer::runtime::kProfileRecordABI);
   for (wafer::runtime::ProfileCaptureKind capture :
        {wafer::runtime::ProfileCaptureKind::Count,
-        wafer::runtime::ProfileCaptureKind::Trace}) {
+        wafer::runtime::ProfileCaptureKind::Trace,
+        wafer::runtime::ProfileCaptureKind::Timing}) {
     ASSERT_NE(loaded->findCapture(capture), nullptr);
   }
   llvm::ArrayRef<wafer::runtime::ProfileTileSiteMap> siteMap =

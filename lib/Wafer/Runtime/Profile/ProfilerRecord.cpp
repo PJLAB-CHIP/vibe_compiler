@@ -169,7 +169,12 @@ llvm::Expected<std::vector<uint8_t>>
 buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
                              Tx81ProfilerCaptureKind kind,
                              uint32_t traceEventLimit) {
-  auto capacity = getTx81ProfilerEventCapacity(recordBytes);
+  if (kind == Tx81ProfilerCaptureKind::Timing &&
+      recordBytes != WAFER_TX81_KERNEL_TIMING_RECORD_BYTES)
+    return invalid("TX81 kernel timing record size is not exact");
+  auto capacity = kind == Tx81ProfilerCaptureKind::Timing
+                      ? llvm::Expected<uint32_t>(0)
+                      : getTx81ProfilerEventCapacity(recordBytes);
   if (!capacity)
     return capacity.takeError();
   if (traceEventLimit > *capacity ||
@@ -197,6 +202,9 @@ buildTx81ProfilerLaunchImage(uint64_t recordBytes, uint32_t tileId,
       image, offsetof(WaferTx81ProfilerLaunchConfig, tile_id), tileId);
   uint32_t flags = 0;
   switch (kind) {
+  case Tx81ProfilerCaptureKind::Timing:
+    flags = WAFER_TX81_PROFILER_ENTRY_TIMING_ONLY;
+    break;
   case Tx81ProfilerCaptureKind::Count:
     flags = WAFER_TX81_PROFILER_ENTRY_COUNT_ONLY;
     break;
@@ -606,6 +614,64 @@ verifyTx81ProfilerTileDomain(llvm::ArrayRef<Tx81ProfilerRecord> records) {
   if (tiles.count() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("TX81 profiler tile domain is not all-and-only 0..15");
   return llvm::Error::success();
+}
+
+namespace {
+llvm::Error
+validateKernelTimingRecord(const WaferTx81KernelTimingRecord &record) {
+  if (record.magic != WAFER_TX81_KERNEL_TIMING_RECORD_MAGIC ||
+      record.record_bytes != WAFER_TX81_KERNEL_TIMING_RECORD_BYTES ||
+      record.completion_guard != WAFER_TX81_PROFILER_BUFFER_GUARD ||
+      record.tile_id >= WAFER_TX81_PROFILER_TILE_COUNT ||
+      llvm::any_of(record.reserved, [](uint64_t value) { return value != 0; }))
+    return invalid("TX81 kernel timing record is incomplete or invalid");
+  if (record.entry_end_us < record.entry_begin_us)
+    return invalid("TX81 kernel timing endpoints are not monotonic");
+  return llvm::Error::success();
+}
+} // namespace
+
+llvm::Expected<WaferTx81KernelTimingRecord>
+decodeTx81KernelTimingRecord(llvm::ArrayRef<uint8_t> bytes) {
+  if (bytes.size() != WAFER_TX81_KERNEL_TIMING_RECORD_BYTES)
+    return invalid("TX81 kernel timing record size is not exact");
+  WaferTx81KernelTimingRecord record{};
+  using namespace llvm::support::endian;
+  record.magic = read64le(bytes.data());
+  record.record_bytes = read32le(bytes.data() + 8);
+  record.tile_id = read32le(bytes.data() + 12);
+  record.entry_begin_us = read64le(bytes.data() + 16);
+  record.entry_end_us = read64le(bytes.data() + 24);
+  for (size_t i = 0; i < std::size(record.reserved); ++i)
+    record.reserved[i] = read64le(bytes.data() + 32 + i * 8);
+  record.completion_guard = read64le(bytes.data() + 56);
+  if (llvm::Error error = validateKernelTimingRecord(record))
+    return std::move(error);
+  return record;
+}
+
+llvm::Expected<Tx81KernelTimingSummary>
+summarizeTx81KernelTiming(llvm::ArrayRef<WaferTx81KernelTimingRecord> records) {
+  if (records.size() != WAFER_TX81_PROFILER_TILE_COUNT)
+    return invalid("TX81 kernel timing requires all 16 Tiles");
+  llvm::SmallBitVector seen(WAFER_TX81_PROFILER_TILE_COUNT);
+  Tx81KernelTimingSummary summary;
+  for (const auto &record : records) {
+    if (llvm::Error error = validateKernelTimingRecord(record))
+      return std::move(error);
+    if (seen.test(record.tile_id))
+      return invalid("TX81 kernel timing contains a duplicate Tile");
+    seen.set(record.tile_id);
+    summary.tileMicroseconds[record.tile_id] =
+        record.entry_end_us - record.entry_begin_us;
+  }
+  for (auto [tile, duration] : llvm::enumerate(summary.tileMicroseconds)) {
+    if (duration > summary.longestTileMicroseconds) {
+      summary.longestTile = tile;
+      summary.longestTileMicroseconds = duration;
+    }
+  }
+  return summary;
 }
 
 } // namespace wafer::runtime

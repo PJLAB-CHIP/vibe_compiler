@@ -800,7 +800,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         if (profile.recordABI != kProfileRecordABI || profile.bytes == 0 ||
             profile.alignment == 0 || !isPowerOfTwo(profile.alignment) ||
             profile.alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT ||
-            (profile.bytes != WAFER_TX81_PROFILER_MIN_BUFFER_BYTES &&
+            (profile.bytes != WAFER_TX81_KERNEL_TIMING_RECORD_BYTES &&
+             profile.bytes != WAFER_TX81_PROFILER_MIN_BUFFER_BYTES &&
              profile.bytes != WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES))
           return invalid("package entry profile record requirement is "
                          "invalid");

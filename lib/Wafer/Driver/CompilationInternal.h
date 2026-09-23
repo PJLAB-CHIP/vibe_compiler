@@ -48,7 +48,7 @@ struct ProfileInstrumentationIdentity {
   std::string primaryManifestDigest;
   std::string planDigest;
   std::string siteMapDigest;
-  std::array<std::string, 2> captureManifestDigests;
+  std::array<std::string, 3> captureManifestDigests;
 };
 
 struct BoundProfileInstrumentation {

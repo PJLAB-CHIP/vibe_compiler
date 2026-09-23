@@ -18,6 +18,12 @@
 
 ## 当前调度
 
+2026-09-23用户授权的kernel本体轻量计时已完成，归 `board-testing`，不代签整体板测。
+15号 `timing` capture、首尾微秒record及单次runtime执行已接通，默认关闭；
+主机、fresh no-card和原BF16 NCx GEMM、2048 attention各三次实卡通过，canonical完整增量及Ninja no-op通过。
+生产completion、算术与搜索策略保持；最长Tile main-entry与外层event分列，独立transport prepare不计入本体。
+覆盖矩阵见15号“Kernel 本体轻量计时”，完成证据与使用说明见[本轮记录](../docs/board-performance-results.md#2026-09-23kernel-本体轻量计时)。
+
 2026-09-23用户授权的直接 NCx I/O 性能整改已完成，仍归 `board-testing`，不代签整体板测完成。
 输入复用的布局覆盖、私有 DMA/layout 合成及共享转换合并后的同一优化均已接通；
 fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。

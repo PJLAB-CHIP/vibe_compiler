@@ -4,6 +4,7 @@
 #define WAFER_TOOLS_WAFER_RUN_WAFERPROFILECOLLECTION_H
 
 #include "Wafer/Runtime/Profile/ProfileInstrumentation.h"
+#include "Wafer/Runtime/Profile/ProfilerRecord.h"
 #include "WaferRunBoardIO.h"
 
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -165,6 +166,19 @@ struct BoardProfileCollectionResult {
   BoardInvocationFilePlan finalPlan;
   std::string runDirectory;
 };
+
+struct BoardKernelTimingResult {
+  BoardRuntimeInvocationResult finalResult;
+  BoardInvocationFilePlan finalPlan;
+  Tx81KernelTimingSummary timing;
+};
+
+/// Execute only the entry-timed capture, with the ordinary completion path.
+llvm::Expected<BoardKernelTimingResult>
+runBoardKernelTiming(const VerifiedProfileInstrumentation &instrumentation,
+                     const PackageManifest &primaryManifest,
+                     const BoardInvocationFilePlan &primaryPlan,
+                     BoardRuntimeDriver &driver);
 
 /// Executes the compiler-owned, fixed profiler collection in one qualified
 /// board session. The caller supplies only the ordinary invocation file plan;

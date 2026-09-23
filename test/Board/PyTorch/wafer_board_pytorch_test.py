@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-trace-event-limit", type=int)
     parser.add_argument("--device-timing", action="store_true")
+    parser.add_argument("--kernel-timing", action="store_true",
+                        help="Run only the entry timing capture; requires --profile")
     parser.add_argument("--board-diagnose-tool", type=pathlib.Path,
                         help="wrap each board invocation with wafer-board-diagnose")
     parser.add_argument("--capture-registers", action="store_true", default=False,
@@ -1368,7 +1370,9 @@ def main() -> int:
     args = parse_args()
     if args.capture_registers and args.board_diagnose_tool is None:
         raise RuntimeError("--capture-registers requires --board-diagnose-tool")
-    if args.board_diagnose_tool is not None and args.profile:
+    if args.kernel_timing and (not args.profile or args.profile_trace_event_limit is not None):
+        raise RuntimeError("kernel timing requires --profile without a trace event limit")
+    if args.board_diagnose_tool is not None and args.profile and not args.kernel_timing:
         raise RuntimeError("board diagnostics currently wrap ordinary packages; profile has its own collector")
     if args.compile_timeout_seconds is not None and args.compile_timeout_seconds < 1:
         raise RuntimeError("compile timeout must be positive")
@@ -1466,6 +1470,8 @@ def main() -> int:
         )
 
         command = base_runtime_command(args.wafer_run, package)
+        if args.kernel_timing:
+            command.append("--kernel-timing")
         if args.memory_guards:
             command.append("--memory-guards")
         if args.profile_trace_event_limit is not None:
@@ -1526,7 +1532,8 @@ def main() -> int:
                 (step_dir / "command.json").write_text(json.dumps(actual_command, indent=2) + "\n")
                 (step_dir / f"measurement-{iteration + 1:02d}.json").write_text(json.dumps({
                     "host_register_capture": args.capture_registers,
-                    "device_profile": args.profile,
+                    "device_profile": args.profile and not args.kernel_timing,
+                    "kernel_timing": args.kernel_timing,
                     "device_timing": args.device_timing,
                 }, indent=2) + "\n")
                 # Profile includes host report generation after device collection.
@@ -1536,7 +1543,7 @@ def main() -> int:
                     actual_command,
                     timeout_seconds=(
                         None
-                        if args.profile or args.board_diagnose_tool is not None else
+                        if (args.profile and not args.kernel_timing) or args.board_diagnose_tool is not None else
                         args.completion_timeout_ms / 1000 + PROCESS_TIMEOUT_MARGIN_SECONDS
                     ),
                 )
@@ -1583,7 +1590,7 @@ def main() -> int:
                         for actual, expected in zip(actual_outputs, expected_outputs, strict=True)
                     ],
                     "timing": [line for line in result.stdout.splitlines()
-                               if line.startswith(("board_timing:", "profile_run:"))],
+                               if line.startswith(("board_timing:", "kernel_timing:", "kernel_timing_tile:", "profile_run:"))],
                 }
                 (step_dir / f"numeric-audit-{iteration + 1:02d}.json").write_text(
                     json.dumps(audit, indent=2) + "\n"

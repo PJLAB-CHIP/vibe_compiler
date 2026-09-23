@@ -22,7 +22,7 @@ DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_CRT_MCPU = "c908"
 DEFAULT_MABI = "lp64d"
 DEFAULT_LOADER_ABI = "tx8-kcore-loader"
-PROFILE_CAPTURE_KINDS = ("none", "count", "trace")
+PROFILE_CAPTURE_KINDS = ("none", "count", "trace", "timing")
 SDK_MODULE_HOOKS = frozenset({"module_init", "module_cleanup"})
 BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
     {
@@ -40,6 +40,7 @@ BASE_LOADER_ABI_UNDEFINED_SYMBOLS = frozenset(
         "direct_sync_init",
         "direct_sync_post",
         "direct_sync_wait",
+        "csi_tick_get_us",
         "csi_kernel_free",
         "csi_kernel_malloc",
         "monitor_write_log",
@@ -244,6 +245,8 @@ def build_commands(
     ]
     if args.profile_capture in {"count", "trace"}:
         compile_crt_cmd.insert(-2, "-DWAFER_TX81_PROFILE_TRACE_CRT=1")
+    if args.profile_capture == "timing":
+        compile_crt_cmd.insert(-2, "-DWAFER_TX81_PROFILE_TIMING_CRT=1")
     if args.crt_specialization_source:
         # This is a C preprocessor string literal passed as one argv entry;
         # no shell interprets the configured source path.

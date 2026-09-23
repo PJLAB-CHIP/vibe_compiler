@@ -1242,7 +1242,8 @@ bool detail::isValidPackageCompilerManagedSlot(const TileEntryArgument &slot) {
     return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&
            slot.shape.size() == 1 && slot.shape.front() == slot.byteSize &&
            slot.alignment == WAFER_TX81_PROFILER_BUFFER_ALIGNMENT &&
-           (slot.byteSize == WAFER_TX81_PROFILER_MIN_BUFFER_BYTES ||
+           (slot.byteSize == WAFER_TX81_KERNEL_TIMING_RECORD_BYTES ||
+            slot.byteSize == WAFER_TX81_PROFILER_MIN_BUFFER_BYTES ||
             slot.byteSize == WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
   if (slot.kind == TileEntryArgumentKind::TransportStatus)
     return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U32 &&

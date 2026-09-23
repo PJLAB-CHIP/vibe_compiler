@@ -48,6 +48,7 @@ struct Options {
   std::vector<wafer::runtime::cli::PortFile> outputFiles;
   bool supportsHostWatchdog = false;
   bool deviceTiming = false;
+  bool kernelTiming = false;
   wafer::runtime::RuntimeMemoryGuardPolicy memoryGuardPolicy =
       wafer::runtime::RuntimeMemoryGuardPolicy::Disabled;
   uint32_t profileTraceEventLimit = 0;
@@ -58,7 +59,8 @@ struct Options {
 void printUsage(llvm::raw_ostream &output) {
   output << "usage:\n"
             "  wafer-run --package-dir <path> --no-card "
-            "[--profile-trace-event-limit <events>] [--memory-guards] "
+            "[--kernel-timing] [--profile-trace-event-limit <events>] "
+            "[--memory-guards] "
             "[--max-resource-bytes <bytes>] [--direct-dte-status-abi <abi> "
             "--supports-host-watchdog]\n"
             "  wafer-run --package-dir <path> --board "
@@ -68,7 +70,8 @@ void printUsage(llvm::raw_ostream &output) {
             "--expected-tile-count <count> "
             "--expected-runtime-library-sha256 <hex> "
             "[--completion-timeout-ms <milliseconds>] "
-            "[--device-timing] [--profile-trace-event-limit <events>] "
+            "[--device-timing] [--kernel-timing] [--profile-trace-event-limit "
+            "<events>] "
             "--resource <ResourceId=raw-file>... "
             "[--expected <ResourceId=raw-file>]... "
             "[--expected-f16-relaxed <ResourceId=raw-file>]... "
@@ -241,6 +244,10 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       options.deviceTiming = true;
       continue;
     }
+    if (argument == "--kernel-timing") {
+      options.kernelTiming = true;
+      continue;
+    }
     if (argument == "--memory-guards") {
       options.memoryGuardPolicy =
           wafer::runtime::RuntimeMemoryGuardPolicy::Check;
@@ -256,6 +263,10 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "wafer-run requires explicit --no-card or --board, but not both");
+  if (options.kernelTiming && options.profileTraceEventLimit != 0)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "--kernel-timing cannot be combined with --profile-trace-event-limit");
   if (options.noCard &&
       (!options.resourceFiles.empty() || !options.expectedFiles.empty() ||
        !options.relaxedF16ExpectedFiles.empty() ||
@@ -387,6 +398,10 @@ int runNoCard(
                  << " captures=" << profileInstrumentation->getCaptures().size()
                  << " target_call_sites="
                  << profileInstrumentation->getSiteCount() << "\n";
+  if (options.kernelTiming)
+    llvm::outs() << "kernel_timing: ready record_bytes="
+                 << WAFER_TX81_KERNEL_TIMING_RECORD_BYTES
+                 << " scope=main-entry aggregation=max-tile-duration\n";
   // No-card is an invocation/package contract check only. It does not run
   // target arithmetic, device completion, or numeric readback; callers must
   // not reuse these lines as a board result.
@@ -430,8 +445,18 @@ int runBoard(const Options &options,
     return fail(driver.takeError());
   wafer::runtime::cli::BoardInvocationFilePlan completedPlan;
   std::string profileRunDirectory;
+  std::optional<wafer::runtime::Tx81KernelTimingSummary> kernelTiming;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       [&]() -> llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> {
+    if (options.kernelTiming) {
+      auto timed = wafer::runtime::cli::runBoardKernelTiming(
+          *profileInstrumentation, manifest, *filePlan, **driver);
+      if (!timed)
+        return timed.takeError();
+      completedPlan = std::move(timed->finalPlan);
+      kernelTiming = timed->timing;
+      return std::move(timed->finalResult);
+    }
     if (profileInstrumentation) {
       llvm::Expected<wafer::runtime::cli::BoardProfileCollectionResult>
           collection = wafer::runtime::cli::runBoardProfileCollection(
@@ -457,6 +482,18 @@ int runBoard(const Options &options,
   if (llvm::Error error = wafer::runtime::cli::validateAndWriteBoardOutputs(
           result->outputs, completedPlan))
     return fail(std::move(error));
+
+  if (kernelTiming) {
+    for (auto [tile, duration] :
+         llvm::enumerate(kernelTiming->tileMicroseconds))
+      llvm::outs() << "kernel_timing_tile: tile_id=" << tile
+                   << " elapsed_us=" << duration << "\n";
+    llvm::outs() << "kernel_timing: kind=vendor-microseconds scope=main-entry"
+                    " aggregation=max-tile-duration longest_tile="
+                 << kernelTiming->longestTile
+                 << " elapsed_us=" << kernelTiming->longestTileMicroseconds
+                 << "\n";
+  }
 
   llvm::outs() << "board_device: id=" << result->device.deviceId
                << " name=" << result->device.name
@@ -562,6 +599,14 @@ int main(int argc, char **argv) {
       profileInstrumentation;
   if (*loaded)
     profileInstrumentation.emplace(std::move(**loaded));
+  if (options->kernelTiming &&
+      (!profileInstrumentation ||
+       !profileInstrumentation->findCapture(
+           wafer::runtime::ProfileCaptureKind::Timing)))
+    return fail(llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "--kernel-timing requires sibling profile instrumentation; "
+        "compile with --profile"));
   if (options->profileTraceEventLimit != 0) {
     if (!profileInstrumentation)
       return fail(llvm::createStringError(
@@ -583,6 +628,13 @@ int main(int argc, char **argv) {
                  << options->profileTraceEventLimit << "\n";
   }
   if (options->noCard) {
+    if (options->kernelTiming)
+      return runNoCard(
+          *options,
+          profileInstrumentation
+              ->findCapture(wafer::runtime::ProfileCaptureKind::Timing)
+              ->getPackage(),
+          profileInstrumentation);
     return runNoCard(*options, *package, profileInstrumentation);
   }
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)

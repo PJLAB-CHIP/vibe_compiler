@@ -215,6 +215,7 @@ wafer_add_component_unit_test(WaferRuntimeUnitTests
     Runtime/Profile/ProfileInstrumentationTest.cpp
     Runtime/Profile/ProfilerRecordTest.cpp
     Runtime/Profile/ProfilerCRTTest.cpp
+    Runtime/Profile/KernelTimingTest.cpp
   LINK_LIBS WaferRuntime)
 target_include_directories(WaferRuntimeUnitTests PRIVATE
   "${CMAKE_SOURCE_DIR}/runtime/crt/src"

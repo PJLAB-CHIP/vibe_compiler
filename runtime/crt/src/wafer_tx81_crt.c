@@ -1,6 +1,7 @@
 #include "wafer_tx81_crt.h"
 
-#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+#if defined(WAFER_TX81_PROFILE_TRACE_CRT) ||                                   \
+    defined(WAFER_TX81_PROFILE_TIMING_CRT)
 #include "wafer_tx81_profiler.h"
 #endif
 
@@ -739,9 +740,16 @@ static int32_t wafer_bilinear_scale(uint32_t src, uint32_t dst) {
   return (int32_t)(((uint64_t)src << 16) / dst);
 }
 
-#ifdef WAFER_TX81_PROFILE_TRACE_CRT
+#if defined(WAFER_TX81_PROFILE_TRACE_CRT) ||                                   \
+    defined(WAFER_TX81_PROFILE_TIMING_CRT)
 #include "wafer_tx81_profiler_hardware.inc"
+#endif
+#ifdef WAFER_TX81_PROFILE_TRACE_CRT
 #include "wafer_tx81_profiler_impl.inc"
+#elif defined(WAFER_TX81_PROFILE_TIMING_CRT)
+extern uint64_t csi_tick_get_us(void);
+static uint64_t wafer_profile_microseconds(void) { return csi_tick_get_us(); }
+#include "wafer_tx81_kernel_timing_impl.inc"
 #endif
 
 static bool wafer_set_ncc_worker(uint32_t *inter_type, uint32_t worker) {

@@ -26,7 +26,7 @@ python3 -B build/bin/wafer-board-diagnose run \
 
 PyTorch板测入口通过`--board-diagnose-tool build/bin/wafer-board-diagnose`接入，每次repeat分别输出
 `diagnostics-NN/`与`measurement-NN.json`。不指定该工具时保持原运行入口，`--capture-registers`也默认false。
-当前该接入用于ordinary package；已有`--profile`继续使用自己的收集与报告路径。
+该接入支持ordinary及`--profile --kernel-timing`的单次执行；完整`--profile`继续使用自己的收集与报告路径。
 
 ## 显式诊断
 

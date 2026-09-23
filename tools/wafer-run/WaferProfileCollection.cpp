@@ -189,6 +189,8 @@ Tx81ProfilerCaptureKind toRuntimeCaptureKind(ProfileCaptureKind capture) {
     return Tx81ProfilerCaptureKind::Count;
   case ProfileCaptureKind::Trace:
     return Tx81ProfilerCaptureKind::Trace;
+  case ProfileCaptureKind::Timing:
+    return Tx81ProfilerCaptureKind::Timing;
   }
   llvm_unreachable("unknown profile capture kind");
 }
@@ -205,9 +207,15 @@ makeCapturePlan(const BoardInvocationFilePlan &primaryPlan,
 
   plan->request.profilerRecordBytes.emplace();
   plan->request.profilerRecordBytes->reserve(WAFER_TX81_PROFILER_TILE_COUNT);
-  for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
+  for (uint32_t slot = 0; slot < WAFER_TX81_PROFILER_TILE_COUNT; ++slot) {
+    const auto &entries = capture.getPackage().getManifest().entries;
+    auto entry = llvm::find_if(entries, [&](const auto &entry) {
+      return entry.launchSlot == LaunchSlotId(slot);
+    });
+    if (entry == entries.end())
+      return invalid("profile capture has no entry for its launch slot");
     llvm::Expected<std::vector<uint8_t>> image = buildTx81ProfilerLaunchImage(
-        capture.getRecordBytes(), tile,
+        capture.getRecordBytes(), entry->tileId.getValue(),
         toRuntimeCaptureKind(capture.getCaptureKind()), traceEventLimit);
     if (!image)
       return image.takeError();
@@ -231,8 +239,12 @@ decodeProfilerOutputs(const ProfileCapturePackage &capture,
         decodeTx81ProfilerRecord(output.bytes);
     if (!decoded)
       return decoded.takeError();
-    if (decoded->header.tile_id !=
-        static_cast<uint32_t>(output.launchSlot.getValue()))
+    const auto &entries = capture.getPackage().getManifest().entries;
+    auto entry = llvm::find_if(entries, [&](const auto &entry) {
+      return entry.launchSlot == output.launchSlot;
+    });
+    if (entry == entries.end() ||
+        decoded->header.tile_id != entry->tileId.getValue())
       return invalid("board profiler record and launch slot disagree");
     records.push_back(std::move(*decoded));
   }
@@ -1527,6 +1539,40 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
   if (llvm::Error error = consumeMeasurements(result.samples))
     return std::move(error);
   return result;
+}
+
+llvm::Expected<BoardKernelTimingResult>
+runBoardKernelTiming(const VerifiedProfileInstrumentation &instrumentation,
+                     const PackageManifest &primaryManifest,
+                     const BoardInvocationFilePlan &primaryPlan,
+                     BoardRuntimeDriver &driver) {
+  const auto *capture = instrumentation.findCapture(ProfileCaptureKind::Timing);
+  if (!capture)
+    return invalid("profile instrumentation has no kernel timing capture");
+  auto plan = makeCapturePlan(primaryPlan, primaryManifest, *capture, 0);
+  if (!plan)
+    return plan.takeError();
+  auto result = executeBoardInvocation(capture->getPackage(),
+                                       std::move(plan->request), driver);
+  if (!result)
+    return result.takeError();
+  std::vector<WaferTx81KernelTimingRecord> records;
+  for (const auto &output : result->profilerOutputs) {
+    auto record = decodeTx81KernelTimingRecord(output.bytes);
+    if (!record)
+      return record.takeError();
+    const auto &entries = capture->getPackage().getManifest().entries;
+    auto entry = llvm::find_if(entries, [&](const auto &entry) {
+      return entry.launchSlot == output.launchSlot;
+    });
+    if (entry == entries.end() || record->tile_id != entry->tileId.getValue())
+      return invalid("kernel timing record and launch slot disagree");
+    records.push_back(*record);
+  }
+  auto timing = summarizeTx81KernelTiming(records);
+  if (!timing)
+    return timing.takeError();
+  return BoardKernelTimingResult{std::move(*result), std::move(*plan), *timing};
 }
 
 llvm::Expected<BoardProfileCollectionResult>

@@ -247,6 +247,8 @@ llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture) {
     return "count";
   case ProfileCaptureKind::Trace:
     return "trace";
+  case ProfileCaptureKind::Timing:
+    return "timing";
   }
   llvm_unreachable("unknown profile capture kind");
 }
@@ -259,6 +261,8 @@ uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture) {
     return WAFER_TX81_PROFILER_MIN_BUFFER_BYTES;
   case ProfileCaptureKind::Trace:
     return WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
+  case ProfileCaptureKind::Timing:
+    return WAFER_TX81_KERNEL_TIMING_RECORD_BYTES;
   }
   llvm_unreachable("unknown profile capture kind");
 }

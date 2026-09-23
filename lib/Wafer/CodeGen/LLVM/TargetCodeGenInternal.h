@@ -90,7 +90,7 @@ inline constexpr llvm::StringLiteral kKernelPrepareExportSymbol =
 
 /// Compiler-internal target capture kinds. They are implementation details of
 /// the single profiling product and are never user-selectable driver modes.
-enum class ProfileCaptureKind : uint8_t { None, Count, Trace };
+enum class ProfileCaptureKind : uint8_t { None, Count, Trace, Timing };
 
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture);
