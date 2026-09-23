@@ -3933,7 +3933,8 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
 mlir::FailureOr<TemporalTilingStatistics>
 applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
                     StructuredMaterializationRelations &relations,
-                    TemporalTilingFailure *failure) {
+                    TemporalTilingFailure *failure,
+                    mlir::RewriterBase::Listener *externalListener) {
   if (failure)
     *failure = {};
   TemporalTilingStatistics total;
@@ -3959,7 +3960,8 @@ applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
           "temporal batch requires distinct live regions and unchanged choices "
           "in one Module");
   }
-  compiler::detail::StructuredBufferReplacementListener listener(relations);
+  compiler::detail::StructuredBufferReplacementListener listener(
+      relations, externalListener);
   for (const auto &request : requests) {
     auto applied = applyRegionTemporalTiling(request.domain, request.choice,
                                              relations, listener, failure);

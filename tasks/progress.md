@@ -22,9 +22,11 @@
 capacity拒绝，未生成package。只读首候选诊断同时见完整MLP权重及K/V状态allocation，不能仅归因于attention
 内部块大小。已按Tensor子集物化计划拆开纯来源/覆盖分析与Temporal融合职责，并接通静态Spatial窗口的
 last-writer局部物化；Temporal已接通有界线性循环的多轴完整assembly窗口，按实际来源边界分段，
-与Spatial共用静态片段组装。部分insert的动态Temporal需求、显式共享选择、四项性能保护及S1024/1025实卡仍待完成。
+与Spatial共用静态片段组装。部分insert的动态Temporal需求、共享/局部容量反馈验收、四项性能保护及S1024/1025实卡仍待完成。
 审查后已修正多读取分段遗漏与提升索引的支配关系，局部物化接口改为只处理明确选中的读取，并恢复1031覆盖。
-临时配对attempt已移除；Driver的读取组身份、跨retile选择与独立预算专项验证尚未闭合，不能以全局共享/局部开关代签设计。
+临时配对attempt及全局共享/局部开关已移除；Driver按父SSA和实际读取组维护完整选择，跨retile重新绑定及
+standard 8/42的mixed分支已实际验证；缓存关闭/淘汰保持候选序列与最终IR相同，deep独立计费及预算收尾通过。
+共享/局部分支的controller容量反馈专项仍待闭合。
 此检查点不改变`board-testing`的`doing`状态，细节见
 [子集物化计划](plans/tensor-subset-materialization.md)。
 

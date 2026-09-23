@@ -7,6 +7,7 @@
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -71,7 +72,8 @@ struct TemporalTilingRequest {
 mlir::FailureOr<TemporalTilingStatistics>
 applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
                     StructuredMaterializationRelations &relations,
-                    TemporalTilingFailure *failure = nullptr);
+                    TemporalTilingFailure *failure = nullptr,
+                    mlir::RewriterBase::Listener *listener = nullptr);
 
 /// Inspect one actual Tensor subset after structural expansion. Unsupported
 /// and exhausted proofs remain distinct from a read with no assembly source.

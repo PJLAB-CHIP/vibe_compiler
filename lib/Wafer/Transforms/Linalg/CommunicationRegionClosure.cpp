@@ -581,7 +581,8 @@ static bool canMergeTileRegions(TileMergeSet &set) {
 
 static mlir::FailureOr<TileRegionOp>
 mergeTileRegions(TileMergeSet &set,
-                 llvm::DenseMap<mlir::Value, mlir::Value> &replacements) {
+                 llvm::DenseMap<mlir::Value, mlir::Value> &replacements,
+                 mlir::IRMapping *mapping) {
   if (set.regions.size() < 2)
     return set.regions.front();
   MergeBuilder merged(set.function.getContext());
@@ -595,6 +596,17 @@ mergeTileRegions(TileMergeSet &set,
       set.regions.front().getLoc(), resultTypes, merged.inputs);
   replacement.getBody().takeBody(merged.body);
 
+  if (mapping)
+    for (TileRegionOp region : set.regions)
+      region.walk([&](mlir::Operation *operation) {
+        for (auto result : operation->getResults())
+          mapping->map(result, merged.mapping.lookup(result));
+        for (auto &nested : operation->getRegions())
+          for (auto &block : nested)
+            for (auto argument : block.getArguments())
+              mapping->map(argument, merged.mapping.lookup(argument));
+      });
+
   for (const auto &[argument, mapped] : merged.argumentReplacements)
     replacements.try_emplace(argument, mapped);
 
@@ -603,6 +615,8 @@ mergeTileRegions(TileMergeSet &set,
       mlir::Value replacementResult =
           replacement.getResult(merged.resultIndices.lookup(result));
       replacements[result] = replacementResult;
+      if (mapping)
+        mapping->map(result, replacementResult);
       result.replaceAllUsesWith(replacementResult);
     }
   for (TileRegionOp region : llvm::reverse(set.regions))
@@ -767,7 +781,7 @@ analyzeCommunicationRegionClosure(
 mlir::LogicalResult closeCrossTileCommunicationRegions(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     CommunicationRegionClosureStatistics *statistics,
-    SpatialRegionMaterializationFailure *failure) {
+    SpatialRegionMaterializationFailure *failure, mlir::IRMapping *mapping) {
   auto prepared = prepareCommunicationRegionClosure(module, relations, failure);
   if (mlir::failed(prepared))
     return mlir::failure();
@@ -776,7 +790,7 @@ mlir::LogicalResult closeCrossTileCommunicationRegions(
   for (TileMergeSet &set : *prepared) {
     closedComponents.insert(set.components.begin(), set.components.end());
     uint64_t regionCount = set.regions.size();
-    if (mlir::failed(mergeTileRegions(set, replacements)))
+    if (mlir::failed(mergeTileRegions(set, replacements, mapping)))
       return fail(failure,
                   SpatialRegionMaterializationFailureKind::CompilerFailure,
                   "preflighted exchange scope failed during current IR "

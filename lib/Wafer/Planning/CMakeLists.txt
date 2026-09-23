@@ -17,6 +17,7 @@ add_mlir_library(WaferPlanning
   PhysicalDataflow/RegionDomain.cpp
   PhysicalDataflow/ExactPBQPSolver.cpp
   PhysicalDataflow/TemporalDomain.cpp
+  PhysicalDataflow/TensorAssemblySelection.cpp
   PhysicalDataflow/StructuredDemandAnalysis.cpp
   PhysicalDataflow/SpatialDomain.cpp
   PhysicalDataflow/OperandReuse.cpp

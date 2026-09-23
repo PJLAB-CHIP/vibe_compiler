@@ -96,6 +96,7 @@ wafer_add_component_unit_test(WaferPlanningUnitTests
     Planning/PhysicalDataflow/RegionDomainTest.cpp
     Planning/PhysicalDataflow/ExactPBQPSolverTest.cpp
     Planning/PhysicalDataflow/TemporalDomainTest.cpp
+    Planning/PhysicalDataflow/TensorAssemblySelectionTest.cpp
     Planning/PhysicalDataflow/SpatialDomainTest.cpp
     Planning/PhysicalDataflow/SpatialPlanTest.cpp
     TestSupport/Planning/SpatialDemandTestSupport.cpp

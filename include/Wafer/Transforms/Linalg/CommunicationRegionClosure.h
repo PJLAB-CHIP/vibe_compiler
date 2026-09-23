@@ -8,6 +8,7 @@
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include <cstdint>
@@ -37,10 +38,13 @@ analyzeCommunicationRegionClosure(
 /// transformation merges the Regions belonging to that exchange and retargets
 /// the live endpoint relations. It does not create messages, buffers, rounds,
 /// completion facts, or a persistent communication plan.
+/// When requested, mapping reports exact correspondence for values in the
+/// replaced Regions. Other values remain live and are not remapped.
 mlir::LogicalResult closeCrossTileCommunicationRegions(
     mlir::ModuleOp module, StructuredMaterializationRelations &relations,
     CommunicationRegionClosureStatistics *statistics = nullptr,
-    SpatialRegionMaterializationFailure *failure = nullptr);
+    SpatialRegionMaterializationFailure *failure = nullptr,
+    mlir::IRMapping *mapping = nullptr);
 
 } // namespace wafer
 

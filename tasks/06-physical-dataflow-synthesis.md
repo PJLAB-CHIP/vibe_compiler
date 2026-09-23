@@ -1896,6 +1896,15 @@ Owner/query一起存亡；销毁缓存不能留下旧operation/value句柄。Cac
 不适用只拒绝该点，不静默回到I₀，不把一个T失败提升为整个方案失败。
 必要条件只提前到current IR能完整证明的位置；没有未来IR证据时继续保留unknown。
 
+Tensor assembly 的局部选择以共享值的父 SSA 锚点和实际读取组为单位：有 tiling 循环时，读取组由包围循环的
+iteration coordinates 确定，main/tail 的同坐标实例属于同组；无此坐标时使用父 IR 中明确的读取 SSA 锚点。
+同值被 CSE 合并时保留完整锚点集合，不任选一个来源。锚点只表达选择对应，不证明来源、覆盖或内存。
+对应从同次 clone 的 IRMapping 建立，rewrite listener 仅跟随真实 SSA replacement，erase 使对应失效；
+Region closure 的克隆也必须交出该次 IRMapping。无法建立对应的读取保持 typed unknown，不以形状或位置补绑。
+每次 retile 从仍存活的父 IR 重建对应，并重新查询全组实际读取；组缺失或任何成员不支持都拒绝该点。
+局部选择保存完整组集合，空集合表示共享；单组和组合各自进入既有分支调度。对应在 Tensor 选择消费后销毁，
+不进入 layout、bufferization、owner attribution 或 SPM。可选 layout 前缀按完整组集合匹配并有固定槽位上界。
+
 沿用iteration-coordinate annotation连接实际tiling循环与选择：query-local scope锚点来自存活父IR，
 iterator为接口坐标；共享循环记录实际实现的全部坐标。Annotation不含tile size、memory或completion事实，
 clone/bufferization保留，共同Instr入口移除。旧load/loop句柄不跨mutation，不按名称、顺序或首个可用对象恢复选择。

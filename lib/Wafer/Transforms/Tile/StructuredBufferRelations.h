@@ -20,12 +20,17 @@ namespace wafer::compiler::detail {
 /// retargets the current-IR buffer relations in place. It owns no IR and
 /// must not outlive either the relations or the rewrite invocation.
 class StructuredBufferReplacementListener
-    : public mlir::RewriterBase::Listener {
+    : public mlir::RewriterBase::ForwardingListener {
 public:
   explicit StructuredBufferReplacementListener(
-      StructuredMaterializationRelations &relations);
+      StructuredMaterializationRelations &relations,
+      mlir::RewriterBase::Listener *listener = nullptr);
   ~StructuredBufferReplacementListener() override;
 
+  void notifyOperationReplaced(mlir::Operation *operation,
+                               mlir::Operation *replacement) final {
+    notifyOperationReplaced(operation, replacement->getResults());
+  }
   void notifyOperationReplaced(mlir::Operation *operation,
                                mlir::ValueRange replacements) final;
   void notifyOperationErased(mlir::Operation *operation) final;
@@ -43,6 +48,7 @@ public:
   llvm::StringRef getFailureReason() const;
 
 private:
+  mlir::RewriterBase::Listener emptyListener;
   struct Impl;
   std::unique_ptr<Impl> impl;
 };

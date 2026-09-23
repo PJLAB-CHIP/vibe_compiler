@@ -261,8 +261,10 @@ struct StructuredBufferReplacementListener::Impl {
 };
 
 StructuredBufferReplacementListener::StructuredBufferReplacementListener(
-    StructuredMaterializationRelations &relations)
-    : impl(std::make_unique<Impl>(relations)) {}
+    StructuredMaterializationRelations &relations,
+    mlir::RewriterBase::Listener *listener)
+    : ForwardingListener(listener ? listener : &emptyListener),
+      impl(std::make_unique<Impl>(relations)) {}
 
 StructuredBufferReplacementListener::~StructuredBufferReplacementListener() =
     default;
@@ -308,6 +310,7 @@ void StructuredBufferReplacementListener::recordLoweredOperation(
 
 void StructuredBufferReplacementListener::notifyOperationReplaced(
     mlir::Operation *operation, mlir::ValueRange replacements) {
+  ForwardingListener::notifyOperationReplaced(operation, replacements);
   auto iterator = impl->references.find(operation);
   if (iterator == impl->references.end())
     return;
@@ -330,6 +333,7 @@ void StructuredBufferReplacementListener::notifyOperationReplaced(
 
 void StructuredBufferReplacementListener::notifyOperationErased(
     mlir::Operation *operation) {
+  ForwardingListener::notifyOperationErased(operation);
   auto iterator = impl->references.find(operation);
   if (iterator != impl->references.end()) {
     if (mlir::isa<mlir::memref::AllocOp>(operation) && operation->use_empty()) {

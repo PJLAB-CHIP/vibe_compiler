@@ -10,6 +10,7 @@
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Planning/PhysicalDataflow/AccessReuse.h"
+#include "Wafer/Planning/PhysicalDataflow/TensorAssemblySelection.h"
 #include "Wafer/Transforms/Instr/NCCJoinPlacement.h"
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/AccessReuse.h"
@@ -4503,15 +4504,10 @@ TEST(TemporalTilingTest, AssemblyDemandCrossesViewsBeforeBufferization) {
   }
 }
 
-TEST(TemporalTilingTest, AssemblyLocalizationRetainsObservableSharedValues) {
-  for (auto kind :
-       {TemporalTraversalKind::Joint, TemporalTraversalKind::Independent}) {
-    for (bool intermediate : {false, true}) {
-      for (int64_t extent : {1024, 1025, 1031}) {
-        SCOPED_TRACE(extent);
-        SCOPED_TRACE(intermediate);
-        auto context = createContext();
-        std::string text = R"mlir(
+mlir::OwningOpRef<mlir::ModuleOp>
+parseObservedAssembly(mlir::MLIRContext &context, int64_t extent,
+                      bool intermediate) {
+  std::string text = R"mlir(
 module {
   wafer.tile.module card_id = 0 tile_id = 0 {
     func.func @entry(%input: tensor<2xEXTENTx128xf16>)
@@ -4545,12 +4541,24 @@ module {
   }
 }
 )mlir";
-        size_t position;
-        while ((position = text.find("EXTENT")) != std::string::npos)
-          text.replace(position, 6, std::to_string(extent));
-        text.replace(text.find("PUBLISHED"), 9, intermediate ? "a" : "b");
-        auto module = mlir::parseSourceString<mlir::ModuleOp>(
-            text, mlir::ParserConfig(context.get()));
+  size_t position;
+  while ((position = text.find("EXTENT")) != std::string::npos)
+    text.replace(position, 6, std::to_string(extent));
+  text.replace(text.find("PUBLISHED"), 9, intermediate ? "a" : "b");
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      text, mlir::ParserConfig(&context));
+  return module;
+}
+
+TEST(TemporalTilingTest, AssemblyLocalizationRetainsObservableSharedValues) {
+  for (auto kind :
+       {TemporalTraversalKind::Joint, TemporalTraversalKind::Independent}) {
+    for (bool intermediate : {false, true}) {
+      for (int64_t extent : {1024, 1025, 1031}) {
+        SCOPED_TRACE(extent);
+        SCOPED_TRACE(intermediate);
+        auto context = createContext();
+        auto module = parseObservedAssembly(*context, extent, intermediate);
         ASSERT_TRUE(module);
         auto region = findRegion(*module);
         auto domain = buildTemporalDomain(region);
@@ -4638,6 +4646,95 @@ module {
         }
         expectTemporalSPM(std::move(module), relations);
       }
+    }
+  }
+}
+
+TEST(TemporalTilingTest, AssemblyReadChoiceBindsFreshRetiledMainAndTail) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    auto parent = parseObservedAssembly(*context, extent, false);
+    ASSERT_TRUE(parent);
+    auto original = buildTemporalDomain(findRegion(*parent));
+    ASSERT_TRUE(original.succeeded());
+    auto parentBindings = TensorChoiceBindings::capture(parent->getOperation());
+    std::optional<TensorAssemblyIntent> selected;
+    for (int64_t rows : {int64_t(128), int64_t(64), extent}) {
+      SCOPED_TRACE(rows);
+      mlir::IRMapping mapping;
+      auto candidate = mlir::OwningOpRef<mlir::ModuleOp>(
+          mlir::cast<mlir::ModuleOp>(parent->getOperation()->clone(mapping)));
+      auto bindings = parentBindings.clone(mapping);
+      ASSERT_TRUE(mlir::succeeded(bindings));
+      auto region = findRegion(*candidate);
+      std::string detail;
+      auto domain =
+          remapTemporalDomain(*original.domain, region, mapping, &detail);
+      ASSERT_TRUE(mlir::succeeded(domain)) << detail;
+      auto choice = selectTileSizes(*domain, {2, rows, 48});
+      if (rows == 64)
+        choice.scopes.front().loopOrder = {2, 1};
+      ASSERT_TRUE(domain->contains(choice));
+      StructuredMaterializationRelations relations;
+      for (unsigned i = 0; i < 2; ++i)
+        relations.structuralOutputs.push_back({i, region.getResult(i)});
+      TemporalTilingFailure failure;
+      ASSERT_TRUE(mlir::succeeded(applyTemporalTiling(
+          {{*domain, choice}}, relations, &failure, &*bindings)))
+          << failure.detail;
+      auto reads = findTestAssemblyReads(region);
+      ASSERT_FALSE(reads.empty());
+      auto families = groupTensorAssemblyReads(reads, *bindings);
+      ASSERT_TRUE(families.unavailable.empty())
+          << families.unavailable.front().detail;
+      TensorAssemblyIntent current;
+      for (const auto &family : families.families)
+        current.selections.push_back(family.selection);
+      if (rows == extent) {
+        ASSERT_TRUE(selected);
+        EXPECT_TRUE(
+            llvm::any_of(selected->selections, [&](const auto &selection) {
+              return !llvm::is_contained(current.selections, selection);
+            }));
+        // Full-extent retile removes a selected iteration scope. The new
+        // choice must be rejected; other available reads cannot substitute.
+        EXPECT_TRUE(mlir::succeeded(mlir::verify(*candidate)));
+        continue;
+      }
+      if (!selected)
+        selected = current;
+      else
+        EXPECT_EQ(current, *selected);
+      // Clone the same actual checkpoint, then consume only explicitly bound
+      // current reads. This also detects any stale binding after tiling.
+      mlir::IRMapping localMapping;
+      auto local = mlir::OwningOpRef<mlir::ModuleOp>(mlir::cast<mlir::ModuleOp>(
+          candidate->getOperation()->clone(localMapping)));
+      auto localBindings = bindings->clone(localMapping);
+      ASSERT_TRUE(mlir::succeeded(localBindings));
+      auto localReads = findTestAssemblyReads(findRegion(*local));
+      auto localFamilies = groupTensorAssemblyReads(localReads, *localBindings);
+      ASSERT_TRUE(localFamilies.unavailable.empty());
+      llvm::SmallVector<mlir::tensor::ExtractSliceOp> materialized;
+      for (const auto &selection : selected->selections) {
+        auto family =
+            llvm::find_if(localFamilies.families, [&](const auto &entry) {
+              return entry.selection == selection;
+            });
+        ASSERT_NE(family, localFamilies.families.end());
+        llvm::append_range(materialized, family->reads);
+      }
+      EXPECT_EQ(materialized.size(), localReads.size());
+      StructuredMaterializationRelations localRelations;
+      for (const auto &output : relations.structuralOutputs)
+        localRelations.structuralOutputs.push_back(
+            {output.outputIndex, localMapping.lookup(output.endpoint)});
+      auto changed = materializeLocalTensorAssemblyReads(
+          findRegion(*local), materialized, localRelations, &failure);
+      ASSERT_TRUE(mlir::succeeded(changed)) << failure.detail;
+      EXPECT_GT(changed->tileLocalAssemblies, 0u);
+      expectTemporalSPM(std::move(local), localRelations);
     }
   }
 }

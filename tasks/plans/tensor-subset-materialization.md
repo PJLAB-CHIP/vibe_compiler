@@ -36,10 +36,20 @@ ResourceExhausted 和 BrokenContract 必须保留到调用者；删除1031局部
   保留共享值、未选读取和输出递推的旧destination；不再循环扫描整个Region直到所有机会消失。
 - 临时配对attempt已删除，局部实现重新进入独立`ImplementationBranch`，沿用既有预算和容量反馈入口。
 
-仍未闭合：Driver的实现描述仍为整体共享/局部二选一，尚未按06号保存assembly/use-family的完整选择、组合和
-跨retile重新查询合同；不能把变换接口的mixed选择测试视为搜索已支持mixed候选。动态partial insert与参数化view的
-共同生成、纯片段生成与producer tiler的最终解耦、全部typed工作预算、独立分支的专项standard/deep生命周期验证、
-fresh产品及板测也仍待完成。
+Driver后续修复已移除整体共享/局部开关：Planning保存父SSA锚点、实际读取组及完整组合；同次clone和
+replacement listener维护当前对应，retile重新查询全部成员，Region closure交出实际IRMapping。
+相同source/不同作用域的局部实现分别进入既有ImplementationBranch；layout缓存按完整选择匹配并保持固定槽位上限。
+16 Tile的1024/1025/1031生产搜索反例在原standard 8/42内实际发现、启动并接受局部分支，mixed候选也通过actual下游评估。
+128/64行切分及loop-order变化的重新绑定、作用域消失、CSE/erase和Region closure对应已有直接测试。
+1031的cache容量0/1/8产生相同候选序列和最终executable IR。deep的width/trials=6/6覆盖前两个无共享机会的结构
+和第三个结构的首个局部分支：六方案全部完成，局部分支实际accepted，retile丢失选择得到明确拒绝，未降回共享。
+
+Driver父SSA/读取组修复的主机检查：Planning组件、Transforms 540项及原Driver 151项全部实际通过；
+补强后的retile、standard mixed/cache与deep专项通过，canonical完整增量和后续Ninja no-op通过。
+源码/IR组织检查及`git diff --check`通过；这些结果不代签后续产品门槛。
+
+仍未闭合：动态partial insert与参数化view的共同生成、纯片段生成与producer tiler的最终解耦、
+全部typed工作预算、共享/局部的actual容量反馈专项、fresh产品及板测。
 本轮暂不推进LM资格或性能签发，先完成上述设计缺口。
 
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
@@ -60,6 +70,10 @@ Driver 151项组件单测全部实际通过，共831项，无跳过。随后补�
 | 1024/1025行、共享assembly的两个重叠观察者及full-use，分别只选择第一个/第二个 | `ExplicitLocalAssemblyPreservesOverlappingReads`通过；每个mixed分支仅改写一个读取，另一个继续读取原发布值；同时保留双局部选择 | 每个实际分支均经过bufferization、Instr和SPM；未代签Driver mixed搜索 |
 | 1024/1025/1031、Joint/Independent、完整值/中间快照观察者 | `AssemblyLocalizationRetainsObservableSharedValues`恢复1031并通过；原观察者保持，尾块新暴露的输出递推读取单独证明来自旧destination | 共享与局部分支均实际进入Instr/SPM |
 | 正常叶子、未定义旧值、非单位stride、受限关系/索引查询、无效选择 | `AssemblyReadFailuresAreTypedAndLeaveIRUnchanged`与`ParameterizedLoopGridUsesAffineCoordinates`通过；NotApplicable、Unsupported、ResourceExhausted、BrokenContract分开；整批preflight失败前后IR一致 | verifier有效，无半修改；不伪造capacity结果 |
+| rank3的1024/1025/1031、不同父SSA与读取scope、CSE和erase | `TensorAssemblySelectionTest`通过；完整选择按集合去重，同次IRMapping克隆，缺失组不扩展成新组合 | Region closure及后续clone保持精确对应 |
+| 128/64行retile、loop-order置换和full extent | `AssemblyReadChoiceBindsFreshRetiledMainAndTail`通过；main/tail重新绑定，消失scope不能由其它读取替代 | 选中成员实际进入Instr/SPM |
+| 16 Tile、1024/1025/1031、共享与局部组合 | `AssemblyGroupsHaveIndependentActualImplementations`通过；standard 8/42独立启动并接受mixed候选；1031的cache 0/1/8实际trace和executable IR一致 | 实际Driver搜索、SPM与accepted owner |
+| 16 Tile、1031、deep预算收尾 | `AssemblyImplementationFinishesItsChargedDeepProcess`通过；width/trials=6/6，六方案全部完成、实际求值多于六次，局部分支accepted且缺失选择typed拒绝 | 独立proposal、计费与完整有限内搜；capacity反馈另行验收 |
 
 ## 1. 输入、输出与范围
 
@@ -107,6 +121,11 @@ pinned `TilingInterface.td` 明确区分机制与收益判断；`Linalg/Transfor
 对照 pinned `Tensor/Transforms/ExtractSliceFromReshapeUtils.cpp` 的逆索引局部拼接，复用本仓 exact relation
 及片段合并能力，避免按线性元素逐个展开。上游 API 事实以仓库 pinned 源码为准。
 
+选择句柄维护对照 [MLIR Transform 的 handle invalidation](https://mlir.llvm.org/docs/Dialects/Transform/#handle-invalidation)
+及 pinned `Transform/Interfaces/TransformInterfaces.cpp` 中 `TrackingListener` 的 value replacement/erase 通知。
+本项只跟随实际 SSA replacement，并从同次 `IRMapping` 建立克隆对应；当前查询重新证明全部读取成员。
+现有 `RewriterBase::ForwardingListener` 用于串联观察者，buffer relation 的职责保持在原 component。
+
 ## 3. 需求算法与生成合同
 
 ### 3.1 查询
@@ -147,6 +166,11 @@ offset 不必是常量或裸 IV，`base + iv * step` 与等价 affine 写法使�
 source endpoint 仍由当前 transaction 的关系维护，listener 跟随 replacement 更新实际 owner；
 不能用 shape、名称或“只有一个来源”补归因。变换失败丢弃所属候选，不能留下半成品给下游修补。
 
+纯片段生成只接收来源/窗口，不接收计算producer或tiler；返回本次实际创建且仍存活的source
+`extract_slice`。Temporal计算融合调用者在同一epoch内将这些读取与已选择的producer SSA逐一对应，
+再调用TilingInterface并替换该读取。显式局部物化直接消费纯生成结果，不能构造或调用producer tiler。
+这些临时句柄不越过canonicalization或其它会使其失效的改写。
+
 ## 4. 共享选择、流水线位置与搜索
 
 ### 4.1 共享与局部实现
@@ -168,6 +192,12 @@ source endpoint 仍由当前 transaction 的关系维护，listener 跟随 repla
 无相关机会不得增加 clone/完整评分；同一 source/config 重复编译的选择和产物应确定。
 
 ### 4.2 唯一实现的调用位置
+
+Driver整改的直接覆盖增加：两个不同assembly以及同assembly的不同循环读取组，各自共享/局部和组合；
+同一父SSA经clone、replacement、CSE、erase、Region closure后的精确对应；1024/1025/1031 retile后
+main/tail重新绑定及读取组消失的typed失败；standard/deep在width压力和预算末尾的独立计费与反馈；
+cache-off/eviction不改变实际候选序列。绑定只使用父SSA、同次IRMapping和现有iteration coordinates，
+其职责与失效规则见06号“实现分支与适用性”；未知身份不降成全局局部化。
 
 ```text
 实际 Spatial endpoint + consumer operand subset

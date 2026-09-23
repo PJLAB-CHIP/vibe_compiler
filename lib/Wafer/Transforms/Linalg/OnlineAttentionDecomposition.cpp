@@ -621,7 +621,8 @@ void buildDecomposeOnlineAttentionPipeline(mlir::OpPassManager &pm) {
 mlir::FailureOr<OnlineAttentionDecompositionStatistics>
 decomposeOnlineAttention(mlir::ModuleOp module,
                          StructuredMaterializationRelations &relations,
-                         OnlineAttentionDecompositionFailure *failure) {
+                         OnlineAttentionDecompositionFailure *failure,
+                         mlir::RewriterBase::Listener *externalListener) {
   if (failure)
     *failure = {};
   if (!module || mlir::failed(mlir::verify(module)) ||
@@ -659,7 +660,8 @@ decomposeOnlineAttention(mlir::ModuleOp module,
         "current online-attention maps or static tile types cannot be "
         "decomposed");
 
-  compiler::detail::StructuredBufferReplacementListener listener(relations);
+  compiler::detail::StructuredBufferReplacementListener listener(
+      relations, externalListener);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
   if (mlir::failed(compiler::detail::orientOnlineAttentionAccumulators(
           module, relations, rewriter)))

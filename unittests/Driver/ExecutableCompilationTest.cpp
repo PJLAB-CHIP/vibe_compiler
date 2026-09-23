@@ -20,6 +20,8 @@
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1287,6 +1289,147 @@ TEST(ExecutableCompilationPolicyTest,
     EXPECT_GT(activeTiles, 1u);
     EXPECT_EQ(result.physicalIRInventory->tileRegions, activeTiles);
   }
+}
+
+struct AssemblySearchConfiguration {
+  int64_t extent;
+  wafer::SearchMode mode;
+  uint64_t width, trials, cache;
+};
+
+void expectAssemblyGroupSearch(AssemblySearchConfiguration config,
+                               std::vector<std::string> &referenceTrace,
+                               std::vector<std::string> &referenceIR) {
+  using namespace wafer::compiler::detail;
+  const auto standard = wafer::SearchMode::Standard;
+  const int64_t extent = config.extent;
+  SCOPED_TRACE(extent);
+  SCOPED_TRACE(static_cast<unsigned>(config.mode));
+  SCOPED_TRACE(config.cache);
+  auto parsed = wafer::compiler::testing::parseMultiProducerJoinProgram(extent);
+  ASSERT_TRUE(parsed.module);
+  auto function = *parsed.module->getOps<mlir::func::FuncOp>().begin();
+  auto returned = mlir::cast<mlir::func::ReturnOp>(
+      function.getBody().front().getTerminator());
+  auto first = returned.getOperand(0).getDefiningOp<mlir::linalg::GenericOp>();
+  ASSERT_TRUE(first);
+  mlir::IRRewriter rewriter(parsed.context.get());
+  rewriter.setInsertionPoint(returned);
+  mlir::IRMapping mapping;
+  auto second =
+      mlir::cast<mlir::linalg::GenericOp>(rewriter.clone(*first, mapping));
+  auto payload =
+      mlir::cast<mlir::linalg::YieldOp>(second.getBody()->getTerminator());
+  auto sum = payload.getOperand(0).getDefiningOp<mlir::arith::AddFOp>();
+  ASSERT_TRUE(sum);
+  rewriter.setInsertionPoint(sum);
+  rewriter.replaceOpWithNewOp<mlir::arith::MulFOp>(sum, sum.getLhs(),
+                                                   sum.getRhs());
+  rewriter.setInsertionPoint(returned);
+  auto identity = rewriter.getMultiDimIdentityMap(3);
+  auto combined = rewriter.create<mlir::linalg::GenericOp>(
+      returned.getLoc(), first.getResultTypes(),
+      mlir::ValueRange{first.getResult(0), second.getResult(0)},
+      first.getDpsInits(),
+      llvm::ArrayRef<mlir::AffineMap>{identity, identity, identity},
+      llvm::ArrayRef<mlir::utils::IteratorType>{
+          mlir::utils::IteratorType::parallel,
+          mlir::utils::IteratorType::parallel,
+          mlir::utils::IteratorType::parallel},
+      [&](mlir::OpBuilder &builder, mlir::Location location,
+          mlir::ValueRange args) {
+        auto value =
+            builder.create<mlir::arith::AddFOp>(location, args[0], args[1]);
+        builder.create<mlir::linalg::YieldOp>(location, value.getResult());
+      });
+  rewriter.modifyOpInPlace(
+      returned, [&] { returned->setOperands(combined.getResults()); });
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*parsed.module)));
+  auto program =
+      wafer::compiler::testing::multiProducerJoinProgramMetadata(extent);
+  wafer::compiler::ProgramDataHandoff data;
+  std::string text;
+  llvm::raw_string_ostream diagnostics(text);
+  auto timing =
+      std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
+  wafer::support::ScopedCompileTimingActivation activation(timing);
+  SearchCurrentIROptions options;
+  options.mode = config.mode;
+  options.limits = wafer::SearchLimits{config.width, config.trials};
+  options.prefixCacheEntries = config.cache;
+  options.downstream.tilePipelineParallelism = 1;
+  SearchCurrentIRStatistics statistics;
+  auto result = compileSearchCurrentIR(
+      *parsed.module, program, wafer::compiler::testing::executionConfig(),
+      diagnostics, data, options, &statistics);
+  timing->finishAndPrintSummary();
+  ASSERT_TRUE(result.isAccepted()) << result.detail << text;
+  EXPECT_EQ(statistics.traversal.trialsUsed, config.trials);
+  EXPECT_LE(statistics.traversal.peakRetainedBranches, config.width);
+  EXPECT_LE(statistics.peakCachedPrefixes, config.cache);
+  EXPECT_GT(statistics.assemblyBranchesDiscovered, 1u);
+  EXPECT_GT(statistics.assemblyCandidates, 1u);
+  EXPECT_GT(statistics.assemblyAccepted, 0u);
+  EXPECT_EQ(statistics.controller.compilerBugs, 0u);
+  if (config.mode == standard) {
+    EXPECT_EQ(statistics.traversal.candidateActualizations, config.trials);
+    EXPECT_GT(statistics.assemblyBranchesStarted, 1u);
+    EXPECT_GT(statistics.assemblyMixedMaterializations, 0u);
+    EXPECT_GT(statistics.assemblyMixedAccepted, 0u);
+  } else {
+    EXPECT_EQ(statistics.traversal.schemesStarted, config.trials);
+    EXPECT_EQ(statistics.traversal.schemesCompleted, config.trials);
+    EXPECT_GT(statistics.traversal.candidateActualizations, config.trials);
+    EXPECT_EQ(statistics.assemblyBranchesStarted, 1u);
+    EXPECT_GT(statistics.assemblyBindingRejected, 0u);
+  }
+  if (extent == 1031 && config.mode == standard) {
+    std::vector<std::string> trace, ir;
+    llvm::SmallVector<llvm::StringRef> lines;
+    llvm::StringRef(text).split(lines, '\n');
+    for (auto line : lines)
+      if (line.contains("category=search-temporal ") ||
+          line.contains("category=search name=region-candidate-") ||
+          line.starts_with("wafer-compile: rejected-candidate "))
+        trace.push_back(line.str());
+    ASSERT_FALSE(trace.empty());
+    for (const auto &tile : result.executable->tiles) {
+      std::string module;
+      llvm::raw_string_ostream stream(module);
+      tile.getModule().print(stream);
+      ir.push_back(std::move(module));
+    }
+    if (config.cache == 0) {
+      referenceTrace = std::move(trace);
+      referenceIR = std::move(ir);
+    } else {
+      EXPECT_EQ(trace, referenceTrace);
+      EXPECT_EQ(ir, referenceIR);
+    }
+  }
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     AssemblyGroupsHaveIndependentActualImplementations) {
+  const auto standard = wafer::SearchMode::Standard;
+  std::vector<std::string> referenceTrace, referenceIR;
+  for (auto config : {AssemblySearchConfiguration{1024, standard, 8, 42, 8},
+                      AssemblySearchConfiguration{1025, standard, 8, 42, 8},
+                      AssemblySearchConfiguration{1031, standard, 8, 42, 0},
+                      AssemblySearchConfiguration{1031, standard, 8, 42, 1},
+                      AssemblySearchConfiguration{1031, standard, 8, 42, 8}})
+    ASSERT_NO_FATAL_FAILURE(
+        expectAssemblyGroupSearch(config, referenceTrace, referenceIR));
+}
+
+TEST(ExecutableCompilationPolicyTest,
+     AssemblyImplementationFinishesItsChargedDeepProcess) {
+  // The first two structures have no shared assembly opportunity. Six
+  // independently charged schemes reach the first actual local branch in
+  // the third structure, then finish all six under a full retention width.
+  std::vector<std::string> trace, ir;
+  ASSERT_NO_FATAL_FAILURE(expectAssemblyGroupSearch(
+      {1031, wafer::SearchMode::Deep, 6, 6, 1}, trace, ir));
 }
 
 TEST(ExecutableCompilationPolicyTest,

@@ -23,6 +23,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Planning/PhysicalDataflow/CollectiveAlgorithms.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/TensorAssemblySelection.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
@@ -4863,8 +4864,14 @@ TEST_F(StructuredToTileTest,
 TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
   for (int64_t extent : {1024, 1025}) {
     SCOPED_TRACE(extent);
-    auto module = parse(makeSplitExchangeSource(extent));
-    ASSERT_TRUE(module);
+    auto parent = parse(makeSplitExchangeSource(extent));
+    ASSERT_TRUE(parent);
+    auto parentBindings = TensorChoiceBindings::capture(parent->getOperation());
+    mlir::IRMapping initialMapping;
+    auto module = mlir::OwningOpRef<mlir::ModuleOp>(mlir::cast<mlir::ModuleOp>(
+        parent->getOperation()->clone(initialMapping)));
+    auto bindings = parentBindings.clone(initialMapping);
+    ASSERT_TRUE(mlir::succeeded(bindings));
     llvm::SmallVector<llvm::SmallVector<TileRegionOp, 2>, 2> regions(2);
     for (TileModuleOp tile : module->getOps<TileModuleOp>())
       tile.walk([&](TileRegionOp region) {
@@ -4879,11 +4886,29 @@ TEST_F(StructuredToTileTest, SplitExchangeRegionsCloseBeforeOneRingRound) {
         {regions[1][0].getResult(0), regions[0][1].getBody().getArgument(0)});
     relations.structuralOutputs.push_back({0, regions[0][1].getResult(0)});
     relations.structuralOutputs.push_back({0, regions[1][1].getResult(0)});
+    llvm::SmallVector<mlir::Value> originalValues;
+    parent->walk([&](mlir::Operation *operation) {
+      for (auto result : operation->getResults())
+        if (mlir::isa<mlir::RankedTensorType>(result.getType()))
+          originalValues.push_back(result);
+    });
+    mlir::IRMapping closureMapping;
     CommunicationRegionClosureStatistics closure;
     SpatialRegionMaterializationFailure closureFailure;
     ASSERT_TRUE(mlir::succeeded(closeCrossTileCommunicationRegions(
-        *module, relations, &closure, &closureFailure)))
+        *module, relations, &closure, &closureFailure, &closureMapping)))
         << closureFailure.detail;
+    bindings->remap(closureMapping);
+    for (auto original : originalValues)
+      EXPECT_TRUE(llvm::is_contained(
+          bindings->getAnchors(
+              closureMapping.lookupOrDefault(initialMapping.lookup(original))),
+          original));
+    mlir::IRMapping cloneMapping;
+    auto cloned = mlir::OwningOpRef<mlir::ModuleOp>(mlir::cast<mlir::ModuleOp>(
+        module->getOperation()->clone(cloneMapping)));
+    EXPECT_TRUE(mlir::succeeded(bindings->clone(cloneMapping)));
+    bindings->clear();
     EXPECT_EQ(closure.closedExchangeComponents, 1u);
     EXPECT_EQ(closure.mergedTileScopes, 2u);
     EXPECT_EQ(closure.mergedRegions, 4u);
