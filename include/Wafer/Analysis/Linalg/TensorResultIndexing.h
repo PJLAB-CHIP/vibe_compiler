@@ -196,6 +196,48 @@ TensorAssemblyDemandResult queryTensorAssemblyDemand(
     mlir::Value value, const StaticRectangularIndexSet &requested,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
+/// An actual loop's finite partition. Split points are induction coordinates,
+/// not tensor coordinates. The final bound need not be a reached iteration.
+struct TensorAssemblyReadLoop {
+  mlir::Value induction;
+  int64_t step = 0;
+  llvm::SmallVector<int64_t, 4> boundaries;
+};
+
+struct TensorAssemblyReadPiece {
+  mlir::Value source;
+  mlir::AffineMap sourceOffsets;
+  llvm::SmallVector<int64_t, 4> sourceSizes;
+  StaticRectangularIndexSet resultWindow;
+};
+
+struct TensorAssemblyReadCase {
+  llvm::SmallVector<int64_t, 4> lowerBounds;
+  llvm::SmallVector<int64_t, 4> upperBounds;
+  llvm::SmallVector<TensorAssemblyReadPiece, 4> pieces;
+};
+
+struct TensorAssemblyReadResult {
+  TensorAssemblyStatus status = TensorAssemblyStatus::NotAssembly;
+  llvm::SmallVector<TensorAssemblyReadLoop, 4> loops;
+  llvm::SmallVector<TensorAssemblyReadCase, 4> cases;
+  std::string detail;
+  /// Compact piece coordinates. A proved transparent reshape may make this
+  /// differ from the consumer shape while preserving row-major element order.
+  llvm::SmallVector<int64_t, 4> shape;
+
+  bool isExact() const { return status == TensorAssemblyStatus::Exact; }
+};
+
+/// Resolve the actual bounded read family, preserving holes between reads.
+/// Each case has static local pieces; sourceOffsets takes the live induction
+/// values in loops order. This is current-index analysis, not a future IR or
+/// storage plan. Mutation invalidates all returned handles and proofs.
+TensorAssemblyReadResult queryTensorAssemblyRead(
+    mlir::Value value, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<int64_t> sizes,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
 /// Current structured-compute access maps. These adapters expose dialect
 /// semantics only; no fusion, tiling, or placement decisions belong here.
 mlir::FailureOr<mlir::AffineMap>

@@ -896,7 +896,20 @@ public:
       if (statistics) {
         statistics->actualCapacityRefinements += refined;
         statistics->unavailableCapacityRefinements += !refined;
+        if (!choice.assembly.selections.empty()) {
+          ++statistics->localAssemblyCapacityRejected;
+          statistics->localAssemblyCapacityRefinements += refined;
+        } else if (!attempt.assemblyOpportunities.empty()) {
+          ++statistics->sharedAssemblyCapacityRejected;
+          statistics->sharedAssemblyCapacityRefinements += refined;
+        }
       }
+      if (support::getActiveCompileTimingSession())
+        diagnostics << "wafer-compile: capacity-feedback structural="
+                    << explorationStratum << " implementation=" << *active
+                    << " local_assembly_groups="
+                    << choice.assembly.selections.size()
+                    << " refined=" << refined << '\n';
     } else if (compiled.isAccepted()) {
       auto objective =
           deriveExecutableSearchObjective(*compiled.executable, costCohort);
@@ -991,7 +1004,12 @@ private:
              temporal.choice.assembly, temporal.region.assemblyOpportunities)) {
       auto sibling = temporal.choice;
       sibling.assembly = std::move(intent);
-      discover(std::move(sibling), temporal.choices);
+      // The complete sibling retains the parent's selected reuse choice.
+      // Preserve its ranking hint too; resetting it to zero systematically
+      // postpones a composed implementation behind every reuse-only sibling.
+      // This hint affects visitation only. The new branch owns fresh proposals
+      // and must materialize and pass the same actual capacity/cost gates.
+      discover(std::move(sibling), temporal.choices, current().priority);
     }
   }
 
@@ -2082,6 +2100,14 @@ ExecutableCompilationResult compileSearchCurrentIR(
                     *statistics->minimumResidentDDRReadBytes);
     searchCounter("access-reuse-capacity-rejected",
                   statistics->accessReuseCapacityRejected);
+    searchCounter("assembly-shared-capacity-rejected",
+                  statistics->sharedAssemblyCapacityRejected);
+    searchCounter("assembly-local-capacity-rejected",
+                  statistics->localAssemblyCapacityRejected);
+    searchCounter("assembly-shared-capacity-refinements",
+                  statistics->sharedAssemblyCapacityRefinements);
+    searchCounter("assembly-local-capacity-refinements",
+                  statistics->localAssemblyCapacityRefinements);
   }
   if (statistics) {
     statistics->planning = searched.planning;

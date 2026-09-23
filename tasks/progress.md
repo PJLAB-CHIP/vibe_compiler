@@ -26,8 +26,11 @@ last-writer局部物化；Temporal已接通有界线性循环的多轴完整asse
 审查后已修正多读取分段遗漏与提升索引的支配关系，局部物化接口改为只处理明确选中的读取，并恢复1031覆盖。
 临时配对attempt及全局共享/局部开关已移除；Driver按父SSA和实际读取组维护完整选择，跨retile重新绑定及
 standard 8/42的mixed分支已实际验证；缓存关闭/淘汰保持候选序列与最终IR相同，deep独立计费及预算收尾通过。
-纯片段生成与计算融合调用已分开；共享/局部的实际Instr/SPM容量对照通过。参数化共同生成与文件归属、
-共享/局部分支的controller容量反馈专项仍待闭合。
+纯片段生成与计算融合调用已分开；动态partial insert、矩形平移view的共同查询/生成及文件归属已接通，
+共享/局部的实际Instr/SPM容量对照和controller独立容量修正专项通过。四项保护的新包已通过no-card；
+修正实际读取适用性及组合排序后，S1024已实际启动完整局部分支并独立容量修正，仍待accepted package。
+四项保护已跑前两项实卡：FP16 4096 GEMM性能通过，BF16完整数值健康但中位数7.308ms高于7.271ms门槛，
+保留性能未通过。通用reshape周期、多piece view、剩余性能保护及S1024/1025产品和实卡仍待闭合。
 此检查点不改变`board-testing`的`doing`状态，细节见
 [子集物化计划](plans/tensor-subset-materialization.md)。
 

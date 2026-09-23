@@ -661,4 +661,214 @@ TEST(TensorResultIndexingTest, ZeroOffsetSubsetIsNotAnEqualVolumeReshape) {
   }
 }
 
+TEST(TensorResultIndexingTest, BoundedAssemblyReadsPreservePartialLastWriters) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    for (int64_t window : {1, 32}) {
+      SCOPED_TRACE(window);
+      for (int64_t step : {16, 32, 64}) {
+        auto context = createContext();
+        std::string full = "tensor<2x" + std::to_string(extent) + "x128xf16>";
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        os << "module { func.func @read(%old: " << full
+           << ", %a: tensor<2x600x64xf16>, %b: tensor<400x96xf16>) {\n"
+           << " %first = tensor.insert_slice %a into %old[0,100,16] [2,600,64] "
+              "[1,1,1] : tensor<2x600x64xf16> into "
+           << full << "\n"
+           << " %last = tensor.insert_slice %b into %first[1,480,0] [1,400,96] "
+              "[1,1,1] : tensor<400x96xf16> into "
+           << full << "\n"
+           << " %zero = arith.constant 0 : index\n"
+           << " %upper = arith.constant " << extent - window + 1 << " : index\n"
+           << " %step = arith.constant " << step << " : index\n"
+           << " scf.for %i = %zero to %upper step %step {\n"
+           << " %read = tensor.extract_slice %last[0,%i,0] [2," << window
+           << ",128] [1,1,1] : " << full << " to tensor<2x" << window
+           << "x128xf16>\n"
+           << " } return } }";
+        auto module =
+            mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+        ASSERT_TRUE(module);
+        mlir::tensor::ExtractSliceOp read;
+        module->walk([&](mlir::tensor::ExtractSliceOp op) { read = op; });
+        auto query = queryTensorAssemblyRead(
+            read.getSource(), read.getMixedOffsets(), {2, window, 128});
+        ASSERT_TRUE(query.isExact()) << query.detail;
+        ASSERT_EQ(query.loops.size(), 1u);
+        EXPECT_LT(query.cases.size(), 20u);
+        auto function = *module->getOps<mlir::func::FuncOp>().begin();
+        unsigned instances = 0;
+        for (const auto &part : query.cases) {
+          for (int64_t iv = part.lowerBounds[0]; iv < part.upperBounds[0];
+               iv += step) {
+            ++instances;
+            // Independent integer oracle of the original newest-write
+            // semantics. Visit every demanded coordinate, including
+            // rank-reduced sources.
+            for (int64_t batch = 0; batch < 2; ++batch)
+              for (int64_t row = 0; row < window; ++row)
+                for (int64_t col = 0; col < 128; ++col) {
+                  llvm::SmallVector<int64_t, 4> point{batch, row, col};
+                  unsigned matches = 0;
+                  for (const auto &piece : part.pieces) {
+                    bool inside = true;
+                    for (unsigned axis = 0; axis < 3; ++axis)
+                      inside &=
+                          point[axis] >= piece.resultWindow.offsets[axis] &&
+                          point[axis] < piece.resultWindow.offsets[axis] +
+                                            piece.resultWindow.sizes[axis];
+                    if (!inside)
+                      continue;
+                    ++matches;
+                    const bool newest = batch == 1 && iv + row >= 480 &&
+                                        iv + row < 880 && col < 96;
+                    const bool first = iv + row >= 100 && iv + row < 700 &&
+                                       col >= 16 && col < 80;
+                    EXPECT_EQ(piece.source, function.getArgument(newest  ? 2
+                                                                 : first ? 1
+                                                                         : 0));
+                    llvm::SmallVector<mlir::Attribute> parameters{
+                        mlir::IntegerAttr::get(
+                            mlir::IndexType::get(context.get()), iv)},
+                        folded;
+                    ASSERT_TRUE(mlir::succeeded(
+                        piece.sourceOffsets.constantFold(parameters, folded)));
+                    llvm::SmallVector<int64_t, 4> source;
+                    unsigned sourceAxis = 0;
+                    for (unsigned axis = 0; axis < 3; ++axis)
+                      if (!newest || axis != 0)
+                        source.push_back(
+                            mlir::cast<mlir::IntegerAttr>(folded[sourceAxis++])
+                                .getInt() +
+                            point[axis] - piece.resultWindow.offsets[axis]);
+                    auto expected =
+                        newest
+                            ? llvm::SmallVector<int64_t, 4>{iv + row - 480, col}
+                        : first ? llvm::SmallVector<int64_t, 4>{batch,
+                                                                iv + row - 100,
+                                                                col - 16}
+                                : llvm::SmallVector<int64_t, 4>{batch, iv + row,
+                                                                col};
+                    ASSERT_EQ(source, expected);
+                  }
+                  ASSERT_EQ(matches, 1u);
+                }
+          }
+        }
+        EXPECT_EQ(instances, (extent - window) / step + 1);
+        IndexRelationLimits limited;
+        limited.maxRectangularPieces = 2;
+        auto rejected =
+            queryTensorAssemblyRead(read.getSource(), read.getMixedOffsets(),
+                                    {2, window, 128}, limited);
+        EXPECT_EQ(rejected.status, TensorAssemblyStatus::ResourceExhausted);
+        EXPECT_TRUE(rejected.cases.empty());
+      }
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest, BoundedAssemblyReadsDoNotDemandUndefinedHoles) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module { func.func @holes(%a: tensor<2x32x128xf16>, %b: tensor<2x32x128xf16>) {
+  %empty = tensor.empty() : tensor<2x2048x128xf16>
+  %first = tensor.insert_slice %a into %empty[0,0,0] [2,32,128] [1,1,1] : tensor<2x32x128xf16> into tensor<2x2048x128xf16>
+  %last = tensor.insert_slice %b into %first[0,1024,0] [2,32,128] [1,1,1] : tensor<2x32x128xf16> into tensor<2x2048x128xf16>
+  %c0 = arith.constant 0 : index
+  %c2048 = arith.constant 2048 : index
+  %c1024 = arith.constant 1024 : index
+  scf.for %iv = %c0 to %c2048 step %c1024 {
+    %read = tensor.extract_slice %last[0,%iv,0] [2,32,128] [1,1,1] : tensor<2x2048x128xf16> to tensor<2x32x128xf16>
+  }
+  return
+} }
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  mlir::tensor::ExtractSliceOp read;
+  module->walk([&](mlir::tensor::ExtractSliceOp op) { read = op; });
+  auto query = queryTensorAssemblyRead(read.getSource(), read.getMixedOffsets(),
+                                       {2, 32, 128});
+  ASSERT_TRUE(query.isExact()) << query.detail;
+  ASSERT_EQ(query.cases.size(), 2u);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  for (unsigned i = 0; i < 2; ++i) {
+    ASSERT_EQ(query.cases[i].pieces.size(), 1u);
+    EXPECT_EQ(query.cases[i].pieces.front().source, function.getArgument(i));
+    EXPECT_EQ(query.cases[i].pieces.front().resultWindow.sizes,
+              (llvm::SmallVector<int64_t, 4>{2, 32, 128}));
+  }
+  auto undefined = queryTensorAssemblyRead(
+      read.getSource(), read.getMixedOffsets(), {2, 33, 128});
+  EXPECT_EQ(undefined.status, TensorAssemblyStatus::Unsupported);
+}
+
+TEST(TensorResultIndexingTest, BoundedAssemblyViewUsesTheWholeCurrentRelation) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1031}) {
+    auto context = createContext();
+    std::string full = "tensor<2x" + std::to_string(extent) + "x128xf16>";
+    std::string view = "tensor<2x" + std::to_string(extent) + "x4x32xf16>";
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    os << "module { func.func @view(%old: " << full
+       << ", %new: tensor<2x600x64xf16>) {\n"
+       << " %updated = tensor.insert_slice %new into %old[0,100,16] [2,600,64] "
+          "[1,1,1] : tensor<2x600x64xf16> into "
+       << full << "\n"
+       << " %view = tensor.expand_shape %updated [[0], [1], [2,3]] "
+          "output_shape [2,"
+       << extent << ",4,32] : " << full << " into " << view << "\n"
+       << " %zero = arith.constant 0 : index\n %upper = arith.constant "
+       << extent - 31 << " : index\n %step = arith.constant 32 : index\n"
+       << " scf.for %i = %zero to %upper step %step {\n"
+       << " %read = tensor.extract_slice %view[0,%i,1,0] [2,32,2,32] [1,1,1,1] "
+          ": "
+       << view << " to tensor<2x32x2x32xf16>\n } return } }";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    mlir::tensor::ExtractSliceOp read;
+    module->walk([&](mlir::tensor::ExtractSliceOp op) { read = op; });
+    auto query = queryTensorAssemblyRead(
+        read.getSource(), read.getMixedOffsets(), {2, 32, 2, 32});
+    ASSERT_TRUE(query.isExact()) << query.detail;
+    EXPECT_EQ(query.shape, (llvm::SmallVector<int64_t, 4>{2, 32, 64}));
+    ASSERT_EQ(query.loops.size(), 1u);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    for (const auto &part : query.cases)
+      for (int64_t iv = part.lowerBounds[0]; iv < part.upperBounds[0]; iv += 32)
+        for (int64_t row = 0; row < 32; ++row)
+          for (int64_t col = 0; col < 64; ++col) {
+            unsigned matches = 0;
+            for (const auto &piece : part.pieces) {
+              if (row < piece.resultWindow.offsets[1] ||
+                  row >= piece.resultWindow.offsets[1] +
+                             piece.resultWindow.sizes[1] ||
+                  col < piece.resultWindow.offsets[2] ||
+                  col >= piece.resultWindow.offsets[2] +
+                             piece.resultWindow.sizes[2])
+                continue;
+              ++matches;
+              bool updated = iv + row >= 100 && iv + row < 700 && col < 48;
+              EXPECT_EQ(piece.source, function.getArgument(updated ? 1 : 0));
+              llvm::SmallVector<mlir::Attribute> args{mlir::IntegerAttr::get(
+                  mlir::IndexType::get(context.get()), iv)},
+                  result;
+              ASSERT_TRUE(mlir::succeeded(
+                  piece.sourceOffsets.constantFold(args, result)));
+              EXPECT_EQ(mlir::cast<mlir::IntegerAttr>(result[1]).getInt() +
+                            row - piece.resultWindow.offsets[1],
+                        iv + row - (updated ? 100 : 0));
+              EXPECT_EQ(mlir::cast<mlir::IntegerAttr>(result[2]).getInt() +
+                            col - piece.resultWindow.offsets[2],
+                        col + (updated ? 16 : 32));
+            }
+            ASSERT_EQ(matches, 1u);
+          }
+  }
+}
+
 } // namespace

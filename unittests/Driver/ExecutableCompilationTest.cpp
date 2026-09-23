@@ -1358,6 +1358,18 @@ void expectAssemblyGroupSearch(AssemblySearchConfiguration config,
   options.limits = wafer::SearchLimits{config.width, config.trials};
   options.prefixCacheEntries = config.cache;
   options.downstream.tilePipelineParallelism = 1;
+  uint64_t capacityCallbacks = 0;
+  auto observeCapacity =
+      [&](wafer::CardId, wafer::TileId,
+          const wafer::SPMMemoryPlanningFailure &failure,
+          const wafer::StructuredMaterializationRelations &) {
+        EXPECT_EQ(failure.kind,
+                  wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+        EXPECT_GT(failure.demandCount, 0u);
+        ++capacityCallbacks;
+      };
+  options.downstream.capacityObserver = observeCapacity;
+
   SearchCurrentIRStatistics statistics;
   auto result = compileSearchCurrentIR(
       *parsed.module, program, wafer::compiler::testing::executionConfig(),
@@ -1376,6 +1388,20 @@ void expectAssemblyGroupSearch(AssemblySearchConfiguration config,
     EXPECT_GT(statistics.assemblyBranchesStarted, 1u);
     EXPECT_GT(statistics.assemblyMixedMaterializations, 0u);
     EXPECT_GT(statistics.assemblyMixedAccepted, 0u);
+    // Both independent implementations consume their own actual capacity
+    // certificates and enter their own proposal repair process in this budget.
+    EXPECT_GT(statistics.sharedAssemblyCapacityRejected, 0u);
+    EXPECT_GT(statistics.localAssemblyCapacityRejected, 0u);
+    EXPECT_GT(statistics.sharedAssemblyCapacityRefinements, 0u);
+    EXPECT_GT(statistics.localAssemblyCapacityRefinements, 0u);
+    EXPECT_LE(statistics.sharedAssemblyCapacityRejected +
+                  statistics.localAssemblyCapacityRejected,
+              capacityCallbacks);
+    EXPECT_LE(statistics.sharedAssemblyCapacityRefinements,
+              statistics.sharedAssemblyCapacityRejected);
+    EXPECT_LE(statistics.localAssemblyCapacityRefinements,
+              statistics.localAssemblyCapacityRejected);
+
   } else {
     EXPECT_EQ(statistics.traversal.schemesStarted, config.trials);
     EXPECT_EQ(statistics.traversal.schemesCompleted, config.trials);
@@ -1390,7 +1416,8 @@ void expectAssemblyGroupSearch(AssemblySearchConfiguration config,
     for (auto line : lines)
       if (line.contains("category=search-temporal ") ||
           line.contains("category=search name=region-candidate-") ||
-          line.starts_with("wafer-compile: rejected-candidate "))
+          line.starts_with("wafer-compile: rejected-candidate ") ||
+          line.starts_with("wafer-compile: capacity-feedback "))
         trace.push_back(line.str());
     ASSERT_FALSE(trace.empty());
     for (const auto &tile : result.executable->tiles) {

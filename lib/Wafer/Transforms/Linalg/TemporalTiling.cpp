@@ -28,7 +28,6 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/SubsetOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
-#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Transforms/CSE.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -208,93 +207,7 @@ mlir::FailureOr<mlir::Value> reshapeTile(mlir::IRRewriter &rewriter,
   return reshape(source, targetType);
 }
 
-std::optional<int64_t> resolveStaticIndex(mlir::OpFoldResult value) {
-  if (auto attribute = llvm::dyn_cast_if_present<mlir::IntegerAttr>(
-          value.dyn_cast<mlir::Attribute>()))
-    return attribute.getInt();
-  mlir::Value dynamic = value.dyn_cast<mlir::Value>();
-  if (!dynamic || !dynamic.getType().isIndex())
-    return std::nullopt;
-  mlir::FailureOr<int64_t> constant =
-      mlir::ValueBoundsConstraintSet::computeConstantBound(
-          mlir::presburger::BoundType::EQ,
-          mlir::ValueBoundsConstraintSet::Variable(dynamic));
-  if (mlir::succeeded(constant))
-    return *constant;
-  std::function<std::optional<int64_t>(mlir::Value, unsigned)> resolve =
-      [&](mlir::Value current, unsigned depth) -> std::optional<int64_t> {
-    if (!current || depth > 8)
-      return std::nullopt;
-    if (std::optional<int64_t> constant = mlir::getConstantIntValue(current))
-      return constant;
-    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(current)) {
-      auto loop = argument.getOwner()
-                      ? mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-                            argument.getOwner()->getParentOp())
-                      : mlir::scf::ForOp{};
-      if (!loop || argument != loop.getInductionVar())
-        return std::nullopt;
-      std::optional<int64_t> lower =
-          mlir::getConstantIntValue(loop.getLowerBound());
-      std::optional<int64_t> upper =
-          mlir::getConstantIntValue(loop.getUpperBound());
-      std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
-      if (!lower || !upper || !step || *step <= 0 || *upper <= *lower ||
-          *upper - *lower > *step)
-        return std::nullopt;
-      return lower;
-    }
-    mlir::Operation *definition = current.getDefiningOp();
-    mlir::AffineMap map;
-    mlir::ValueRange operands;
-    bool takeMinimum = false;
-    bool takeMaximum = false;
-    if (auto apply =
-            mlir::dyn_cast_or_null<mlir::affine::AffineApplyOp>(definition)) {
-      map = apply.getAffineMap();
-      operands = apply.getMapOperands();
-    } else if (auto minimum = mlir::dyn_cast_or_null<mlir::affine::AffineMinOp>(
-                   definition)) {
-      map = minimum.getAffineMap();
-      operands = minimum.getMapOperands();
-      takeMinimum = true;
-    } else if (auto maximum = mlir::dyn_cast_or_null<mlir::affine::AffineMaxOp>(
-                   definition)) {
-      map = maximum.getAffineMap();
-      operands = maximum.getMapOperands();
-      takeMaximum = true;
-    } else {
-      return std::nullopt;
-    }
-    llvm::SmallVector<mlir::Attribute, 4> attributes;
-    for (mlir::Value operand : operands) {
-      std::optional<int64_t> operandValue = resolve(operand, depth + 1);
-      if (!operandValue)
-        return std::nullopt;
-      attributes.push_back(mlir::IntegerAttr::get(
-          mlir::IndexType::get(current.getContext()), *operandValue));
-    }
-    llvm::SmallVector<mlir::Attribute, 4> folded;
-    if (mlir::failed(map.constantFold(attributes, folded)) || folded.empty())
-      return std::nullopt;
-    std::optional<int64_t> result;
-    for (mlir::Attribute attribute : folded) {
-      auto integer = mlir::dyn_cast<mlir::IntegerAttr>(attribute);
-      if (!integer)
-        return std::nullopt;
-      if (!result)
-        result = integer.getInt();
-      else if (takeMinimum)
-        result = std::min(*result, integer.getInt());
-      else if (takeMaximum)
-        result = std::max(*result, integer.getInt());
-      else
-        return std::nullopt;
-    }
-    return result;
-  };
-  return resolve(dynamic, 0);
-}
+using compiler::detail::resolveStaticIndex;
 
 mlir::OpFoldResult addConstantOffset(mlir::IRRewriter &rewriter,
                                      mlir::Location location,
@@ -323,7 +236,6 @@ struct ViewFusionRequest {
 
 struct AssemblyReadRequest {
   mlir::Value assembledValue;
-  llvm::SmallVector<analysis::TensorAssemblySegment, 4> segments;
 };
 
 struct AssemblyProducerFusion {
@@ -333,11 +245,7 @@ struct AssemblyProducerFusion {
 
 AssemblyReadRequest getAssemblyReadRequest(
     const compiler::detail::TemporalConcatQueryResult &query) {
-  AssemblyReadRequest request{query.assembledValue, {}};
-  for (const auto &segment : query.segments)
-    request.segments.push_back(
-        {segment.source, nullptr, segment.offsets, segment.sizes});
-  return request;
+  return {query.assembledValue};
 }
 
 void collectAssemblyProducerFusions(
@@ -778,57 +686,9 @@ fuseJointProducerSlices(mlir::IRRewriter &rewriter, TileRegionOp region,
   return mlir::success();
 }
 
-using analysis::getTensorLoopGridCeil;
 using analysis::getTensorLoopGridFloor;
-using analysis::getTensorLoopIndex;
 using analysis::queryTensorLoopGrid;
 using analysis::TensorLoopGrid;
-
-std::optional<unsigned> getConcatPartitionDimension(
-    mlir::RankedTensorType assembledType,
-    llvm::ArrayRef<analysis::TensorAssemblySegment> segments) {
-  if (!assembledType || !assembledType.hasStaticShape() || segments.size() < 2)
-    return std::nullopt;
-  std::optional<unsigned> partitionDimension;
-  for (const auto &segment : segments) {
-    if (segment.offsets.size() !=
-            static_cast<size_t>(assembledType.getRank()) ||
-        segment.sizes.size() != static_cast<size_t>(assembledType.getRank()))
-      return std::nullopt;
-    for (unsigned dimension = 0; dimension < assembledType.getRank();
-         ++dimension) {
-      const bool full =
-          segment.offsets[dimension] == 0 &&
-          segment.sizes[dimension] == assembledType.getDimSize(dimension);
-      if (full)
-        continue;
-      if (partitionDimension && *partitionDimension != dimension)
-        return std::nullopt;
-      partitionDimension = dimension;
-    }
-  }
-  if (!partitionDimension)
-    return std::nullopt;
-  llvm::SmallVector<std::pair<int64_t, int64_t>, 4> intervals;
-  for (const auto &segment : segments) {
-    int64_t begin = segment.offsets[*partitionDimension];
-    int64_t end = 0;
-    if (begin < 0 || segment.sizes[*partitionDimension] <= 0 ||
-        llvm::AddOverflow(begin, segment.sizes[*partitionDimension], end))
-      return std::nullopt;
-    intervals.push_back({begin, end});
-  }
-  llvm::sort(intervals);
-  int64_t covered = 0;
-  for (auto [begin, end] : intervals) {
-    if (begin != covered || end <= begin)
-      return std::nullopt;
-    covered = end;
-  }
-  if (covered != assembledType.getDimSize(*partitionDimension))
-    return std::nullopt;
-  return partitionDimension;
-}
 
 mlir::FailureOr<mlir::scf::ForOp> splitForLoopAt(mlir::IRRewriter &rewriter,
                                                  mlir::scf::ForOp loop,
@@ -859,82 +719,118 @@ mlir::FailureOr<mlir::scf::ForOp> splitForLoopAt(mlir::IRRewriter &rewriter,
   return suffix;
 }
 
+TensorAssemblyOpportunityKind
+assemblyOutcome(analysis::TensorAssemblyStatus status) {
+  using Kind = TensorAssemblyOpportunityKind;
+  switch (status) {
+  case analysis::TensorAssemblyStatus::Exact:
+    return Kind::Available;
+  case analysis::TensorAssemblyStatus::NotAssembly:
+    return Kind::NotApplicable;
+  case analysis::TensorAssemblyStatus::Unsupported:
+    return Kind::Unsupported;
+  case analysis::TensorAssemblyStatus::ResourceExhausted:
+    return Kind::ResourceExhausted;
+  case analysis::TensorAssemblyStatus::BrokenContract:
+    return Kind::BrokenContract;
+  }
+  llvm_unreachable("unknown assembly status");
+}
+
+TemporalTilingFailureKind
+assemblyFailureKind(TensorAssemblyOpportunityKind kind) {
+  switch (kind) {
+  case TensorAssemblyOpportunityKind::Unsupported:
+  case TensorAssemblyOpportunityKind::NotApplicable:
+    return TemporalTilingFailureKind::Unsupported;
+  case TensorAssemblyOpportunityKind::ResourceExhausted:
+    return TemporalTilingFailureKind::ResourceExhausted;
+  case TensorAssemblyOpportunityKind::BrokenContract:
+    return TemporalTilingFailureKind::BrokenContract;
+  case TensorAssemblyOpportunityKind::Available:
+    return TemporalTilingFailureKind::None;
+  }
+  llvm_unreachable("unknown assembly read outcome");
+}
+
 mlir::LogicalResult specializeConcatLoopBoundaries(
     mlir::IRRewriter &rewriter, TileRegionOp region,
     llvm::ArrayRef<AssemblyReadRequest> requests,
     TemporalTilingStatistics &statistics,
     llvm::SmallVectorImpl<mlir::tensor::ExtractSliceOp> *selectedReads =
-        nullptr) {
+        nullptr,
+    TemporalTilingFailure *failure = nullptr,
+    const analysis::IndexRelationLimits &limits =
+        analysis::IndexRelationLimits()) {
   // Collect every current read before mutation. Different affine origins in
   // the same loop require different boundary iterations; the loop identity
   // only groups their union, never suppresses a second read's constraints.
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<int64_t, 8>> loopSplits;
   for (const auto &request : requests) {
-    auto type =
-        mlir::cast<mlir::RankedTensorType>(request.assembledValue.getType());
-    for (const auto &segment : request.segments)
-      if (segment.offsets.size() != static_cast<size_t>(type.getRank()) ||
-          segment.sizes.size() != static_cast<size_t>(type.getRank()))
-        return mlir::failure();
     bool invalid = false;
     region.walk([&](mlir::tensor::ExtractSliceOp slice) {
       if (slice.getSource() != request.assembledValue ||
           (selectedReads && !llvm::is_contained(*selectedReads, slice)))
         return;
-      for (unsigned axis = 0; axis < static_cast<unsigned>(type.getRank());
-           ++axis) {
-        if (resolveStaticIndex(slice.getMixedOffsets()[axis]))
-          continue;
-        auto grid = queryTensorLoopGrid(slice.getMixedOffsets()[axis]).grid;
-        if (!grid) {
-          invalid = true;
-          return;
-        }
-        auto loop = mlir::cast<mlir::scf::ForOp>(
-            mlir::cast<mlir::BlockArgument>(grid->induction)
-                .getOwner()
-                ->getParentOp());
+      auto query = compiler::detail::queryTensorAssemblySlice(slice, limits);
+      if (!query.isExact()) {
+        if (failure)
+          *failure = {assemblyFailureKind(assemblyOutcome(query.status)),
+                      query.detail};
+        invalid = true;
+        return;
+      }
+      for (const auto &partition : query.loops) {
+        auto *loop = mlir::cast<mlir::BlockArgument>(partition.induction)
+                         .getOwner()
+                         ->getParentOp();
         auto &splits = loopSplits[loop];
-        auto addSplit = [&](int64_t coordinate) {
-          if (coordinate <= grid->lower || coordinate >= grid->upper)
-            return;
-          auto index = getTensorLoopIndex(*grid, coordinate);
-          if (!index) {
-            invalid = true;
-            return;
-          }
-          splits.push_back(*index);
-        };
-        for (const auto &segment : request.segments) {
-          int64_t end = 0;
-          if (llvm::AddOverflow(segment.offsets[axis], segment.sizes[axis],
-                                end)) {
-            invalid = true;
-            return;
-          }
-          for (int64_t boundary : {segment.offsets[axis], end}) {
-            if (boundary <= grid->lower || boundary >= grid->upper)
-              continue;
-            auto preceding = getTensorLoopGridFloor(*grid, boundary);
-            if (!preceding) {
-              invalid = true;
-              return;
-            }
-            addSplit(*preceding);
-            if (*preceding != boundary) {
-              int64_t following = 0;
-              if (llvm::AddOverflow(*preceding, grid->step, following)) {
-                invalid = true;
-                return;
-              }
-              addSplit(following);
-            }
-          }
-        }
+        splits.append(partition.boundaries.begin() + 1,
+                      partition.boundaries.end() - 1);
       }
     });
     if (invalid)
       return mlir::failure();
+  }
+  if (loopSplits.empty())
+    return mlir::success();
+  // Bound cloning work from the actual current body and the union of all
+  // selected partitions. This is a rewrite budget, never SPM admission.
+  uint64_t work = 0;
+  for (auto &entry : loopSplits) {
+    auto &splits = entry.second;
+    llvm::sort(splits);
+    splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
+  }
+  bool exhausted = false;
+  region.walk([&](mlir::Operation *operation) {
+    uint64_t copies = 1;
+    for (auto *parent = operation->getParentOp(); parent && parent != region;
+         parent = parent->getParentOp()) {
+      auto found = loopSplits.find(parent);
+      if (found == loopSplits.end())
+        continue;
+      uint64_t intervals = found->second.size() + 1;
+      if (copies > limits.maxConstraintWork / intervals) {
+        exhausted = true;
+        return;
+      }
+      copies *= intervals;
+    }
+    if (copies == 1)
+      return;
+    if (copies > limits.maxConstraintWork - work) {
+      exhausted = true;
+      return;
+    }
+    work += copies;
+  });
+  if (exhausted) {
+    if (failure)
+      *failure = {
+          TemporalTilingFailureKind::ResourceExhausted,
+          "selected assembly partitions exceed the rewrite work budget"};
+    return mlir::failure();
   }
   // Split nested loops first so a subsequent outer-loop clone contains all
   // already-specialized inner reads. Never replay handles into cloned IR.
@@ -976,10 +872,11 @@ struct AssemblySliceReuse {
 
 // A static subset proof alone does not authorize replication. Inspect the
 // actual loop family between this read and the shared value. An invariant
-// suffix can share one local assembly; an invariant outer loop around a
-// dependency would require a separate storage/loop-order choice.
+// suffix can share one local assembly. Repetition around a dependency needs
+// an explicit local implementation; it keeps the existing loop order/storage.
 std::optional<AssemblySliceReuse>
-queryAssemblySliceReuse(mlir::tensor::ExtractSliceOp slice) {
+queryAssemblySliceReuse(mlir::tensor::ExtractSliceOp slice,
+                        bool allowRepeatedReads = false) {
   AssemblySliceReuse result{slice.getOperation(), {}};
   llvm::SmallDenseSet<mlir::Value, 4> dependencies;
   for (auto [offset, size] :
@@ -992,7 +889,7 @@ queryAssemblySliceReuse(mlir::tensor::ExtractSliceOp slice) {
       begin = last = *constant;
     } else {
       auto grid = queryTensorLoopGrid(offset).grid;
-      if (!grid || grid->step < *length)
+      if (!grid || (!allowRepeatedReads && grid->step < *length))
         return std::nullopt;
       auto final = getTensorLoopGridFloor(*grid, grid->upper - 1);
       if (!final)
@@ -1018,9 +915,12 @@ queryAssemblySliceReuse(mlir::tensor::ExtractSliceOp slice) {
       insideDependency = true;
     } else if (!insideDependency) {
       result.insertionPoint = loop;
-    } else if (grid->upper - grid->lower > grid->step) {
+    } else if (!allowRepeatedReads && grid->upper - grid->lower > grid->step) {
       return std::nullopt;
     }
+    // An explicit local implementation may repeat this pure read inside an
+    // invariant outer loop. Keep its actual placement: hoisting across a
+    // dependency would invent a cache or change its dynamic instance.
     block = loop->getBlock();
   }
   mlir::DominanceInfo dominance;
@@ -1032,68 +932,44 @@ queryAssemblySliceReuse(mlir::tensor::ExtractSliceOp slice) {
   return result;
 }
 
-// Only rematerialize the exact linear expression already proved by the grid
-// query. Its defining arithmetic may live inside an invariant inner loop;
-// the induction value must dominate the chosen insertion point.
-mlir::Value materializeAssemblyOffset(mlir::IRRewriter &rewriter,
-                                      mlir::Location location,
-                                      const TensorLoopGrid &grid,
-                                      mlir::Operation *insertionPoint) {
-  mlir::DominanceInfo dominance;
-  if (dominance.properlyDominates(grid.offset, insertionPoint))
-    return grid.offset;
-  mlir::Value value = grid.induction;
-  if (grid.scale != 1) {
-    auto scale =
-        rewriter.create<mlir::arith::ConstantIndexOp>(location, grid.scale);
-    value = rewriter.create<mlir::arith::MulIOp>(location, value, scale);
-  }
-  if (grid.base != 0) {
-    auto base =
-        rewriter.create<mlir::arith::ConstantIndexOp>(location, grid.base);
-    value = rewriter.create<mlir::arith::AddIOp>(location, value, base);
-  }
-  return value;
-}
-
 // The assembly query proves the value, not the selected traversal's ability to
 // rebuild it with static pieces. Overlapping windows can still read the
 // already materialized assembly; they do not require concat fusion to tile.
-bool canSpecializeConcatSlices(TileRegionOp region,
-                               const AssemblyReadRequest &request,
-                               bool allowAdditionalAssembly = false,
-                               mlir::tensor::ExtractSliceOp selectedRead = {}) {
+TensorAssemblyOpportunity
+queryUnsharedAssemblyReads(TileRegionOp region,
+                           const AssemblyReadRequest &request) {
   auto type =
       mlir::dyn_cast<mlir::RankedTensorType>(request.assembledValue.getType());
   if (!type || !type.hasStaticShape())
-    return false;
-  auto axis = getConcatPartitionDimension(type, request.segments);
+    return {TensorAssemblyOpportunityKind::Unsupported,
+            "assembly read requires an explicit shared-use choice"};
   bool found = false;
   bool supported = true;
+  std::optional<TensorAssemblyOpportunity> queryFailure;
   llvm::SmallVector<AssemblySliceReuse, 4> reads;
   mlir::OpOperand *nextDestination = nullptr;
   auto current = request.assembledValue;
   while (auto insert =
              current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
-    if (nextDestination && !allowAdditionalAssembly)
+    if (nextDestination)
       for (auto &use : current.getUses())
         if (&use != nextDestination && !mlir::isOpTriviallyDead(use.getOwner()))
-          return false;
+          return {TensorAssemblyOpportunityKind::Unsupported,
+                  "assembly read requires an explicit shared-use choice"};
     nextDestination = &insert.getDestinationOperand();
     current = nextDestination->get();
   }
   // A retained full consumer already owns the shared assembly. Rebuilding its
   // fragments for another consumer would introduce unselected duplication.
-  if (!allowAdditionalAssembly)
-    for (auto &use : request.assembledValue.getUses()) {
-      auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());
-      if ((!slice || &slice.getSourceMutable() != &use) &&
-          !mlir::isOpTriviallyDead(use.getOwner()))
-        return false;
-    }
+  for (auto &use : request.assembledValue.getUses()) {
+    auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());
+    if ((!slice || &slice.getSourceMutable() != &use) &&
+        !mlir::isOpTriviallyDead(use.getOwner()))
+      return {TensorAssemblyOpportunityKind::Unsupported,
+              "assembly read requires an explicit shared-use choice"};
+  }
   region.walk([&](mlir::tensor::ExtractSliceOp slice) {
-    if (slice.getSource() != request.assembledValue ||
-        (selectedRead && slice != selectedRead))
+    if (slice.getSource() != request.assembledValue)
       return;
     found = true;
     auto reuse = queryAssemblySliceReuse(slice);
@@ -1104,516 +980,32 @@ bool canSpecializeConcatSlices(TileRegionOp region,
     for (auto [bound, extent] : llvm::zip_equal(reuse->bounds, type.getShape()))
       if (bound.first < 0 || bound.second > extent)
         supported = false;
-    if (!allowAdditionalAssembly)
-      for (const auto &other : reads) {
-        bool disjoint = false;
-        for (auto [left, right] : llvm::zip_equal(reuse->bounds, other.bounds))
-          disjoint |= left.second <= right.first || right.second <= left.first;
-        if (!disjoint)
-          supported = false;
-      }
-    reads.push_back(std::move(*reuse));
-    llvm::SmallVector<int64_t> staticSizes;
-    for (mlir::OpFoldResult size : slice.getMixedSizes()) {
-      auto length = resolveStaticIndex(size);
-      if (!length || *length <= 0)
-        supported = false;
-      else
-        staticSizes.push_back(*length);
-    }
-    if (staticSizes.size() != static_cast<size_t>(type.getRank()) ||
-        (slice.getType().getRank() != type.getRank() &&
-         (!slice.getType().hasStaticShape() ||
-          !mlir::computeRankReductionMask(staticSizes,
-                                          slice.getType().getShape()))))
-      supported = false;
-    for (mlir::OpFoldResult stride : slice.getMixedStrides())
-      if (resolveStaticIndex(stride) != 1)
-        supported = false;
-    llvm::SmallVector<int64_t, 4> staticOffsets;
-    for (mlir::OpFoldResult offset : slice.getMixedOffsets()) {
-      auto constant = resolveStaticIndex(offset);
-      if (!constant)
-        break;
-      staticOffsets.push_back(*constant);
-    }
-    if (!axis && staticOffsets.size() == staticSizes.size()) {
-      analysis::StaticRectangularIndexSet requested;
-      requested.offsets.append(staticOffsets.begin(), staticOffsets.end());
-      requested.sizes.append(staticSizes.begin(), staticSizes.end());
-      auto demand = analysis::queryTensorAssemblyDemand(request.assembledValue,
-                                                        requested);
-      if (!demand.isExact() || demand.pieces.empty())
-        supported = false;
-      return;
-    }
-    if (!axis) {
-      for (auto [offset, size] :
-           llvm::zip_equal(slice.getMixedOffsets(), slice.getMixedSizes())) {
-        if (resolveStaticIndex(offset))
-          continue;
-        auto grid = queryTensorLoopGrid(offset).grid;
-        auto length = resolveStaticIndex(size);
-        if (!grid || !length || grid->step < *length)
-          supported = false;
-      }
-      return;
-    }
-    auto offset = slice.getMixedOffsets()[*axis];
-    if (resolveStaticIndex(offset))
-      return;
-    auto grid = queryTensorLoopGrid(offset).grid;
-    auto length = resolveStaticIndex(slice.getMixedSizes()[*axis]);
-    if (!grid || !length || grid->step != *length)
-      supported = false;
-  });
-  return found && supported;
-}
-
-bool canReshapeStaticAssemblyPiece(mlir::RankedTensorType source,
-                                   mlir::RankedTensorType target) {
-  if (!source.hasStaticShape() || !target.hasStaticShape() ||
-      source.getElementType() != target.getElementType() ||
-      source.getEncoding() != target.getEncoding())
-    return false;
-  if (source == target ||
-      mlir::tensor::CastOp::areCastCompatible(source, target))
-    return true;
-  return source.getRank() && target.getRank() &&
-         source.getRank() != target.getRank() &&
-         source.getNumElements() == target.getNumElements() &&
-         mlir::getReassociationIndicesForReshape(source, target).has_value();
-}
-
-struct StaticAssemblyRead {
-  analysis::StaticRectangularIndexSet requested;
-  analysis::TensorAssemblyDemandResult demand;
-  mlir::RankedTensorType compactType;
-};
-
-struct StaticAssemblyReadQuery {
-  TensorAssemblyOpportunity outcome;
-  std::optional<StaticAssemblyRead> read;
-};
-
-TensorAssemblyOpportunityKind
-assemblyOutcome(analysis::TensorAssemblyStatus status) {
-  using Kind = TensorAssemblyOpportunityKind;
-  switch (status) {
-  case analysis::TensorAssemblyStatus::Exact:
-    return Kind::Available;
-  case analysis::TensorAssemblyStatus::NotAssembly:
-    return Kind::NotApplicable;
-  case analysis::TensorAssemblyStatus::Unsupported:
-    return Kind::Unsupported;
-  case analysis::TensorAssemblyStatus::ResourceExhausted:
-    return Kind::ResourceExhausted;
-  case analysis::TensorAssemblyStatus::BrokenContract:
-    return Kind::BrokenContract;
-  }
-  llvm_unreachable("unknown assembly status");
-}
-
-TensorAssemblyOpportunityKind
-indexingOutcome(analysis::TensorResultIndexingStatus status) {
-  using Kind = TensorAssemblyOpportunityKind;
-  switch (status) {
-  case analysis::TensorResultIndexingStatus::Exact:
-    return Kind::Available;
-  case analysis::TensorResultIndexingStatus::Unsupported:
-    return Kind::Unsupported;
-  case analysis::TensorResultIndexingStatus::ResourceExhausted:
-    return Kind::ResourceExhausted;
-  case analysis::TensorResultIndexingStatus::BrokenContract:
-    return Kind::BrokenContract;
-  }
-  llvm_unreachable("unknown indexing status");
-}
-
-StaticAssemblyReadQuery
-queryStaticAssemblyRead(mlir::tensor::ExtractSliceOp slice,
-                        const analysis::IndexRelationLimits &limits) {
-  using Kind = TensorAssemblyOpportunityKind;
-  auto unavailable = [](Kind kind, llvm::StringRef detail) {
-    return StaticAssemblyReadQuery{{kind, detail.str()}, std::nullopt};
-  };
-  // First identify an actual assembly; ordinary reads are not failures.
-  mlir::Value assemblyValue = slice.getSource();
-  std::optional<analysis::TensorViewIndexing> view;
-  if (!assemblyValue.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
-    auto *definition = assemblyValue.getDefiningOp();
-    if (!definition || !mlir::isa<WaferTensorIndexingOpInterface>(definition))
-      return unavailable(Kind::NotApplicable,
-                         "read source is an opaque tensor leaf");
-    auto derived = analysis::deriveTensorViewIndexing(assemblyValue, limits);
-    if (!derived.isExact())
-      return unavailable(indexingOutcome(derived.status), derived.detail);
-    if (!derived.indexing->source
-             .getDefiningOp<mlir::SubsetInsertionOpInterface>())
-      return unavailable(Kind::NotApplicable,
-                         "read has no current assembly source");
-    assemblyValue = derived.indexing->source;
-    view = std::move(*derived.indexing);
-  }
-  auto viewType =
-      mlir::dyn_cast<mlir::RankedTensorType>(slice.getSource().getType());
-  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
-  if (!viewType || !viewType.hasStaticShape() || !resultType ||
-      !resultType.hasStaticShape())
-    return unavailable(Kind::Unsupported,
-                       "assembly read requires static tensor shapes");
-  analysis::StaticRectangularIndexSet viewRequest;
-  for (mlir::OpFoldResult offset : slice.getMixedOffsets()) {
-    auto constant = resolveStaticIndex(offset);
-    if (!constant)
-      return unavailable(Kind::Unsupported,
-                         "assembly read has a parameterized offset");
-    viewRequest.offsets.push_back(*constant);
-  }
-  for (mlir::OpFoldResult size : slice.getMixedSizes()) {
-    auto constant = resolveStaticIndex(size);
-    if (!constant || *constant <= 0)
-      return unavailable(Kind::Unsupported,
-                         "assembly read requires positive static sizes");
-    viewRequest.sizes.push_back(*constant);
-  }
-  if (viewRequest.sizes.size() != static_cast<size_t>(viewType.getRank()) ||
-      !mlir::computeRankReductionMask(viewRequest.sizes,
-                                      resultType.getShape()) ||
-      llvm::any_of(slice.getMixedStrides(), [](mlir::OpFoldResult stride) {
-        return resolveStaticIndex(stride) != 1;
-      }))
-    return unavailable(
-        Kind::Unsupported,
-        "assembly read requires exact rank reduction and unit strides");
-  analysis::StaticRectangularIndexSet requested = viewRequest;
-  if (view) {
-    auto image = analysis::getTensorViewTileSource(*view, viewType.getShape(),
-                                                   viewRequest, limits);
-    if (!image.isExact()) {
-      Kind kind =
-          image.status == analysis::IndexRelationStatus::ResourceExhausted
-              ? Kind::ResourceExhausted
-          : image.status == analysis::IndexRelationStatus::Invalid
-              ? Kind::BrokenContract
-              : Kind::Unsupported;
-      return unavailable(kind, image.reason);
-    }
-    requested = std::move(*image.domain);
-  }
-  auto assembledType =
-      mlir::cast<mlir::RankedTensorType>(assemblyValue.getType());
-  auto compactType = mlir::RankedTensorType::get(requested.sizes,
-                                                 assembledType.getElementType(),
-                                                 assembledType.getEncoding());
-  if (!compactType.getRank() || !resultType.getRank() ||
-      compactType.getElementType() != resultType.getElementType() ||
-      compactType.getEncoding() != resultType.getEncoding() ||
-      compactType.getNumElements() != resultType.getNumElements())
-    return unavailable(Kind::Unsupported,
-                       "assembly view has no supported compact representation");
-  auto demand =
-      analysis::queryTensorAssemblyDemand(assemblyValue, requested, limits);
-  if (!demand.isExact())
-    return unavailable(assemblyOutcome(demand.status), demand.detail);
-  if (demand.pieces.empty())
-    return unavailable(Kind::BrokenContract,
-                       "exact nonempty assembly demand has no pieces");
-  for (const auto &piece : demand.pieces) {
-    auto sourceType =
-        mlir::dyn_cast<mlir::RankedTensorType>(piece.source.getType());
-    if (!sourceType || !sourceType.hasStaticShape() ||
-        piece.sourceWindow.sizes.size() !=
-            static_cast<size_t>(sourceType.getRank()) ||
-        piece.sourceWindow.offsets.size() != piece.sourceWindow.sizes.size() ||
-        piece.resultWindow.sizes.size() !=
-            static_cast<size_t>(assembledType.getRank()) ||
-        piece.resultWindow.offsets.size() != piece.resultWindow.sizes.size())
-      return unavailable(Kind::BrokenContract,
-                         "assembly demand returned an invalid piece shape");
-    auto sourcePieceType = mlir::RankedTensorType::get(
-        piece.sourceWindow.sizes, sourceType.getElementType(),
-        sourceType.getEncoding());
-    auto resultPieceType = mlir::RankedTensorType::get(
-        piece.resultWindow.sizes, assembledType.getElementType(),
-        assembledType.getEncoding());
-    if (!canReshapeStaticAssemblyPiece(sourcePieceType, resultPieceType))
-      return unavailable(Kind::Unsupported,
-                         "assembly piece has no supported static reshape");
-  }
-  return {
-      {Kind::Available, {}},
-      StaticAssemblyRead{std::move(requested), std::move(demand), compactType}};
-}
-
-mlir::LogicalResult materializeStaticAssemblyRead(
-    mlir::IRRewriter &rewriter, mlir::tensor::ExtractSliceOp slice,
-    StaticAssemblyRead read, TemporalTilingStatistics &statistics) {
-  rewriter.setInsertionPoint(slice);
-  llvm::SmallVector<compiler::detail::TensorAssemblyTilePiece, 4> pieces;
-  for (const auto &piece : read.demand.pieces) {
-    llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
-    for (auto [offset, size] : llvm::zip_equal(piece.sourceWindow.offsets,
-                                               piece.sourceWindow.sizes)) {
-      offsets.push_back(rewriter.getIndexAttr(offset));
-      sizes.push_back(rewriter.getIndexAttr(size));
-      strides.push_back(rewriter.getIndexAttr(1));
-    }
-    auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
-        slice.getLoc(), piece.source, offsets, sizes, strides);
-    auto resultPieceType = mlir::RankedTensorType::get(
-        piece.resultWindow.sizes, read.compactType.getElementType(),
-        read.compactType.getEncoding());
-    auto reshaped =
-        reshapeTile(rewriter, slice.getLoc(), sourceSlice, resultPieceType);
-    if (mlir::failed(reshaped))
-      return mlir::failure();
-    pieces.push_back({*reshaped, piece.resultWindow});
-  }
-  auto assembled = compiler::detail::materializeTensorAssemblyTile(
-      rewriter, slice.getLoc(), read.compactType, read.requested, pieces);
-  if (mlir::failed(assembled))
-    return mlir::failure();
-  auto replacement = reshapeStaticTensorTile(
-      rewriter, slice.getLoc(), *assembled,
-      mlir::cast<mlir::RankedTensorType>(slice.getResult().getType()));
-  rewriter.replaceOp(slice, replacement);
-  statistics.assembledSegments += pieces.size();
-  ++statistics.tileLocalAssemblies;
-  return mlir::success();
-}
-
-struct AxisAssemblyOverlap {
-  enum class Kind : uint8_t { Static, FullGridRange, BoundaryGridPoint } kind;
-  int64_t size = 0;
-  int64_t sourceOffset = 0;
-  int64_t destinationOffset = 0;
-  int64_t first = 0;
-  int64_t last = 0;
-};
-
-llvm::SmallVector<AxisAssemblyOverlap, 3>
-getAxisAssemblyOverlaps(int64_t segmentBegin, int64_t segmentSize,
-                        int64_t requestLength,
-                        std::optional<int64_t> requestBegin,
-                        const std::optional<TensorLoopGrid> &grid) {
-  llvm::SmallVector<AxisAssemblyOverlap, 3> overlaps;
-  int64_t segmentEnd = 0;
-  if (segmentBegin < 0 || segmentSize <= 0 || requestLength <= 0 ||
-      llvm::AddOverflow(segmentBegin, segmentSize, segmentEnd))
-    return overlaps;
-  if (requestBegin) {
-    int64_t requestEnd = 0;
-    if (llvm::AddOverflow(*requestBegin, requestLength, requestEnd))
-      return overlaps;
-    int64_t begin = std::max(*requestBegin, segmentBegin);
-    int64_t end = std::min(requestEnd, segmentEnd);
-    if (begin < end)
-      overlaps.push_back({AxisAssemblyOverlap::Kind::Static, end - begin,
-                          begin - segmentBegin, begin - *requestBegin});
-    return overlaps;
-  }
-  if (!grid || grid->step < requestLength)
-    return overlaps;
-  auto firstFull = getTensorLoopGridCeil(*grid, segmentBegin);
-  auto lastFull =
-      segmentEnd >= requestLength && segmentEnd - requestLength >= grid->lower
-          ? getTensorLoopGridFloor(
-                *grid, std::min(segmentEnd - requestLength, grid->upper - 1))
-          : std::nullopt;
-  bool hasFull = firstFull && lastFull && *firstFull <= *lastFull;
-  int64_t firstFullValue = firstFull.value_or(0);
-  int64_t lastFullValue = lastFull.value_or(0);
-  if (hasFull)
-    overlaps.push_back({AxisAssemblyOverlap::Kind::FullGridRange, requestLength,
-                        -segmentBegin, 0, firstFullValue, lastFullValue});
-  llvm::SmallVector<int64_t, 2> boundaryBegins;
-  if (auto begin = getTensorLoopGridFloor(*grid, segmentBegin))
-    boundaryBegins.push_back(*begin);
-  if (auto begin = getTensorLoopGridFloor(*grid, segmentEnd - 1))
-    boundaryBegins.push_back(*begin);
-  llvm::sort(boundaryBegins);
-  boundaryBegins.erase(
-      std::unique(boundaryBegins.begin(), boundaryBegins.end()),
-      boundaryBegins.end());
-  for (int64_t begin : boundaryBegins) {
-    if (hasFull && begin >= firstFullValue && begin <= lastFullValue)
-      continue;
-    int64_t end = 0;
-    if (llvm::AddOverflow(begin, requestLength, end))
-      continue;
-    int64_t intersectionBegin = std::max(begin, segmentBegin);
-    int64_t intersectionEnd = std::min(end, segmentEnd);
-    if (intersectionBegin < intersectionEnd)
-      overlaps.push_back({AxisAssemblyOverlap::Kind::BoundaryGridPoint,
-                          intersectionEnd - intersectionBegin,
-                          intersectionBegin - segmentBegin,
-                          intersectionBegin - begin, begin, begin});
-  }
-  return overlaps;
-}
-
-mlir::LogicalResult materializeMultiAxisAssemblySlice(
-    mlir::IRRewriter &rewriter, mlir::tensor::ExtractSliceOp slice,
-    const AssemblyReadRequest &request,
-    llvm::ArrayRef<mlir::OpFoldResult> requestOffsets,
-    llvm::SmallVectorImpl<int64_t> &staticRequestSizes,
-    TemporalTilingStatistics &statistics,
-    llvm::SmallVectorImpl<mlir::tensor::ExtractSliceOp> &sourceReads) {
-  auto assembledType =
-      mlir::cast<mlir::RankedTensorType>(request.assembledValue.getType());
-  const unsigned rank = assembledType.getRank();
-  llvm::SmallVector<std::optional<TensorLoopGrid>, 4> grids;
-  llvm::SmallVector<std::optional<int64_t>, 4> requestBegins;
-  for (mlir::OpFoldResult offset : requestOffsets) {
-    requestBegins.push_back(resolveStaticIndex(offset));
-    grids.push_back(requestBegins.back() ? std::nullopt
-                                         : queryTensorLoopGrid(offset).grid);
-    if (!requestBegins.back() && !grids.back())
-      return mlir::failure();
-  }
-  struct PreparedPiece {
-    const analysis::TensorAssemblySegment *segment;
-    llvm::SmallVector<AxisAssemblyOverlap, 4> axes;
-  };
-  llvm::SmallVector<PreparedPiece, 4> prepared;
-  uint64_t requestedVolume = 1;
-  for (int64_t size : staticRequestSizes) {
-    if (size <= 0 || requestedVolume > UINT64_MAX / uint64_t(size))
-      return mlir::failure();
-    requestedVolume *= uint64_t(size);
-  }
-  uint64_t coveredVolume = 0;
-  for (const auto &segment : request.segments) {
-    auto sourceType =
-        mlir::dyn_cast<mlir::RankedTensorType>(segment.source.getType());
-    if (!sourceType || segment.offsets.size() != rank ||
-        segment.sizes.size() != rank ||
-        !mlir::computeRankReductionMask(segment.sizes, sourceType.getShape()))
-      return mlir::failure();
-    PreparedPiece piece{&segment, {}};
-    for (unsigned axis = 0; axis < rank; ++axis) {
-      auto options = getAxisAssemblyOverlaps(
-          segment.offsets[axis], segment.sizes[axis], staticRequestSizes[axis],
-          requestBegins[axis], grids[axis]);
-      if (options.empty())
-        break;
-      // Loop specialization must make every selected piece unconditional.
-      // A tensor-valued conditional would bufferize to a dynamic memref
-      // merge with no current endpoint relation for Instr lowering.
-      if (options.size() != 1)
-        return mlir::failure();
-      const auto &part = options.front();
-      if (grids[axis] &&
-          (part.first != grids[axis]->lower ||
-           getTensorLoopGridFloor(*grids[axis], grids[axis]->upper - 1) !=
-               part.last))
-        return mlir::failure();
-      if (part.destinationOffset < 0 ||
-          part.destinationOffset > staticRequestSizes[axis] || part.size <= 0 ||
-          part.size > staticRequestSizes[axis] - part.destinationOffset)
-        return mlir::failure();
-      piece.axes.push_back(part);
-    }
-    if (piece.axes.size() != rank)
-      continue;
-    uint64_t volume = 1;
-    for (const auto &part : piece.axes) {
-      if (volume > requestedVolume / uint64_t(part.size))
-        return mlir::failure();
-      volume *= uint64_t(part.size);
-    }
-    if (volume > requestedVolume - coveredVolume)
-      return mlir::failure();
-    coveredVolume += volume;
-    for (const auto &other : prepared) {
+    for (const auto &other : reads) {
       bool disjoint = false;
-      for (auto [left, right] : llvm::zip_equal(piece.axes, other.axes))
-        disjoint |=
-            left.destinationOffset + left.size <= right.destinationOffset ||
-            right.destinationOffset + right.size <= left.destinationOffset;
+      for (auto [left, right] : llvm::zip_equal(reuse->bounds, other.bounds))
+        disjoint |= left.second <= right.first || right.second <= left.first;
       if (!disjoint)
-        return mlir::failure();
+        supported = false;
     }
-    prepared.push_back(std::move(piece));
-    if (prepared.size() > analysis::IndexRelationLimits().maxRectangularPieces)
-      return mlir::failure();
-  }
-  if (prepared.empty() || coveredVolume != requestedVolume)
-    return mlir::failure();
-  auto compactType = mlir::RankedTensorType::get(staticRequestSizes,
-                                                 assembledType.getElementType(),
-                                                 assembledType.getEncoding());
-  const bool direct =
-      prepared.size() == 1 &&
-      llvm::all_of(llvm::enumerate(prepared.front().axes), [&](auto indexed) {
-        return indexed.value().destinationOffset == 0 &&
-               indexed.value().size == staticRequestSizes[indexed.index()];
-      });
-  mlir::Value assembled;
-  if (!direct)
-    assembled = rewriter.create<mlir::tensor::EmptyOp>(
-        slice.getLoc(), compactType.getShape(), compactType.getElementType(),
-        compactType.getEncoding());
-  for (const auto &piece : prepared) {
-    const auto &segment = *piece.segment;
-    auto sourceType =
-        mlir::cast<mlir::RankedTensorType>(segment.source.getType());
-    auto dropped =
-        *mlir::computeRankReductionMask(segment.sizes, sourceType.getShape());
-    llvm::SmallVector<mlir::OpFoldResult, 4> sourceOffsets, sourceSizes;
-    llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets, pieceSizes;
-    for (unsigned dimension = 0; dimension < rank; ++dimension) {
-      const auto &part = piece.axes[dimension];
-      mlir::OpFoldResult sourceOffset =
-          rewriter.getIndexAttr(part.sourceOffset);
-      if (part.kind == AxisAssemblyOverlap::Kind::FullGridRange) {
-        sourceOffset =
-            addConstantOffset(rewriter, slice.getLoc(),
-                              grids[dimension]->offset, part.sourceOffset);
-      }
-      if (!dropped.contains(dimension)) {
-        sourceOffsets.push_back(sourceOffset);
-        sourceSizes.push_back(rewriter.getIndexAttr(part.size));
-      }
-      destinationOffsets.push_back(
-          rewriter.getIndexAttr(part.destinationOffset));
-      pieceSizes.push_back(rewriter.getIndexAttr(part.size));
+    reads.push_back(std::move(*reuse));
+    auto query = compiler::detail::queryTensorAssemblySlice(slice);
+    if (!query.isExact()) {
+      auto kind = assemblyOutcome(query.status);
+      if (!queryFailure ||
+          kind == TensorAssemblyOpportunityKind::BrokenContract ||
+          (kind == TensorAssemblyOpportunityKind::ResourceExhausted &&
+           queryFailure->kind != TensorAssemblyOpportunityKind::BrokenContract))
+        queryFailure = TensorAssemblyOpportunity{kind, std::move(query.detail)};
     }
-    llvm::SmallVector<mlir::OpFoldResult, 4> sourceStrides(
-        sourceOffsets.size(), rewriter.getIndexAttr(1));
-    auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
-        slice.getLoc(), segment.source, sourceOffsets, sourceSizes,
-        sourceStrides);
-    mlir::Value sourcePiece = sourceSlice;
-    sourceReads.push_back(sourceSlice);
-    auto pieceType = mlir::RankedTensorType::get(
-        llvm::to_vector(llvm::map_range(
-            piece.axes, [](const auto &part) { return part.size; })),
-        assembledType.getElementType(), assembledType.getEncoding());
-    auto reshaped =
-        reshapeTile(rewriter, slice.getLoc(), sourcePiece, pieceType);
-    if (mlir::failed(reshaped))
-      return mlir::failure();
-    if (direct) {
-      assembled = *reshaped;
-    } else {
-      llvm::SmallVector<mlir::OpFoldResult, 4> strides(
-          rank, rewriter.getIndexAttr(1));
-      assembled = rewriter.create<mlir::tensor::InsertSliceOp>(
-          slice.getLoc(), *reshaped, assembled, destinationOffsets, pieceSizes,
-          strides);
-    }
-    ++statistics.assembledSegments;
-  }
-  auto replacement =
-      reshapeTile(rewriter, slice.getLoc(), assembled,
-                  mlir::cast<mlir::RankedTensorType>(slice.getType()));
-  if (mlir::failed(replacement))
-    return mlir::failure();
-  rewriter.replaceOp(slice, *replacement);
-  ++statistics.tileLocalAssemblies;
-  return mlir::success();
+  });
+  if (queryFailure)
+    return std::move(*queryFailure);
+  if (!found)
+    return {TensorAssemblyOpportunityKind::NotApplicable, {}};
+  if (!supported)
+    return {TensorAssemblyOpportunityKind::Unsupported,
+            "assembly read requires an explicit shared-use choice"};
+  return {TensorAssemblyOpportunityKind::Available, {}};
 }
 
 mlir::FailureOr<llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4>>
@@ -1623,332 +1015,37 @@ materializeAssemblySlices(
     TemporalTilingStatistics &statistics,
     mlir::tensor::ExtractSliceOp selectedRead = {}) {
   llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> sourceReads;
-  for (const AssemblyReadRequest &request : requests) {
-    auto assembledType = mlir::dyn_cast<mlir::RankedTensorType>(
-        request.assembledValue.getType());
-    std::optional<unsigned> partitionDimension =
-        getConcatPartitionDimension(assembledType, request.segments);
+  for (const auto &request : requests) {
     llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
     region.walk([&](mlir::tensor::ExtractSliceOp slice) {
       if (slice.getSource() == request.assembledValue &&
-          (!selectedRead || slice == selectedRead))
+          (!selectedRead || selectedRead == slice))
         slices.push_back(slice);
     });
     if (slices.empty())
       return mlir::failure();
-    for (mlir::tensor::ExtractSliceOp slice : slices) {
-      auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
-      if (!resultType)
-        return mlir::failure();
-      auto reuse = queryAssemblySliceReuse(slice);
-      if (!reuse)
+    for (auto slice : slices) {
+      auto query = compiler::detail::queryTensorAssemblySlice(slice);
+      auto reuse = queryAssemblySliceReuse(slice, /*allowRepeatedReads=*/true);
+      if (!query.isExact() || query.cases.size() != 1 || !reuse)
         return mlir::failure();
       rewriter.setInsertionPoint(reuse->insertionPoint);
-      llvm::SmallVector<mlir::OpFoldResult, 4> requestOffsets =
-          slice.getMixedOffsets();
-      for (auto &offset : requestOffsets) {
-        if (auto constant = resolveStaticIndex(offset)) {
-          offset = rewriter.getIndexAttr(*constant);
-          continue;
-        }
-        auto grid = queryTensorLoopGrid(offset).grid;
-        if (!grid)
-          return mlir::failure();
-        offset = materializeAssemblyOffset(rewriter, slice.getLoc(), *grid,
-                                           reuse->insertionPoint);
-      }
-      llvm::SmallVector<mlir::OpFoldResult, 4> requestSizes =
-          slice.getMixedSizes();
-      llvm::SmallVector<int64_t, 4> staticRequestSizes;
-      for (mlir::OpFoldResult size : requestSizes) {
-        std::optional<int64_t> constant = resolveStaticIndex(size);
-        if (!constant || *constant <= 0)
-          return mlir::failure();
-        staticRequestSizes.push_back(*constant);
-      }
-      if (staticRequestSizes.size() != requestOffsets.size() ||
-          staticRequestSizes.size() !=
-              static_cast<size_t>(assembledType.getRank()))
+      llvm::SmallVector<int64_t, 4> sizes;
+      for (auto size : slice.getMixedSizes())
+        sizes.push_back(*resolveStaticIndex(size));
+      auto generated = compiler::detail::materializeTensorAssemblyRead(
+          rewriter, slice.getLoc(), slice.getType(), sizes, query);
+      if (mlir::failed(generated))
         return mlir::failure();
-      llvm::SmallVector<int64_t, 4> staticRequestOffsets;
-      for (mlir::OpFoldResult offset : requestOffsets) {
-        auto constant = resolveStaticIndex(offset);
-        if (!constant)
-          break;
-        staticRequestOffsets.push_back(*constant);
-      }
-      if (!partitionDimension &&
-          staticRequestOffsets.size() == staticRequestSizes.size()) {
-        analysis::StaticRectangularIndexSet requested{staticRequestOffsets,
-                                                      staticRequestSizes};
-        auto demand = analysis::queryTensorAssemblyDemand(
-            request.assembledValue, requested);
-        if (!demand.isExact() || demand.pieces.empty())
-          return mlir::failure();
-        llvm::SmallVector<compiler::detail::TensorAssemblyTilePiece, 4> pieces;
-        for (const auto &piece : demand.pieces) {
-          auto sourceType =
-              mlir::dyn_cast<mlir::RankedTensorType>(piece.source.getType());
-          if (!sourceType || !sourceType.hasStaticShape() ||
-              piece.sourceWindow.offsets.size() !=
-                  static_cast<size_t>(sourceType.getRank()) ||
-              piece.sourceWindow.sizes.size() !=
-                  static_cast<size_t>(sourceType.getRank()))
-            return mlir::failure();
-          llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
-          for (auto [offset, size] : llvm::zip_equal(
-                   piece.sourceWindow.offsets, piece.sourceWindow.sizes)) {
-            offsets.push_back(rewriter.getIndexAttr(offset));
-            sizes.push_back(rewriter.getIndexAttr(size));
-            strides.push_back(rewriter.getIndexAttr(1));
-          }
-          auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
-              slice.getLoc(), piece.source, offsets, sizes, strides);
-          mlir::Value sourcePiece = sourceSlice;
-          sourceReads.push_back(sourceSlice);
-          auto pieceType = mlir::RankedTensorType::get(
-              piece.resultWindow.sizes, assembledType.getElementType(),
-              assembledType.getEncoding());
-          auto reshaped =
-              reshapeTile(rewriter, slice.getLoc(), sourcePiece, pieceType);
-          if (mlir::failed(reshaped))
-            return mlir::failure();
-          pieces.push_back({*reshaped, piece.resultWindow});
-        }
-        auto compactType = mlir::RankedTensorType::get(
-            staticRequestSizes, assembledType.getElementType(),
-            assembledType.getEncoding());
-        auto assembled = compiler::detail::materializeTensorAssemblyTile(
-            rewriter, slice.getLoc(), compactType, requested, pieces);
-        if (mlir::failed(assembled))
-          return mlir::failure();
-        auto replacement =
-            reshapeTile(rewriter, slice.getLoc(), *assembled, resultType);
-        if (mlir::failed(replacement))
-          return mlir::failure();
-        rewriter.replaceOp(slice, *replacement);
-        statistics.assembledSegments += pieces.size();
-        ++statistics.tileLocalAssemblies;
-        continue;
-      }
-      if (!partitionDimension) {
-        if (mlir::failed(materializeMultiAxisAssemblySlice(
-                rewriter, slice, request, requestOffsets, staticRequestSizes,
-                statistics, sourceReads)))
-          return mlir::failure();
-        continue;
-      }
-      auto empty = rewriter.create<mlir::tensor::EmptyOp>(
-          slice.getLoc(), staticRequestSizes, resultType.getElementType(),
-          resultType.getEncoding());
-      mlir::Value assembled = empty;
-      auto staticResultType = empty.getType();
-
-      const unsigned axis = *partitionDimension;
-      const int64_t requestLength = staticRequestSizes[axis];
-      std::optional<int64_t> constantRequestBegin =
-          resolveStaticIndex(requestOffsets[axis]);
-      std::optional<TensorLoopGrid> grid;
-      if (!constantRequestBegin) {
-        grid = queryTensorLoopGrid(requestOffsets[axis]).grid;
-        if (!grid || grid->step != requestLength)
-          return mlir::failure();
-      }
-
-      auto createConditionForExactBegin = [&](int64_t begin) {
-        mlir::Value expected = rewriter.create<mlir::arith::ConstantIndexOp>(
-            slice.getLoc(), begin);
-        return rewriter.create<mlir::arith::CmpIOp>(
-            slice.getLoc(), mlir::arith::CmpIPredicate::eq, grid->offset,
-            expected);
-      };
-      auto createConditionForRange = [&](int64_t first, int64_t last) {
-        if (first == last)
-          return createConditionForExactBegin(first).getResult();
-        mlir::Value lower = rewriter.create<mlir::arith::ConstantIndexOp>(
-            slice.getLoc(), first);
-        mlir::Value upper =
-            rewriter.create<mlir::arith::ConstantIndexOp>(slice.getLoc(), last);
-        mlir::Value atLeast = rewriter.create<mlir::arith::CmpIOp>(
-            slice.getLoc(), mlir::arith::CmpIPredicate::sge, grid->offset,
-            lower);
-        mlir::Value atMost = rewriter.create<mlir::arith::CmpIOp>(
-            slice.getLoc(), mlir::arith::CmpIPredicate::sle, grid->offset,
-            upper);
-        return rewriter
-            .create<mlir::arith::AndIOp>(slice.getLoc(), atLeast, atMost)
-            .getResult();
-      };
-
-      auto emitPiece =
-          [&](const analysis::TensorAssemblySegment &segment,
-              mlir::OpFoldResult sourceAxisOffset,
-              mlir::OpFoldResult destinationAxisOffset, int64_t axisSize,
-              mlir::Value condition) -> mlir::LogicalResult {
-        auto sourceType =
-            mlir::cast<mlir::RankedTensorType>(segment.source.getType());
-        auto dropped = mlir::computeRankReductionMask(segment.sizes,
-                                                      sourceType.getShape());
-        if (!dropped)
-          return mlir::failure();
-        llvm::SmallVector<mlir::OpFoldResult, 4> sourceOffsets;
-        llvm::SmallVector<mlir::OpFoldResult, 4> sourceSizes;
-        llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
-        llvm::SmallVector<mlir::OpFoldResult, 4> pieceSizes;
-        for (unsigned dimension = 0; dimension < staticRequestSizes.size();
-             ++dimension) {
-          if (!dropped->contains(dimension)) {
-            sourceOffsets.push_back(dimension == axis
-                                        ? sourceAxisOffset
-                                        : requestOffsets[dimension]);
-            sourceSizes.push_back(rewriter.getIndexAttr(
-                dimension == axis ? axisSize : staticRequestSizes[dimension]));
-          }
-          destinationOffsets.push_back(dimension == axis
-                                           ? destinationAxisOffset
-                                           : rewriter.getIndexAttr(0));
-          pieceSizes.push_back(rewriter.getIndexAttr(
-              dimension == axis ? axisSize : staticRequestSizes[dimension]));
-        }
-        llvm::SmallVector<mlir::OpFoldResult, 4> strides(
-            staticRequestSizes.size(), rewriter.getIndexAttr(1));
-        mlir::Value current = assembled;
-        mlir::scf::IfOp select;
-        if (condition) {
-          select = rewriter.create<mlir::scf::IfOp>(
-              slice.getLoc(), mlir::TypeRange{staticResultType}, condition,
-              /*withElseRegion=*/true);
-          rewriter.setInsertionPointToStart(&select.getThenRegion().front());
-        }
-        auto sourceSlice = rewriter.create<mlir::tensor::ExtractSliceOp>(
-            slice.getLoc(), segment.source, sourceOffsets, sourceSizes,
-            llvm::SmallVector<mlir::OpFoldResult, 4>(sourceSizes.size(),
-                                                     rewriter.getIndexAttr(1)));
-        mlir::Value sourcePiece = sourceSlice;
-        sourceReads.push_back(sourceSlice);
-        mlir::Value inserted = rewriter.create<mlir::tensor::InsertSliceOp>(
-            slice.getLoc(), sourcePiece, current, destinationOffsets,
-            pieceSizes, strides);
-        if (!condition) {
-          assembled = inserted;
-        } else {
-          rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), inserted);
-          rewriter.setInsertionPointToStart(&select.getElseRegion().front());
-          rewriter.create<mlir::scf::YieldOp>(slice.getLoc(), current);
-          assembled = select.getResult(0);
-          rewriter.setInsertionPointAfter(select);
-        }
-        ++statistics.assembledSegments;
-        return mlir::success();
-      };
-
-      for (const auto &segment : request.segments) {
-        auto sourceType =
-            mlir::dyn_cast<mlir::RankedTensorType>(segment.source.getType());
-        if (!sourceType ||
-            segment.offsets.size() !=
-                static_cast<size_t>(assembledType.getRank()) ||
-            segment.sizes.size() !=
-                static_cast<size_t>(assembledType.getRank()))
-          return mlir::failure();
-        const int64_t segmentBegin = segment.offsets[axis];
-        int64_t segmentEnd = 0;
-        if (llvm::AddOverflow(segmentBegin, segment.sizes[axis], segmentEnd))
-          return mlir::failure();
-        if (constantRequestBegin) {
-          int64_t requestEnd = 0;
-          if (llvm::AddOverflow(*constantRequestBegin, requestLength,
-                                requestEnd))
-            return mlir::failure();
-          const int64_t begin = std::max(*constantRequestBegin, segmentBegin);
-          const int64_t end = std::min(requestEnd, segmentEnd);
-          if (begin < end &&
-              mlir::failed(emitPiece(
-                  segment, rewriter.getIndexAttr(begin - segmentBegin),
-                  rewriter.getIndexAttr(begin - *constantRequestBegin),
-                  end - begin, {})))
-            return mlir::failure();
-          continue;
-        }
-
-        std::optional<int64_t> firstFull =
-            getTensorLoopGridCeil(*grid, segmentBegin);
-        const int64_t lastFullCoordinate = segmentEnd - requestLength;
-        std::optional<int64_t> lastFull =
-            lastFullCoordinate >= grid->lower
-                ? getTensorLoopGridFloor(
-                      *grid, std::min(lastFullCoordinate, grid->upper - 1))
-                : std::nullopt;
-        const bool hasFullRange = firstFull.has_value() &&
-                                  lastFull.has_value() &&
-                                  firstFull.value_or(0) <= lastFull.value_or(0);
-        const int64_t firstFullValue = firstFull.value_or(0);
-        const int64_t lastFullValue = lastFull.value_or(0);
-        if (hasFullRange) {
-          std::optional<int64_t> lastGridValue =
-              getTensorLoopGridFloor(*grid, grid->upper - 1);
-          const bool coversCompleteLoop = firstFullValue == grid->lower &&
-                                          lastGridValue &&
-                                          lastFullValue == *lastGridValue;
-          mlir::Value condition =
-              coversCompleteLoop
-                  ? mlir::Value{}
-                  : createConditionForRange(firstFullValue, lastFullValue);
-          mlir::OpFoldResult sourceOffset =
-              firstFullValue == lastFullValue && !coversCompleteLoop
-                  ? mlir::OpFoldResult(
-                        rewriter.getIndexAttr(firstFullValue - segmentBegin))
-                  : addConstantOffset(rewriter, slice.getLoc(), grid->offset,
-                                      -segmentBegin);
-          if (mlir::failed(emitPiece(segment, sourceOffset,
-                                     rewriter.getIndexAttr(0), requestLength,
-                                     condition)))
-            return mlir::failure();
-        }
-
-        llvm::SmallVector<int64_t, 2> boundaryBegins;
-        if (std::optional<int64_t> begin =
-                getTensorLoopGridFloor(*grid, segmentBegin))
-          boundaryBegins.push_back(*begin);
-        if (std::optional<int64_t> begin =
-                getTensorLoopGridFloor(*grid, segmentEnd - 1))
-          boundaryBegins.push_back(*begin);
-        llvm::sort(boundaryBegins);
-        boundaryBegins.erase(
-            std::unique(boundaryBegins.begin(), boundaryBegins.end()),
-            boundaryBegins.end());
-        for (int64_t requestBegin : boundaryBegins) {
-          if (hasFullRange && requestBegin >= firstFullValue &&
-              requestBegin <= lastFullValue)
-            continue;
-          int64_t requestEnd = 0;
-          if (llvm::AddOverflow(requestBegin, requestLength, requestEnd))
-            return mlir::failure();
-          const int64_t begin = std::max(requestBegin, segmentBegin);
-          const int64_t end = std::min(requestEnd, segmentEnd);
-          if (begin >= end)
-            continue;
-          mlir::Value condition = createConditionForExactBegin(requestBegin);
-          if (mlir::failed(emitPiece(
-                  segment, rewriter.getIndexAttr(begin - segmentBegin),
-                  rewriter.getIndexAttr(begin - requestBegin), end - begin,
-                  condition)))
-            return mlir::failure();
-        }
-      }
-      mlir::FailureOr<mlir::Value> replacement =
-          reshapeTile(rewriter, slice.getLoc(), assembled, resultType);
-      if (mlir::failed(replacement))
-        return mlir::failure();
-      rewriter.replaceOp(slice, *replacement);
+      statistics.assembledSegments += generated->sourceReads.size();
       ++statistics.tileLocalAssemblies;
+      sourceReads.append(generated->sourceReads);
+      rewriter.replaceOp(slice, generated->value);
     }
   }
   return sourceReads;
 }
 
-// Computation fusion consumes actual source reads produced above. Keeping this
-// choice in Temporal prevents pure subset generation from cloning a producer.
 mlir::LogicalResult fuseAssemblySources(
     mlir::IRRewriter &rewriter, TileRegionOp region,
     llvm::ArrayRef<AssemblyReadRequest> requests,
@@ -2603,7 +1700,8 @@ void localizeAssemblyViewSlices(
 mlir::LogicalResult
 localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
                           TemporalTilingStatistics &statistics,
-                          ProducerTiling &producerTiling) {
+                          ProducerTiling &producerTiling,
+                          TemporalTilingFailure *failure) {
   // Query actual subsets after all traversals, including fused reductions.
   // Rebuild after each rewrite: loop specialization can replace nested IR.
   while (true) {
@@ -2627,7 +1725,17 @@ localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
         if (!query.isExact())
           continue;
         auto candidate = getAssemblyReadRequest(query);
-        if (!canSpecializeConcatSlices(region, candidate))
+        auto opportunity = queryUnsharedAssemblyReads(region, candidate);
+        if (opportunity.kind ==
+                TensorAssemblyOpportunityKind::ResourceExhausted ||
+            opportunity.kind == TensorAssemblyOpportunityKind::BrokenContract) {
+          if (failure)
+            *failure = {assemblyFailureKind(opportunity.kind),
+                        opportunity.detail};
+          broken = true;
+          return mlir::WalkResult::interrupt();
+        }
+        if (opportunity.kind != TensorAssemblyOpportunityKind::Available)
           continue;
         collectAssemblyProducerFusions(query, selectedProducers);
         request = std::move(candidate);
@@ -2640,9 +1748,12 @@ localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
     if (!request)
       break;
     localizeAssemblyViewSlices(rewriter, region, {*request});
-    if (mlir::failed(specializeConcatLoopBoundaries(rewriter, region,
-                                                    {*request}, statistics)))
+    if (mlir::failed(specializeConcatLoopBoundaries(
+            rewriter, region, {*request}, statistics, nullptr, failure))) {
+      if (failure && failure->kind != TemporalTilingFailureKind::None)
+        return mlir::failure();
       return region.emitOpError("assembly boundary specialization failed");
+    }
     if (mlir::failed(fuseAssemblySources(rewriter, region, {*request},
                                          selectedProducers, statistics,
                                          producerTiling)))
@@ -3752,14 +2863,27 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
           "ragged temporal loop could not form one static tail");
     canonicalizeLoopBoundMinMax(rewriter, region);
     localizeAssemblyViewSlices(rewriter, region, assemblyRequests);
-    llvm::erase_if(assemblyRequests, [&](const auto &request) {
-      return !canSpecializeConcatSlices(region, request);
-    });
-    if (mlir::failed(specializeConcatLoopBoundaries(
-            rewriter, region, assemblyRequests, statistics)))
+    llvm::SmallVector<AssemblyReadRequest, 2> selectedAssemblies;
+    for (const auto &request : assemblyRequests) {
+      auto opportunity = queryUnsharedAssemblyReads(region, request);
+      if (opportunity.kind ==
+              TensorAssemblyOpportunityKind::ResourceExhausted ||
+          opportunity.kind == TensorAssemblyOpportunityKind::BrokenContract)
+        return fail<TemporalTilingStatistics>(
+            failure, assemblyFailureKind(opportunity.kind), opportunity.detail);
+      if (opportunity.kind == TensorAssemblyOpportunityKind::Available)
+        selectedAssemblies.push_back(request);
+    }
+    assemblyRequests = std::move(selectedAssemblies);
+    if (mlir::failed(
+            specializeConcatLoopBoundaries(rewriter, region, assemblyRequests,
+                                           statistics, nullptr, failure))) {
+      if (failure && failure->kind != TemporalTilingFailureKind::None)
+        return mlir::failure();
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::CompilerFailure,
           "static concat boundary could not specialize its canonical loop");
+    }
     if (mlir::failed(fuseViewProducerSlices(
             rewriter, region, viewFusionRequests, statistics, producerTiling)))
       return fail<TemporalTilingStatistics>(
@@ -3938,10 +3062,13 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
         "temporal tiling was invalid before final common-subexpression "
         "elimination");
   if (mlir::failed(localizeCurrentAssemblies(rewriter, region, statistics,
-                                             producerTiling)))
+                                             producerTiling, failure))) {
+    if (failure && failure->kind != TemporalTilingFailureKind::None)
+      return mlir::failure();
     return fail<TemporalTilingStatistics>(
         failure, TemporalTilingFailureKind::CompilerFailure,
         "current assembly tile could not be materialized");
+  }
   if (mlir::failed(materializeInitializerTiles(rewriter, region)))
     return fail<TemporalTilingStatistics>(
         failure, TemporalTilingFailureKind::CompilerFailure,
@@ -4025,80 +3152,6 @@ applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
   return total;
 }
 
-namespace {
-
-struct DynamicAssemblyReadQuery {
-  TensorAssemblyOpportunity outcome;
-  std::optional<AssemblyReadRequest> request;
-};
-
-DynamicAssemblyReadQuery
-queryDynamicAssemblyRead(mlir::tensor::ExtractSliceOp read,
-                         const analysis::IndexRelationLimits &limits) {
-  if (!read.getSource().getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
-    auto *definition = read.getSource().getDefiningOp();
-    if (!definition || !mlir::isa<WaferTensorIndexingOpInterface>(definition))
-      return {{TensorAssemblyOpportunityKind::NotApplicable, {}}, std::nullopt};
-    auto view = analysis::deriveTensorViewIndexing(read.getSource(), limits);
-    if (!view.isExact())
-      return {{indexingOutcome(view.status), std::move(view.detail)},
-              std::nullopt};
-    if (view.indexing->source.getDefiningOp<mlir::SubsetInsertionOpInterface>())
-      return {{TensorAssemblyOpportunityKind::Unsupported,
-               "parameterized assembly view requires a supported "
-               "source-coordinate partition"},
-              std::nullopt};
-    return {{TensorAssemblyOpportunityKind::NotApplicable, {}}, std::nullopt};
-  }
-  for (auto offset : read.getMixedOffsets()) {
-    if (resolveStaticIndex(offset))
-      continue;
-    auto grid = analysis::queryTensorLoopGrid(offset, limits);
-    if (grid.status != analysis::TensorResultIndexingStatus::Exact)
-      return {{indexingOutcome(grid.status), std::move(grid.detail)},
-              std::nullopt};
-  }
-  auto assembly = analysis::queryTensorAssembly(read.getSource(), limits);
-  if (!assembly.isExact())
-    return {{assemblyOutcome(assembly.status), std::move(assembly.detail)},
-            std::nullopt};
-  AssemblyReadRequest request{read.getSource(), {}};
-  for (auto &piece : assembly.segments)
-    request.segments.push_back({piece.source, piece.sourceOperand,
-                                std::move(piece.offsets), std::move(piece.sizes)});
-  if (!canSpecializeConcatSlices(read->getParentOfType<TileRegionOp>(), request,
-                                 /*allowAdditionalAssembly=*/true, read))
-    return {{TensorAssemblyOpportunityKind::Unsupported,
-             "selected assembly read has no supported static loop partition or "
-             "placement"},
-            std::nullopt};
-  return {{TensorAssemblyOpportunityKind::Available, {}}, std::move(request)};
-}
-
-bool hasDynamicAssemblyOffset(mlir::tensor::ExtractSliceOp read) {
-  return llvm::any_of(read.getMixedOffsets(), [](mlir::OpFoldResult offset) {
-    return !resolveStaticIndex(offset);
-  });
-}
-
-TemporalTilingFailureKind
-assemblyFailureKind(TensorAssemblyOpportunityKind kind) {
-  switch (kind) {
-  case TensorAssemblyOpportunityKind::Unsupported:
-  case TensorAssemblyOpportunityKind::NotApplicable:
-    return TemporalTilingFailureKind::Unsupported;
-  case TensorAssemblyOpportunityKind::ResourceExhausted:
-    return TemporalTilingFailureKind::ResourceExhausted;
-  case TensorAssemblyOpportunityKind::BrokenContract:
-    return TemporalTilingFailureKind::BrokenContract;
-  case TensorAssemblyOpportunityKind::Available:
-    return TemporalTilingFailureKind::None;
-  }
-  llvm_unreachable("unknown assembly read outcome");
-}
-
-} // namespace
-
 TensorAssemblyOpportunity
 queryLocalTensorAssemblyRead(mlir::tensor::ExtractSliceOp read,
                              const analysis::IndexRelationLimits &limits) {
@@ -4106,15 +3159,20 @@ queryLocalTensorAssemblyRead(mlir::tensor::ExtractSliceOp read,
       mlir::failed(mlir::verify(read)))
     return {TensorAssemblyOpportunityKind::BrokenContract,
             "local assembly query requires a verified current Region read"};
-  if (hasDynamicAssemblyOffset(read))
-    return queryDynamicAssemblyRead(read, limits).outcome;
-  return queryStaticAssemblyRead(read, limits).outcome;
+  auto query = compiler::detail::queryTensorAssemblySlice(read, limits);
+  if (!query.isExact())
+    return {assemblyOutcome(query.status), std::move(query.detail)};
+  if (!queryAssemblySliceReuse(read, /*allowRepeatedReads=*/true))
+    return {TensorAssemblyOpportunityKind::Unsupported,
+            "assembly read has no supported current placement"};
+  return {TensorAssemblyOpportunityKind::Available, {}};
 }
 
 mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
     TileRegionOp region, llvm::ArrayRef<mlir::tensor::ExtractSliceOp> reads,
     StructuredMaterializationRelations &relations,
-    TemporalTilingFailure *failure) {
+    TemporalTilingFailure *failure,
+    const analysis::IndexRelationLimits &limits) {
   if (failure)
     *failure = {};
   auto module =
@@ -4133,32 +3191,31 @@ mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::BrokenContract,
           "assembly selection contains a foreign or repeated read");
-    auto outcome = queryLocalTensorAssemblyRead(read);
+    auto outcome = queryLocalTensorAssemblyRead(read, limits);
     if (outcome.kind != TensorAssemblyOpportunityKind::Available)
       return fail<TemporalTilingStatistics>(
           failure, assemblyFailureKind(outcome.kind), outcome.detail);
     selected.push_back(read);
-    if (hasDynamicAssemblyOffset(read) &&
-        llvm::none_of(requests, [&](const auto &request) {
+    if (llvm::none_of(requests, [&](const auto &request) {
           return request.assembledValue == read.getSource();
-        })) {
-      auto dynamic =
-          queryDynamicAssemblyRead(read, analysis::IndexRelationLimits());
-      requests.push_back(std::move(*dynamic.request));
-    }
+        }))
+      requests.push_back({read.getSource()});
   }
   TemporalTilingStatistics total;
   compiler::detail::StructuredBufferReplacementListener listener(relations);
   mlir::IRRewriter rewriter(region.getContext(), &listener);
-  if (mlir::failed(specializeConcatLoopBoundaries(rewriter, region, requests,
-                                                  total, &selected)))
+  if (mlir::failed(specializeConcatLoopBoundaries(
+          rewriter, region, requests, total, &selected, failure, limits))) {
+    if (failure && failure->kind != TemporalTilingFailureKind::None)
+      return mlir::failure();
     return fail<TemporalTilingStatistics>(
         failure, TemporalTilingFailureKind::CompilerFailure,
         "selected assembly boundary partition failed after preflight");
+  }
   // Splitting clones actual reads with IRMapping. Query those live reads anew;
   // never recover a clone by its walk position, source shape or symbol name.
   for (auto read : selected) {
-    auto current = queryLocalTensorAssemblyRead(read);
+    auto current = queryLocalTensorAssemblyRead(read, limits);
     // A selected ancestor view may already have exposed the original tensor
     // leaf to this selected read. Its current source is authoritative.
     if (current.kind == TensorAssemblyOpportunityKind::NotApplicable)
@@ -4167,24 +3224,11 @@ mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::CompilerFailure,
           "selected assembly read lost its proved representation");
-    if (hasDynamicAssemblyOffset(read)) {
-      auto dynamic =
-          queryDynamicAssemblyRead(read, analysis::IndexRelationLimits());
-      if (!dynamic.request ||
-          mlir::failed(materializeAssemblySlices(
-              rewriter, region, {*dynamic.request}, total, read)))
-        return fail<TemporalTilingStatistics>(
-            failure, TemporalTilingFailureKind::CompilerFailure,
-            "selected dynamic assembly read failed after preflight");
-    } else {
-      auto stat =
-          queryStaticAssemblyRead(read, analysis::IndexRelationLimits());
-      if (!stat.read || mlir::failed(materializeStaticAssemblyRead(
-                            rewriter, read, std::move(*stat.read), total)))
-        return fail<TemporalTilingStatistics>(
-            failure, TemporalTilingFailureKind::CompilerFailure,
-            "selected static assembly read failed after preflight");
-    }
+    if (mlir::failed(materializeAssemblySlices(
+            rewriter, region, {{read.getSource()}}, total, read)))
+      return fail<TemporalTilingStatistics>(
+          failure, TemporalTilingFailureKind::CompilerFailure,
+          "selected assembly read failed after preflight");
   }
   if (mlir::failed(canonicalizeTiledRegion(region, &listener)) ||
       !listener.finalizeAfterRewrite() || mlir::failed(mlir::verify(module)) ||

@@ -88,7 +88,9 @@ queryLocalTensorAssemblyRead(mlir::tensor::ExtractSliceOp read,
 mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
     TileRegionOp region, llvm::ArrayRef<mlir::tensor::ExtractSliceOp> reads,
     StructuredMaterializationRelations &relations,
-    TemporalTilingFailure *failure = nullptr);
+    TemporalTilingFailure *failure = nullptr,
+    const analysis::IndexRelationLimits &limits =
+        analysis::IndexRelationLimits());
 
 } // namespace wafer
 

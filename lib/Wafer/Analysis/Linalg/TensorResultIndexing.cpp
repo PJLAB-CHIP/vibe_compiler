@@ -780,8 +780,14 @@ queryTensorAssemblyDemand(mlir::Value value,
   TensorAssemblyDemandResult result;
   result.status = TensorAssemblyStatus::Exact;
   mlir::Value current = value;
+  uint64_t steps = 0;
   while (auto insert =
              current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
+    if (pending.empty())
+      break;
+    if (++steps > limits.maxConstraintWork)
+      return fail(TensorAssemblyStatus::ResourceExhausted,
+                  "insert demand exceeded its SSA traversal budget");
     auto indexing = deriveTensorResultIndexing(
         mlir::cast<mlir::OpResult>(current), limits);
     if (!indexing.isExact())

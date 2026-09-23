@@ -593,6 +593,8 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 
 `TensorResultIndexing`/`IndexRelation`只保存当前关系。对窗口D和插入区域W，插入源消费D与W的交集经源映射后的集合，
 旧destination消费D去掉W后的集合；共同物化器按准确pieces形成局部值，保持last-writer及rank reduction。
+源坐标必须沿原insert的索引投影恢复；裁剪使保留维变成unit时，不得从局部shape重新推断删除轴。
+有界读取查询只保存当前访问的有限区间和数学关系；循环切分后失效并重新查询，不成为跨stage物化清单。
 动态offset由当前有界循环和分支约束推导，不要求裸IV。分片边界、reshape周期和tail采用有界静态尺寸分段；
 不逐元素或逐迭代实例生成代码，不以bounding box替代带holes的集合。
 Opaque计算与loop-carried快照作为当前SSA边界；未选计算融合时只读取已有结果，不复制其算术。

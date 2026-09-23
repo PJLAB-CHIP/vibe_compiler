@@ -7,6 +7,7 @@ add_mlir_library(WaferAnalysis
   Linalg/SemanticRootAnalysis.cpp
   Linalg/StructuredDAGAnalysis.cpp
   Linalg/TensorResultIndexing.cpp
+  Linalg/TensorAssemblyRead.cpp
   Tile/AccessReuseAnalysis.cpp
   Tile/MovementEndpoint.cpp
   Tile/PhysicalAccessRelation.cpp

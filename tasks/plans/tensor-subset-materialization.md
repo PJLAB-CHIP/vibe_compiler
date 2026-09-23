@@ -55,9 +55,34 @@ TemporalTiling的54项测试（含计算来源反例）及新增容量对照实�
 实际局部化，两条路径都进入Instr/completion/SPM：共享得到带actual oversized demand的typed容量拒绝，局部生成合法offsets。
 重构后的Driver standard mixed/cache专项、canonical完整增量和后续Ninja no-op通过。
 
-仍未闭合：动态partial insert与参数化view的共同生成及独立文件归属、全部typed工作预算、
-共享/局部的controller容量反馈专项、fresh产品及板测。
-本轮暂不推进LM资格或性能签发，先完成上述设计缺口。
+2026-09-24接续：共同有界读取查询已进入`Analysis/Linalg/TensorAssemblyRead.cpp`，
+纯片段生成进入`TensorAssemblyMaterialization.cpp`。Temporal的静态、单轴、多轴及partial insert
+均消费同一读取查询；只保留实际循环切分、共享放置和明确的计算融合职责。窗口跨边界时生成有限区间，
+旧destination及重叠insert按last-writer处理；透明view当前覆盖整族可证明的矩形平移和row-major次序。
+rank reduction必须消费原insert关系的source投影，不能从裁剪后恰好为1的维度重新推断删除轴。
+新增长度1窗口的独立坐标oracle先复现错误，修复后与32行窗口、1024/1025/1031及稀疏读取一起通过。
+查询和分段累计SSA步数、边界、case/piece及实际循环克隆工作；预算失败保留ResourceExhausted。
+
+本轮Analysis 144项、Transforms 543项组件回归通过；随后原insert投影修复的Analysis全组件与
+Temporal 56项通过。Controller standard共享/局部分支专项实际观察到两边独立的SPM冲突及容量修正，
+cache-off/eviction的比较同时包含容量反馈序列；完整Driver除独立deep长测外的152项通过。
+四项保护的新source/reference/package及guard no-card均已通过。首次S1024正式standard 8/42
+全部actual capacity拒绝；修正下述适用性与组合排序后，本轮接续编译已启动96个读取组的完整局部实现，
+实际独立容量修正已将该候选最大allocation降至1 MiB且无单个oversized demand，但整体SPM尚未accepted。
+S1024/S1025仍在原8/42预算内编译，不能签LM board-ready。
+
+仍未闭合：通用reshape的常数floor/mod周期与多piece生成、全部typed预算审查、完整LM产品路径、
+四项性能保护和两项LM实卡。已修复显式局部选择误用外层不变循环共享限制的问题；
+普通确定性局部化继续保留原动态共享次数。该反例已通过：分段后重新查询，若相关轴成为singleton，
+可在不跨剩余IV依赖的前提下共享局部SSA；实际动态组装量按生成后的循环逐项核对。
+独立deep计费/收尾本轮重跑仍在执行，未使用历史结果代签。
+S1024继续暴露组合分支的排序缺陷：继承实际reuse选择的局部分支丢失了父分支的收益排序hint。
+组合发现保持同一hint，仍独立计费、物化及actual容量/cost求值；不改SPM准入或扩大width/trials。
+
+本轮实卡保护已完成前两项：FP16 4096 GEMM为7.374/7.231/7.343ms，中位数7.343ms，
+通过7.414ms门槛；BF16为7.256/7.308/7.416ms，中位数7.308ms，高于7.271ms，性能保护未通过。
+两项六次完整数值、guard、16 Tile completion、占用及运行窗口诊断均通过，无fatal/timeout。
+保留全部样本，继续其余保护及实际IR差异核对；不放宽门槛或用健康数值代签性能。
 
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
 Driver 151项组件单测全部实际通过，共831项，无跳过。随后补强组合反例的逐行执行覆盖计数，六组输入重新通过，
@@ -111,8 +136,8 @@ S1025 还存在独立的 packed-i1 非 byte 对齐写回限制。后者不能由
 | --- | --- |
 | `TemporalDomain.cpp::queryTemporalConcatAssembly` 混合覆盖分析与 `derivedProducer` 计算融合资格 | 纯来源/覆盖证明进入 `Analysis/Linalg`；计算融合仍由 Temporal fusion 查询消费 |
 | `getConcatPartitionDimension` 只接受单轴拼接，`getCanonicalLoopGrid` 要求裸 IV | 多维需求与参数化循环关系由同一索引分析描述；生成器按能力返回明确结果 |
-| `queryAssemblySliceReuse` / `canSpecializeConcatSlices` 混合生成条件、full-use、重复读取和放置 | 生成 preflight 与实际 use-family 的共享选择分离；不把性能取舍当语义不合法 |
-| Temporal的纯片段生成与计算融合原先同处一个函数 | 已由实际source subset隔开：`materializeAssemblySlices`只生成，`fuseAssemblySources`消费明确的assembly/producer选择；共同文件迁移仍待 |
+| `queryAssemblySliceReuse` / `queryUnsharedAssemblyReads` 混合生成条件、full-use、重复读取和放置 | 生成 preflight 与实际 use-family 的共享选择分离；不把性能取舍当语义不合法 |
+| Temporal的纯片段生成与计算融合原先同处一个函数 | 已由实际source subset隔开：`materializeAssemblySlices`只生成，`fuseAssemblySources`消费明确的assembly/producer选择；共同文件已由有界读取查询与纯生成器承接 |
 | 普通切分后与融合归约后各自发现局部化机会，检查顺序不同 | 同一当前 subset 查询/物化实现，rewrite 后更新工作集；最终 Tensor 边界统一检查 |
 | Spatial 的 `materializeCompactSupportTile` 与 Temporal 分别生成 view/片段 | 共享索引映射和片段生成；Spatial endpoint 绑定、Temporal 循环与计算融合各自保留 |
 | `AccessReuse` 在 BoundaryMovement 后识别实际 load，当前要求函数输入身份 | 本项保持其合同；不让它修复上游 Tensor 拼接 |
@@ -121,7 +146,7 @@ S1025 还存在独立的 packed-i1 非 byte 对齐写回限制。后者不能由
 这些函数只是迁移索引；新增源码/API 名称按职责确定，不把旧实现名固化成协议。
 相关文件为 `lib/Wafer/Transforms/Linalg/TemporalTiling.cpp`、`SpatialRegionMaterialization.cpp`、
 `lib/Wafer/Planning/PhysicalDataflow/TemporalDomain.cpp`、
-`lib/Wafer/Analysis/Linalg/TensorResultIndexing.cpp` 和 `lib/Wafer/Transforms/Tile/PhysicalMovementPlacement.cpp`。
+`lib/Wafer/Analysis/Linalg/TensorResultIndexing.cpp`、`TensorAssemblyRead.cpp` 和 `lib/Wafer/Transforms/Tile/PhysicalMovementPlacement.cpp`。
 
 算法依据：采用 MLIR 的 [consumer tile 驱动 producer 需求](https://mlir.llvm.org/docs/Tutorials/transform/Ch1/)和
 [Tensor DPS 后再 bufferize](https://mlir.llvm.org/docs/Bufferization/)的分工。
@@ -164,6 +189,12 @@ offset 不必是常量或裸 IV，`base + iv * step` 与等价 affine 写法使�
 请求落在单一来源且局部顺序可表达时直接切片/reshape；跨来源时才建立紧凑 destination。
 分段数、relation 求解和生成工作量受已有显式预算约束；预算耗尽返回 ResourceExhausted，不能近似成包围盒。
 非单位 stride、数据依赖索引或无法生成静态局部块时保留明确能力限制，不宣称为硬件禁用。
+
+线性循环的实现按实际insert窗口边界划分读取族：边界穿过消费窗口的有限实例单独形成区间，
+完全处于同一片段内的连续实例保留循环。每个区间在首个实际窗口上调用共同last-writer需求查询，
+再由同一区间内不跨边界的证明将源offset提升为原IV的affine表达式；局部size和destination坐标必须恒定。
+多个读取对同一循环取分段点并集，克隆后通过同次IRMapping绑定并重新查询。此过程中不构造带holes需求的包围框，
+也不读取未被实际窗口消费的tensor.empty。跨边界实例、区间笛卡尔积、SSA链步数和生成片段共同受显式工作预算限制。
 
 ### 3.3 Preflight、输出与失败
 
@@ -264,6 +295,17 @@ cache-off/eviction不改变实际候选序列。绑定只使用父SSA、同次IR
 | 共享实际超容量而局部合法；两者都合法但流量不同 | 先物化再真实规划；合法集不受 footprint 估算影响 | completion-closed Instr → SPM offsets/typed 冲突 → controller |
 | 原始完整 LM S1024/1025 FP16 | 完整 embedding/decoder/final norm/32000 logits；尾部写回独立闭合 | fresh source/reference/package/no-card → 本轮实卡全部输出/guard |
 | 原 ViT、LLaMA block 与大 GEMM、2048 attention | 同配置功能保护；四项性能门槛逐项通过 | 当前生产入口，见第7节；无 skip/unsupported 代签 |
+
+本轮共同生成的补充覆盖：
+
+| 输入等价类 | 已执行检查 | 直接下游 |
+| --- | --- | --- |
+| 1024/1025/1031、partial overlap、rank-reduced source，窗口1/32，步长16/32/64 | `BoundedAssemblyReadsPreservePartialLastWriters`逐点核对来源、原source坐标和恰好一次覆盖；保留单位维歧义的先失败证据 | 同一动态查询供Temporal生成 |
+| 2048行中的两个32行定义窗口，中间为未定义holes | `BoundedAssemblyReadsDoNotDemandUndefinedHoles`只读实际窗口；扩大到33行明确Unsupported | 不把稀疏读取包围框当需求 |
+| partial insert后的expand，带非零局部origin和两轴读取 | `BoundedAssemblyViewUsesTheWholeCurrentRelation`验证全族次序；`ParameterizedPartialAssemblyViewReachesInstrAndSPM`覆盖1024/1025/1031 | 实际layout、bufferization、Instr与SPM通过 |
+| 同loop的两个偏移读取、两种遍历顺序、partial last-writer | `AssemblyReadFamiliesUnionBoundariesAndHoistIndices`扩到12组，逐元素解释实际生成SSA | 验证、Instr/SPM通过 |
+| 片段预算0、未定义source、非单位stride、scalar source | `AssemblyReadFailuresAreTypedAndLeaveIRUnchanged`整批mutation前拒绝，IR逐字不变 | typed失败，无assert |
+| 共享/局部implementation分别发生actual容量拒绝 | `AssemblyGroupsHaveIndependentActualImplementations`两边独立observeCapacity/refinement，observer验证actual demand；不以估算准入 | 原controller与SPM leaf；cache序列包含容量反馈 |
 
 ## 7. 大 GEMM 与 2048 attention 的硬性性能保护
 
