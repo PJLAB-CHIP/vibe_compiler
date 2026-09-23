@@ -22,6 +22,7 @@ struct ReadAccess {
   StorageLoadOp load;
   TileModuleOp tile;
   int64_t argument = -1;
+  mlir::MemRefType inputType;
   mlir::MemRefType sourceType;
   mlir::MemRefType payloadType;
   llvm::SmallVector<int64_t> strides;
@@ -47,6 +48,7 @@ struct ScopedReadAccess {
   mlir::Value source;
   TileModuleOp tile;
   int64_t argument = -1;
+  mlir::MemRefType inputType;
   mlir::scf::ForOp scope;
   mlir::AffineMap origin;
   llvm::SmallVector<mlir::Value, 4> parameters;

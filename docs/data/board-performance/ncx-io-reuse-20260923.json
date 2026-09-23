@@ -1,0 +1,1711 @@
+{
+  "date": "2026-09-23T03:55:40.584260+00:00",
+  "scope": "直接NCx I/O输入复用及私有DMA/layout合成；BF16指定GEMM和2048 attention，原算术/seed/预算/数值策略。",
+  "root": "/data/vibe_compiler-validation/ncx-io-reuse-20260923",
+  "source_parent_commit": "6cd754de0c6fa1582ca1bfecad27030bcd2776b4",
+  "tools": {
+    "build/bin/wafer-compile": "0208065a29783e8d6b39e5c5267329dd93b7c97815751db3867cd500cc422095",
+    "build/bin/wafer-compile-test": "81e58a0198fcab2eb5d01feeb1448d70558d8700991f3ebb859f372ae0247cf7",
+    "build/board-bin/wafer-run": "22e89cdb18e7b0356cd31324bdd4ec747a33047c40cce5a69d4d80a94c3fc0fa",
+    "build/bin/wafer-board-diagnose": "f4076d19d1fc88687bb6a674a40e4bcbd54ef0db4c12a9c3021fe3f9a28aa187"
+  },
+  "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+  "runtime_library_sha256": "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+  "environment": {
+    "PYTHONPATH": "/home/ubuntu/hxf_dev/vibe_compiler/python",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "TX8_DEPS_ROOT": "/home/ubuntu/hxf_dev/vibe_compiler/third_party/tx8_deps",
+    "PATH_prefix": "/home/ubuntu/hxf_dev/vibe_compiler/build/third_party/llvm-project-f0b3/bin"
+  },
+  "cases": {
+    "gemm": {
+      "seed": 20260803,
+      "dtype": "bf16",
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "input_ports": [
+        {
+          "id": 0,
+          "role_index": 1,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            1024,
+            4096
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            1024,
+            4096
+          ],
+          "bytes": 8388608,
+          "alignment": 256
+        },
+        {
+          "id": 1,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            4096,
+            1024
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            4096,
+            1024
+          ],
+          "bytes": 8388608,
+          "alignment": 256
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "bytes": 33554432,
+          "alignment": 256
+        }
+      ],
+      "samples": [
+        {
+          "device_ms": 3.127,
+          "audit": {
+            "case": "single-card-gemm-m4096-k1024-n4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "86ac5c480ca3d3badf023163cadf16618c9d1a2d25ae7c9585d8c358e6b85555",
+            "comparison_passed": true,
+            "memory_guard_bytes": 20800,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+              "card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 0.5,
+                "cosine_similarity": 0.9999999973703549,
+                "relative_l2_error": 7.252768781293553e-05,
+                "elementwise_mismatches": 99,
+                "mean_abs_error": 2.4142965550311146e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3127000"
+            ]
+          },
+          "diagnostics": {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "host_register_capture": false,
+            "returncode": 0,
+            "passed": true,
+            "alarms": [],
+            "problems": []
+          },
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "state": "idle",
+            "holders": [
+              {
+                "pid": 1615,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "unexplained_fuser_pids": [],
+            "fuser_log": "  1615                     USER        PID ACCESS COMMAND\n/dev/accel/dev-0:    root      F.... npu_pull_ep_log\n"
+          }
+        },
+        {
+          "device_ms": 3.21,
+          "audit": {
+            "case": "single-card-gemm-m4096-k1024-n4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "86ac5c480ca3d3badf023163cadf16618c9d1a2d25ae7c9585d8c358e6b85555",
+            "comparison_passed": true,
+            "memory_guard_bytes": 20800,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+              "card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 0.5,
+                "cosine_similarity": 0.9999999973703549,
+                "relative_l2_error": 7.252768781293553e-05,
+                "elementwise_mismatches": 99,
+                "mean_abs_error": 2.4142965550311146e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3210000"
+            ]
+          },
+          "diagnostics": {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "host_register_capture": false,
+            "returncode": 0,
+            "passed": true,
+            "alarms": [],
+            "problems": []
+          },
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "state": "idle",
+            "holders": [
+              {
+                "pid": 1615,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "unexplained_fuser_pids": [],
+            "fuser_log": "  1615                     USER        PID ACCESS COMMAND\n/dev/accel/dev-0:    root      F.... npu_pull_ep_log\n"
+          }
+        },
+        {
+          "device_ms": 3.203,
+          "audit": {
+            "case": "single-card-gemm-m4096-k1024-n4096",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "86ac5c480ca3d3badf023163cadf16618c9d1a2d25ae7c9585d8c358e6b85555",
+            "comparison_passed": true,
+            "memory_guard_bytes": 20800,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+              "card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 0.5,
+                "cosine_similarity": 0.9999999973703549,
+                "relative_l2_error": 7.252768781293553e-05,
+                "elementwise_mismatches": 99,
+                "mean_abs_error": 2.4142965550311146e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3203000"
+            ]
+          },
+          "diagnostics": {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "host_register_capture": false,
+            "returncode": 0,
+            "passed": true,
+            "alarms": [],
+            "problems": []
+          },
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "state": "idle",
+            "holders": [
+              {
+                "pid": 1615,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "unexplained_fuser_pids": [],
+            "fuser_log": "  1615                     USER        PID ACCESS COMMAND\n/dev/accel/dev-0:    root      F.... npu_pull_ep_log\n"
+          }
+        }
+      ],
+      "median_ms": 3.203,
+      "previous_ncx_median_ms": 13.704,
+      "previous_tensor_median_ms": 3.495,
+      "reduction_from_previous_ncx_percent": 76.6272621132516,
+      "no_card_passed": true,
+      "compile_timing": [
+        "wafer-compile: compile-stats stage=source-to-tensor-program wall_ms=29 peak_rss_kib=505472",
+        "wafer-compile: compile-stats stage=target-ir-lowering wall_ms=9 peak_rss_kib=505472 capture=none abi_preparations=16 tile_lowerings=16 tile_translations=16 tile_pipeline_workers=16",
+        "wafer-compile: compile-stats stage=target-module wall_ms=1188 peak_rss_kib=505472 capture=none module_count=1",
+        "wafer-compile: compile-stats stage=package-assembly wall_ms=95 peak_rss_kib=505472 capture=none tile_count=16",
+        "wafer-compile: compile-stats stage=target-package wall_ms=1293 peak_rss_kib=505472 capture=none",
+        "wafer-compile: compile-stats stage=executable-package wall_ms=10825 peak_rss_kib=505472 capture_packages=0 target_module_set_count=1",
+        "wafer-compile: compile-stats stage=target-codegen wall_ms=10825 peak_rss_kib=505472 profile=false",
+        "wafer-compile: compile-stats stage=output-rename wall_ms=2 peak_rss_kib=505472",
+        "wafer-compile: compile-stats stage=compile-transaction wall_ms=10858 peak_rss_kib=505472"
+      ],
+      "board_command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/data/vibe_compiler-validation/ncx-io-reuse-20260923/case.py",
+        "--case",
+        "single-card-gemm-m4096-k1024-n4096",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/ncx-io-reuse-20260923/gemm-board",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--memory-guards",
+        "--device-timing",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--board-diagnose-tool",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+        "--prepared-work-dir",
+        "/data/vibe_compiler-validation/ncx-io-reuse-20260923/gemm-prepared",
+        "--repeat",
+        "3",
+        "--external-layout",
+        "ncx"
+      ],
+      "tensor_product_comparison": {
+        "baseline_ir": "/data/vibe_compiler-validation/gemm-m4096-k1024-n4096-20260923/prepared/compiler-ir",
+        "stages": {
+          "instruction": {
+            "files": 16,
+            "different": [],
+            "current_sha256": {
+              "tile_00000.mlir": "1aa0a1080679fb12697b98751f8887b07ead013375415ed8658782bf2592ea6f",
+              "tile_00001.mlir": "4be5795de802b7df7b923917ef7e656a0c1d7d4e7e41d79390a97f8bf079f4b5",
+              "tile_00002.mlir": "ff339b764da6b7f64a69f008be2de09c7396e177b5f98225420fe14f588fcef1",
+              "tile_00003.mlir": "dde806b5a4aec5c2889bbf692db39219b93ab521a5dfd23265e788d901cb88cc",
+              "tile_00004.mlir": "5270653da1295d730604236da461f04048f5ae6b61311ab8da69ffa4d0010d29",
+              "tile_00005.mlir": "3220b36697c8bea66922288e49051f04899b204d84f9904dd6e3649fe98a18c8",
+              "tile_00006.mlir": "1e2d9fb90d1a5cd40cdc6aef7eb0fa422b8927163e36f0d1ca655c8d78cd76ed",
+              "tile_00007.mlir": "c420f1178e7a6a22f0e5d91d619b9512ed38224f496195a30db54fc15bd834b8",
+              "tile_00008.mlir": "65c904fb780b2872b2e3bfca39525bbc1f10bdab9e767905fc90dcaf129b1ebc",
+              "tile_00009.mlir": "350256b38fcc8d85b90c32292bf3aaab0ccdd8a7dcc2a1d9001008c0b33a65e0",
+              "tile_00010.mlir": "fe841ce629be04d2d42117e1fad033d4a09d44941383bd25790413b370acf127",
+              "tile_00011.mlir": "7a04b5399276ff2cf73787c7011000e575456fb83a4cbe9893463bad71c5074b",
+              "tile_00012.mlir": "00bd20bc4cad237883f1b8a49bc2d6bd4234c52e096af65abec802f4203b31e5",
+              "tile_00013.mlir": "3893d3b9aaed166b3264325cb549dc86091824df09940c48a2f13590fa662d6f",
+              "tile_00014.mlir": "68edb7807c65a2b4a2ffc3b3636fc3115ae2164b096b67d946f2e4f151cffef7",
+              "tile_00015.mlir": "49f15dbe1d031d7d1e91b2aaa933732075330fe63dd85962fc1f763001de5665"
+            }
+          },
+          "target-llvm": {
+            "files": 16,
+            "different": [],
+            "current_sha256": {
+              "tile_00000.ll": "fc2face1bfffdb96867735ab1cab97f9f6891ea9016ecc3c28eff91985ac874d",
+              "tile_00001.ll": "80339220b24982875df9297ec83f609bccd6dd03c7355942caaa902955c963fe",
+              "tile_00002.ll": "4c2a69eeb2115bd12e4c7f955cd3df1ece9ed245a8d19421ab320698a96142e1",
+              "tile_00003.ll": "6f924498877d7a922c262b90e34c16f53fe3accfaad64c125df9f45bc7f5a947",
+              "tile_00004.ll": "e5fbbf7e635192e966fce728e78c17030449fa2e8902cf8f7a4d49f5fd657b2c",
+              "tile_00005.ll": "69b677a24bdfb76fd63c2faa6eb0f815775ec4f0a6a4578e3ca49cecc9a34c97",
+              "tile_00006.ll": "22eb3bc57f91ab181c014996493f01e66d9e8575095bc29510909d0e506cf922",
+              "tile_00007.ll": "67df5daa8bde863e228a3cc357bae9e1f5fbaa4ff9fbae58fae6a58b98977211",
+              "tile_00008.ll": "25fc3d8a4c20234480660fb13758d9d55065ee1f35a869427c19fe8d3067dfd1",
+              "tile_00009.ll": "3edaa54dc18b772937062e2c7dd4200c1ca0507be49811fc882d736c3772f01b",
+              "tile_00010.ll": "e28b4747cce00a3c309be361ea4580edff87677dcb722edfc251e322219767af",
+              "tile_00011.ll": "abe4b98837ccd16219eeeb6dbc6ae753c3a6b2b37fcf98b1927b4e8d53852efe",
+              "tile_00012.ll": "a6b9f55d40b2ec1f0b7fb35afa623e9ca2c83796cef534150382dfb041e008fa",
+              "tile_00013.ll": "002aaaa9edb24272a5b769adf7ecd10a94e723ed3cc067aa17e5bee41aec4340",
+              "tile_00014.ll": "8521203e2ed8e580cf0fcb47c20e355e0f75319d8ea59791850d2ca0565d542b",
+              "tile_00015.ll": "6c2cd888a15b7eb76c19dad01fe6964f869c45e8c61e0ca75114098266e86319"
+            }
+          }
+        }
+      },
+      "artifacts": {
+        "gemm-final-prepared/package/data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "gemm-final-prepared/package/manifest.json": "86ac5c480ca3d3badf023163cadf16618c9d1a2d25ae7c9585d8c358e6b85555",
+        "gemm-final-prepared/package/modules/module_00000.so": "40f0f50a7a57fa7c3ad42308a598e7a707e288718310e752be1b8496db8deba8",
+        "gemm-final-prepared/source-program/functions/forward.meta": "b006855889d46e968f30ad2560364bef8fb468986f364ce61d4c6bcc783aeda9",
+        "gemm-final-prepared/source-program/functions/forward.stablehlo.bc": "cee24baa5c5c5d4c075b0dcd6196b5ada530ef947f25fc932e119517b7f58abc",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00000.mlir": "daed7dfd28943486dfad88b2bf5a4cb63e6efd57a051fddb078ff8ace721bd1e",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00001.mlir": "73500032f1549f05e3a30c89fa04a291a8e34691e3cd8b5b9629f5b8d79318b3",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00002.mlir": "d8008c0746a6812b567ee9373d48593cae518e3d584a3a21e97811e318ab5b70",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00003.mlir": "1233a8bb9cad97cf9f416b6321a799a05c3f354e436d92ff65c4d0f58c2bc4bb",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00004.mlir": "dffc7b037b12c80f13dc55b93553a3c57e0f9a0bb2096685a97b53ad22c79851",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00005.mlir": "7161a41c4bc5a5ab3473107d324d06fd4f185364534c0f16e4b3daeacda742d2",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00006.mlir": "1c7c4897c290eb144e2b4ccb123c0900d30a3339eaa807640a1352a3d1ac3b56",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00007.mlir": "d63f5bc0888acffd3d515ba85aadefcc9afea7d47eafe4f3ff7e2aded785a984",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00008.mlir": "740c0e2e923b032cf4bd7f8ccdccc41fe3afbcc5619ceca2b02318a9301d36c4",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00009.mlir": "23d7dfa2bbb636ce7ba8edd535565cb4691375bc91097efd99ea1d8efdf8ba15",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00010.mlir": "64289a4476a17c95932ced51a130803d2fffe76cf90464e0fdbd3e8d21830515",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00011.mlir": "1f2d74f85f07bcd68cdb1bafdeb72d64d280e0017ecb3b3bdc9ee03932684238",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00012.mlir": "217fbbfd1299e5e5c89c1956295003ee8a0b072241e9a98e3b62d96fe9c7ccc6",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00013.mlir": "2dec60b165073a0a24e7fa2a4c43b385a94d4ccbb18800b8794d096c8e348793",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00014.mlir": "0121587ffd09a5474cae368c7be92991ba0952240bcd459750bc77503d639107",
+        "gemm-final-prepared/compiler-ir/instruction/tile_00015.mlir": "aa24519f1d51ef0726ea73b75ab715e23bd1e19d0951abd3cc947b82b48dc7ea",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00000.ll": "5ac9fedeee6572189e348b3a30abcfc0d691cb9e0b17b89ca8d5611066183fc3",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00001.ll": "bbbab88f97c18910997e99ed6003a59c2e496a0320158da6691367a675b47ef5",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00002.ll": "561690555c6e79d1227e18e0bb363ad5f11ae68cf537c831a05a3017b7480e8d",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00003.ll": "ab6c2c0b589996004b67a5d517e580c38cdd7e444ed4870c25a9f0b05c1c271d",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00004.ll": "bd33ebe376b90fccf4a878f161aaa932152c25f3f3968210e1fcfa11fa1205e3",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00005.ll": "56cff6270a42bfaa37dbd108279cb28ef7d11fcbd7a26372c50bc9ba7e78f9e5",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00006.ll": "c8757add4529ea949712e64be244ccdc96b87ce6811eaade2353bef49ee24430",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00007.ll": "0f1c37a64b6b6496629cfd33db8acbdc13b433fd3962484870c81ae2079ed764",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00008.ll": "93c85c1bfc9144c1e80005e7b4e0bea187e4e79c92718a6fcc963b9e475264f1",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00009.ll": "cb69c6326ba472235e249f570e9d96d476c65dfaaaacdf77d2967b4eec5fe557",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00010.ll": "e9e60a39896c91c369176a38ee999d8de8c09ec7b929314c92f3e51fc6393f51",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00011.ll": "8f8db95caf15d9286329f952e00282a77c8279bdf764c3a2622354b106e8850f",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00012.ll": "6fe8f0c5a51448420af9e97b2c2083707b0a5e6d2451abe574c457f3874d4092",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00013.ll": "1e447e5e766c523388c6aa12c76a2fc85d3a30b4f7b6f287d16eaa182ab57065",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00014.ll": "3602684273674320956cfb78a0c90c7d55114e0aa35cb3e5d1626359b391b53a",
+        "gemm-final-prepared/compiler-ir/target-llvm/tile_00015.ll": "f72341185ea00f44921c02ccaa661f35defc1e67de5c7e7bfb87c8cee3414f93",
+        "gemm-board/raw/card_00_output_0.capture.bf16.raw": "f1823136b659737f742389fbe460cace09ef1ce323611833e491b9e5736ad982",
+        "gemm-board/raw/card_00_output_0.expected.bf16.raw": "ff7c76669ef8a2cbf062f339072131d14c38a976b8f2cedd79409b53124f3788",
+        "gemm-board/raw/card_00_user_input_0.bf16.raw": "3028c5103ee0332e958697c20777931d01aa0f35782e35a791b4c5e37c3cc8c8",
+        "gemm-board/raw/card_00_user_input_1.bf16.raw": "d0bedb5eb28e3bfb86bf2f05da75f9aeab4aed7f955549c10e1bd538a422e36a",
+        "gemm-board/command.json": "8b96b88154ec2a34ce07447a7e974f93d5c488898ec18b3915431a59527875db",
+        "gemm-board/measurement-01.json": "62f23fb3b7cc8b121e1acf29dd9ffd9a2176fa29febdf2feb1bff9a7a5cd2b4c",
+        "gemm-board/measurement-02.json": "62f23fb3b7cc8b121e1acf29dd9ffd9a2176fa29febdf2feb1bff9a7a5cd2b4c",
+        "gemm-board/measurement-03.json": "62f23fb3b7cc8b121e1acf29dd9ffd9a2176fa29febdf2feb1bff9a7a5cd2b4c",
+        "gemm-board/numeric-audit-01.json": "bacfd896a881b2f8f41eba2b1f1d8e46f6e1c5f5612388841ce116f659439c59",
+        "gemm-board/numeric-audit-02.json": "14721a9f17bbe4afaf6905e8153928e72b083c5533522206870cf4b82745ebbf",
+        "gemm-board/numeric-audit-03.json": "abb86adfbdcfa2c6058470c246931ac346a9bd7314701c79e05fca5c5f34e9af"
+      }
+    },
+    "attention": {
+      "seed": 20260922,
+      "dtype": "bf16",
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "input_ports": [
+        {
+          "id": 0,
+          "role_index": 2,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        },
+        {
+          "id": 1,
+          "role_index": 1,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        },
+        {
+          "id": 2,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        }
+      ],
+      "output_ports": [
+        {
+          "id": 0,
+          "role_index": 0,
+          "logical_dtype": "bf16",
+          "logical_shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "bf16",
+          "layout": "ncx",
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "bytes": 14680064,
+          "alignment": 256
+        }
+      ],
+      "samples": [
+        {
+          "device_ms": 3.546,
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "dc23bf41876d215e284bef3a36ca90afa1e1645e283a17d9727f6d461dbb1273",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+              "card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+              "card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3546000"
+            ]
+          },
+          "diagnostics": {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "host_register_capture": false,
+            "returncode": 0,
+            "passed": true,
+            "alarms": [],
+            "problems": []
+          },
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "state": "idle",
+            "holders": [
+              {
+                "pid": 1615,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "unexplained_fuser_pids": [],
+            "fuser_log": "  1615                     USER        PID ACCESS COMMAND\n/dev/accel/dev-0:    root      F.... npu_pull_ep_log\n"
+          }
+        },
+        {
+          "device_ms": 3.544,
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "dc23bf41876d215e284bef3a36ca90afa1e1645e283a17d9727f6d461dbb1273",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+              "card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+              "card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3544000"
+            ]
+          },
+          "diagnostics": {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "host_register_capture": false,
+            "returncode": 0,
+            "passed": true,
+            "alarms": [],
+            "problems": []
+          },
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "state": "idle",
+            "holders": [
+              {
+                "pid": 1615,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "unexplained_fuser_pids": [],
+            "fuser_log": "  1615                     USER        PID ACCESS COMMAND\n/dev/accel/dev-0:    root      F.... npu_pull_ep_log\n"
+          }
+        },
+        {
+          "device_ms": 3.448,
+          "audit": {
+            "case": "attention-prefill-28-heads-2048",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "dc23bf41876d215e284bef3a36ca90afa1e1645e283a17d9727f6d461dbb1273",
+            "comparison_passed": true,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+              "card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+              "card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3448000"
+            ]
+          },
+          "diagnostics": {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "host_register_capture": false,
+            "returncode": 0,
+            "passed": true,
+            "alarms": [],
+            "problems": []
+          },
+          "occupancy": {
+            "device": "/dev/accel/dev-0",
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "state": "idle",
+            "holders": [
+              {
+                "pid": 1615,
+                "fd": 3,
+                "exe": "/usr/bin/npu_pull_ep_log",
+                "uid": 0,
+                "cgroup": "1:net_cls:/\n0::/system.slice/npu_ep_log_svc.service",
+                "verified_log_service": true
+              }
+            ],
+            "unknown": [],
+            "unexplained_fuser_pids": [],
+            "fuser_log": "  1615                     USER        PID ACCESS COMMAND\n/dev/accel/dev-0:    root      F.... npu_pull_ep_log\n"
+          }
+        }
+      ],
+      "median_ms": 3.544,
+      "previous_ncx_median_ms": 12.592,
+      "previous_tensor_median_ms": 3.649,
+      "reduction_from_previous_ncx_percent": 71.8551461245235,
+      "no_card_passed": true,
+      "compile_timing": [
+        "wafer-compile: compile-stats stage=source-to-tensor-program wall_ms=44 peak_rss_kib=616240",
+        "wafer-compile: compile-stats stage=target-ir-lowering wall_ms=77 peak_rss_kib=935300 capture=none abi_preparations=16 tile_lowerings=16 tile_translations=16 tile_pipeline_workers=16",
+        "wafer-compile: compile-stats stage=target-module wall_ms=1369 peak_rss_kib=935300 capture=none module_count=1",
+        "wafer-compile: compile-stats stage=package-assembly wall_ms=111 peak_rss_kib=935300 capture=none tile_count=16",
+        "wafer-compile: compile-stats stage=target-package wall_ms=1559 peak_rss_kib=935300 capture=none",
+        "wafer-compile: compile-stats stage=executable-package wall_ms=187833 peak_rss_kib=935300 capture_packages=0 target_module_set_count=1",
+        "wafer-compile: compile-stats stage=target-codegen wall_ms=187834 peak_rss_kib=935300 profile=false",
+        "wafer-compile: compile-stats stage=output-rename wall_ms=14 peak_rss_kib=935300",
+        "wafer-compile: compile-stats stage=compile-transaction wall_ms=187893 peak_rss_kib=935300"
+      ],
+      "board_command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/data/vibe_compiler-validation/ncx-io-reuse-20260923/case.py",
+        "--case",
+        "attention-prefill-28-heads-2048",
+        "--dtype",
+        "bfloat16",
+        "--seed",
+        "20260922",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/ncx-io-reuse-20260923/attention-board",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--memory-guards",
+        "--device-timing",
+        "--expected-runtime-version",
+        "1400",
+        "--expected-device-name",
+        "/dev/accel/dev-0",
+        "--expected-pci-bus-id",
+        "0000:3b:00.0",
+        "--expected-tile-count",
+        "16",
+        "--expected-runtime-library-sha256",
+        "3dbe48226a67e3a43fd40d2f9f009f34b7d2c039ba7ce2613e964124e3d3c48c",
+        "--completion-timeout-ms",
+        "60000",
+        "--board-diagnose-tool",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-board-diagnose",
+        "--prepared-work-dir",
+        "/data/vibe_compiler-validation/ncx-io-reuse-20260923/attention-final-prepared",
+        "--repeat",
+        "3",
+        "--external-layout",
+        "ncx"
+      ],
+      "tensor_product_comparison": {
+        "baseline_ir": "/data/vibe_compiler-validation/cpu-fixed-args-20260922/ir",
+        "stages": {
+          "instruction": {
+            "files": 16,
+            "different": [],
+            "current_sha256": {
+              "tile_00000.mlir": "37657ad88efa5316cf26cae47ed1eef5efe74b452b400764b2c005f658705e5d",
+              "tile_00001.mlir": "33cdc38d5b26c818894ad4fcb509b59fab598c3eea3d639698503e5aa2d4cf0a",
+              "tile_00002.mlir": "91b2b68e70487b052953ca11ca5a2d3da83357246a551d5d2e877780a417e09f",
+              "tile_00003.mlir": "42744324469c626a13486814db85315d8a22358518c04ad58a5d22e7ad71243b",
+              "tile_00004.mlir": "6c936aee5233b1fbd03d3f73f122ba289c694aba620224967fc7d8184eec940a",
+              "tile_00005.mlir": "4e062abd25d7f7fa247740f6e697647cc5c6efcc6c4fcc4ae503ea9674945485",
+              "tile_00006.mlir": "8002367250494db084d159372729daaaaa546df07ed8edc41605b634c1bf568d",
+              "tile_00007.mlir": "71fad4a630ad7098b13669d87ea5a9abf95ef0d1a58fd1931a7b244d003e784e",
+              "tile_00008.mlir": "9c20a4ab0c45267d785e785ce02bfe348c401511bd85afca6669077a7b6424fa",
+              "tile_00009.mlir": "6c0423b70b0c927aa6fe6cb3720148672ff4982bc921990c8bd88c47f842e85e",
+              "tile_00010.mlir": "dbe6941ed25a936519f95a2bcda18477305df98e5d413511e464c7f1936bdbb0",
+              "tile_00011.mlir": "9ea6e39a467412cc9defe93b015abb0f54070a8a6486649c725fee80c8172944",
+              "tile_00012.mlir": "49e02e7b6365ce66146d3cec177fe4d75a216b50a8386fb23d7c523a559e01a6",
+              "tile_00013.mlir": "ffeedc409a82f874ed90c847adeee98209b285cc59ea810472d422578efc74fe",
+              "tile_00014.mlir": "323d9b13b92cd4ac7999fa9c5b650613cfe0d8abed97d5af6c57e2b11fcaf64c",
+              "tile_00015.mlir": "e4d8894d996e7a56b792cceca2bdbc3d68dbc2ff146ac64cc06601700f1650a8"
+            }
+          },
+          "target-llvm": {
+            "files": 16,
+            "different": [],
+            "current_sha256": {
+              "tile_00000.ll": "05f959d8f1813c95a0759cc4387f6a9514d5a7755f0c751f64374824fa16b73c",
+              "tile_00001.ll": "4b2fe4e9f5f8208f929e4a6b5c5e2c91139fcfe77404a0ab864624991d2eff7c",
+              "tile_00002.ll": "117e1321eb70bc8ed129fbc9323852573925e68634347bd02e2216d6df711328",
+              "tile_00003.ll": "e13ae7109ac548a1bda98454dd447957b7a0aa41301e35150f198b26ce786be4",
+              "tile_00004.ll": "4af2c7c043e7b99ba499aa0e985cdddbb901c421ae9678b1e170aa7bc691973d",
+              "tile_00005.ll": "c76b762a7aa873595a6ba4b5677afe0e9843fcce03f3cbd0c58c6171ce3c35d0",
+              "tile_00006.ll": "9f9b1e85cebe7aca2d48ffed8584c29f16627a76b51c23a7fe206d48fbb6e991",
+              "tile_00007.ll": "df6955f620435377b50900edd9de7852fd44eb1de48143a4615ab1b1103ad9c9",
+              "tile_00008.ll": "9f3ae25a944399cdd58f6e97261c9473356dc14a4e939f4b947f076234baeb03",
+              "tile_00009.ll": "28fd79fa70bb36604c84b858df33dcaab974ca7db5e4b5b61c183dcc3346f8f1",
+              "tile_00010.ll": "18b9734c6993ee4bbe3453d90feb3d1140e59c994b94cf66d2dcb9a983cee1e6",
+              "tile_00011.ll": "887d1e04ec70134f6c076b66a195a52d886163f159d56f706a812fde144bca65",
+              "tile_00012.ll": "ed4b5da61b07f47957ae7329b57624bfb522e9c1a5a5ec0080bf5f13a3fde88e",
+              "tile_00013.ll": "3569874dfec83e6f565162eede5deef3c854266e56727e1afef51eefa742de57",
+              "tile_00014.ll": "b21861e0006266de1ccc7cfa079ef41d0cab6ea7eb3b408060e0bcc7170542af",
+              "tile_00015.ll": "ebc136b0ec383adee1f8f953f2778404a977ec28222fdbd789d28a7f0303837b"
+            }
+          }
+        }
+      },
+      "artifacts": {
+        "attention-final-prepared/package/data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+        "attention-final-prepared/package/manifest.json": "dc23bf41876d215e284bef3a36ca90afa1e1645e283a17d9727f6d461dbb1273",
+        "attention-final-prepared/package/modules/module_00000.so": "df25e917d7d8ca871c3a3105254fe85ab3513392fd2c8091c0ff7f3d7fe41745",
+        "attention-final-prepared/source-program/constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+        "attention-final-prepared/source-program/constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+        "attention-final-prepared/source-program/constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+        "attention-final-prepared/source-program/functions/forward.meta": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+        "attention-final-prepared/source-program/functions/forward.stablehlo.bc": "0eebf1e15f9fe1e2c09d3e23ae0a9ea9aa1b7abd684f3645a7b069a653e96223",
+        "attention-final-prepared/compiler-ir/instruction/tile_00000.mlir": "75fc702fa1681242a508279c0583ddd1f1d10f1bf5aa300c830f84d45d07f755",
+        "attention-final-prepared/compiler-ir/instruction/tile_00001.mlir": "8a1e95d8428a2d08210806f344677b66da83271b74a7a17a13a043273f007448",
+        "attention-final-prepared/compiler-ir/instruction/tile_00002.mlir": "90651c571a76412f00e05892d914505aba80ae8c5eb57a5a894870a6ec104bd0",
+        "attention-final-prepared/compiler-ir/instruction/tile_00003.mlir": "5a959c382575e9bfe73ff9cce56d1723a6e1b32bb653efef730a6ea2149ea356",
+        "attention-final-prepared/compiler-ir/instruction/tile_00004.mlir": "1aa91eebc24f4a3f2b2aefad1532555144717df981035243ad7efd55d2352d5c",
+        "attention-final-prepared/compiler-ir/instruction/tile_00005.mlir": "97806931f5b572114802008cb792390538db4a1700ad09361e3c35a6d89d684e",
+        "attention-final-prepared/compiler-ir/instruction/tile_00006.mlir": "0b9b6d34acdf682732377c556e0050eecb9187c0f6b97908594fbf7ee5cf67eb",
+        "attention-final-prepared/compiler-ir/instruction/tile_00007.mlir": "b7e5d2053faddbaee52e5ce9e1f0fc645678e246d78637c0cdebf45c238bda4f",
+        "attention-final-prepared/compiler-ir/instruction/tile_00008.mlir": "50b0e6dc5f4ec84f07dff6eb63b17c92ea65fc2c81f148c6f09b87effb7d69c6",
+        "attention-final-prepared/compiler-ir/instruction/tile_00009.mlir": "e45b50787906cf483a2bff38c0f3e63573016d0e772997186c763cbe3cdbe408",
+        "attention-final-prepared/compiler-ir/instruction/tile_00010.mlir": "f86d714b70f9adc5a094d5cde2046ee028fce04760b25a41082411f86777d662",
+        "attention-final-prepared/compiler-ir/instruction/tile_00011.mlir": "4a3bff887a14c32ccd673a9faf99264cfee289abeef2571f511d5112667f8139",
+        "attention-final-prepared/compiler-ir/instruction/tile_00012.mlir": "6a8e819c2ddd326229a3b0fb816adc4229cbdcbe73c9d443dbc97bee44abd75b",
+        "attention-final-prepared/compiler-ir/instruction/tile_00013.mlir": "d811ab4166fb740e4d9b3ee51d869bc651be083a169cba070d069c5a6e7110b3",
+        "attention-final-prepared/compiler-ir/instruction/tile_00014.mlir": "3d74348c3cc7ea7a399cfeb07cce7d0ba89514759caec7a34168e47a23b810a1",
+        "attention-final-prepared/compiler-ir/instruction/tile_00015.mlir": "63faafe88eca44539de255d1b6d66854dbd4d2344e3135f65da382072ee8beeb",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00000.ll": "b47ea86ee91e0f54c1babc984b8ec1996edc9bf18fa05171e85988d27c175542",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00001.ll": "faac2b7dd923a1d7b0700aedfb3563ae3af170bd9f1ff0b3a2968a330c13f818",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00002.ll": "88ba7cbffc9d19472012abe6074355bc90efb0f194f76bbbdf6ea31a161cd02f",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00003.ll": "51a24a71eae03a3652a9043c589baaeb3652da7da39564b9f038e78c9a5b21ed",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00004.ll": "986da1d19d5193bc722a8469e3c18cf93dd23119d850138772ac173fd281166e",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00005.ll": "f3cb07f09867144d466c99e5f2d875329efe466a32f081626bc8dfbceb9f8f91",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00006.ll": "4215ad756890aa32561fadc956932dc9efda9749f821ed90d435a760b9064b79",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00007.ll": "2b97d6535d7e328789b3d969200d7a246e3e8265ce4b2687b2e92f6ee67599cf",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00008.ll": "3c78934b0e572c8f0ccd4c6bb0ab73c1a30872cc6f350793b9cb525334859483",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00009.ll": "eb6e0f3f4835451a6ed518e3cb8a28b9fcb3bd8d7d4058da42e5a27f077ce3f5",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00010.ll": "3894ade792b2ea65c39611a48ee69095e0aa7757c7991d455692bcf7ba88fb5c",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00011.ll": "3fa0d523ca003904eac145b2ea5c66dddc2d5dc7b0e222eb0d44bed1cf3be5c4",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00012.ll": "d680c39e9aea6f6eb1486a091e7d3ce17553b16870bb961af2c572973f6033ae",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00013.ll": "d1b1304574e237d5e07982efcf800bce4f4a4cf5750d8ae775581b0b176430ad",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00014.ll": "0dabdc044e8ed62cf5cb7a5e75bceb9fbbc0c5ce5484dce03fd65603f74d0e12",
+        "attention-final-prepared/compiler-ir/target-llvm/tile_00015.ll": "df5d38e76a9cd09379cf34cafe1de9ea99e7e4f935b15ddf35cdadbd76c97e4d",
+        "attention-board/raw/card_00_output_0.capture.bf16.raw": "f210c9893638646d275d7ca3d4dd39211c45faae8d182f5eef9aa4d83308f125",
+        "attention-board/raw/card_00_output_0.expected.bf16.raw": "d65d2469a07e81999f19e7e2d20dde377150348125b13533b1cde8cbe4858eff",
+        "attention-board/raw/card_00_user_input_0.bf16.raw": "8e509ca4770024b0b5ef81e80969192ea82647cca413bd3b32ef0aecc4b4c681",
+        "attention-board/raw/card_00_user_input_1.bf16.raw": "d0f14b88f6156ea22456f441ffa77c8f6e0bbab53d1c33b86588e3383124628d",
+        "attention-board/raw/card_00_user_input_2.bf16.raw": "55d3707d9324b0e555cc92e1991299ab2a12d33c02abedfe574593ebc5ca96bd",
+        "attention-board/command.json": "29ce08ea6030f2b99bf66fab5aaafe7fe4882ebef19e710b7a97044678b3d300",
+        "attention-board/measurement-01.json": "62f23fb3b7cc8b121e1acf29dd9ffd9a2176fa29febdf2feb1bff9a7a5cd2b4c",
+        "attention-board/measurement-02.json": "62f23fb3b7cc8b121e1acf29dd9ffd9a2176fa29febdf2feb1bff9a7a5cd2b4c",
+        "attention-board/measurement-03.json": "62f23fb3b7cc8b121e1acf29dd9ffd9a2176fa29febdf2feb1bff9a7a5cd2b4c",
+        "attention-board/numeric-audit-01.json": "782a65a088c1f16a1e393f740b2bf18de14569b09fbcf99be59b6788da6828ba",
+        "attention-board/numeric-audit-02.json": "b753deafa481f9b75ca176522eb151d90dca19dcdbe16579b51702b1c8fef00e",
+        "attention-board/numeric-audit-03.json": "d8503967b7436dc5c30dc8a004665e42658440e1a6b0db9a9e26d27cbbbc67c4"
+      }
+    }
+  },
+  "host_validation": {
+    "components_and_lit": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-host-regression.log",
+      "sha256": "a1953c583d36b8b42f9513655657cc4fdfafc041e5927dbf95a496eb016df1c1"
+    },
+    "systemc_final": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-final-systemc.log",
+      "sha256": "885037098ab0147ec7e443df1720eac56bed849bce250828cdd2d8e904fba4df"
+    },
+    "transforms_final": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-final-transforms.log",
+      "sha256": "e791a5f9f62fc6a1312340fc0412ea9c4e01551ce8a4307080fb8766884a5fa0"
+    },
+    "dma_oracle_final": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-final-dma-oracle.log",
+      "sha256": "4fdf8177e0fb604b3e9e1705bf277f51d4a143cc29dcec5c1ef4d98ae1df4a6f"
+    },
+    "driver_current_leaf": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-driver-current-leaf.log",
+      "sha256": "52a26b87ca16052034db04ef2589e0df6d84c6f5d24f5d00e26dfd6a48db5b09"
+    },
+    "canonical_build": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-final-build.log",
+      "sha256": "5bb5fc12b8281781f84ddde543a6e551bfba23de86db6301fed4303fc6e2a0d6"
+    },
+    "canonical_noop": {
+      "path": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/host/wafer-ncx-final-noop.log",
+      "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+    }
+  },
+  "limitations": [
+    "未做本轮profile，不分摊每个改动或engine对总耗时的贡献。",
+    "NCx动态窄C尾平移的原限制保持；共享的不同布局consumer和必要搬运不强行消除。",
+    "GEMM所选策略仍有A跨N窗口重读，40MiB大于历史Tensor的16MiB；不声称所有复用被选中或达到性能极限。",
+    "没有重跑历史package；两项默认Tensor仅fresh编译/no-card和产物比较，没有重复实卡。"
+  ],
+  "gemm_package_identity_after_q_fusion": {
+    "files": 3,
+    "all_bytes_equal": true,
+    "measured_compiler_sha256": "d0836fbee5e2a3a40518d312d9bcaeda5db42ecaf719eb94a2dd1d40c495ff4c",
+    "current_package": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/gemm-final-prepared/package",
+    "measured_package": "/data/vibe_compiler-validation/ncx-io-reuse-20260923/gemm-prepared/package"
+  },
+  "gemm_actual_ir_work": {
+    "total": {
+      "fill": {
+        "calls": 64,
+        "bytes": 0
+      },
+      "rdma": {
+        "calls": 272,
+        "bytes": 41943040
+      },
+      "gemm": {
+        "calls": 256,
+        "bytes": 0
+      },
+      "gather_scatter": {
+        "calls": 256,
+        "bytes": 234881024
+      },
+      "ncc_join": {
+        "calls": 481,
+        "bytes": 0
+      },
+      "dte_send": {
+        "calls": 240,
+        "bytes": 125829120
+      },
+      "dte_wait": {
+        "calls": 480,
+        "bytes": 0
+      },
+      "wdma": {
+        "calls": 64,
+        "bytes": 33554432
+      },
+      "dte_recv": {
+        "calls": 240,
+        "bytes": 125829120
+      }
+    },
+    "per_tile": [
+      {
+        "tile": "tile_00000.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 32,
+            "bytes": 10485760
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "ncc_join": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00001.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00002.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00003.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00004.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00005.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00006.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00007.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00008.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00009.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00010.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00011.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00012.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 17,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00013.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00014.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      },
+      {
+        "tile": "tile_00015.mlir",
+        "work": {
+          "fill": {
+            "calls": 4,
+            "bytes": 0
+          },
+          "rdma": {
+            "calls": 16,
+            "bytes": 2097152
+          },
+          "ncc_join": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "dte_recv": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "dte_wait": {
+            "calls": 32,
+            "bytes": 0
+          },
+          "gemm": {
+            "calls": 16,
+            "bytes": 0
+          },
+          "gather_scatter": {
+            "calls": 16,
+            "bytes": 14680064
+          },
+          "dte_send": {
+            "calls": 16,
+            "bytes": 8388608
+          },
+          "wdma": {
+            "calls": 4,
+            "bytes": 2097152
+          }
+        }
+      }
+    ]
+  },
+  "source_file_sha256": {
+    "include/Wafer/Analysis/Tile/AccessReuseAnalysis.h": "108d3c2dc1eb4e9a0460d73ea78325265e1baef80031756ffc8a88c373455ca5",
+    "include/Wafer/Transforms/Tile/MovementFusion.h": "aa068cf4050c78ae4038bb049cd44ee11f18e3ec89b5686795d1b540c54f007d",
+    "lib/Wafer/Analysis/CMakeLists.txt": "909cbfc53a59bfacb540ad5dc672a2194bc5974ae3f159f737dd1efe0405fccc",
+    "lib/Wafer/Analysis/Tile/AccessReuseAnalysis.cpp": "f368aea175c856ea29aa2040247a68e3402c91215c5c451b4170518b63182a94",
+    "lib/Wafer/Conversion/TileToInstr/MovementLowering.cpp": "049778a79908d5313069af71a7cab6746e737cd2b38f260e2e84519c676f92ec",
+    "lib/Wafer/Driver/CurrentIRExecutablePipeline.cpp": "5f182a9aa7df88252d05924208bbcc1592ed8bb26aabe358a45e43284bc9fdf3",
+    "lib/Wafer/Planning/PhysicalDataflow/AccessReuse.cpp": "d939664089074bde67a9786ee2b3623aacc8b9169b83e89df0e8a70e108522ca",
+    "lib/Wafer/Transforms/Tile/BoundaryMovement.cpp": "5538c6aef3deda25e47c77cc90cc2d5486bbe550a210a9553b2a806a4a7e2197",
+    "lib/Wafer/Transforms/Tile/MovementFusion.cpp": "e745f3e74f922d3119e40191c739b2961b555f1b4aed8752500e2a2445b9c497",
+    "unittests/CMakeLists.txt": "cf236623fe04efaf3d836e56a22019248872d77b5c6ce635a56b866f356eceab",
+    "unittests/Conversion/InstrToLLVM/LowerInstrToLLVMTest.cpp": "3cf6afbf48d3cb19e6098d5b55628c61a9fd697201cc1182984704e5a8572a76",
+    "unittests/Simulator/SystemC/SystemCTargetModelAccessReuseTest.cpp": "fbe27e444a81320e2405b71ff8c81f2224a222b0a9173ad62cc9145a600b64eb",
+    "unittests/TestSupport/Transforms/AccessReuseInputs.h": "93700ff8e1878c09a1967831aad722232462c89c1f3b892dd5572e6f2628e967",
+    "unittests/Transforms/Tile/MovementFusionTest.cpp": "69c79cb59e0ba398c49f1002ecc41da82120480f70ae44a2e16a6454e4df8f16",
+    "include/Wafer/Analysis/Tile/MovementEndpoint.h": "cec8f1862b6876f3323687472a2080afd1854c59a076bb6aa70d48f00dbda764",
+    "lib/Wafer/Analysis/Tile/MovementEndpoint.cpp": "dca62785f19d702aba21bfdb8a48e9d305394b575020cd093509272b9bca5411"
+  },
+  "reproduction_scripts": {
+    "/data/vibe_compiler-validation/ncx-io-reuse-20260923/case.py": "52da7a059b490edfc0f1da8fdd7baa6946958836aff57ab1d5f60e32797a38f7",
+    "/data/vibe_compiler-validation/ncx-io-reuse-20260923/launch.py": "20e50a1190f1f412f5a7b03d55b0a46a7d56ce8f61813b8d3cd450c0a6726cf5",
+    "/data/vibe_compiler-validation/ncx-io-reuse-20260923/record.py": "476f49e46d4900e82ae0c8a81d21cbb4f93dce4ac29e282b8dda83b303127233"
+  }
+}

@@ -99,6 +99,27 @@ host-visible descriptor 来自最终 entry type，直接下游是 15 号 package
 标准 buffer 边界采用 [MLIR Bufferization](https://mlir.llvm.org/docs/Bufferization/#tensor--buffer-boundary) 的
 `to_tensor`/`materialize_in_destination`；API 以 pinned LLVM 的 Bufferization 实现为准。
 
+### 外部 blocked 布局的输入复用与直接搬运
+
+Pipeline position：输入是 boundary movement 后实际 Tile load/store、layout materialization、SSA subview、循环和 encoding。
+本阶段只消除实际重复读取及私有中转，输出仍是同层显式 allocation/load/store/peer，直接消费者为 Tile→Instr 与
+fresh completion/SPM。正式 search/baseline 调用相同 transformation；不新增 ABI、CLI、算术重排、硬件指令或搜索预算。
+
+输入复用的共同条件是同一 typed 外部资源、相同逻辑读取窗口、匹配循环域以及只读 effect；DDR encoding 不决定有无复用。
+逻辑坐标/逻辑线性索引只用于比较访问集合，不能用作 NCx 物理地址。实际 resident load 保留源 root 与 subview；
+物理字节地址由唯一 encoding/view 证明及 movement lowering 生成。跨 Tile 同一窗口还须具有相同源 encoding 与 payload。
+已有 resident、sliding、two-level、peer 选择继续在实际候选中物化，owner、SPM 和 completion 不采用旁路推断。
+
+对于 load→layout 或 layout→store 的私有中转，允许把已经选定的计算布局直接用作 DMA 的 SPM endpoint。
+首次 mutation 前检查 shape/dtype、唯一写入/读取、支配关系与中间 effect，以及实际 root/subview 的物理映射。
+有其它观察者、别名写入、未知 effect 或无法证明的物理窗口时保留原链；不放宽 tensor.extract_slice 的 alias 规则。
+这属于已物化搬运合成，不是 Tensor 层重选布局；禁止 lower 时根据 users 隐式发明新 buffer。
+
+与 MLIR One-Shot 的 subview/alias 规则比较，本项保留其切片语义，在物理搬运阶段合成 copy；
+不把非连续 blocked 子集伪装为紧凑 memref。API 以 pinned `Tensor/Transforms/BufferizableOpInterfaceImpl.cpp` 为准。
+本项覆盖矩阵及两项产品验收位于板测计划“直接 NCx I/O 的复用与搬运整改”；必须包含真实规模主/尾块、跨 C block、
+多 Tile、只读正例和资源/窗口/写入反例、完整模型字节结果与 actual Instr/completion/SPM，不能只检查布局标签。
+
 - 当前IR是shape、dtype、indexing、view、memory space、encoding、allocation root、movement和effect的唯一事实源。
 - `IndexRelation`是可失效、可重算的analysis value，不是attr、独立dialect、cache key或package字段。
 - encoding行为属于承载它的attr/type interface；consumer不能各自复制block/tail/padding公式。

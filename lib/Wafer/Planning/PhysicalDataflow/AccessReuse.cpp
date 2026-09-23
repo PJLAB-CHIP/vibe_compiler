@@ -80,7 +80,8 @@ bool equivalentWindows(const analysis::ScopedReadAccess &a,
                        const analysis::ScopedReadAccess &b) {
   auto aTile = a.tile, bTile = b.tile;
   return a.argument == b.argument && aTile.getCardId() == bTile.getCardId() &&
-         a.sizes == b.sizes && a.sourceStrides == b.sourceStrides &&
+         a.inputType == b.inputType && a.sizes == b.sizes &&
+         a.sourceStrides == b.sourceStrides &&
          mlir::cast<mlir::MemRefType>(a.source.getType()).getElementType() ==
              mlir::cast<mlir::MemRefType>(b.source.getType())
                  .getElementType() &&

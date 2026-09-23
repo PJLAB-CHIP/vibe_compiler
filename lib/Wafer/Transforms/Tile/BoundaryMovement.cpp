@@ -2,6 +2,7 @@
 
 #include "BoundaryMovement.h"
 #include "StructuredToTile.h"
+#include "Wafer/Transforms/Tile/MovementFusion.h"
 
 #include "DistributedCollectiveMovement.h"
 #include "GemmFinalization.h"
@@ -3996,6 +3997,10 @@ materializeTileBoundaryMovement(mlir::ModuleOp module,
   relations.boundaryRelations.clear();
   relations.structuralOutputs.clear();
   materializeBlockedDDRBoundaryViews(module);
+  {
+    mlir::IRRewriter rewriter(module.getContext());
+    fuseDMALayoutMovements(module, rewriter);
+  }
   if (mlir::failed(foldGemmOutputConversions(module)))
     return fail(BoundaryMovementFailureKind::CompilerFailure,
                 "native GEMM output fusion produced invalid physical Tile IR");

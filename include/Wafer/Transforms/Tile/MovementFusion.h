@@ -8,6 +8,10 @@
 #include "llvm/ADT/DenseSet.h"
 
 namespace wafer::compiler::detail {
+/// Remove private layout staging around a DMA whose blocked physical order
+/// already matches the selected SPM layout. No new layout is selected.
+void fuseDMALayoutMovements(mlir::ModuleOp module, mlir::IRRewriter &rewriter);
+
 /// Fuse a private transpose followed by layout conversion into one movement.
 void fuseTransposeLayoutMovements(
     mlir::ModuleOp module, mlir::IRRewriter &rewriter,

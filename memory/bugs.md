@@ -7,6 +7,15 @@
 `completion`、`bufferization`、`package`、`runtime`、`CMake`和`ownership`。条目描述的是防复发模式；若与current
 编号设计或源码冲突，以current事实源为准并在同次修改中修正文档。
 
+## 外部物理布局接通后丢失输入复用与直接搬运
+
+- 现象：外部NCx数值正确，却增加DDR读取并保留DDR NCx→SPM Tensor→SPM NCx往返。
+- 根因：输入复用资格按Tensor布局类别过滤；逻辑切片的alias约束使局部中转保持Tensor，实际DMA与后续layout copy未合成。
+- 修复模式：用typed资源身份、逻辑窗口、循环域和effect识别复用，同时保留完整root encoding；逻辑线性索引不得解释为blocked地址。
+  对私有load/layout/store按actual physical endpoint合成搬运；查询与lowering共用root/subview证明，placement合并后再处理新暴露的链。
+- 防复发：同时检查外部payload、内部endpoint、实际DDR字节量、peer复用和完整模型输出；默认路径用fresh产物比较。
+  manifest标签、数值通过或总指令减少都不能单独证明预期优化已生效。
+
 ## GS有界分段不等于高效广播
 
 - 现象：watchdog问题已消除，普通广播仍消耗大量TDMA活动周期；减少单条iteration并没有减少总inner搬运。

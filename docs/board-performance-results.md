@@ -19,6 +19,45 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-23：NCx 输入复用与直接 DMA 整改
+
+本轮修复前次 NCx I/O 测量暴露的编译器覆盖缺口。仍为 BF16、原 seed、standard width8/trials42、guard、
+普通 TX stream-event 计时；两项均重新生成 source/reference/package 并通过 no-card，各三次实卡。
+没有重跑历史 package，没有寄存器采集或设备插桩；boot、driver、runtime 与前次一致。
+
+| case | 本轮三次 device elapsed（ms） | 本轮中位数 | 前轮 NCx 中位数 | 已有 Tensor 中位数 |
+| --- | --- | ---: | ---: | ---: |
+| M=N4096、K1024、batch1 GEMM | 3.127 / 3.210 / 3.203 | 3.203 | 13.704 | 3.495 |
+| causal attention `[1,28,2048,128]` | 3.546 / 3.544 / 3.448 | 3.544 | 12.592 | 3.649 |
+
+根因和实际修改：
+
+- 输入复用的 `getReadAccess` 原先直接排除非 Tensor DDR。现在按 typed 资源身份、逻辑窗口、循环域和只读 effect
+  判断，同时比较完整 input encoding；逻辑线性索引不解释为 blocked 物理地址。原 resident/sliding/two-level/peer
+  物化与实际 completion/SPM 资格路径保持。
+- 切片仍遵守原 alias 规则。在实际 boundary movement 后合成私有 load→layout、layout→store，直接使用已选 SPM 布局。
+  root/subview 物理坐标查询从 lowering 提取到唯一 `MovementEndpoint` analysis，两处共用；不引入另一套地址公式。
+  移动合并之后再应用同一合成，因此 Q 的共享转换也能消除。其它观察者、源写入或不匹配的物理次序保留原链。
+
+GEMM winner 按 M 切16份，每 Tile M256、temporal N1024/K256；B 的 DTE 分发恢复。
+实际全卡 RDMA 从160降到40 MiB，发射512降到272次；GS从384降到224 MiB，发射768降到256次。
+输入直接从 DDR NCx 读进 SPM NCx，输出从 blocked SPM 写回 NCx，主要 DMA inner 从128 B变为32 KiB。
+40 MiB仍高于旧 Tensor winner的16 MiB：当前A按4个N窗口重读，不能声称所有驻留优化均已选中或达到性能极限。
+
+Attention 的 Q/K/V 及输出均为直接 blocked DMA；64 KiB窗口使用两段32 KiB连续搬运，原先每段128 B。
+计算仍保留算法需要的内部搬运和常量数据，不将“直接 NCx I/O”描述为全程序无 Tensor 或无 GS。
+本轮未做 profile，不按活动周期或指令数分摊总耗时，也不分别归因两个改动的独立收益。
+
+六次完整数值、guard和厂商清理均通过，设备诊断没有 fatal/timeout。
+GEMM全部16,777,216元素沿用相似度合同，cosine 0.99999999737035494、relative L2 0.0000725277、逐点超差99个；
+attention全部7,340,032元素逐点超差0个，relative L2 0.00193234。每次 guard 检查分别20800和10752 B。
+Q合成位置补齐后重新生成的GEMM package与已测本轮package全部文件逐byte相同，因此保留同一包的三次结果，未多跑设备。
+
+默认 Tensor 的两个 fresh 产品也通过 no-card，全部16份Instr和目标LLVM分别与原健康记录逐byte一致。
+主机覆盖包括48组16-Tile SystemC复用模型、rank3/4主尾块的融合前后逐字节DMA oracle、
+观察者/写入反例、actual completion/SPM与正式driver直接下游。详细门禁、版本和artifact见
+[本轮证据](data/board-performance/ncx-io-reuse-20260923.json)。
+
 ## 2026-09-23：直接 NCx DDR 输入输出测量
 
 通过正式 `--external-layout ncx` 编译，全部外部 input/output 的 actual DDR encoding、manifest 和本轮 payload

@@ -34,12 +34,13 @@ frontend::ProgramBoundaryBinding boundary(llvm::ArrayRef<int64_t> shape) {
   return result;
 }
 
-using ReuseParameters = std::tuple<const char *, int64_t, AccessReuseKind>;
+using ReuseParameters =
+    std::tuple<const char *, int64_t, AccessReuseKind, bool>;
 class SystemCTargetModelAccessReuseTest
     : public ::testing::TestWithParam<ReuseParameters> {};
 TEST_P(SystemCTargetModelAccessReuseTest,
        CompleteReadWindowsMatchIndependentInputBytes) {
-  const auto &[type, extent, kind] = GetParam();
+  const auto &[type, extent, kind, blocked] = GetParam();
   llvm::StringRef spelling(type);
   SCOPED_TRACE(::testing::Message()
                << spelling.str() << "/" << extent << "/" << int(kind));
@@ -47,9 +48,11 @@ TEST_P(SystemCTargetModelAccessReuseTest,
   registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
+  const int64_t channels = blocked ? 192 : 64;
   bool sliding = kind == AccessReuseKind::Sliding;
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
-      wafer::testing::makeAccessReuseInput(16, extent, spelling, sliding),
+      wafer::testing::makeAccessReuseInput(
+          16, extent, spelling, sliding, channels, blocked ? "ncx" : "tensor"),
       context.get());
   ASSERT_TRUE(module);
   auto facts = analysis::analyzeAccessReuse(*module);
@@ -68,7 +71,8 @@ TEST_P(SystemCTargetModelAccessReuseTest,
       AccessReuseAction action{kind, window.reads, window.scope, {}};
       if (kind == AccessReuseKind::TwoLevel)
         for (const auto &inner : facts.scopes)
-          if (inner.source == window.source && inner.windowBytes == 256 * 128) {
+          if (inner.source == window.source &&
+              inner.windowBytes == uint64_t(256 * channels * 2)) {
             action.innerScope = inner.scope;
             break;
           }
@@ -97,8 +101,8 @@ TEST_P(SystemCTargetModelAccessReuseTest,
   frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 1;
-  program.distributedInputs = {boundary({1, inputRows, 64})};
-  program.distributedOutputs = {boundary({batches, outputRows, 64})};
+  program.distributedInputs = {boundary({1, inputRows, channels})};
+  program.distributedOutputs = {boundary({batches, outputRows, channels})};
   auto format = llvm::cantFail(parseProgramElementType(spelling));
   program.distributedInputs.front().dtype = format;
   program.distributedOutputs.front().dtype = format;
@@ -126,7 +130,7 @@ TEST_P(SystemCTargetModelAccessReuseTest,
       compileDeviceExecutableToTargetLLVMModules(executable, diagnostics);
   ASSERT_TRUE(bool(target)) << detail << llvm::toString(target.takeError());
 
-  std::vector<uint8_t> bytes(inputRows * 64 * 2);
+  std::vector<uint8_t> bytes(inputRows * channels * 2);
   for (size_t i = 0; i < bytes.size() / 2; ++i) {
     uint16_t bits =
         (spelling == "f16" ? 0x3c00 : 0x3f80) +
@@ -134,14 +138,14 @@ TEST_P(SystemCTargetModelAccessReuseTest,
     bytes[2 * i] = bits & 255;
     bytes[2 * i + 1] = bits >> 8;
   }
-  std::vector<uint8_t> expected(batches * outputRows * 64 * 2);
+  std::vector<uint8_t> expected(batches * outputRows * channels * 2);
   for (int64_t batch = 0; batch < batches; ++batch)
     for (int64_t row = 0; row < outputRows; ++row) {
       int64_t inputRow = sliding ? batch % extent + row : row;
-      std::copy_n(bytes.begin() + inputRow * 128, 128,
-                  expected.begin() + (batch * outputRows + row) * 128);
+      std::copy_n(bytes.begin() + inputRow * channels * 2, channels * 2,
+                  expected.begin() + (batch * outputRows + row) * channels * 2);
     }
-  auto input = ProgramTensor::create(format, {1, inputRows, 64}, bytes);
+  auto input = ProgramTensor::create(format, {1, inputRows, channels}, bytes);
   ASSERT_TRUE(bool(input)) << llvm::toString(input.takeError());
   auto calls = prepareProgramInvocations(executable, {{0, std::move(*input)}});
   ASSERT_TRUE(bool(calls)) << llvm::toString(calls.takeError());
@@ -163,7 +167,8 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values("f16", "bf16"),
         ::testing::Values(int64_t(1024), int64_t(1025), int64_t(1031)),
         ::testing::Values(AccessReuseKind::Resident, AccessReuseKind::Sliding,
-                          AccessReuseKind::TwoLevel, AccessReuseKind::Peer)));
+                          AccessReuseKind::TwoLevel, AccessReuseKind::Peer),
+        ::testing::Bool()));
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {

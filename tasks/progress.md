@@ -18,11 +18,18 @@
 
 ## 当前调度
 
+2026-09-23用户授权的直接 NCx I/O 性能整改已完成，仍归 `board-testing`，不代签整体板测完成。
+输入复用的布局覆盖、私有 DMA/layout 合成及共享转换合并后的同一优化均已接通；
+fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
+原算术、搜索预算、数值门槛保持，默认 Tensor 两项 fresh Instr/目标LLVM与原记录逐byte一致；
+完成合同与覆盖见08号及板测计划顶部，性能与限制见[整改记录](../docs/board-performance-results.md#2026-09-23ncx-输入复用与直接-dma-整改)。
+本轮指定修复已闭合；Tensor 子集物化整改仍按下方独立合同待推进。
+
 2026-09-23用户追加直接 NCx DDR 输入/输出测量：M=N4096/K1024 BF16 GEMM 与 2048、28-head BF16 causal attention。
 仍归 `board-testing`；08 号外部物理布局和 15 号 caller 编解码已接通，两项 fresh 构包/no-card及各三次实卡通过。
 此前 source reshape/permute 包装未完成构包，已停止，未执行设备测试；不作为直接 NCx 实现或性能结果。
-默认 Tensor 路径及既有数值策略保持。指定 NCx I/O 数值、guard和清理已签发，但中位数均慢于已有 Tensor 记录；
-内部转换、复用和搜索策略差异仍存在，不签 NCx 性能优化完成。本轮主机回归、canonical/no-op及指定测量已完成；详情见
+默认 Tensor 路径及既有数值策略保持。前轮指定 NCx I/O 数值、guard和清理已签发，但中位数均慢于已有 Tensor 记录；
+该检查点只完成能力与测量，随后性能整改已按上方接续闭合。前轮测量详情见
 [NCx实测](../docs/board-performance-results.md#2026-09-23直接-ncx-ddr-输入输出测量)。
 
 2026-09-23用户追加M=N4096、K1024 GEMM性能测量：BF16、batch1、standard 8/42的fresh产品及guard no-card通过；

@@ -151,6 +151,7 @@ optimizeCurrentIRStorage(mlir::ModuleOp module,
     return mlir::failure();
   mlir::IRRewriter rewriter(module.getContext());
   preservePrivateScalarBroadcasts(module, rewriter, {});
+  fuseDMALayoutMovements(module, rewriter);
   fuseTransposeLayoutMovements(module, rewriter, {});
   if (mlir::failed(optimizeStorage(module, rewriter, {})))
     return mlir::failure();

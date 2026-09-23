@@ -620,7 +620,8 @@ wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
 | `wafer.instr.wdma` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<ddr, *>>` | none | current：`byte_count`, `inner_bytes`, `dst_strides`, `dst_iterations` |
 
 `wafer.tile.load/store`已经是explicit source/destination的destination-style边界。compact Tensor保留为baseline；mapped target extension
-SPM endpoint允许Tensor/NTensor/Cx/NCx，外部DDR仍为Tensor。NTensor不通过改类型冒充Tensor：同Cx/NCx一样，
+SPM endpoint允许Tensor/NTensor/Cx/NCx，外部DDR按实际entry encoding解释，默认Tensor，显式NCx见08号。
+NTensor不通过改类型冒充Tensor：同Cx/NCx一样，
 mapped route从其typed physical encoding证明DDR logical view到SPM physical order的精确映射，闭合时直接发descriptor，否则显式使用
 `wafer.tile.materialize_layout`/GatherScatter。representation/movement planning只生成这些已有actual-IR representation/movement路径，physical search联合选择，
 都不改变instruction合同。

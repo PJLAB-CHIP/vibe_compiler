@@ -196,7 +196,8 @@ relation时只依赖`WaferTileTransforms`，二者都不反向依赖umbrella
 | load地址/use资格与提前读取选择 | `Transforms/Tile/LoadPipelining.cpp` | 只读当前图形成局部choice，调用同一loop/rotation实现 |
 | 实际槽与轮转访问 | `Transforms/Tile/RotatingBuffers.cpp` | current allocation/loop、typed owner；不规划物理offset |
 | destination与copy复用 | `Transforms/Tile/StorageOptimization.cpp` | fresh use/alias/effect；初始化证明复用StorageInitialization |
-| 已选layout下的搬运合成 | `Transforms/Tile/MovementFusion.cpp` | current permutation及physical relation；不选择流水stage |
+| 已选layout下的搬运合成 | `Transforms/Tile/MovementFusion.cpp` | current permutation、私有DMA中转及physical relation；不选择流水stage |
+| 当前movement endpoint的物理坐标 | `Analysis/Tile/MovementEndpoint.cpp` | 从actual root/subview证明静态relation与动态平移；Tile合成与Tile→Instr共用，不创建地址SSA |
 | 搬运位置调整 | 现有`Transforms/Tile/PhysicalMovementPlacement.cpp` | 当前不变性与effect证明 |
 | blocked DDR boundary view 的 root 保留 | `Transforms/Tile/PhysicalBoundaryViews.cpp` | 显式 root binding 与原 subview SSA；不分配或搬运数据 |
 | 阶段编排与失败传播 | 现有`Driver/CurrentIRExecutablePipeline.cpp` | 同一candidate owner；不内嵌leaf算法 |

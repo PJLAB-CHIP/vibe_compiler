@@ -101,4 +101,59 @@ TEST(MovementFusionTest, TransposeFusesPrivateLayoutConsumer) {
       }
 }
 
+TEST(MovementFusionTest, DMALayoutFusionPreservesObserversAndSnapshots) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned mode : {0u, 1u, 2u, 3u}) {
+      auto context = createContext();
+      auto type = [&](llvm::StringRef space, llvm::StringRef layout) {
+        return llvm::formatv("memref<1x{0}x192xbf16, #wafer.memory<{1}, {2}>>",
+                             extent, space, layout)
+            .str();
+      };
+      auto ddr = type("ddr", "ncx");
+      auto tensor = type("spm", "tensor");
+      auto ncx = type("spm", "ncx");
+      std::string text;
+      llvm::raw_string_ostream out(text);
+      out << "module { func.func @entry(%a: " << ddr << ", %b: " << ddr
+          << ") { wafer.tile.region(%a, %b : " << ddr << ", " << ddr
+          << ") -> () { ^bb0(%src: " << ddr << ", %dst: " << ddr << "): "
+          << "%buffer = memref.alloc() : " << tensor
+          << " wafer.tile.load %src into %buffer : " << ddr << " into "
+          << tensor;
+      if (mode == 1)
+        out << " wafer.tile.store %buffer, %dst : " << tensor << " -> " << ddr;
+      out << " %compute = wafer.tile.materialize_layout %buffer : " << tensor
+          << " -> " << ncx
+          << " %publication = wafer.tile.materialize_layout %compute : " << ncx
+          << " -> " << tensor;
+      if (mode == 2)
+        out << " %zero = arith.constant 0.0 : bf16"
+            << " wafer.tile.fill %compute, %zero {fill_domain = "
+               "#wafer.fill_domain<physical_footprint>} : "
+            << ncx << ", bf16";
+      out << " wafer.tile.store %publication, %dst : " << tensor << " -> "
+          << ddr;
+      if (mode == 3)
+        out << " wafer.tile.store %publication, %dst : " << tensor << " -> "
+            << ddr;
+      out << " wafer.tile.yield } return } }";
+      auto module =
+          mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+      ASSERT_TRUE(module) << text;
+      mlir::IRRewriter rewriter(context.get());
+      fuseDMALayoutMovements(*module, rewriter);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      unsigned layouts = 0;
+      module->walk([&](LayoutMaterializeOp) { ++layouts; });
+      EXPECT_EQ(layouts, mode == 0 ? 0u : 1u);
+      module->walk([&](StorageLoadOp load) {
+        EXPECT_EQ(getWaferMemoryAttr(
+                      mlir::cast<mlir::MemRefType>(load.getDest().getType()))
+                      .getLayout(),
+                  mode == 1 ? MemLayout::Tensor : MemLayout::NCx);
+      });
+    }
+}
+
 } // namespace

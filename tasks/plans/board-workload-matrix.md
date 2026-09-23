@@ -1,5 +1,38 @@
 # 扩展板测矩阵与三轮性能调优
 
+## 直接 NCx I/O 的复用与搬运整改（2026-09-23）
+
+用户已授权接续此项，取代下方前轮测量结束时“不自动启动优化”的限制；仍不启动 Tensor 子集物化整改。
+输入为当前 actual Tile load/store、layout materialization、subview 和循环。输出为相同数值语义的实际复用与直接 DMA，
+下游仍为唯一 Tile→Instr、completion、SPM、target 与 package。稳定合同见08号。
+
+1. 复用按外部资源身份、逻辑窗口与实际读写 effect 判断；移除只接受 Tensor DDR 的类别限制，保留 root encoding。
+   同一候选先实际物化 resident/peer，再做原 completion/SPM；不改搜索预算或按 footprint 放行。
+2. 对私有的 load→layout、layout→store 链合成已选目标布局的 DMA；从 current root/view 证明地址，复用唯一搬运 lowering。
+   不能把 blocked subview 当作局部紧凑 NCx，也不能删除存在其它观察者或写入的 staging。
+3. 真实规模 FP16/BF16、1024/1025/1031、跨 C block、4/16 Tile、resident/peer/main/tail，
+   检查输入复用、exact 字节地址、无重叠、owner、下游 Instr/completion/SPM 与模型输出；反例覆盖布局/窗口/资源不同和写入。
+4. 使用原 seed、standard 8/42 与 guard，重新生成 M=N4096/K1024 GEMM 和 `[1,28,2048,128]` causal attention 的
+   NCx source/reference/package/no-card；核对实际转换、DDR 读取量、DTE 与策略，再逐项三次普通实卡。
+   与已有 Tensor 及前轮 NCx 健康记录比较，不运行旧包；分别报告数值与性能，不能用指令数代替总耗时。
+
+实现前工作量证据为前轮实际 Instr 统计与 `direct-ncx-ddr-20260923.json`：GEMM RDMA 160 MiB、512次，
+没有 DTE；Tensor 对照16 MiB、80次。原构包日志保留 pass/counter/wall/RSS；本轮按同一 timing 输出记录。
+完成要求：两条实现缺口闭合、默认路径回归、fresh 产品及上述板测通过，性能改善以本轮结果签发。
+
+| 本项覆盖 | exact 检查与直接下游 |
+| --- | --- |
+| FP16/BF16；1024/1025/1031；16 Tile；Tensor与NCx；C64/192 | 48组SystemC模型逐字节输出一致，resident/sliding/two-level/peer均实际执行，主尾块进入completion/SPM/target |
+| rank3/4；跨C block；静态/动态窗口及C尾；两种dtype | 同一DMA oracle比较融合前后全部实际地址；无多写、漏写、padding误写，主块descriptor保持符号合成 |
+| staging观察者、转换后源写入、多use；资源/窗口/layout不同 | 保留必要snapshot，不错误共享；verifier-valid负例与原DMA越界/unknown拒绝 |
+| 正式NCx GEMM与attention | 全部外部ports/payload NCx；fresh no-card，Q/K/V和GEMM输入输出直接搬运，实际DTE恢复；各三次实卡完整数值/guard |
+| 默认Tensor两项产品 | fresh no-card；16份Instr和目标LLVM分别与原健康记录逐byte一致 |
+
+本轮两项各三次实卡通过，普通中位数为3.203/3.544ms；异常慢已消除。
+证据与收益边界见[本轮记录](../../docs/board-performance-results.md#2026-09-23ncx-输入复用与直接-dma-整改)。
+Analysis/Planning/Transforms/Conversion/Driver完整单测与lit均通过，48组SystemC及最终实现的直接回归通过；
+canonical完整增量与随后Ninja no-op通过。本项已完成，不扩大到其它切分、负载均衡或Tensor子集物化整改。
+
 ## 直接 NCx DDR 输入输出测量（2026-09-23）
 
 指定输入为 BF16 M=N4096/K1024 GEMM（seed20260803）及 BF16 causal attention
@@ -30,7 +63,7 @@ caller 按 manifest 打包/解码。runtime 直接传输物理字节，不使用
 [NCx测量](../../docs/board-performance-results.md#2026-09-23直接-ncx-ddr-输入输出测量)。
 主机11个 component unit suite、PyTorch caller 两组及 physical codec 通过；旧 layout verifier fixture 更新和静态 BOOL
 路径修复后，conversion 全45项及 lit 全310项复测通过，无 skip/unsupported；canonical完整增量与随后 Ninja no-op通过。
-指定 I/O 能力和测量闭合，NCx 内部转换及复用性能整改仍未完成，不自动启动该优化。
+这是前轮能力与测量检查点，当时未启动性能整改；随后用户授权的接续及验收以上方整改节为准。
 
 ## Tensor子集物化整改与核心性能保护（2026-09-23）
 

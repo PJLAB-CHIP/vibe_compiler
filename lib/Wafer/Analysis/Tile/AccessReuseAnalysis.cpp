@@ -93,8 +93,9 @@ mlir::BlockArgument getProgramSource(mlir::Value value) {
   }
 }
 
-// Compare actual address functions over the enclosing ordered iteration
-// domain. The expression is query-local; no symbolic window survives mutation.
+// Compare logical coordinates over the enclosing ordered iteration domain.
+// Linear offsets use logical memref strides, not blocked physical addresses.
+// The root encoding is kept separately and movement lowering owns addresses.
 class AccessIndexing {
 public:
   explicit AccessIndexing(llvm::ArrayRef<analysis::StaticLoopDomain> loops)
@@ -246,7 +247,6 @@ std::optional<ReadAccess> getReadAccess(StorageLoadOp load) {
   auto payload = mlir::cast<mlir::MemRefType>(load.getDest().getType());
   if (!original || !original.getLayout().isIdentity() ||
       !isWaferDDRMemRefType(original) ||
-      getWaferMemoryAttr(original).getLayout() != MemLayout::Tensor ||
       !source.hasStaticShape() || !payload.hasStaticShape() ||
       !load.getDest().getDefiningOp<mlir::memref::AllocOp>())
     return std::nullopt;
@@ -269,6 +269,7 @@ std::optional<ReadAccess> getReadAccess(StorageLoadOp load) {
   access.load = load;
   access.tile = load->getParentOfType<TileModuleOp>();
   access.argument = identity.getIndex();
+  access.inputType = original;
   access.sourceType = source;
   access.payloadType = payload;
   access.strides = std::move(strides);
@@ -362,9 +363,9 @@ AccessReuseAnalysis collectReads(mlir::ModuleOp module) {
 
 bool equivalentPeerAccess(const ReadAccess &a, const ReadAccess &b) {
   auto aTile = a.tile, bTile = b.tile;
-  return a.argument == b.argument && a.sourceType == b.sourceType &&
-         a.payloadType == b.payloadType && a.strides == b.strides &&
-         a.linearOffset == b.linearOffset &&
+  return a.argument == b.argument && a.inputType == b.inputType &&
+         a.sourceType == b.sourceType && a.payloadType == b.payloadType &&
+         a.strides == b.strides && a.linearOffset == b.linearOffset &&
          aTile.getCardId() == bTile.getCardId() &&
          a.loops.size() == b.loops.size() &&
          llvm::all_of(llvm::zip_equal(a.loops, b.loops), [](const auto &pair) {
@@ -534,6 +535,7 @@ ScopedReadAccessResult queryScope(llvm::ArrayRef<const ReadAccess *> reads,
     if (result.reads.empty()) {
       result.tile = read.tile;
       result.argument = read.argument;
+      result.inputType = read.inputType;
       result.linearOffset =
           mlir::simplifyAffineExpr(globalOrigin, outerCount, 0);
       result.outerLoops.append(read.loops.begin(),
