@@ -6,10 +6,12 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/SubsetOpInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <limits>
 
@@ -469,6 +471,217 @@ getTensorOperandDemand(const TensorResultIndexing &indexing,
       return fail(IndexRelationStatus::ResourceExhausted,
                   "tensor demand image exceeds rectangle work limit");
   }
+  return result;
+}
+
+TensorAssemblyResult queryTensorAssembly(mlir::Value value,
+                                         const IndexRelationLimits &limits) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!type || !type.hasStaticShape())
+    return {TensorAssemblyStatus::Unsupported, {},
+            "insert assembly requires a static ranked tensor"};
+
+  llvm::SmallVector<TensorAssemblySegment, 4> reverseSegments;
+  mlir::Value current = value;
+  while (auto insert =
+             current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
+    if (reverseSegments.size() >= limits.maxRectangularPieces)
+      return {TensorAssemblyStatus::ResourceExhausted, {},
+              "insert assembly exceeded its segment work bound"};
+    auto subset = mlir::cast<mlir::SubsetOpInterface>(insert.getOperation())
+                      .getAccessedHyperrectangularSlice();
+    if (mlir::failed(subset) || insert.getUpdatedDestination() != current ||
+        insert.getUpdatedDestination().getType() != type ||
+        llvm::any_of(subset->getMixedStrides(), [](auto stride) {
+          return !mlir::isConstantIntValue(stride, 1);
+        }))
+      return {TensorAssemblyStatus::Unsupported, {},
+              "insert assembly is strided or type-inconsistent"};
+
+    llvm::SmallVector<int64_t, 4> offsets;
+    llvm::SmallVector<int64_t, 4> sizes;
+    for (mlir::OpFoldResult offset : subset->getMixedOffsets()) {
+      std::optional<int64_t> constant = mlir::getConstantIntValue(offset);
+      if (!constant)
+        return {TensorAssemblyStatus::Unsupported, {},
+                "insert assembly requires static offsets"};
+      offsets.push_back(*constant);
+    }
+    for (mlir::OpFoldResult size : subset->getMixedSizes()) {
+      std::optional<int64_t> constant = mlir::getConstantIntValue(size);
+      if (!constant)
+        return {TensorAssemblyStatus::Unsupported, {},
+                "insert assembly requires static sizes"};
+      sizes.push_back(*constant);
+    }
+    auto source = insert.getSourceOperand().get();
+    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
+    if (!sourceType || !sourceType.hasStaticShape() ||
+        offsets.size() != static_cast<size_t>(type.getRank()) ||
+        sizes.size() != static_cast<size_t>(type.getRank()) ||
+        !mlir::computeRankReductionMask(sizes, sourceType.getShape()))
+      return {TensorAssemblyStatus::BrokenContract, {},
+              "insert assembly source does not match its rectangle"};
+    reverseSegments.push_back(
+        {source, &insert.getSourceOperand(), std::move(offsets),
+         std::move(sizes)});
+    current = insert.getDestinationOperand().get();
+  }
+  if (reverseSegments.size() < 2)
+    return {TensorAssemblyStatus::NotAssembly, {}, {}};
+  int64_t fullVolume = 1;
+  for (int64_t extent : type.getShape()) {
+    int64_t next = 0;
+    if (extent <= 0 || llvm::MulOverflow(fullVolume, extent, next))
+      return {TensorAssemblyStatus::ResourceExhausted, {},
+              "insert assembly volume is not representable"};
+    fullVolume = next;
+  }
+  int64_t coveredVolume = 0;
+  for (auto [index, segment] : llvm::enumerate(reverseSegments)) {
+    int64_t volume = 1;
+    for (auto [offset, size, extent] : llvm::zip_equal(
+             segment.offsets, segment.sizes, type.getShape())) {
+      int64_t end = 0;
+      int64_t next = 0;
+      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, end) ||
+          end > extent || llvm::MulOverflow(volume, size, next))
+        return {TensorAssemblyStatus::BrokenContract, {},
+                "insert assembly rectangle is invalid"};
+      volume = next;
+    }
+    int64_t nextCovered = 0;
+    if (llvm::AddOverflow(coveredVolume, volume, nextCovered))
+      return {TensorAssemblyStatus::ResourceExhausted, {},
+              "insert assembly covered volume is not representable"};
+    coveredVolume = nextCovered;
+    for (size_t previous = 0; previous < index; ++previous) {
+      bool overlaps = true;
+      for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
+           llvm::zip_equal(segment.offsets, segment.sizes,
+                           reverseSegments[previous].offsets,
+                           reverseSegments[previous].sizes))
+        overlaps &= lhsOffset < rhsOffset + rhsSize &&
+                    rhsOffset < lhsOffset + lhsSize;
+      if (overlaps)
+        return {TensorAssemblyStatus::Unsupported, {},
+                "insert assembly rectangles overlap"};
+    }
+  }
+  if (coveredVolume != fullVolume)
+    return {TensorAssemblyStatus::Unsupported, {},
+            "insert assembly does not exactly cover its result"};
+  return {TensorAssemblyStatus::Exact, std::move(reverseSegments), {}};
+}
+
+TensorAssemblyDemandResult
+queryTensorAssemblyDemand(mlir::Value value,
+                          const StaticRectangularIndexSet &requested,
+                          const IndexRelationLimits &limits) {
+  auto fail = [](TensorAssemblyStatus status, llvm::StringRef detail) {
+    return TensorAssemblyDemandResult{status, {}, detail.str()};
+  };
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!type || !type.hasStaticShape() ||
+      requested.offsets.size() != static_cast<size_t>(type.getRank()) ||
+      requested.sizes.size() != requested.offsets.size())
+    return fail(TensorAssemblyStatus::BrokenContract,
+                "assembly demand has an inconsistent static shape");
+  for (auto [offset, size, extent] : llvm::zip_equal(
+           requested.offsets, requested.sizes, type.getShape()))
+    if (offset < 0 || offset > extent || size < 0 || size > extent - offset)
+      return fail(TensorAssemblyStatus::BrokenContract,
+                  "assembly demand is outside its result");
+  if (!value.getDefiningOp<mlir::SubsetInsertionOpInterface>())
+    return fail(TensorAssemblyStatus::NotAssembly, "value has no insert chain");
+
+  auto fromRelation = [&](const StaticRectangularIndexSetPiecesResult &query) {
+    return fail(query.status == IndexRelationStatus::ResourceExhausted
+                    ? TensorAssemblyStatus::ResourceExhausted
+                : query.status == IndexRelationStatus::Invalid
+                    ? TensorAssemblyStatus::BrokenContract
+                    : TensorAssemblyStatus::Unsupported,
+                query.reason);
+  };
+  llvm::SmallVector<StaticRectangularIndexSet, 4> pending;
+  if (!llvm::is_contained(requested.sizes, 0))
+    pending.push_back(requested);
+  TensorAssemblyDemandResult result;
+  result.status = TensorAssemblyStatus::Exact;
+  mlir::Value current = value;
+  while (auto insert =
+             current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
+    auto indexing = deriveTensorResultIndexing(
+        mlir::cast<mlir::OpResult>(current), limits);
+    if (!indexing.isExact())
+      return fail(indexing.status == TensorResultIndexingStatus::ResourceExhausted
+                      ? TensorAssemblyStatus::ResourceExhausted
+                  : indexing.status == TensorResultIndexingStatus::BrokenContract
+                      ? TensorAssemblyStatus::BrokenContract
+                      : TensorAssemblyStatus::Unsupported,
+                  indexing.detail);
+    const TensorOperandIndexing *source = nullptr;
+    const TensorOperandIndexing *destination = nullptr;
+    for (const auto &operand : indexing.indexing->operands) {
+      if (operand.role == TensorIndexingOperandRole::Source)
+        source = &operand;
+      else if (operand.role == TensorIndexingOperandRole::Destination)
+        destination = &operand;
+    }
+    if (!source || !destination ||
+        source->operand >= insert->getNumOperands() ||
+        destination->operand >= insert->getNumOperands())
+      return fail(TensorAssemblyStatus::BrokenContract,
+                  "insert chain has no typed source and destination");
+    llvm::SmallVector<StaticRectangularIndexSet, 4> remaining;
+    for (const auto &window : pending) {
+      auto sourceDemand =
+          getTensorOperandDemand(*indexing.indexing, *source, {window}, limits);
+      if (!sourceDemand.isExact())
+        return fromRelation(sourceDemand);
+      if (!sourceDemand.domains.empty()) {
+        if (sourceDemand.domains.size() != 1)
+          return fail(TensorAssemblyStatus::Unsupported,
+                      "insert source needs multiple rectangular images");
+        StaticRectangularIndexSet read;
+        for (auto [offset, size, insertedOffset, insertedSize] :
+             llvm::zip_equal(window.offsets, window.sizes, source->offsets,
+                             source->sizes)) {
+          int64_t begin = std::max(offset, insertedOffset);
+          int64_t end = std::min(offset + size,
+                                 insertedOffset + insertedSize);
+          if (begin >= end)
+            return fail(TensorAssemblyStatus::BrokenContract,
+                        "insert source image has no result intersection");
+          read.offsets.push_back(begin);
+          read.sizes.push_back(end - begin);
+        }
+        mlir::OpOperand *sourceOperand = &insert->getOpOperand(source->operand);
+        if (sourceOperand->get().getDefiningOp<mlir::tensor::EmptyOp>())
+          return fail(TensorAssemblyStatus::Unsupported,
+                      "insert source is undefined tensor.empty data");
+        result.pieces.push_back({sourceOperand->get(), sourceOperand,
+                                 std::move(read),
+                                 std::move(sourceDemand.domains.front())});
+      }
+      auto oldDemand = getTensorOperandDemand(
+          *indexing.indexing, *destination, {window}, limits);
+      if (!oldDemand.isExact())
+        return fromRelation(oldDemand);
+      remaining.append(std::move(oldDemand.domains));
+      if (remaining.size() + result.pieces.size() >
+          limits.maxRectangularPieces)
+        return fail(TensorAssemblyStatus::ResourceExhausted,
+                    "insert demand exceeded its rectangle work bound");
+    }
+    pending = std::move(remaining);
+    current = insert.getDestinationOperand().get();
+  }
+  if (!pending.empty() && current.getDefiningOp<mlir::tensor::EmptyOp>())
+    return fail(TensorAssemblyStatus::Unsupported,
+                "insert demand reads undefined tensor.empty data");
+  for (auto &window : pending)
+    result.pieces.push_back({current, nullptr, window, std::move(window)});
   return result;
 }
 

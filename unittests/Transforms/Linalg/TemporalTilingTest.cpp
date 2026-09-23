@@ -1411,6 +1411,10 @@ TEST(TemporalTilingTest, ConcatInsertChainBuildsOnlyRequestedConsumerTile) {
         queryTemporalConcatAssembly(consumer->getOpOperand(0));
     ASSERT_TRUE(concat.isExact()) << concat.detail;
     ASSERT_EQ(concat.segments.size(), 2u);
+    EXPECT_EQ(concat.segments[0].offsets,
+              (llvm::SmallVector<int64_t, 4>{0, 0, 64}));
+    EXPECT_EQ(concat.segments[1].offsets,
+              (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
     TemporalDomainResult domain = buildTemporalDomain(region);
     ASSERT_TRUE(domain.succeeded())
         << (domain.failure ? domain.failure->detail : "");

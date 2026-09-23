@@ -18,6 +18,13 @@
 
 ## 当前调度
 
+2026-09-23接续完整单层LLaMA2长序列：当前S1024 FP16的正式fresh no-card编译复现42/42个actual SPM
+capacity拒绝，未生成package。只读首候选诊断同时见完整MLP权重及K/V状态allocation，不能仅归因于attention
+内部块大小。已按Tensor子集物化计划拆开纯来源/覆盖分析与Temporal融合职责，并接通静态Spatial窗口的
+last-writer局部物化；Temporal动态窗口、共同生成入口、显式共享选择、四项性能保护及S1024/1025实卡仍待完成。
+此检查点不改变`board-testing`的`doing`状态，细节见
+[子集物化计划](plans/tensor-subset-materialization.md)。
+
 2026-09-23用户要求将BF16 NCx GEMM M=N4096/K1024与2048、28-head attention纳入正式case集合，
 并让后续全部PyTorch板测case的耗时同时记录kernel本体与外层event，仍归 `board-testing`。
 已按15号统一runner合同完成：两个NCx名称直接注册，普通case布局仍默认Tensor；板测默认一次轻量capture并列
@@ -51,10 +58,11 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 2026-09-23用户追加M=N4096、K1024 GEMM性能测量：BF16、batch1、standard 8/42的fresh产品及guard no-card通过；
 三次普通实卡3.489/3.583/3.495ms，中位数3.495ms，完整相似度、guard及厂商清理健康，
 见[记录](../docs/board-performance-results.md#2026-09-23mn4096k1024-gemm测量)。本次指定测量已完成，未扩大优化范围。
-容量调查临时打印已撤除并恢复正式构建；下方Tensor整改仍为设计完成、实现待推进，四项保护验收仍须随整改新测。
+容量调查临时打印已撤除并恢复正式构建；Tensor整改及四项保护的后续状态按顶部检查点和实施计划执行。
 
 2026-09-23最新要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
-本轮先交付文档；06/08/18号边界与[实施计划](plans/tensor-subset-materialization.md)已同步，代码实现、fresh产品和实卡尚未完成。
+06/08/18号边界与[实施计划](plans/tensor-subset-materialization.md)已同步；纯来源/覆盖分析已拆分，
+静态Spatial窗口已用实际来源物化；Temporal动态窗口、共同生成入口和共享选择、fresh产品及实卡尚未完成。
 后续顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；仍归`board-testing`，
 不新增队列项，不把扩展AccessReuse中间存储资格列为前置，不重开attention专项优化。
 任一保护项回退或不可比，整改不得签完成；固定case、seed、预算、guard、健康样本和比较门槛见实施计划第7节。

@@ -4,7 +4,27 @@
 [06号](../06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)、
 [08号](../08-physical-realization.md#21-两个有序transformation)和
 [18号](../18-source-organization.md#42-analysisplanning与ir变换)共同约束。
-本次交付是设计细化；实现、no-card、板端数值和性能分别验收，文档落地不代表这些门槛已完成。
+实现、no-card、板端数值和性能分别验收；设计或局部代码检查点不代表这些门槛已完成。
+
+2026-09-23实施检查点：按正式S1024 FP16入口重新导出source和合法ID，default standard 8/42的
+fresh no-card编译实际完成42次候选，全部为actual SPM capacity拒绝，尚无package。第一候选的
+只读容量诊断可见`11008×4096xf16`完整权重约90 MB以及`1×32×1024×128xf16`完整状态约8 MB；
+后者还由当前Region以整值发布。这是首候选证据，不代替其余41个候选或S1025的根因结论。
+已将“完整静态insert链的来源/覆盖证明”移到`Analysis/Linalg`，Temporal只保留consumer唯一性与计算融合判断；
+rank3的1024/1025/1031多轴来源、重叠拒绝及原Temporal矩阵通过。随后接入静态实际窗口查询，
+按last-writer分出insert源及旧destination需求；rank reduction、覆盖重叠、预算失败和`tensor.empty`未定义读取已有定向测试。
+Spatial的实际4 Tile、1025行跨512边界用同一查询只生成255+1行紧凑输入片段并通过stage verifier；
+完整尺寸的insert仅用于observable输出发布。当前静态Spatial路径已接入，Temporal动态分段、共同生成入口、
+显式共享/局部候选、fresh产品及板测仍未完成，不能签长LM board-ready。
+
+本检查点的已执行覆盖（未列部分仍按第6节验收）：
+
+| 输入等价类 | 本轮测试与实际结果 | 直接下游边界 |
+| --- | --- | --- |
+| rank3的1024/1025/1031多轴完整拼接及另一观察者 | `AssemblyCoverageIsIndependentOfUseAndFusion`通过；四个source矩形精确、重叠的完整拼接资格单列拒绝 | Temporal原完整拼接路径的`ConcatInsertChainBuildsOnlyRequestedConsumerTile`通过 |
+| 1025行部分insert、覆盖重叠与旧destination | `AssemblyDemandUsesLastWriterAndReadsOnlyTheOldDestinationRemainder`通过；200至799行逐行恰一owner，紧预算返回ResourceExhausted | 静态需求供Spatial物化；未代签动态Temporal |
+| rank reduction及未定义旧destination | `AssemblyDemandPreservesRankReducedSourceCoordinates`通过；source窗口为二维，实际读取`tensor.empty`返回Unsupported | Spatial在首次物化前查询 |
+| 1025行、4 Tile、跨512边界 | `SelectedAssemblyWindowUsesOnlyItsCurrentSourcePieces`通过；Tile内255+1行的源/结果坐标精确，module verifier通过 | Spatial TileRegion；layout/Instr/SPM仍待覆盖 |
 
 ## 1. 输入、输出与范围
 

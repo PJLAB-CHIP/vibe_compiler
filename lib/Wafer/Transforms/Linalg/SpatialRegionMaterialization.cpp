@@ -1762,65 +1762,47 @@ struct GroupBuilder {
     if (indexing.status != analysis::TensorResultIndexingStatus::Unsupported)
       return mlir::failure();
 
-    if (auto inserted =
-            value.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
-      auto subset = mlir::cast<mlir::SubsetOpInterface>(inserted.getOperation())
-                        .getAccessedHyperrectangularSlice();
-      if (mlir::failed(subset))
+    if (value.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
+      auto demand = analysis::queryTensorAssemblyDemand(value, requested);
+      if (!demand.isExact() || demand.pieces.empty())
         return mlir::failure();
-      auto staticOffsets = getStaticValues(subset->getMixedOffsets());
-      auto staticSizes = getStaticValues(subset->getMixedSizes());
-      auto staticStrides = getStaticValues(subset->getMixedStrides());
-      auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(
-          inserted.getSourceOperand().get().getType());
-      if (!staticOffsets || !staticSizes || !staticStrides || !sourceType ||
-          sourceType.getRank() != type.getRank() ||
-          !llvm::equal(*staticSizes, sourceType.getShape()) ||
-          !llvm::all_of(*staticStrides,
-                        [](int64_t stride) { return stride == 1; }))
+      if (llvm::any_of(demand.pieces, [](const auto &piece) {
+            return piece.sourceWindow.sizes.empty();
+          }))
         return mlir::failure();
-      mlir::FailureOr<mlir::Value> compact = materializeCompactSupportTile(
-          inserted.getDestinationOperand().get(), requested, fragments);
-      if (mlir::failed(compact))
-        return mlir::failure();
-
-      analysis::StaticRectangularIndexSet sourceRequest;
-      llvm::SmallVector<int64_t, 4> compactOffsets;
-      bool intersects = true;
-      for (auto [requestedOffset, requestedSize, insertedOffset, insertedSize] :
-           llvm::zip_equal(requested.offsets, requested.sizes, *staticOffsets,
-                           *staticSizes)) {
-        int64_t requestedEnd = requestedOffset + requestedSize;
-        int64_t insertedEnd = insertedOffset + insertedSize;
-        int64_t begin = std::max(requestedOffset, insertedOffset);
-        int64_t end = std::min(requestedEnd, insertedEnd);
-        if (begin >= end) {
-          intersects = false;
-          break;
+      auto compactType = mlir::RankedTensorType::get(
+          requested.sizes, type.getElementType(), type.getEncoding());
+      mlir::Value assembled;
+      for (const auto &piece : demand.pieces) {
+        auto source = materializeCompactSupportTile(
+            piece.source, piece.sourceWindow, fragments);
+        if (mlir::failed(source))
+          return mlir::failure();
+        auto pieceType = mlir::RankedTensorType::get(
+            piece.resultWindow.sizes, type.getElementType(),
+            type.getEncoding());
+        mlir::Value tile =
+            reshapeStaticTensorTile(builder, value.getLoc(), *source, pieceType);
+        if (demand.pieces.size() == 1 &&
+            piece.resultWindow.offsets == requested.offsets &&
+            piece.resultWindow.sizes == requested.sizes)
+          return tile;
+        if (!assembled)
+          assembled = builder.create<mlir::tensor::EmptyOp>(
+              value.getLoc(), compactType.getShape(),
+              compactType.getElementType(), compactType.getEncoding());
+        llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
+        for (auto [offset, origin, size] : llvm::zip_equal(
+                 piece.resultWindow.offsets, requested.offsets,
+                 piece.resultWindow.sizes)) {
+          offsets.push_back(builder.getIndexAttr(offset - origin));
+          sizes.push_back(builder.getIndexAttr(size));
+          strides.push_back(builder.getIndexAttr(1));
         }
-        sourceRequest.offsets.push_back(begin - insertedOffset);
-        sourceRequest.sizes.push_back(end - begin);
-        compactOffsets.push_back(begin - requestedOffset);
+        assembled = builder.create<mlir::tensor::InsertSliceOp>(
+            value.getLoc(), tile, assembled, offsets, sizes, strides);
       }
-      if (!intersects)
-        return compact;
-      mlir::FailureOr<mlir::Value> sourceTile = materializeCompactSupportTile(
-          inserted.getSourceOperand().get(), sourceRequest, fragments);
-      if (mlir::failed(sourceTile))
-        return mlir::failure();
-      llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
-      llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
-      llvm::SmallVector<mlir::OpFoldResult, 4> strides;
-      for (int64_t offset : compactOffsets)
-        offsets.push_back(builder.getIndexAttr(offset));
-      for (int64_t size : sourceRequest.sizes)
-        sizes.push_back(builder.getIndexAttr(size));
-      for (int64_t dimension = 0; dimension < type.getRank(); ++dimension)
-        strides.push_back(builder.getIndexAttr(1));
-      return builder
-          .create<mlir::tensor::InsertSliceOp>(
-              value.getLoc(), *sourceTile, *compact, offsets, sizes, strides)
-          .getResult();
+      return assembled;
     }
 
     mlir::Value full;

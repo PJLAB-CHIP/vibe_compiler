@@ -111,6 +111,62 @@ StaticRectangularIndexSetPiecesResult getTensorOperandDemand(
     llvm::ArrayRef<StaticRectangularIndexSet> demand,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
+enum class TensorAssemblyStatus : uint8_t {
+  Exact,
+  NotAssembly,
+  Unsupported,
+  ResourceExhausted,
+  BrokenContract,
+};
+
+struct TensorAssemblySegment {
+  mlir::Value source;
+  mlir::OpOperand *sourceOperand = nullptr;
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+};
+
+struct TensorAssemblyResult {
+  TensorAssemblyStatus status = TensorAssemblyStatus::NotAssembly;
+  llvm::SmallVector<TensorAssemblySegment, 4> segments;
+  std::string detail;
+
+  bool isExact() const {
+    return status == TensorAssemblyStatus::Exact && !segments.empty();
+  }
+};
+
+/// Prove that the current insert chain defines every element exactly once.
+/// Segments are returned newest insertion first, matching SSA traversal.
+/// This is a source/coverage query only: other uses of the chain and
+/// producer fusion eligibility are decisions for its immediate consumer.
+TensorAssemblyResult queryTensorAssembly(
+    mlir::Value value,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
+struct TensorAssemblyDemandPiece {
+  mlir::Value source;
+  mlir::OpOperand *sourceOperand = nullptr;
+  StaticRectangularIndexSet resultWindow;
+  StaticRectangularIndexSet sourceWindow;
+};
+
+struct TensorAssemblyDemandResult {
+  TensorAssemblyStatus status = TensorAssemblyStatus::NotAssembly;
+  llvm::SmallVector<TensorAssemblyDemandPiece, 4> pieces;
+  std::string detail;
+
+  bool isExact() const { return status == TensorAssemblyStatus::Exact; }
+};
+
+/// Resolve one static demand against current insert_slice SSA updates.
+/// The newest write wins; uncovered points read the actual old destination.
+/// A demanded tensor.empty point is unsupported because its value is undefined.
+/// Windows and borrowed handles are valid only in the current IR epoch.
+TensorAssemblyDemandResult queryTensorAssemblyDemand(
+    mlir::Value value, const StaticRectangularIndexSet &requested,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
 /// Current structured-compute access maps. These adapters expose dialect
 /// semantics only; no fusion, tiling, or placement decisions belong here.
 mlir::FailureOr<mlir::AffineMap>

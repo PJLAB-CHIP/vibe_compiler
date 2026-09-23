@@ -16,7 +16,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits>
@@ -938,71 +937,50 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
     return result;
   }
 
-  mlir::Value current = result.assembledValue;
-  llvm::SmallVector<TemporalConcatSegment, 4> reverseSegments;
-  const analysis::IndexRelationLimits relationLimits;
-  while (auto insert =
-             current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
-    if (reverseSegments.size() >= relationLimits.maxRectangularPieces) {
+  auto assembly = analysis::queryTensorAssembly(result.assembledValue);
+  if (!assembly.isExact()) {
+    switch (assembly.status) {
+    case analysis::TensorAssemblyStatus::Exact:
+      llvm_unreachable("exact assembly must have segments");
+    case analysis::TensorAssemblyStatus::NotAssembly:
+      result.kind = TemporalConcatQueryKind::NotConcat;
+      break;
+    case analysis::TensorAssemblyStatus::Unsupported:
+      result.kind = TemporalConcatQueryKind::Unsupported;
+      break;
+    case analysis::TensorAssemblyStatus::ResourceExhausted:
       result.kind = TemporalConcatQueryKind::ResourceExhausted;
-      result.detail = "insert assembly exceeded its segment work bound";
-      return result;
-    }
-    auto subset = mlir::cast<mlir::SubsetOpInterface>(insert.getOperation())
-                      .getAccessedHyperrectangularSlice();
-    if ((!actualSubset && !current.hasOneUse()) || mlir::failed(subset) ||
-        insert.getUpdatedDestination() != current ||
-        insert.getUpdatedDestination().getType() != assembledType ||
-        llvm::any_of(subset->getMixedStrides(), [](auto stride) {
-          return !mlir::isConstantIntValue(stride, 1);
-        })) {
-      result.kind = TemporalConcatQueryKind::NonUnique;
-      result.detail =
-          "insert assembly chain is multi-use, strided, or type-inconsistent";
-      return result;
-    }
-    llvm::SmallVector<int64_t, 4> offsets;
-    llvm::SmallVector<int64_t, 4> sizes;
-    for (mlir::OpFoldResult offset : subset->getMixedOffsets()) {
-      std::optional<int64_t> value = mlir::getConstantIntValue(offset);
-      if (!value) {
-        result.kind = TemporalConcatQueryKind::Unsupported;
-        result.detail = "insert assembly requires static offsets";
-        return result;
-      }
-      offsets.push_back(*value);
-    }
-    for (mlir::OpFoldResult size : subset->getMixedSizes()) {
-      std::optional<int64_t> value = mlir::getConstantIntValue(size);
-      if (!value) {
-        result.kind = TemporalConcatQueryKind::Unsupported;
-        result.detail = "insert assembly requires static sizes";
-        return result;
-      }
-      sizes.push_back(*value);
-    }
-    auto sourceType =
-        mlir::dyn_cast<mlir::RankedTensorType>(
-            insert.getSourceOperand().get().getType());
-    if (!sourceType || !sourceType.hasStaticShape() ||
-        offsets.size() != static_cast<size_t>(assembledType.getRank()) ||
-        sizes.size() != static_cast<size_t>(assembledType.getRank()) ||
-        !mlir::computeRankReductionMask(sizes, sourceType.getShape())) {
+      break;
+    case analysis::TensorAssemblyStatus::BrokenContract:
       result.kind = TemporalConcatQueryKind::BrokenContract;
-      result.detail = "insert assembly source does not match its rectangle";
-      return result;
+      break;
     }
+    result.detail = std::move(assembly.detail);
+    return result;
+  }
+  if (!actualSubset) {
+    mlir::Value current = result.assembledValue;
+    while (auto insert =
+               current.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
+      if (!current.hasOneUse()) {
+        result.kind = TemporalConcatQueryKind::NonUnique;
+        result.detail = "insert assembly chain has another consumer";
+        return result;
+      }
+      current = insert.getDestinationOperand().get();
+    }
+  }
+  for (auto &piece : assembly.segments) {
     TemporalConcatSegment segment;
-    segment.source = insert.getSourceOperand().get();
-    segment.offsets = std::move(offsets);
-    segment.sizes = std::move(sizes);
+    segment.source = piece.source;
+    segment.offsets = std::move(piece.offsets);
+    segment.sizes = std::move(piece.sizes);
     if (auto sourceResult = mlir::dyn_cast<mlir::OpResult>(segment.source)) {
       mlir::Operation *sourceOwner = sourceResult.getOwner();
       std::optional<mlir::OpOperand *> sourceUse =
           getOnlyOperationUse(sourceOwner);
       if (!actualSubset && sourceUse &&
-          (*sourceUse)->getOwner() == insert.getOperation() &&
-          *sourceUse == &insert.getSourceOperand() &&
+          *sourceUse == piece.sourceOperand &&
           isTemporalCandidate(sourceOwner) &&
           !mlir::isa<mlir::tensor::PadOp>(sourceOwner) &&
           !mlir::isa<LinalgExtOnlineAttentionOp>(sourceOwner) &&
@@ -1012,72 +990,9 @@ queryTemporalConcatAssembly(mlir::OpOperand &consumerOperand) {
           sourceOwner->isBeforeInBlock(consumer))
         segment.derivedProducer = sourceResult;
     }
-    reverseSegments.push_back(std::move(segment));
-    current = insert.getDestinationOperand().get();
-  }
-  // Complete, nonoverlapping writes below make the previous destination's
-  // contents irrelevant. Its defining operation need not be tensor.empty.
-  if (reverseSegments.size() < 2) {
-    result.kind = TemporalConcatQueryKind::NotConcat;
-    result.detail.clear();
-    return result;
-  }
-  llvm::reverse(reverseSegments);
-
-  int64_t fullVolume = 1;
-  for (int64_t extent : assembledType.getShape()) {
-    int64_t next = 0;
-    if (extent <= 0 || llvm::MulOverflow(fullVolume, extent, next)) {
-      result.kind = TemporalConcatQueryKind::ResourceExhausted;
-      result.detail = "insert assembly volume is not representable";
-      return result;
-    }
-    fullVolume = next;
-  }
-  int64_t coveredVolume = 0;
-  for (auto [index, segment] : llvm::enumerate(reverseSegments)) {
-    int64_t volume = 1;
-    for (auto [offset, size, extent] : llvm::zip_equal(
-             segment.offsets, segment.sizes, assembledType.getShape())) {
-      int64_t end = 0;
-      int64_t next = 0;
-      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, end) ||
-          end > extent || llvm::MulOverflow(volume, size, next)) {
-        result.kind = TemporalConcatQueryKind::BrokenContract;
-        result.detail = "insert assembly rectangle is invalid";
-        return result;
-      }
-      volume = next;
-    }
-    int64_t nextCovered = 0;
-    if (llvm::AddOverflow(coveredVolume, volume, nextCovered)) {
-      result.kind = TemporalConcatQueryKind::ResourceExhausted;
-      result.detail = "insert assembly covered volume is not representable";
-      return result;
-    }
-    coveredVolume = nextCovered;
-    for (size_t previous = 0; previous < index; ++previous) {
-      bool overlaps = true;
-      for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
-           llvm::zip_equal(segment.offsets, segment.sizes,
-                           reverseSegments[previous].offsets,
-                           reverseSegments[previous].sizes))
-        overlaps &=
-            lhsOffset < rhsOffset + rhsSize && rhsOffset < lhsOffset + lhsSize;
-      if (overlaps) {
-        result.kind = TemporalConcatQueryKind::Unsupported;
-        result.detail = "insert assembly rectangles overlap";
-        return result;
-      }
-    }
-  }
-  if (coveredVolume != fullVolume) {
-    result.kind = TemporalConcatQueryKind::Unsupported;
-    result.detail = "insert assembly does not exactly cover its result";
-    return result;
+    result.segments.push_back(std::move(segment));
   }
   result.kind = TemporalConcatQueryKind::Exact;
-  result.segments = std::move(reverseSegments);
   return result;
 }
 

@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Transforms/SubsetInsertionOpInterfaceImpl.h"
 #include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
@@ -21,6 +22,7 @@ std::unique_ptr<mlir::MLIRContext> createContext() {
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                   mlir::tensor::TensorDialect>();
   wafer::registerWaferCoreDialects(registry);
+  mlir::tensor::registerSubsetOpInterfaceExternalModels(registry);
   auto context = std::make_unique<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
   return context;
@@ -115,6 +117,181 @@ TEST(TensorResultIndexingTest, TransparentReadsStopAtPartialAndUpdatedSources) {
                                         {{0, 128, 0}, {2, 128, 64}});
     EXPECT_EQ(tile.status, IndexRelationStatus::Unsupported);
   });
+}
+
+TEST(TensorResultIndexingTest, AssemblyCoverageIsIndependentOfUseAndFusion) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    auto context = createContext();
+    std::string text = R"mlir(
+module {
+  func.func @assembly(%a: tensor<2x512x64xf16>,
+                      %b: tensor<2x512x64xf16>,
+                      %c: tensor<2xTAILx64xf16>,
+                      %d: tensor<2xTAILx64xf16>)
+      -> (tensor<2xEXTENTx128xf16>, tensor<2xEXTENTx128xf16>) {
+    %empty = tensor.empty() : tensor<2xEXTENTx128xf16>
+    %x0 = tensor.insert_slice %a into %empty[0, 0, 0] [2, 512, 64] [1, 1, 1]
+      : tensor<2x512x64xf16> into tensor<2xEXTENTx128xf16>
+    %x1 = tensor.insert_slice %b into %x0[0, 0, 64] [2, 512, 64] [1, 1, 1]
+      : tensor<2x512x64xf16> into tensor<2xEXTENTx128xf16>
+    %x2 = tensor.insert_slice %c into %x1[0, 512, 0] [2, TAIL, 64] [1, 1, 1]
+      : tensor<2xTAILx64xf16> into tensor<2xEXTENTx128xf16>
+    %x3 = tensor.insert_slice %d into %x2[0, 512, 64] [2, TAIL, 64] [1, 1, 1]
+      : tensor<2xTAILx64xf16> into tensor<2xEXTENTx128xf16>
+    %overlap = tensor.insert_slice %a into %x3[0, 0, 0] [2, 512, 64] [1, 1, 1]
+      : tensor<2x512x64xf16> into tensor<2xEXTENTx128xf16>
+    return %x3, %overlap : tensor<2xEXTENTx128xf16>, tensor<2xEXTENTx128xf16>
+  }
+}
+
+)mlir";
+    auto replaceAll = [&](llvm::StringRef needle, const std::string &value) {
+      size_t position = 0;
+      while ((position = text.find(needle.str(), position)) !=
+             std::string::npos) {
+        text.replace(position, needle.size(), value);
+        position += value.size();
+      }
+    };
+    replaceAll("EXTENT", std::to_string(extent));
+    replaceAll("TAIL", std::to_string(extent - 512));
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        text, mlir::ParserConfig(context.get()));
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto *terminator = function.getBody().front().getTerminator();
+    auto exact = wafer::analysis::queryTensorAssembly(terminator->getOperand(0));
+    ASSERT_TRUE(exact.isExact())
+        << static_cast<int>(exact.status) << ": " << exact.detail << "\n"
+        << text;
+    ASSERT_EQ(exact.segments.size(), 4u);
+    EXPECT_EQ(exact.segments[0].offsets,
+              (llvm::SmallVector<int64_t, 4>{0, 512, 64}));
+    EXPECT_EQ(exact.segments[3].offsets,
+              (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+    for (const auto &segment : exact.segments) {
+      ASSERT_NE(segment.sourceOperand, nullptr);
+      EXPECT_EQ(segment.sourceOperand->get(), segment.source);
+    }
+    auto overlap =
+        wafer::analysis::queryTensorAssembly(terminator->getOperand(1));
+    EXPECT_EQ(overlap.status,
+              wafer::analysis::TensorAssemblyStatus::Unsupported);
+    EXPECT_EQ(overlap.detail, "insert assembly rectangles overlap");
+    wafer::analysis::StaticRectangularIndexSet whole{{0, 0, 0},
+                                                      {2, extent, 128}};
+    auto lastWriter = wafer::analysis::queryTensorAssemblyDemand(
+        terminator->getOperand(1), whole);
+    ASSERT_TRUE(lastWriter.isExact()) << lastWriter.detail;
+    ASSERT_EQ(lastWriter.pieces.size(), 4u);
+    EXPECT_EQ(lastWriter.pieces[0].resultWindow.offsets,
+              (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+    EXPECT_EQ(lastWriter.pieces[0].source, function.getArgument(0));
+    EXPECT_NE(lastWriter.pieces[0].sourceOperand,
+              exact.segments[3].sourceOperand);
+  }
+}
+
+TEST(TensorResultIndexingTest,
+     AssemblyDemandUsesLastWriterAndReadsOnlyTheOldDestinationRemainder) {
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @assembly(%base: tensor<2x1025x8xf16>,
+                      %a: tensor<2x400x8xf16>,
+                      %b: tensor<2x300x8xf16>) -> tensor<2x1025x8xf16> {
+    %first = tensor.insert_slice %a into %base[0, 100, 0] [2, 400, 8] [1, 1, 1]
+      : tensor<2x400x8xf16> into tensor<2x1025x8xf16>
+    %last = tensor.insert_slice %b into %first[0, 300, 0] [2, 300, 8] [1, 1, 1]
+      : tensor<2x300x8xf16> into tensor<2x1025x8xf16>
+    return %last : tensor<2x1025x8xf16>
+  }
+}
+)mlir", mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto value = function.getBody().front().getTerminator()->getOperand(0);
+  wafer::analysis::StaticRectangularIndexSet request{{0, 200, 0},
+                                                       {2, 600, 8}};
+  auto result = wafer::analysis::queryTensorAssemblyDemand(value, request);
+  ASSERT_TRUE(result.isExact()) << result.detail;
+  ASSERT_EQ(result.pieces.size(), 3u);
+  EXPECT_EQ(result.pieces[0].source, function.getArgument(2));
+  EXPECT_EQ(result.pieces[0].resultWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 300, 0}));
+  EXPECT_EQ(result.pieces[0].sourceWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+  EXPECT_EQ(result.pieces[1].source, function.getArgument(1));
+  EXPECT_EQ(result.pieces[1].resultWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 200, 0}));
+  EXPECT_EQ(result.pieces[1].sourceWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 100, 0}));
+  EXPECT_EQ(result.pieces[2].source, function.getArgument(0));
+  EXPECT_EQ(result.pieces[2].resultWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 600, 0}));
+  EXPECT_EQ(result.pieces[2].sourceWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 600, 0}));
+  for (int64_t row = 200; row < 800; ++row) {
+    unsigned owners = 0;
+    for (const auto &piece : result.pieces)
+      owners += piece.resultWindow.offsets[1] <= row &&
+                row < piece.resultWindow.offsets[1] +
+                          piece.resultWindow.sizes[1];
+    EXPECT_EQ(owners, 1u) << row;
+  }
+  wafer::analysis::IndexRelationLimits tight;
+  tight.maxRectangularPieces = 2;
+  auto bounded =
+      wafer::analysis::queryTensorAssemblyDemand(value, request, tight);
+  EXPECT_EQ(bounded.status,
+            wafer::analysis::TensorAssemblyStatus::ResourceExhausted);
+}
+
+TEST(TensorResultIndexingTest,
+     AssemblyDemandPreservesRankReducedSourceCoordinates) {
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @assembly(%base: tensor<1x1025x8xf16>,
+                      %source: tensor<400x8xf16>)
+      -> (tensor<1x1025x8xf16>, tensor<1x1025x8xf16>) {
+    %updated = tensor.insert_slice %source into %base[0, 200, 0]
+      [1, 400, 8] [1, 1, 1]
+      : tensor<400x8xf16> into tensor<1x1025x8xf16>
+    %empty = tensor.empty() : tensor<1x1025x8xf16>
+    %partial = tensor.insert_slice %source into %empty[0, 200, 0]
+      [1, 400, 8] [1, 1, 1]
+      : tensor<400x8xf16> into tensor<1x1025x8xf16>
+    return %updated, %partial
+      : tensor<1x1025x8xf16>, tensor<1x1025x8xf16>
+  }
+}
+)mlir", mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto *terminator = function.getBody().front().getTerminator();
+  wafer::analysis::StaticRectangularIndexSet middle{{0, 300, 0},
+                                                      {1, 200, 8}};
+  auto exact = wafer::analysis::queryTensorAssemblyDemand(
+      terminator->getOperand(0), middle);
+  ASSERT_TRUE(exact.isExact()) << exact.detail;
+  ASSERT_EQ(exact.pieces.size(), 1u);
+  EXPECT_EQ(exact.pieces[0].source, function.getArgument(1));
+  EXPECT_EQ(exact.pieces[0].sourceWindow.offsets,
+            (llvm::SmallVector<int64_t, 4>{100, 0}));
+  EXPECT_EQ(exact.pieces[0].sourceWindow.sizes,
+            (llvm::SmallVector<int64_t, 4>{200, 8}));
+  wafer::analysis::StaticRectangularIndexSet whole{{0, 0, 0},
+                                                     {1, 1025, 8}};
+  auto undefined = wafer::analysis::queryTensorAssemblyDemand(
+      terminator->getOperand(1), whole);
+  EXPECT_EQ(undefined.status,
+            wafer::analysis::TensorAssemblyStatus::Unsupported);
+  EXPECT_EQ(undefined.detail,
+            "insert demand reads undefined tensor.empty data");
 }
 
 TEST(TensorResultIndexingTest,

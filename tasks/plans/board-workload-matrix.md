@@ -116,7 +116,8 @@ caller 按 manifest 打包/解码。runtime 直接传输物理字节，不使用
 
 用户要求基于代码细化通用方案，并明确保护大GEMM及2048 attention性能。任务状态只看progress，
 稳定边界已进入06/08/18号，具体算法、迁移、覆盖及硬性门槛集中在
-[Tensor子集物化实施计划](tensor-subset-materialization.md)。本轮交付文档，不表示实现或板端已经完成。
+[Tensor子集物化实施计划](tensor-subset-materialization.md)。当前已完成来源/覆盖职责拆分及静态Spatial窗口物化；
+Temporal动态窗口、共同生成入口、候选选择及板端门槛仍未完成，以progress和该计划的检查点为准。
 
 该整改处理已选窗口的Tensor来源与局部物化，计算融合、共享选择和物理复用各归原层级；
 不扩展AccessReuse中间存储资格，不以重新实现缓存或增加搜索预算作为两个长LM可行的前置。
