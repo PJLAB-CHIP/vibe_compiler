@@ -9,9 +9,18 @@
 no-card也接受该选项，并校验实际timing capture的参数、64字节record和内存计划。板端执行时仍提供原输入、expected、
 output及设备资格参数；`--device-timing`可同时保留外层event对照。
 
-PyTorch板测入口对应 `--profile --kernel-timing`，沿原路径生成新的输入/reference并验证完整输出。
-此模式只运行timing capture一次，保留正常完成与清理，不运行完整profile的三次采集。
-没有此选项时，原普通执行与完整profile协议保持。普通包没有首尾插桩，也没有record分配。
+PyTorch板测入口在真实板测时默认开启轻量计时，同时记录stream event；沿原路径生成新的输入/reference并验证完整输出。
+`--no-card`默认仍验证普通包，明确使用`--kernel-timing`可验证计时capture。
+显式`--profile`仍执行完整profile；需要与旧性能基线同口径的无插桩普通包时，使用`--no-kernel-timing --device-timing`。
+轻量模式只运行timing capture一次，保留正常完成与清理，不运行完整profile的三次采集。
+普通包没有首尾插桩，也没有record分配。两种event口径在记录中分别标明，不能互作性能回归样本。
+
+正式case集合新增BF16 NCx性能配置：`single-card-gemm-m4096-k1024-n4096-ncx`（seed20260803）及
+`attention-prefill-28-heads-2048-ncx`（seed20260922）。两者都用`--optimization-policy search --search-mode standard`
+及`--search-width 8 --search-trials 42`。case名绑定外部NCx布局，不需要再手工修改factory或传layout；
+其余case的外部布局默认仍为Tensor，显式`--external-layout ncx`继续可用于专项测量。
+每次成功板测的`numeric-audit-NN.json`有typed `device_timing`字段：`device_event_ns`、
+`kernel_main_entry_us`、`kernel_longest_tile`及16项`kernel_tile_us`；缺失或矛盾时case失败。
 
 输出格式：
 

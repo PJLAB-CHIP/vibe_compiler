@@ -18,6 +18,16 @@
 
 ## 当前调度
 
+2026-09-23用户要求将BF16 NCx GEMM M=N4096/K1024与2048、28-head attention纳入正式case集合，
+并让后续全部PyTorch板测case的耗时同时记录kernel本体与外层event，仍归 `board-testing`。
+已按15号统一runner合同完成：两个NCx名称直接注册，普通case布局仍默认Tensor；板测默认一次轻量capture并列
+外层event与16 Tile本体，缺失/矛盾记录使case失败，显式普通包对照保持。PyTorch完整caller单测、
+默认Tensor GEMM的fresh source→计时包→no-card、两个NCx名称的source相等核对/no-card及各一次实卡均通过，
+数值、guard、清理正常；细节见
+[本轮证据](../docs/board-performance-results.md#2026-09-23ncx-case-注册与统一计时)。历史普通包结果不补造本体时间，
+四项后续性能保护仍使用显式普通包对照并另留kernel timing。整体`board-testing`继续doing；
+覆盖矩阵见15号“PyTorch 板测 case 的计时与布局绑定”。
+
 2026-09-23用户授权的kernel本体轻量计时已完成，归 `board-testing`，不代签整体板测。
 15号 `timing` capture、首尾微秒record及单次runtime执行已接通，默认关闭；
 主机、fresh no-card和原BF16 NCx GEMM、2048 attention各三次实卡通过，canonical完整增量及Ninja no-op通过。

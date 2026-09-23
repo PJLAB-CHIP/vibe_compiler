@@ -45,12 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dump-compiler-ir", type=pathlib.Path)
     parser.add_argument("--compile-timing", action="store_true")
     parser.add_argument("--external-layout", choices=("tensor", "ncx"),
-                        default="tensor")
+                        help="override the case layout; registered NCx cases require ncx")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-trace-event-limit", type=int)
     parser.add_argument("--device-timing", action="store_true")
     parser.add_argument("--kernel-timing", action="store_true",
-                        help="Run only the entry timing capture; requires --profile")
+                        help="run the entry timing capture and stream event")
+    parser.add_argument("--no-kernel-timing", action="store_true",
+                        help="use the ordinary uninstrumented package for a matched baseline")
     parser.add_argument("--board-diagnose-tool", type=pathlib.Path,
                         help="wrap each board invocation with wafer-board-diagnose")
     parser.add_argument("--capture-registers", action="store_true", default=False,
@@ -542,7 +544,7 @@ def read_single_card_continuation_outputs(
     )
 
 
-def verify_no_card(stdout: str) -> None:
+def verify_no_card(stdout: str, *, require_kernel_timing: bool = False) -> None:
     required = {
         "package: id=0 cards=1 tiles=16",
         "arithmetic_execution: false",
@@ -552,6 +554,10 @@ def verify_no_card(stdout: str) -> None:
     }
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("no-card output omitted PyTorch package evidence")
+    if (require_kernel_timing and
+            "kernel_timing: ready record_bytes=64 scope=main-entry "
+            "aggregation=max-tile-duration" not in stdout.splitlines()):
+        raise RuntimeError("no-card output omitted the kernel timing capture")
 
 
 def verify_pre_instruction_boundary(tile_ir: str, instruction_ir: str) -> None:
@@ -595,6 +601,41 @@ def verify_board(
             policy=case.comparison_policy,
             context=f"{case.name} {capture.name}",
         )
+
+
+def parse_kernel_timing(stdout: str) -> dict[str, object]:
+    tile_matches = re.findall(
+        r"^kernel_timing_tile: tile_id=(\d+) elapsed_us=(\d+)$",
+        stdout, re.MULTILINE,
+    )
+    summary_matches = re.findall(
+        r"^kernel_timing: kind=vendor-microseconds scope=main-entry "
+        r"aggregation=max-tile-duration longest_tile=(\d+) elapsed_us=(\d+)$",
+        stdout, re.MULTILINE,
+    )
+    event_matches = re.findall(
+        r"^board_timing: kind=tx-stream-events device_elapsed_ns=(\d+)$",
+        stdout, re.MULTILINE,
+    )
+    tiles = {int(tile): int(duration) for tile, duration in tile_matches}
+    if (len(tile_matches) != PHYSICAL_TILE_COUNT or
+            set(tiles) != set(range(PHYSICAL_TILE_COUNT)) or
+            len(summary_matches) != 1 or len(event_matches) != 1):
+        raise RuntimeError("board timing is missing, duplicated or has an incomplete Tile domain")
+    longest_tile, longest_us = map(int, summary_matches[0])
+    if (longest_tile, longest_us) != max(
+        tiles.items(), key=lambda item: (item[1], -item[0])
+    ):
+        raise RuntimeError("board timing longest Tile disagrees with its Tile records")
+    event_ns = int(event_matches[0])
+    if event_ns == 0:
+        raise RuntimeError("board timing event duration must be positive")
+    return {
+        "kernel_main_entry_us": longest_us,
+        "kernel_longest_tile": longest_tile,
+        "kernel_tile_us": [tiles[tile] for tile in range(PHYSICAL_TILE_COUNT)],
+        "device_event_ns": event_ns,
+    }
 
 
 def verify_ring_allgather(
@@ -1368,10 +1409,19 @@ def base_runtime_command(
 
 def main() -> int:
     args = parse_args()
+    if args.kernel_timing and args.no_kernel_timing:
+        raise RuntimeError("--kernel-timing and --no-kernel-timing conflict")
+    if args.no_kernel_timing and args.profile:
+        raise RuntimeError("ordinary board execution cannot use --profile")
+    if not args.no_card and not args.profile and not args.no_kernel_timing:
+        args.kernel_timing = True
+    if args.kernel_timing:
+        args.profile = True
+        args.device_timing = True
     if args.capture_registers and args.board_diagnose_tool is None:
         raise RuntimeError("--capture-registers requires --board-diagnose-tool")
-    if args.kernel_timing and (not args.profile or args.profile_trace_event_limit is not None):
-        raise RuntimeError("kernel timing requires --profile without a trace event limit")
+    if args.kernel_timing and args.profile_trace_event_limit is not None:
+        raise RuntimeError("kernel timing cannot use a trace event limit")
     if args.board_diagnose_tool is not None and args.profile and not args.kernel_timing:
         raise RuntimeError("board diagnostics currently wrap ordinary packages; profile has its own collector")
     if args.compile_timeout_seconds is not None and args.compile_timeout_seconds < 1:
@@ -1406,6 +1456,12 @@ def main() -> int:
     dtype = board_cases.parse_torch_dtype(args.dtype)
     case_start_ns = time.monotonic_ns()
     case = board_cases.make_case(args.case, dtype=dtype, seed=args.seed)
+    if case.external_layout not in ("tensor", "ncx"):
+        raise RuntimeError("board case has an unsupported external layout")
+    if case.external_layout == "ncx" and args.external_layout == "tensor":
+        raise RuntimeError("registered NCx case cannot use Tensor external layout")
+    if args.external_layout is None:
+        args.external_layout = case.external_layout
     os.environ["CPU_NUM_DEVICES"] = str(case.num_partitions)
     os.environ["PJRT_DEVICE"] = "CPU"
     print(
@@ -1489,7 +1545,7 @@ def main() -> int:
             ]
         )
         result = run(no_card_command)
-        verify_no_card(result.stdout)
+        verify_no_card(result.stdout, require_kernel_timing=args.kernel_timing)
         if args.no_card:
             print(
                 f"pytorch_board_no_card: case={current_case.name} "
@@ -1565,8 +1621,10 @@ def main() -> int:
                 )
                 if current_case.validate_actual_outputs is not None:
                     current_case.validate_actual_outputs(actual_outputs)
+                timing_values = parse_kernel_timing(result.stdout) if args.kernel_timing else None
                 audit = {
                     "case": current_case.name,
+                    "external_layout": args.external_layout,
                     "step": step_index + 1,
                     "policy": args.optimization_policy,
                     "search_mode": args.search_mode,
@@ -1574,6 +1632,7 @@ def main() -> int:
                     "search_trials": args.search_trials,
                     "manifest_sha256": file_sha256(package / "manifest.json"),
                     "comparison_passed": True,
+                    "device_timing": timing_values,
                     "memory_guard_bytes": int(guard_match[1]) if guard_match else None,
                     "comparison": dataclasses.asdict(current_case.comparison_policy),
                     "inputs": {path.name: file_sha256(path) for path in sorted(
@@ -1604,6 +1663,9 @@ def main() -> int:
                     f"wall_ms="
                     f"{(time.monotonic_ns() - iteration_start_ns) // 1_000_000} "
                     "comparison_passed=true"
+                    + (f" kernel_main_entry_us={timing_values['kernel_main_entry_us']}"
+                       f" device_event_ns={timing_values['device_event_ns']}"
+                       if timing_values else "")
                 )
             continuation_outputs = actual_outputs
 

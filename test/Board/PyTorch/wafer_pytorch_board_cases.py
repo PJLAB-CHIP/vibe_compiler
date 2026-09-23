@@ -45,6 +45,7 @@ class PyTorchBoardCase:
     expected_outputs_factory: Callable[[], tuple[torch.Tensor, ...]]
     export_program: Callable[[pathlib.Path], None]
     comparison_policy: common.ComparisonPolicy
+    external_layout: str = "tensor"
     widened_convolution: bool = False
     ordered_convolution: bool = False
     allgather_payload_elements: int | None = None
@@ -1407,6 +1408,13 @@ CASE_FACTORIES: dict[
     "single-card-gemm-4096": lambda dtype, seed: _single_card_gemm(
         dtype, seed, m=4096, k=4096, n=4096
     ),
+    "single-card-gemm-m4096-k1024-n4096": lambda dtype, seed: _single_card_gemm(
+        dtype, seed, m=4096, k=1024, n=4096
+    ),
+    "single-card-gemm-m4096-k1024-n4096-ncx": lambda dtype, seed: dataclasses.replace(
+        _single_card_gemm(dtype, seed, m=4096, k=1024, n=4096),
+        name="single-card-gemm-m4096-k1024-n4096-ncx", external_layout="ncx",
+    ),
     "single-card-gemm-tail-4097": lambda dtype, seed: _single_card_gemm(
         dtype, seed, m=4097, k=4097, n=4097
     ),
@@ -1474,6 +1482,14 @@ CASE_FACTORIES: dict[
         dtype, seed, name="attention-prefill-28-heads-2048",
         query_length=2048, key_value_length=2048, causal=True,
         num_heads=28, head_dim=128,
+    ),
+    "attention-prefill-28-heads-2048-ncx": lambda dtype, seed: dataclasses.replace(
+        _read_only_attention(
+            dtype, seed, name="attention-prefill-28-heads-2048",
+            query_length=2048, key_value_length=2048, causal=True,
+            num_heads=28, head_dim=128,
+        ),
+        name="attention-prefill-28-heads-2048-ncx", external_layout="ncx",
     ),
     "attention-prefill-28-heads-4096": lambda dtype, seed: _read_only_attention(
         dtype, seed, name="attention-prefill-28-heads-4096",

@@ -21,6 +21,30 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-23：NCx case 注册与统一计时
+
+BF16 NCx的M=N4096/K1024 GEMM和2048、28-head causal attention现有正式case名，分别为
+`single-card-gemm-m4096-k1024-n4096-ncx`与`attention-prefill-28-heads-2048-ncx`。
+默认外部布局仍为Tensor，NCx布局由注册case绑定。PyTorch板测runner现在默认在一次轻量capture中同时读取
+最长Tile main-entry和同次stream event，完整数值/guard后写入typed逐次audit；缺失或矛盾计时使case失败。
+原普通包无插桩性能对照用显式`--no-kernel-timing --device-timing`，两种event口径不混作一组性能样本。
+
+本轮两个新名称分别重新生成source/reference及输入，与已准备的同实现profile包逐byte核对source，
+通过计时capture no-card，再各做一次真实板测。条件为原BF16、NCx、seed20260803/20260922、standard 8/42、guard。
+
+| case | 最长Tile本体（ms） | 同次event（ms） | 最长Tile |
+| --- | ---: | ---: | ---: |
+| GEMM M=N4096/K1024 | 1.787 | 3.223 | 12 |
+| causal attention `[1,28,2048,128]` | 2.468 | 3.481 | 11 |
+
+两次全输出比较、guard和正常清理通过，诊断无fatal/timeout，Host寄存器采集关闭。
+GEMM比较16,777,216元素，attention比较7,340,032元素；后者逐点超差0个。
+这两次只验证正式注册入口、布局绑定和逐次计时协议，不作为新性能中位数或算法收益；
+此前75项普通包板测没有kernel本体记录，不能用event差值补造。
+另以默认Tensor的BF16 GEMM `[1,1024,256]×[1,256,512]` 重新生成source/reference/profile包，
+实际manifest外部端口均为Tensor且计时capture的no-card通过；该见证不声称真实板端耗时。
+[本轮证据](data/board-performance/ncx-case-timing-registration-20260923.json)保存源码、包、no-card、审计、16 Tile样本及设备身份。
+
 ## 2026-09-23：Kernel 本体轻量计时
 
 本轮新增显式 `--kernel-timing`，默认关闭。使用同一accepted编译结果生成的timing capture，

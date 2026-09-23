@@ -435,6 +435,24 @@ DMA、计算、通信和必要等待；不包含外层派发、入口wrapper及r
 | CLI no-card / board | timing仅一次invocation、原completion及数值输出路径；与event分列 | 无sibling或同时请求trace limit提前拒绝 |
 | BF16 GEMM M=N4096/K1024及causal attention `[1,28,2048,128]` | fresh source/reference/package/no-card；Cluster prepare+main和Grid main；完整数值/guard、各三次健康timing | 设备异常即停；不以历史记录或host模型签实卡 |
 
+### PyTorch 板测 case 的计时与布局绑定
+
+输入为正式 PyTorch case factory 的逻辑source、dtype/seed及该case声明的外部布局；输出为同一source编译的普通包与
+`timing` capture、fresh no-card和逐次数字审计。PyTorch板测入口是本层的直接调用者，板测结果记录是直接下游。
+默认case外部布局仍为Tensor；NCx性能case以独立注册名绑定NCx，显式相反布局应在构包前拒绝。
+用户级板测默认生成profile companion，只执行一次轻量timing capture，同时记录同次stream event；
+no-card默认仍只验证普通包。显式完整Trace采集及普通包无插桩性能对照保持独立入口，不能将capture的event冒充
+普通包基线。每次结果必须有唯一的event、最长Tile和全部16 Tile duration，缺失、重复或不一致应使case失败；
+audit写入数值字段与原始日志行，不能仅凭未解析字符串声称采集成功。
+非目标为更改算子、数值阈值、硬件timer或重跑历史矩阵；既有历史耗时不补造kernel时间。
+完成条件为两项NCx注册case的源/布局/命令实测、本轮no-card和必要板测，以及默认/显式/普通/完整profile分支测试。
+
+| 输入或分支 | exact输出与直接下游 | 失败边界 |
+| --- | --- | --- |
+| Tensor默认；NCx GEMM `[1,4096,1024]×[1,1024,4096]` 和attention `[1,28,2048,128]` | case名、layout、dtype/seed/shape一致，正式source→包→no-card | NCx命名与显式Tensor冲突拒绝 |
+| 板测默认timing、显式普通对照、完整Trace、no-card | 默认一次capture并列event与16 Tile；普通对照保持无插桩；no-card不请求设备时间 | capture缺失或混用模式拒绝 |
+| 成功、缺行、重复行、Tile域或最大值不一致 | 每次audit含typed微秒/纳秒字段，全部输出和guard通过后发布 | 不完整/矛盾计时不得写通过记录 |
+
 Profile instrumentation必须复用同一个DeviceExecutable、TargetTensor materialization和program-data bytes：
 
 - ordinary/count/trace/timing package的TargetTensor identity、offset和digest关系一致；

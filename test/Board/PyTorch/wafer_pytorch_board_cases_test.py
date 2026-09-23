@@ -341,18 +341,29 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             export_program=lambda _path: None,
             comparison_policy=cases.ATTENTION_COMPARISON,
         )
-        for profile, guards, timing in ((False, False, False), (True, False, False),
-                                        (False, True, False), (True, True, False),
-                                        (True, False, True), (True, True, True)):
-            with self.subTest(profile=profile, guards=guards, timing=timing), tempfile.TemporaryDirectory() as directory:
+        for profile, guards, timing, plain in (
+            (False, False, False, False), (True, False, False, False),
+            (False, True, False, False), (False, False, True, False),
+            (True, True, True, False), (False, False, False, True),
+        ):
+            with self.subTest(profile=profile, guards=guards, timing=timing, plain=plain), tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)
+                active_timing = timing or (not profile and not plain)
+                timing_output = "".join(
+                    f"kernel_timing_tile: tile_id={tile} elapsed_us={10 + tile}\n"
+                    for tile in range(16)
+                ) + (
+                    "kernel_timing: kind=vendor-microseconds scope=main-entry "
+                    "aggregation=max-tile-duration longest_tile=15 elapsed_us=25\n"
+                    "board_timing: kind=tx-stream-events device_elapsed_ns=123456\n"
+                ) if active_timing else ""
                 argv = [
                     "runner", "--case", "attention-prefill", "--wafer-compile", "compile",
                     "--wafer-run", "run", "--work-dir", str(root / "work"),
                     "--expected-runtime-version", "1300", "--expected-device-name", "device",
                     "--expected-pci-bus-id", "bus", "--expected-tile-count", "16",
                     "--expected-runtime-library-sha256", "digest", "--completion-timeout-ms", "7000",
-                ] + (["--profile"] if profile else []) + (["--memory-guards"] if guards else []) + (["--kernel-timing"] if timing else [])
+                ] + (["--profile"] if profile else []) + (["--memory-guards"] if guards else []) + (["--kernel-timing"] if timing else []) + (["--no-kernel-timing"] if plain else [])
                 with (
                     mock.patch.object(sys, "argv", argv),
                     mock.patch.dict(os.environ, {"WAFER_EXECUTE_HARDWARE_TESTS": "1"}),
@@ -361,7 +372,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                         outputs, [], {}, set(), {},
                     )),
                     mock.patch.object(board_runner, "run", return_value=types.SimpleNamespace(
-                        stdout="memory_guards: checked_bytes=1025\n" if guards else "", stderr="",
+                        stdout=("memory_guards: checked_bytes=1025\n" if guards else "") + timing_output,
+                        stderr="",
                     )) as run,
                     mock.patch.object(board_runner, "verify_no_card"),
                     mock.patch.object(board_runner, "verify_board"),
@@ -378,9 +390,66 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 self.assertIn("--board", command)
                 self.assertEqual("--memory-guards" in command, guards)
                 self.assertEqual(command[command.index("--completion-timeout-ms") + 1], "7000")
-                self.assertEqual("--kernel-timing" in no_card.args[0], timing)
-                self.assertEqual("--kernel-timing" in command, timing)
+                self.assertEqual("--kernel-timing" in no_card.args[0], active_timing)
+                self.assertEqual("--kernel-timing" in command, active_timing)
+                self.assertEqual("--device-timing" in command, active_timing)
                 self.assertEqual(launch.kwargs["timeout_seconds"], None if profile and not timing else 67)
+                audit = json.loads((root / "work" / "numeric-audit-01.json").read_text())
+                if active_timing:
+                    self.assertEqual(audit["device_timing"]["kernel_main_entry_us"], 25)
+                    self.assertEqual(audit["device_timing"]["device_event_ns"], 123456)
+                else:
+                    self.assertIsNone(audit["device_timing"])
+
+    def test_kernel_timing_audit_requires_complete_consistent_capture(self):
+        lines = [f"kernel_timing_tile: tile_id={tile} elapsed_us={10 + tile}"
+                 for tile in range(16)]
+        lines.extend((
+            "kernel_timing: kind=vendor-microseconds scope=main-entry "
+            "aggregation=max-tile-duration longest_tile=15 elapsed_us=25",
+            "board_timing: kind=tx-stream-events device_elapsed_ns=123456",
+        ))
+        self.assertEqual(
+            board_runner.parse_kernel_timing("\n".join(lines))[
+                "kernel_main_entry_us"
+            ], 25,
+        )
+        for invalid in (
+            lines[1:],
+            [*lines, lines[0]],
+            [*lines[:-2], lines[-2].replace("longest_tile=15", "longest_tile=14"), lines[-1]],
+            [*lines[:-1], lines[-1], lines[-1]],
+        ):
+            with self.assertRaises(RuntimeError):
+                board_runner.parse_kernel_timing("\n".join(invalid))
+
+    def test_ncx_performance_cases_bind_layout_and_shapes(self):
+        for name, seed, input_shapes, output_shape in (
+            ("single-card-gemm-m4096-k1024-n4096-ncx", 20260803,
+             ((1, 4096, 1024), (1, 1024, 4096)), (1, 4096, 4096)),
+            ("attention-prefill-28-heads-2048-ncx", 20260922,
+             ((1, 28, 2048, 128),) * 3, (1, 28, 2048, 128)),
+        ):
+            with self.subTest(name=name):
+                case = cases.make_case(name, dtype=torch.bfloat16, seed=seed)
+                self.assertEqual(case.name, name)
+                self.assertEqual(case.external_layout, "ncx")
+                self.assertEqual(case.dtype, torch.bfloat16)
+                self.assertEqual(tuple(tuple(value.shape) for value in case.inputs),
+                                 input_shapes)
+                self.assertEqual(case.materialize_expected_outputs()[0].shape,
+                                 output_shape)
+        argv = [
+            "runner", "--case", "attention-prefill-28-heads-2048-ncx",
+            "--wafer-compile", "compile", "--wafer-run", "run",
+            "--work-dir", "unused", "--no-card",
+            "--external-layout", "tensor",
+        ]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            cases, "make_case", return_value=case
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cannot use Tensor"):
+                board_runner.main()
 
     def test_compact_contribution_assembly_preserves_sources_and_global_window(self):
         # The full input has extent 1025; this is its real 64-element Tile 1 tail shard.

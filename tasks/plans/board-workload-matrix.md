@@ -1,5 +1,28 @@
 # 扩展板测矩阵与三轮性能调优
 
+## PyTorch case 集合与统一计时（2026-09-23）
+
+本项归现有board-testing，稳定合同与覆盖矩阵见15号“PyTorch 板测 case 的计时与布局绑定”。
+正式case factory注册M=N4096/K1024 BF16 GEMM及其NCx版本、2048/28-head BF16 attention的NCx版本；
+原attention Tensor版本已存在。NCx case名绑定外部布局，使用原seed、standard 8/42与完整输出比较。
+普通case仍默认Tensor，临时脚本绑定不再作为这些case的唯一入口。
+
+有耗时的PyTorch板测默认只执行一次轻量timing capture，同次输出外层event和最长Tile本体时间；
+逐次audit保存数值字段、16 Tile明细、布局和原始日志。no-card默认不测时间；完整Trace和明确普通包性能对照分别使用
+显式入口。旧普通包历史结果没有kernel本体时间，不能事后用event相减补造。
+后续四项性能保护仍按原普通包event门槛验收，并对同case另留kernel timing；不同capture的event不混为同一性能序列。
+
+| 输入/分支 | 本项直接检查 | 完成状态 |
+| --- | --- | --- |
+| Tensor默认、两个NCx注册case及显式冲突 | 正式factory shape/dtype/layout/seed；NCx命名不能覆盖为Tensor | 主机正反例及普通Tensor GEMM fresh source→timing包→no-card通过 |
+| 默认轻量、显式普通、完整Trace及no-card | 精确命令、单次运行、16 Tile与event/audit字段；损坏/缺项拒绝 | 完整PyTorch caller单测通过 |
+| 两项BF16 NCx完整产品 | 原case重新导出source/reference、profile capture no-card、逐case真实板测数值/guard/清理与计时 | source相等核对、两项no-card及各一次实卡通过 |
+
+本项两个NCx名称复用与新导出source逐byte相等的本轮已准备profile包；输入与reference每次重新生成，
+没有从历史raw读取测试输入。GEMM为1.787ms本体/3.223ms event，attention为2.468/3.481ms；
+本项各一个健康样本，只验收注册入口与计时协议，不把单次值称为稳定中位数或算法收益。
+设备身份、16 Tile明细、全部输出和guard见[证据](../../docs/data/board-performance/ncx-case-timing-registration-20260923.json)。
+
 ## Kernel 本体轻量计时（2026-09-23）
 
 用户授权的本项已完成。稳定pipeline边界、非目标和覆盖矩阵在15号“Kernel 本体轻量计时”；

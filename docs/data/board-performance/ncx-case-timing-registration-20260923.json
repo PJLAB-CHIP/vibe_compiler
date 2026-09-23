@@ -1,0 +1,233 @@
+{
+  "date": "2026-09-23",
+  "scope": "两个注册NCx BF16 PyTorch case，以及所有PyTorch板测case默认同时输出entry与event时间",
+  "base_revision": "a54a38bc",
+  "status": "指定两个case的本轮no-card与各一次板测通过；其它历史case未补测kernel时间",
+  "case_factory_source_sha256": "2f8cc01816ac946920402048e01347d56f0c46818b6d23029ffbd4b82b073e35",
+  "compiler": {
+    "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+    "sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48"
+  },
+  "board_runtime": {
+    "path": "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+    "sha256": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+  },
+  "cases": {
+    "gemm": {
+      "name": "single-card-gemm-m4096-k1024-n4096-ncx",
+      "dtype": "bfloat16",
+      "seed": 20260803,
+      "external_layout": "ncx",
+      "policy": "search",
+      "search_mode": "standard",
+      "search_width": 8,
+      "search_trials": 42,
+      "memory_guard_bytes": 28032,
+      "source_equal_prepared_package": true,
+      "capture": "timing; one board invocation",
+      "manifest_sha256": "86ac5c480ca3d3badf023163cadf16618c9d1a2d25ae7c9585d8c358e6b85555",
+      "prepared_package_manifest": {
+        "path": "/data/vibe_compiler-validation/kernel-timing-20260923/gemm-ready/package/package/manifest.json",
+        "sha256": "86ac5c480ca3d3badf023163cadf16618c9d1a2d25ae7c9585d8c358e6b85555"
+      },
+      "prepared_timing_manifest": {
+        "path": "/data/vibe_compiler-validation/kernel-timing-20260923/gemm-ready/package/package.profile/captures/timing/manifest.json",
+        "sha256": "e31fa5b613bd259e3ae077efe9577b4ad6a88ebd76b2ac771ace29130b06025e"
+      },
+      "no_card": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/gemm-nocard.log",
+        "sha256": "9f7a912818eb705df61eeb008604de4bef5dc62fc6b8a578d963824f42ab5656"
+      },
+      "board_log": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/gemm-board.log",
+        "sha256": "fc5fdbf98db0224904ecf25636c3b746afff8cefc9ca2111372010d32b2492f4"
+      },
+      "numeric_audit": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/gemm-board/numeric-audit-01.json",
+        "sha256": "c6660745aa4cb2071b35e93a4a36e2ea2ca6b0691061f9bd0be8c7b7ae45110a"
+      },
+      "diagnostic_run": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/gemm-board/diagnostics-01/run.json",
+        "sha256": "dcf7e4664365914ad3f191dae74fe3004370090b461cae5ec3bf1cd3d3e00173"
+      },
+      "device_timing": {
+        "kernel_main_entry_us": 1787,
+        "kernel_longest_tile": 12,
+        "kernel_tile_us": [
+          1149,
+          1196,
+          1239,
+          1288,
+          1479,
+          1435,
+          1382,
+          1306,
+          1493,
+          1536,
+          1572,
+          1614,
+          1787,
+          1740,
+          1698,
+          1650
+        ],
+        "device_event_ns": 3223000
+      },
+      "numeric_outputs": [
+        {
+          "shape": [
+            1,
+            4096,
+            4096
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 16777216,
+          "max_abs_error": 0.5,
+          "cosine_similarity": 0.9999999973703549,
+          "relative_l2_error": 7.252768781293553e-05,
+          "elementwise_mismatches": 99,
+          "mean_abs_error": 2.4142965550311146e-05
+        }
+      ],
+      "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "exit": 0,
+      "passed": true,
+      "alarms": [],
+      "problems": []
+    },
+    "attention": {
+      "name": "attention-prefill-28-heads-2048-ncx",
+      "dtype": "bfloat16",
+      "seed": 20260922,
+      "external_layout": "ncx",
+      "policy": "search",
+      "search_mode": "standard",
+      "search_width": 8,
+      "search_trials": 42,
+      "memory_guard_bytes": 21824,
+      "source_equal_prepared_package": true,
+      "capture": "timing; one board invocation",
+      "manifest_sha256": "dc23bf41876d215e284bef3a36ca90afa1e1645e283a17d9727f6d461dbb1273",
+      "prepared_package_manifest": {
+        "path": "/data/vibe_compiler-validation/kernel-timing-20260923/attention-ready/package/package/manifest.json",
+        "sha256": "dc23bf41876d215e284bef3a36ca90afa1e1645e283a17d9727f6d461dbb1273"
+      },
+      "prepared_timing_manifest": {
+        "path": "/data/vibe_compiler-validation/kernel-timing-20260923/attention-ready/package/package.profile/captures/timing/manifest.json",
+        "sha256": "7d734b61964247b07f3d9f28f6c7a561bfbcdb19dd2eb71c4a790a335d99b2fb"
+      },
+      "no_card": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/attention-nocard.log",
+        "sha256": "97bdc3d94bf50ad26eb387f0b1dd5002a711c004a21f69c2cd2dc092048d1c6e"
+      },
+      "board_log": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/attention-board.log",
+        "sha256": "0d16f2c983234bbc7d51ad4c494d074f618256de2f06d76be6b343026b3e00a3"
+      },
+      "numeric_audit": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/attention-board/numeric-audit-01.json",
+        "sha256": "4d091d13d51b7f7701dfc12097f5fd74c09949810f30dcf97b0bf7da41625368"
+      },
+      "diagnostic_run": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/attention-board/diagnostics-01/run.json",
+        "sha256": "d897c64626fab37aeb05d0603dc913d6f5e9d2fa741731405cab06f2cf72a7d4"
+      },
+      "device_timing": {
+        "kernel_main_entry_us": 2468,
+        "kernel_longest_tile": 11,
+        "kernel_tile_us": [
+          2419,
+          2411,
+          2434,
+          2433,
+          2426,
+          2430,
+          2419,
+          2445,
+          2429,
+          2432,
+          2452,
+          2468,
+          1333,
+          1314,
+          1337,
+          1356
+        ],
+        "device_event_ns": 3481000
+      },
+      "numeric_outputs": [
+        {
+          "shape": [
+            1,
+            28,
+            2048,
+            128
+          ],
+          "dtype": "torch.bfloat16",
+          "elements": 7340032,
+          "max_abs_error": 0.015625,
+          "cosine_similarity": 0.9999981330706693,
+          "relative_l2_error": 0.0019323393761810942,
+          "elementwise_mismatches": 0,
+          "mean_abs_error": 3.965543557693617e-05
+        }
+      ],
+      "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+      "driver": "F64164C6460FEE30EBF66E2",
+      "device": "/dev/accel/dev-0",
+      "pci_bus_id": "0000:3b:00.0",
+      "exit": 0,
+      "passed": true,
+      "alarms": [],
+      "problems": []
+    }
+  },
+  "runner_source_sha256_at_board_run": "0bcd8490a9b13f0d5bf872daedbf0604b5dbe024ade20a3e05db082f4a0e11ba",
+  "final_runner_source_sha256": "57343c5792c47375908269f7fd81fd500b99370ccb10a9ed9493e63d87349de9",
+  "post_board_change": "仅新增显式普通模式与完整profile互斥的入参校验；没有改变本轮板测走过的timing分支，主机直接测试已覆盖。",
+  "host_checks": {
+    "passed": [
+      "完整PyTorch板测caller CTest",
+      "default/ordinary/full profile与缺损计时的定向测试",
+      "canonical完整增量构建及后续Ninja no-op"
+    ],
+    "logs": {
+      "ctest": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/host-ctest.log",
+        "sha256": "c59eeeaeea6fe6d615f3fa24b08f2175830a3e44f6f5fe5976ce72117a88ce11"
+      },
+      "targeted-final": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/host-targeted-final.log",
+        "sha256": "c769f88c16388607f98eae19fbf69e2eb81a36bf1209b40536cd1da9ad296587"
+      },
+      "guard-final": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/host-guard-final.log",
+        "sha256": "ced790b5b25a5d92378470466e68710cca6dadcb74f04b29aa7e816ee6d281f3"
+      },
+      "build": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/host-build.log",
+        "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+      },
+      "noop": {
+        "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/host-noop.log",
+        "sha256": "c2ed93ffd93c840755c0e91392ae593b1b52de9b7aaf6c208123feaceb1dde2e"
+      }
+    }
+  },
+  "tensor_default_witness": {
+    "case": "single-card-gemm-m1024-k256-n512",
+    "dtype": "bfloat16",
+    "external_layout": "tensor",
+    "profile_capture_no_card": true,
+    "board_execution": false,
+    "ordinary_manifest_sha256": "d5b32ce69f252c5ac7c34b60fb707ef0b6fa74fd7c029a91310578c49efa1c98",
+    "timing_manifest_sha256": "9fceb6764a052c2a48f547f697001c12f78fdcd20c09ad2479f4c9ffb13ee07b",
+    "no_card_log": {
+      "path": "/data/vibe_compiler-validation/ncx-case-timing-20260923/tensor-default-nocard.log",
+      "sha256": "5251bb1902eb9c3d5931bbf2e1f87c836176d201b52463c12e7f989e08602daf"
+    }
+  }
+}
