@@ -756,14 +756,15 @@ Boundary movement把SPM carrier的subview改接DDR输入或紧凑allocation时�
 API依据为[MemRef subview合同](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)，
 以pinned `SubViewOp::inferRankReducedResultType`及`IndependenceTransforms.cpp`调用方式确认。
 
-Boundary movement已经物化actual DDR destination与terminal `tile.store`后，对只用于收集已完成tile的SPM输出carrier做直接写回：
-从actual allocation及其subview、原样转发的`scf.for` iter_arg/result证明完整use closure；嵌套循环的result须沿实际init/yield递归证明为同一个buffer。除terminal store外，只允许tile copy写入，
-以及可证明source/destination为同一view的冗余copy；存在读取、算术更新、DTE使用、非原样loop yield、未知alias或其它escape时不改写。
-DDR destination必须是支配全部tile写入的Region参数，在当前Region中仅由该terminal store使用，且已有actual allocation；
-同一Region对该allocation存在其它alias使用时保留原IR。证明完成后，将原tile copy改为同位置的
-`tile.store`到对应DDR subview，loop只携带DDR destination，删除完整SPM carrier与最终整块store；不改tile compute、数值顺序或消息。
-该变换输入为完整bufferized Tile region，输出为显式per-tile store及DDR alias，直接下游为Tile→Instr、completion、SPM/DDR规划与target验证。
-它不按shape/估算容量触发，不在allocator中spill，不创建future buffer，也不改变带read/merge需求的SPM state。
+Boundary movement已经物化actual DDR destination与terminal `tile.store`后，可把只用于收集已完成tile的SPM输出carrier流式写回。
+输入为完整bufferized Tile region；从actual allocation、Subview和identity-forwarding SCF alias证明其全部写入与terminal读取，
+只接受copy目的端及可证明source与各出口不alias的load目的端，拒绝中途读取、算术更新、DTE使用、变化loop state和escape。
+出口及其单use view必须满足08号的实际DDR owner、权限、支配与alias条件；单/多出口均按原写入顺序接到精确目的窗口。
+copy直接成为同位置store；load保留原位置的一次读取，物化同shape/dtype/layout的实际紧凑SPM后发射各出口store。
+删除carrier、旧terminal及其identity-forwarding loop argument，不把DDR地址变成跨迭代state。
+已有的单load直接写入自身allocation再store结构不改写；新增staging也处于该固定点，重复处理内层carrier仍收敛。
+输出为actual紧凑allocation、load/store和DDR alias，owner按SSA/effect重建，直接下游为唯一Tile→Instr、completion、SPM/DDR规划及target验证。
+详细证明与覆盖以[08号流式输出合同](08-physical-realization.md)为准；不按shape或估算容量准入，不在allocator内spill或重选tile，不改变数值顺序。
 
 算法依据为[MLIR DPS与bufferization](https://mlir.llvm.org/docs/Bufferization/)的destination reuse/subset写入规则，
 以pinned Tensor `InsertSliceOpInterface::bufferize`的destination subview与copy语义确认；当前阶段DDR destination已经存在，故只改写

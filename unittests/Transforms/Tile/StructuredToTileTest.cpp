@@ -6521,13 +6521,18 @@ TEST_F(StructuredToTileTest,
   for (int64_t extent : {1024, 1025, 1031})
     for (unsigned sinks : {1u, 2u, 3u})
       for (bool shared : {false, true})
-        for (bool window : {false, true}) {
+        for (auto [window, direct] :
+             {std::pair{false, false}, std::pair{false, true},
+              std::pair{true, false}, std::pair{true, true}}) {
           SCOPED_TRACE(extent);
           SCOPED_TRACE(sinks);
           SCOPED_TRACE(shared);
           SCOPED_TRACE(window);
+          SCOPED_TRACE(direct);
           std::string shape = "2x" + std::to_string(extent) + "x64xf16";
           std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+          std::string input =
+              "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
           int64_t rows = extent + (window ? 6 : 0);
           int64_t batches = window ? 4 : 2;
           std::string ddr = "memref<" + std::to_string(batches) + "x" +
@@ -6546,7 +6551,8 @@ TEST_F(StructuredToTileTest,
           if (shared)
             ir << "memref.global \"private\" @shared : " << ddr
                << " {wafer.ddr_resource = #wafer.ddr_resource<0>}\n";
-          ir << "wafer.tile.module card_id = 0 tile_id = 0 { func.func @entry(";
+          ir << "wafer.tile.module card_id = 0 tile_id = 0 { func.func "
+                "@entry(";
           if (shared)
             ir << "%out0: " << ddr
                << " {wafer.ddr_binding = #wafer.ddr_binding<@shared, id = 0, "
@@ -6554,17 +6560,25 @@ TEST_F(StructuredToTileTest,
           ir << ") {\n";
           for (unsigned sink = shared ? 1 : 0; sink < sinks; ++sink)
             ir << "%out" << sink << " = memref.alloc() : " << ddr << "\n";
+          if (direct)
+            ir << "%read_input = memref.alloc() : " << input << "\n";
           ir << "\"wafer.tile.region\"(";
           for (unsigned sink = 0; sink < sinks; ++sink)
             ir << (sink ? ", " : "") << "%out" << sink;
+          if (direct)
+            ir << ", %read_input";
           ir << ") ({ ^bb0(";
           for (unsigned sink = 0; sink < sinks; ++sink)
             ir << (sink ? ", " : "") << "%dst" << sink << ": " << ddr;
-          ir << "):\n%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : "
+          if (direct)
+            ir << ", %read_src: " << input;
+          ir << "):\n%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 "
+                ": "
                 "index\n%c2 = arith.constant 2 : index\n"
              << "%step = arith.constant 128 : index\n%end = arith.constant "
              << extent / 128 * 128 << " : index\n"
-             << "%one = arith.constant 1.25 : f16\n%two = arith.constant 2.5 : "
+             << "%one = arith.constant 1.25 : f16\n%two = arith.constant 2.5 "
+                ": "
                 "f16\n"
              << "%full = memref.alloc() : " << spm << "\n"
              << "%result:2 = scf.for %batch = %c0 to %c2 step %c1 "
@@ -6590,9 +6604,20 @@ TEST_F(StructuredToTileTest,
                << "wafer.tile.fill %a, %one : " << piece
                << ", f16\nwafer.tile.fill %b, %two : " << piece << ", f16\n"
                << "wafer.tile.copy_into %a into %view : " << piece << " into "
-               << view << "\n"
-               << "memref.copy %b, %view : " << piece << " to " << view << "\n"
-               << "memref.copy %view, %view : " << view << " to " << view
+               << view << "\n";
+            if (direct) {
+              auto inputView = view;
+              inputView.replace(inputView.find("spm"), 3, "ddr");
+              ir << "%read_view = memref.subview %read_src[%batch, " << row
+                 << ", 0] [1, " << size << ", 64] [1, 1, 1] : " << input
+                 << " to " << inputView << "\n"
+                 << "wafer.tile.load %read_view into %view : " << inputView
+                 << " into " << view << "\n";
+            } else {
+              ir << "memref.copy %b, %view : " << piece << " to " << view
+                 << "\n";
+            }
+            ir << "memref.copy %view, %view : " << view << " to " << view
                << "\n";
           };
           write(128, "%row", "%inner");
@@ -6618,6 +6643,8 @@ TEST_F(StructuredToTileTest,
           ir << "wafer.tile.yield\n}) : (";
           for (unsigned sink = 0; sink < sinks; ++sink)
             ir << (sink ? ", " : "") << ddr;
+          if (direct)
+            ir << ", " << input;
           ir << ") -> ()\nreturn\n} } }";
           auto module = parse(text);
           ASSERT_TRUE(module);
@@ -6644,6 +6671,8 @@ TEST_F(StructuredToTileTest,
           EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), 0u);
           EXPECT_EQ(countOps<StorageStoreOp>(*module),
                     sinks * 2 * (extent % 128 ? 2 : 1));
+          EXPECT_EQ(countOps<StorageLoadOp>(*module),
+                    direct ? (extent % 128 ? 2u : 1u) : 0u);
           module->walk([&](mlir::memref::AllocOp allocation) {
             if (isWaferSPMMemRefType(allocation.getType())) {
               EXPECT_LE(allocation.getType().getDimSize(1), 128);
@@ -6692,6 +6721,7 @@ TEST_F(StructuredToTileTest,
                     ? 0
                     : 1;
           });
+          llvm::DenseMap<mlir::Value, llvm::SmallVector<int64_t>> loadedOrigins;
           auto execute = [&](auto &&self, mlir::Block &block) -> void {
             for (auto &operation : block) {
               if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
@@ -6701,6 +6731,14 @@ TEST_F(StructuredToTileTest,
                   indices[loop.getInductionVar()] = i;
                   self(self, *loop.getBody());
                 }
+              } else if (auto load = mlir::dyn_cast<StorageLoadOp>(operation)) {
+                ASSERT_TRUE(
+                    load.getDest().getDefiningOp<mlir::memref::AllocOp>());
+                llvm::SmallVector<int64_t> offsets(3, 0);
+                ASSERT_EQ(destination(destination, load.getSource(), offsets),
+                          sinks);
+                loadedOrigins[load.getDest()] = offsets;
+                sourcePhases[load.getDest()] = 1;
               } else if (auto store =
                              mlir::dyn_cast<StorageStoreOp>(operation)) {
                 llvm::SmallVector<int64_t> offsets(3, 0);
@@ -6712,6 +6750,15 @@ TEST_F(StructuredToTileTest,
                 ASSERT_EQ(type.getDimSize(0), 1);
                 ASSERT_EQ(type.getDimSize(2), 64);
                 ASSERT_TRUE(sourcePhases.contains(store.getSource()));
+                if (auto loaded = loadedOrigins.find(store.getSource());
+                    loaded != loadedOrigins.end()) {
+                  auto expected = offsets;
+                  if (window) {
+                    --expected[0];
+                    expected[1] -= 3;
+                  }
+                  EXPECT_EQ(loaded->second, expected);
+                }
                 for (int64_t row = 0; row < type.getDimSize(1); ++row)
                   for (int64_t col = 0; col < 64; ++col) {
                     int64_t address =
@@ -7244,6 +7291,73 @@ TEST_F(StructuredToTileTest, TiledOutputStoresPreserveReadsAndUnknownAliases) {
     EXPECT_EQ(before, after);
     EXPECT_EQ(statistics.streamedOutputCarriers, 0u);
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
+
+TEST_F(StructuredToTileTest,
+       TiledOutputLoadsRejectUnknownAliasesAndDynamicShapes) {
+  for (bool dynamic : {false, true}) {
+    SCOPED_TRACE(dynamic);
+    auto module = parse(R"mlir(
+      module {
+        memref.global "private" @shared : memref<2x1024x128xf16, #wafer.memory<ddr, tensor>> {wafer.ddr_resource = #wafer.ddr_resource<0>}
+        func.func @entry(%source: memref<2x1024x128xf16, #wafer.memory<ddr, tensor>>,
+                         %output: memref<2x1024x128xf16, #wafer.memory<ddr, tensor>> {wafer.ddr_binding = #wafer.ddr_binding<@shared, id = 0, write>}) {
+          wafer.tile.region(%source, %output : memref<2x1024x128xf16, #wafer.memory<ddr, tensor>>, memref<2x1024x128xf16, #wafer.memory<ddr, tensor>>) -> () {
+          ^bb0(%src: memref<2x1024x128xf16, #wafer.memory<ddr, tensor>>, %dst: memref<2x1024x128xf16, #wafer.memory<ddr, tensor>>):
+            %full = memref.alloc() : memref<2x1024x128xf16, #wafer.memory<spm, tensor>>
+            wafer.tile.load %src into %full : memref<2x1024x128xf16, #wafer.memory<ddr, tensor>> into memref<2x1024x128xf16, #wafer.memory<spm, tensor>>
+            wafer.tile.store %full, %dst : memref<2x1024x128xf16, #wafer.memory<spm, tensor>> -> memref<2x1024x128xf16, #wafer.memory<ddr, tensor>>
+            wafer.tile.yield
+          }
+          return
+        }
+      })mlir");
+    ASSERT_TRUE(module);
+    StorageLoadOp load;
+    TileRegionOp region;
+    module->walk([&](StorageLoadOp op) { load = op; });
+    module->walk([&](TileRegionOp op) { region = op; });
+    // Two writes distinguish the rejected carrier from an already compact
+    // direct-load staging buffer, which must remain a fixed point itself.
+    mlir::OpBuilder(load).clone(*load);
+    if (dynamic) {
+      mlir::OpBuilder builder(region);
+      auto output = builder.create<mlir::memref::AllocOp>(
+          region.getLoc(),
+          mlir::cast<mlir::MemRefType>(region.getInputs()[1].getType()));
+      region->setOperand(1, output);
+      builder.setInsertionPoint(load);
+      auto count =
+          builder.create<mlir::arith::ConstantIndexOp>(load.getLoc(), 128);
+      auto view = [&](mlir::Value value) {
+        auto type = mlir::cast<mlir::MemRefType>(value.getType());
+        auto dynamicType = mlir::MemRefType::get(
+            {2, mlir::ShapedType::kDynamic, 128}, type.getElementType(),
+            mlir::StridedLayoutAttr::get(context.get(), 0, {131072, 128, 1}),
+            type.getMemorySpace());
+        return builder
+            .create<mlir::memref::SubViewOp>(
+                load.getLoc(), dynamicType, value,
+                mlir::getAsIndexOpFoldResult(context.get(), {0, 0, 0}),
+                llvm::ArrayRef<mlir::OpFoldResult>{builder.getIndexAttr(2),
+                                                   count.getResult(),
+                                                   builder.getIndexAttr(128)},
+                mlir::getAsIndexOpFoldResult(context.get(), {1, 1, 1}))
+            .getResult();
+      };
+      load->setOperand(0, view(load.getSource()));
+      load->setOperand(1, view(load.getDest()));
+    }
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    std::string before, after;
+    llvm::raw_string_ostream beforeStream(before), afterStream(after);
+    module->print(beforeStream);
+    BoundaryMovementStatistics statistics;
+    materializeTiledOutputStores(*module, statistics);
+    module->print(afterStream);
+    EXPECT_EQ(before, after);
+    EXPECT_EQ(statistics.streamedOutputCarriers, 0u);
   }
 }
 

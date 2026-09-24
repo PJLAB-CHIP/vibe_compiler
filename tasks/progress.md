@@ -29,8 +29,12 @@ Writer已改为紧凑JSON、保留原预算并通过产品及reader边界测试�
 S1025的output publication与BoundaryMovement降rank缺陷已修复；正式8/42复验仍未生成package，
 20次SPM、12次Tile→Instr及10次选择绑定拒绝。已按10号补齐私有packed-i1更新，并按12号修复动态窗口经过
 reinterpret_cast的DDR范围证明；逐bit覆盖、私有性拒绝及16 Tile完整数值模型通过。私有更新后的复验仍有
-actual SPM与Tile load/copy_into拒绝；copy_into已接入同一更新实现并通过逐bit与完整数值模型，最新正式构包仍待结果，
-不放松覆盖证明、不在lowering改tile，也不代签S1025产品资格。
+actual SPM与Tile load/copy_into拒绝；copy_into已接入同一更新实现并通过逐bit与完整数值模型。
+DDR范围修复后的正式复验仍为37次SPM及5次Tile→Instr拒绝；独立诊断进一步定位到混合copy/load输出carrier
+保留4,100,000字节SPM的问题。已按08号扩展原流式输出证明，保留原位置的一次load并用实际紧凑缓冲写入各出口；
+坐标/写入顺序、未知alias拒绝及FP16/BF16六项16 Tile模型通过。完整StructuredToTile回归另发现并修复直接load staging反复重建；66项完整回归及六项模型再次通过，
+临时捕获已撤除，canonical/no-op通过，原8/42的新正式构包正在执行，
+尚未代签S1025产品资格。
 
 四项性能保护的新source/reference/package及guard no-card通过；首轮12次及有界追加6次实卡完整数值、guard及健康通过。
 两项FP16 GEMM性能通过；BF16 GEMM/attention中位数7.308/3.710ms高于7.271/3.649ms门槛，保留未通过。

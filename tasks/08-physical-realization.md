@@ -465,15 +465,22 @@ collapse只合并同组内连续的维度；使用pinned `isGuaranteedCollapsibl
 | 原始GQA 1024/1025及固定FP16 LLaMA | 默认8/42真实source到package/no-card；剩余失败必须定位actual边界 | 正式driver；设备数值/profile仍另行验收 |
 
 Movement结束前，write-only SPM输出carrier可按实际写入流式存到一个或多个既有DDR出口。所有terminal store必须读同一allocation的完整值，
-位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy目的端和这些terminal读取。
+位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy/load目的端和这些terminal读取。
 出口必须是当前私有DDR allocation，或具有Write权限的typed DDRBinding；允许从Region argument派生的单use Subview链，
 其offset/size/stride的SSA operands必须支配原carrier allocation，才可在该处克隆view并保持原窗口坐标。Region内不能存在其它出口alias use。每次原写入按原顺序
 向所有出口的对应Subview发射store，carrier及旧terminal store删除，defined数据、覆盖及出口集合保持。
+若原writer为DDR load，按其实际目的窗口生成同shape、dtype和物理layout的紧凑SPM allocation，在原位置读取同一source一次，
+再向全部DDR出口写入该块。目的窗口必须是静态形状且具有支持的物理编码；不推导新tile，不把DDR到DDR伪装成直接DMA。
+新allocation、load和store均在current IR中生成，owner随BoundaryMovement输出按现有SSA/effect关系重建，
+再交唯一Instr/completion/SPM路径。未知或与任一出口alias的source继续拒绝，不能为消除carrier改变读取快照。
 只转发该carrier的SCF iter argument/result同时删除，循环范围、其它state及原body保持；采用pinned SCF iter-arg folding的block转移方式，
-不把DDR地址伪装成跨迭代更新的state。外层carrier消除后重新从current IR收集新terminal，继续处理内层carrier；每次成功严格删除一个allocation，因而收敛。
+不把DDR地址伪装成跨迭代更新的state。外层carrier消除后重新从current IR收集新terminal，继续处理内层carrier；单个load直接写入自身allocation后store的结构已经是紧凑staging，保持不改写。
+每次成功删除一个已有carrier，新增的直接load staging不能再次匹配，因而收敛。
 这种变换只应用current buffers/effects，shared-DDR publication仍由下游fresh completion重建并验证；partial source窗口、读写状态、未知alias
 或中途可观察读取不通过该证明。覆盖单/多出口、私有/shared-DDR、嵌套循环、1024/1025/1031 main/tail、重叠写及拒绝例，
 并实际经过Instr/completion/SPM和source模型执行。
+混合copy/load另成对覆盖1024/1025/1031、主块/尾块、单/多出口及非零目的窗口；逐坐标核对每次source读取和最后写入顺序，
+证明整块SPM carrier消失而紧凑load只有一次，出口source alias和动态目的形状保持不改写。
 
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建

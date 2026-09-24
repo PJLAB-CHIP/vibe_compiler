@@ -560,6 +560,20 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
       ENVIRONMENT "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}")
   endforeach()
   list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorPackedUpdateTest)
+  add_executable(WaferSystemCSimulatorOutputStoresTest
+    Simulator/SystemC/SystemCTargetModelOutputStoresTest.cpp)
+  llvm_update_compile_flags(WaferSystemCSimulatorOutputStoresTest)
+  target_link_libraries(WaferSystemCSimulatorOutputStoresTest PRIVATE
+    WaferSystemCSimulatorTestSupport GTest::gtest)
+  foreach(case RANGE 0 5)
+    add_test(NAME WaferSystemCSimulatorOutputStoresTest.${case}
+      COMMAND WaferSystemCSimulatorOutputStoresTest
+        --gtest_filter=Windows/SystemCTargetModelOutputStoresTest.MixedWritersPreserveEveryOutputByte/${case})
+    set_tests_properties(WaferSystemCSimulatorOutputStoresTest.${case} PROPERTIES
+      LABELS "systemc-model;managed-dependencies;component"
+      ENVIRONMENT "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}")
+  endforeach()
+  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorOutputStoresTest)
   add_custom_target(check-wafer-systemc-model
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
       -R "^WaferSystemCSimulator"

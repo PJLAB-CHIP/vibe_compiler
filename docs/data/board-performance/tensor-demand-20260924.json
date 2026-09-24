@@ -1714,5 +1714,125 @@
     "board_execution": false,
     "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-packed-timing34.log",
     "qualification": "本轮完整source/reference、普通及count/trace/timing包、guard no-card通过；材料已准备。实卡仍等待原计划性能保护和S1025产品前置。"
+  },
+  "mixed_output_writers_followup": {
+    "recorded_utc": "2026-09-24T05:54:07.975760+00:00",
+    "implementation": "BoundaryMovement streams actual copy/load writers through compact current-IR staging; current-root NoAlias proof preserves source snapshots",
+    "prior_formal_attempt": {
+      "tool_sha256": {
+        "build/bin/wafer-compile": "70a889f30ef6b3056f2cb8df780a6d31e9c813fa03f281c4b645351d9740c7e2",
+        "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+      },
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-single-layer-lm-tail-1025",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing40",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "3600",
+        "--dump-compiler-ir",
+        "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing40/compiler-ir",
+        "--memory-guards",
+        "--kernel-timing",
+        "--no-card"
+      ],
+      "compile_exit_code": 1,
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "rejected_candidates_by_gate": {
+        "spm-allocation": 37,
+        "tile-to-instr": 5
+      },
+      "transaction_wall_ms": 1427603.276,
+      "package_published": false,
+      "board_execution": false,
+      "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing40.log"
+    },
+    "diagnostic": {
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 22
+      },
+      "qualification": false,
+      "rejected_candidates_by_gate": {
+        "spm-allocation": 21,
+        "tile-to-instr": 1
+      },
+      "actual_output_allocation": {
+        "shape": [
+          1,
+          1025,
+          2000
+        ],
+        "dtype": "f16",
+        "bytes": 4100000
+      },
+      "reason": "main copy and direct tail load make the original copy-only proof reject the whole output carrier",
+      "captured_ir": "/data/vibe_compiler-validation/tensor-demand-20260924/memory-failure-562785.mlir",
+      "temporary_instrumentation_removed": true
+    },
+    "host_checks": {
+      "direct_transform_tests": 4,
+      "full_output_systemc_cases": 6,
+      "dtype": [
+        "f16",
+        "bf16"
+      ],
+      "rows": [
+        1024,
+        1025,
+        1031
+      ],
+      "tiles": 16,
+      "outputs_checked_per_case": 2,
+      "steady_state_joins": 0,
+      "unknown_source_alias_rejected": true,
+      "dynamic_destination_shape_rejected": true,
+      "canonical_incremental_build": true,
+      "ninja_noop": true,
+      "organization_lit": 2,
+      "structured_to_tile_tests": 66,
+      "structured_to_tile_wall_ms": 31591,
+      "direct_load_staging_fixed_point": true
+    },
+    "board_execution": false,
+    "qualification": "主机机制检查通过；S1025正式产品复验另记，未完成板端资格。",
+    "stopped_attempt": {
+      "tools_sha256": {
+        "build/bin/wafer-compile": "1234dfdef6f968b0618d9cc45c6c9cf4760188026139922fd0759369641a3607",
+        "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+      },
+      "record": "/data/vibe_compiler-validation/tensor-demand-20260924/mixed-output46-stopped.json",
+      "qualification": false,
+      "reason": "full StructuredToTile regression exposed repeated direct-load staging reconstruction; structural fixed-point fix and full regression required"
+    },
+    "tool_sha256": {
+      "build/bin/wafer-compile": "ea5780ed1c1a9458224522ed53343ed14b186c906c0e25c99c512ab82ba36b04",
+      "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+    }
   }
 }

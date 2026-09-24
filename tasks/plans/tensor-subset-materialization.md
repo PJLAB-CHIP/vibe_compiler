@@ -158,6 +158,20 @@ copy_into接续复用同一私有更新实现，补入实际alias/use closure；
 九项16 Tile完整模型通过，动态主循环join仍为零；Tile→Instr 33项lit及canonical/no-op通过。
 该补齐尚未代签S1025产品资格；后续正式构包保留独立身份和原8/42预算。
 
+DDR reinterpret修复后的独立正式8/42复验仍为37次SPM、5次Tile→Instr拒绝，transaction为1427603.276 ms；
+该轮早于copy_into补齐，身份和失败日志独立保留。随后8/22的只读诊断只用于定位，不作正式资格：
+21次actual容量拒绝、1次Tile→Instr拒绝；失败current IR中的末端输出carrier为`[1,1025,2000]xf16`、4,100,000字节。
+main通过copy写入，单行tail被既有movement折成直接DDR load；原流式输出证明只接受copy，因此完整carrier未消除。
+按08号在原BoundaryMovement证明中接入load目的端，逐写入构造实际紧凑SPM、保留原位置一次读取，再发射全部出口store；
+source与出口必须通过current-root alias证明不重叠，未知alias或动态目的shape保持原IR。没有第二条lowering或SPM路径。
+`TiledOutputStoresStreamAllDestinationsInWriteOrder`先复现失败，再通过混合writer、1/2/3出口、私有/shared DDR、
+非零目的窗口及1024/1025/1031的逐坐标和最后写入顺序检查；同类三项直接检查亦通过。
+新增FP16/BF16 × 1024/1025/1031六项16 Tile SystemC完整输出逐字节一致，两个出口均核对，steady-state join为0；
+完整StructuredToTile回归另在`SameTileRegionsUseOneExplicitDDRStage`暴露直接load staging反复重建；
+已停止当时的主机构包，不计入正式资格。补齐结构固定点：单load直接写入自身allocation的既有紧凑staging不改写，
+新增staging也不会再次匹配。修复后StructuredToTile全部66项实际通过（31591 ms），六项SystemC再次通过；
+canonical/no-op及两项源码/IR组织检查通过，临时捕获已撤除，原8/42的新正式构包正在执行。
+
 两项BF16的唯一有界追加组三次已结束：4096 GEMM为7.322/7.469/7.252ms，中位数7.322ms；
 2048 attention为3.733/3.719/3.811ms，中位数3.733ms。完整数值、guard、16 Tile completion、清理和健康均通过，
 性能仍高于原7.271/3.649ms门槛；本轮合计18次健康实卡，不继续重复到出现快样本。
