@@ -18,32 +18,39 @@
 
 ## 当前调度
 
-2026-09-24接续完整单层LLaMA2长序列及Tensor子集物化整改，仍归`board-testing`。
-纯来源/覆盖分析、共同片段生成与Temporal计算融合已分开；静态Spatial、动态partial insert、
-多轴窗口、矩形平移view及静态多piece view已进入共同查询与物化路径，并有实际Instr/SPM验证。
-Driver按父SSA和实际读取组维护完整共享/局部选择；跨retile绑定、mixed分支、缓存开关/淘汰确定性及
-standard实现轮转已修复并验证。尾块的实际单次循环scope保留至Tensor选择消费，layout入口再展开；
-主尾块全组绑定及逐坐标覆盖通过。完整S1024已在原standard 8/42预算内通过actual SPM和目标后端并生成普通package；
-完整reference/payload及普通guard no-card已通过；15号计时companion此前因profile metadata超过JSON预算而打包失败。
-Writer已改为紧凑JSON、保留原预算并通过产品及reader边界测试；完整S1024计时包、完整reference及guard no-card已通过，实卡尚未执行。
-S1025的output publication与BoundaryMovement降rank缺陷已修复；正式8/42复验仍未生成package，
-20次SPM、12次Tile→Instr及10次选择绑定拒绝。已按10号补齐私有packed-i1更新，并按12号修复动态窗口经过
-reinterpret_cast的DDR范围证明；逐bit覆盖、私有性拒绝及16 Tile完整数值模型通过。私有更新后的复验仍有
-actual SPM与Tile load/copy_into拒绝；copy_into已接入同一更新实现并通过逐bit与完整数值模型。
-DDR范围修复后的正式复验仍为37次SPM及5次Tile→Instr拒绝；独立诊断进一步定位到混合copy/load输出carrier
-保留4,100,000字节SPM的问题。已按08号扩展原流式输出证明，保留原位置的一次load并用实际紧凑缓冲写入各出口；
-坐标/写入顺序、未知alias拒绝及FP16/BF16六项16 Tile模型通过。完整StructuredToTile回归另发现并修复直接load staging反复重建；66项完整回归及六项模型再次通过，
-临时捕获已撤除，canonical/no-op通过，原8/42的新正式构包正在执行，
-尚未代签S1025产品资格。
+2026-09-24接续完整单层LLaMA2长序列及Tensor子集物化整改，仍归`board-testing`，状态为`doing`。
 
-四项性能保护的新source/reference/package及guard no-card通过；首轮12次及有界追加6次实卡完整数值、guard及健康通过。
-两项FP16 GEMM性能通过；BF16 GEMM/attention中位数7.308/3.710ms高于7.271/3.649ms门槛，保留未通过。
-主机编译/回归结束后的唯一追加组三次中位数为7.322/3.733ms，两项仍未通过；不继续重复到出现快样本。
-本次混合writer修复后的四项新包及guard no-card通过，包与本轮已板测包逐字节相同；
-三个GEMM完整包与原性能基线摘要一致，attention ELF/manifest也一致，仍不能据此代签时间门槛。
-通用reshape的常数floor/mod周期、累计预算审查、两项性能门槛及S1024/1025产品和实卡仍待闭合。
-此检查点不改变`board-testing`的`doing`状态，覆盖和完整证据见
-[子集物化计划](plans/tensor-subset-materialization.md)。
+### 当前产品结果
+
+| 项目 | 本轮实际结果 | 下一步 |
+| --- | --- | --- |
+| 完整S1024 FP16 | 原standard 8/42已生成普通及count/trace/timing包，完整reference/payload与guard no-card通过；未实卡 | 完成板端前置后执行完整输出与guard检查 |
+| 完整S1025 FP16 | 最新standard 8/42找到1个accepted方案，另外35次actual SPM capacity、6次unsupported；普通及三种capture目标代码已生成，但最终package transaction回滚 | 修复profile metadata打包容量问题，再生成完整reference/payload并通过guard no-card |
+
+S1025最新明确失败为`site-map.json`紧凑JSON共18,908,154字节，超过既有16,777,216字节限制；
+transaction为1,787,819.290 ms。尚无正式发布的package，不能称为board-ready；本轮reference/no-card与实卡未执行。
+下一步按15号检查metadata的producer/consumer与规模合同，保留完整模型、输出和计时要求。
+
+### 已完成的实现与验证
+
+纯来源/覆盖分析、共同片段生成与Temporal计算融合已分开；静态Spatial、动态partial insert、多轴窗口、
+矩形平移view及静态多piece view共用查询与物化，并有实际Instr/SPM验证。
+Driver的完整共享/局部选择、跨retile绑定、mixed分支、缓存确定性、standard轮转及尾部单次scope已修复。
+私有packed-i1更新的三类producer共用实现，动态DDR reinterpret范围、输出降rank及混合copy/load流式写回已修复。
+最后一次代码提交`bd5fde95`包含流式输出与直接load staging收敛修复；66项StructuredToTile、
+六项FP16/BF16 × 1024/1025/1031的16 Tile完整输出模型、源码/IR检查、canonical增量与Ninja no-op通过。
+
+### 性能保护与剩余项
+
+四项保护的新source/reference/package及guard no-card通过；本轮18次实卡均通过完整数值、guard和健康检查。
+两项FP16性能通过。BF16 GEMM/attention首轮中位数7.308/3.710 ms；唯一追加组为7.322/3.733 ms，
+相对基线7.271/3.649 ms分别多0.051/0.084 ms（0.70%/2.30%）。保留全部样本，不继续重复直到取得快样本。
+最新四项包与本轮已板测包逐字节相同；三个GEMM完整包以及attention ELF/manifest与原基线摘要也一致。
+用户本轮指出可能属于常规波动；现有证据更支持运行波动，尚无证据认定为编译器代码退化。
+原性能时间门槛的超出结果保留，不把波动判断写成已证明的性能通过。
+
+未完成：通用reshape常数floor/mod周期、累计预算审查、S1025 metadata/package与完整no-card、
+两项长LM实卡，以及性能波动的验收结论。实现及证据详见[子集物化计划](plans/tensor-subset-materialization.md)。
 
 2026-09-23用户要求将BF16 NCx GEMM M=N4096/K1024与2048、28-head attention纳入正式case集合，
 并让后续全部PyTorch板测case的耗时同时记录kernel本体与外层event，仍归 `board-testing`。

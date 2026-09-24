@@ -1922,6 +1922,75 @@
           "manifest_sha256_equal": true
         }
       }
-    ]
+    ],
+    "lm1025_formal_attempt": {
+      "tool_sha256": {
+        "build/bin/wafer-compile": "ea5780ed1c1a9458224522ed53343ed14b186c906c0e25c99c512ab82ba36b04",
+        "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+      },
+      "command": [
+        "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+        "-B",
+        "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+        "--case",
+        "llama-2-7b-single-layer-lm-tail-1025",
+        "--dtype",
+        "float16",
+        "--seed",
+        "20260803",
+        "--wafer-compile",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+        "--wafer-run",
+        "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+        "--work-dir",
+        "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing47",
+        "--optimization-policy",
+        "search",
+        "--search-mode",
+        "standard",
+        "--search-width",
+        "8",
+        "--search-trials",
+        "42",
+        "--compile-timing",
+        "--compile-timeout-seconds",
+        "3600",
+        "--dump-compiler-ir",
+        "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing47/compiler-ir",
+        "--memory-guards",
+        "--kernel-timing",
+        "--no-card"
+      ],
+      "compile_exit_code": 1,
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "accepted_candidates": 1,
+      "capacity_rejected_candidates": 35,
+      "unsupported_candidates": 6,
+      "failure_stage": "package-assembly",
+      "failure": "profile instrumentation metadata exceeds JSON byte limit",
+      "metadata_file": "site-map.json",
+      "metadata_bytes": 18908154,
+      "metadata_limit_bytes": 16777216,
+      "transaction_wall_ms": 1787819.29,
+      "package_published": false,
+      "reference_executed": false,
+      "guard_no_card_executed": false,
+      "board_execution": false,
+      "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing47.log",
+      "target_variant_count": 4
+    },
+    "performance_interpretation": {
+      "recorded_utc": "2026-09-24T06:33:13.522941+00:00",
+      "user_observation": "可能是常规波动",
+      "gemm4096_bf16_delta_ms": 0.051,
+      "gemm4096_bf16_delta_percent": 0.7014,
+      "attention2048_bf16_delta_ms": 0.084,
+      "attention2048_bf16_delta_percent": 2.302,
+      "conclusion": "产物摘要与基线一致，现有证据更支持运行波动；尚未确认原因，未证明编译器代码退化，原性能阈值结果保留。"
+    }
   }
 }

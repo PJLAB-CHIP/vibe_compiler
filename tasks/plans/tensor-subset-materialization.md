@@ -170,13 +170,19 @@ source与出口必须通过current-root alias证明不重叠，未知alias或动
 完整StructuredToTile回归另在`SameTileRegionsUseOneExplicitDDRStage`暴露直接load staging反复重建；
 已停止当时的主机构包，不计入正式资格。补齐结构固定点：单load直接写入自身allocation的既有紧凑staging不改写，
 新增staging也不会再次匹配。修复后StructuredToTile全部66项实际通过（31591 ms），六项SystemC再次通过；
-canonical/no-op及两项源码/IR组织检查通过，临时捕获已撤除，原8/42的新正式构包正在执行。
+canonical/no-op及两项源码/IR组织检查通过，临时捕获已撤除。最新正式standard 8/42已完成搜索：
+1个accepted方案、35次actual SPM capacity及6次unsupported；普通与count/trace/timing四套目标代码已生成。
+最终package transaction因紧凑`site-map.json`为18,908,154字节、超过16,777,216字节限制而回滚，
+transaction为1,787,819.290 ms；没有发布package，也未执行本轮reference/no-card与实卡。
+后续按15号统一metadata producer/consumer与规模合同，不能降低完整输出、跳过计时或把target生成当作产品资格。
 四项性能保护再次构包和guard no-card通过，与本轮已板测包逐字节一致；原基线摘要核对中，三个GEMM完整包以及
 attention ELF/manifest均一致。该只读证据排除了这些交付字节的变化，不能证明实际计时相同或代签两项BF16性能门槛。
 
 两项BF16的唯一有界追加组三次已结束：4096 GEMM为7.322/7.469/7.252ms，中位数7.322ms；
 2048 attention为3.733/3.719/3.811ms，中位数3.733ms。完整数值、guard、16 Tile completion、清理和健康均通过，
 性能仍高于原7.271/3.649ms门槛；本轮合计18次健康实卡，不继续重复到出现快样本。
+用户本轮指出两项差异可能是常规波动；复测相对原基线分别多0.051/0.084 ms（0.70%/2.30%）。
+结合设备代码与基线摘要一致，当前按运行波动待解释记录，尚无编译器代码退化证据；保留原阈值结果与全部测量。
 
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
 Driver 151项组件单测全部实际通过，共831项，无跳过。随后补强组合反例的逐行执行覆盖计数，六组输入重新通过，
