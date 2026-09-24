@@ -161,9 +161,16 @@ Physical-dataflow不能整体塞入CodeGen，也不能继续把analysis、choice
 - closed spatial/region choice到actual TileModule/TileRegion的原子物化属于`Transforms/Linalg`；
 - selected temporal choice apply、compact tile/fuse、online-attention decomposition、layout/view/bufferization、movement和execution structure按其真实输入进入
   `Transforms/Linalg`或`Transforms/Tile`；
-- 已选Tensor子集的纯来源/覆盖/顺序证明扩展`Analysis/Linalg`的现有索引分析；共享或局部物化选择属于
-  `Planning/PhysicalDataflow`，当前候选调度属于Driver。共同片段生成进入`Transforms/Linalg`的独立职责文件，
-  Spatial保留endpoint绑定，Temporal保留循环与计算融合；局部物化helper不得调用计算producer tiler或建立物理缓存。
+- 已选Tensor子集的参数化索引、完整结构DAG需求传播、来源/覆盖/顺序及静态块guard证明扩展`Analysis/Linalg`的现有索引分析；
+  标准表达式与参数绑定是同一relation的query-local派生结果，不建立持久化物化计划或第二套索引语义。
+  共享或局部物化选择属于`Planning/PhysicalDataflow`，当前候选调度属于Driver。
+  有界块细分与Tensor/SCF生成进入`Transforms/Linalg`的共同职责文件，整个请求传递同一个累计工作预算；
+  Spatial保留endpoint绑定，Temporal保留计算循环与已选择的producer fusion，不为来源边界克隆计算body。
+  局部物化helper不得调用计算producer tiler或建立物理缓存；retile/mutation后从current IR重新查询。
+  下游layout/bufferization与movement、Instr范围/成本、target verifier各自在原component消费实际IR并重建分析，
+  不反向依赖Tensor证明对象；不为本项增设平行的indexing、bufferization、cost或target实现。
+  会产生新subset的Tensor preparation仍由原`Transforms/Tile` owner实现，但在最终子集发现/选择前完成；
+  上层driver/named pipeline连接准备、Linalg子集物化、边界与layout入口，Tile library不回调或反向链接Linalg library。
   `Transforms/Tile`中的PhysicalMovementPlacement与AccessReuse继续只消费相应阶段的实际物理IR，
   不接管Tensor需求传播；合同及迁移见06号与[子集物化计划](plans/tensor-subset-materialization.md)；
 - candidate-owned current endpoint/materialized-operation-buffer relation、replacement listener和buffer relation query进入`Transforms/Tile`，

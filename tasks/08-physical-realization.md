@@ -139,22 +139,43 @@ post-attention bounded logical normalization
        attention -> online state contributions/merge
   -> current-op temporal tile-and-fuse, including online K2 stateful tiling
   -> online-attention decomposition and final current SSA/use graph
+  -> Tensor preparation that can introduce actual subsets
   -> selected Tensor subset materialization and shared-use closure
-  -> layout/view/function-boundary and region-local bufferization
+  -> singleton normalization / boundary preparation / layout and bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
   -> physical TileRegion
 ```
 
-进入本stage前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
+进入layout query/bufferization前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
 Spatial/Temporal共享纯索引与片段生成；计算融合由Temporal拥有，layout只消费其实际结果。
 “保留共享”与“按窗口局部物化”是两个明确的Tensor实现，不能由bufferization/allocator临时互换，
 也不能因局部IR物化失败而在这里重建完整输入。真实full-use保留完整值，不能仅凭allocation大就删去。
 Tensor选择消费前保留的单次带坐标尾循环，在`prepareCurrentLayoutInput`通过标准SCF接口展开；
 该步骤只规范化已有控制流和SSA，不生成或补绑读取选择。展开后才检查边界发布和建立layout query。
-`prepareCurrentLayoutInput`中的已有Tensor preparation若暴露新的需求，调用同一子集helper闭合后再建立layout query；
+`prepareCurrentLayoutInput`中会生成新subset的Tensor preparation须分离为本层拥有的原子Tensor准备入口，
+由上层driver/named pipeline在最终读取组发现和选择前调用；再调用06号共同物化，最后处理单次循环规范化、
+边界发布及layout query。剩余layout preparation不得新造未闭合需求；不能从`WaferTileTransforms`回调
+`WaferLinalgTransforms`造成循环依赖，也不通过反复扫描补救调用顺序。named pipeline与none/search复用同一实现。
 相关IR mutation后重建analysis，不让早期查询成为当前buffer的事实来源。具体算法与覆盖由
 [06号合同](06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)拥有。
+
+局部物化可以产生保留原计算循环的嵌套copy循环与条件分支；每个块的shape静态，offset和来源guard可包含常数floor/mod。
+条件内先将实际source slice插入局部destination，再yield同一destination；layout不得要求不同source分支先合流为同一view几何。
+One-Shot从这份DPS/SCF SSA决定in-place/out-of-place，movement只消费已确定的alias与实际encoding。
+Tensor逻辑矩形与NCx物理连续性分别证明，沿用上文外部布局支持域；动态窄C tail仍是明确未实现的lowering能力，
+不能因为Tensor查询Exact就放过，也不能静默切回Tensor ABI。若原产品必需的形状落在此边界，须在本owner修复并补矩阵。
+
+每次mutation后，下游从实际IR重建guard、source root、offset/stride、读写范围、allocation owner、effect与lifetime；
+不接受上游临时证明或预计buffer清单代替current IR。首条纵向同时检查以下交付，作为迁移其它入口的前置：
+
+| 实际输入 | 本stage交付与直接消费者 |
+| --- | --- |
+| rank≥3、1024/1025/1031，周期/滑动窗口与条件source，Tensor布局 | layout/bufferization后写满局部destination；列出实际allocation、copy、alias与动态次数，movement→Instr无隐藏完整assembly或无依据的逐块分配 |
+| 支持的NCx行/批次平移、C block对齐窗口及不支持的动态窄C tail | 从actual root encoding重算地址；正例到Instr/target，负例typed拒绝，不按逻辑row-major恢复物理地址 |
+| 同worker连续copy、实际跨worker或release/reuse hazard | completion仅由actual effect/token/lifetime决定；无hazard的非终态join为0，有hazard精确消费对应完成域 |
+| guard含floor/mod、主/尾块、零次循环及未执行分支 | 实际source byte range到14号target/LLVM可验证；06号实际成本保留次数/上下界与估计质量，不枚举整个迭代域，不影响唯一SPM准入 |
+
 物理搬运位置仍由`PhysicalMovementPlacement`按实际alias/effect证明；BoundaryMovement后的AccessReuse维持原输入合同。
 本项不扩展任意中间存储缓存，不新增layout解、SPM准入或同步算法。
 

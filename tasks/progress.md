@@ -20,18 +20,37 @@
 
 2026-09-24接续完整单层LLaMA2长序列及Tensor子集物化整改，仍归`board-testing`，状态为`doing`。
 
-### 当前产品结果
+用户已授权按算法复审更新设计并重排任务。06/08/18号及[实施计划](plans/tensor-subset-materialization.md)已更新；
+本次只完成合同与排程，新的参数化DAG查询、块证明/生成及旧实现替换尚未按新合同验收。
+当前缺口是已选tile的子集物化及其直接消费者，不扩大到整个编译器；保留现有IndexRelation、共享选择及actual SPM路径。
 
-| 项目 | 本轮实际结果 | 下一步 |
+### 当前执行顺序与直接前置
+
+下表是同一`board-testing`内的交付依赖，不另建work item。第1项为下一步；后项等待其直接前置，
+不能先修完一个产品case或metadata就跳过通用算法验收。具体代码替换、算法和覆盖由实施计划拥有。
+
+| 顺序 | 交付 | 直接前置 | 接续条件 |
+| --- | --- | --- | --- |
+| 1 | 反例回归、参数化索引与完整结构DAG需求 | 本次修订的06/08/18合同 | 双边insert传播、语义等价offset、来源/顺序/覆盖与累计预算闭合 |
+| 2 | 静态块证明与有界共同生成 | 1的精确需求 | 充分guard、静态copy几何、二分/奇数tail及单位块完备；无跨界实例计算body展开 |
+| 3 | 首条完整纵向及必要consumer修复 | 2的actual Tensor/SCF | layout/bufferization→movement→Instr/completion→actual SPM、target/LLVM和实际成本均有witness |
+| 4 | Spatial/Temporal/none/search迁移与旧路径删除 | 3的真实下游能力 | Tensor准备→最终查询/物化→layout顺序一致，无component循环；保留fusion/shared/local/retile、预算与确定性 |
+| 5 | 原产品、metadata/package及fresh no-card | 4的唯一生产路径 | 两项完整LM及四项保护的全部所需产品可消费；按15号修复打包规模合同 |
+| 6 | 原功能与性能验收 | 5的board-ready产品 | 四项保护先行，再两项完整LM；数值、guard、健康及原性能门槛逐项闭合 |
+
+### 重排前的产品检查点
+
+| 项目 | 已有版本的实际结果 | 接续要求 |
 | --- | --- | --- |
-| 完整S1024 FP16 | 原standard 8/42已生成普通及count/trace/timing包，完整reference/payload与guard no-card通过；未实卡 | 完成板端前置后执行完整输出与guard检查 |
-| 完整S1025 FP16 | 最新standard 8/42找到1个accepted方案，另外35次actual SPM capacity、6次unsupported；普通及三种capture目标代码已生成，但最终package transaction回滚 | 修复profile metadata打包容量问题，再生成完整reference/payload并通过guard no-card |
+| 完整S1024 FP16 | 原standard 8/42已生成普通及count/trace/timing包，完整reference/payload与guard no-card通过；未实卡 | 生产路径整改后生成fresh产品并重签no-card，再按第6项实卡 |
+| 完整S1025 FP16 | 最新standard 8/42找到1个accepted方案，另外35次actual SPM capacity、6次unsupported；普通及三种capture目标代码已生成，但最终package transaction回滚 | 第5项闭合metadata/package、完整reference/payload与guard no-card，再按第6项实卡 |
 
 S1025最新明确失败为`site-map.json`紧凑JSON共18,908,154字节，超过既有16,777,216字节限制；
 transaction为1,787,819.290 ms。尚无正式发布的package，不能称为board-ready；本轮reference/no-card与实卡未执行。
-下一步按15号检查metadata的producer/consumer与规模合同，保留完整模型、输出和计时要求。
+该失败归第5项的15号metadata producer/consumer与规模合同修复，保留完整模型、输出和计时要求。
+尚未证明metadata规模与Tensor循环展开存在因果关系；不能用其中一项修复代签另一项。
 
-### 已完成的实现与验证
+### 已有实现与验证边界
 
 纯来源/覆盖分析、共同片段生成与Temporal计算融合已分开；静态Spatial、动态partial insert、多轴窗口、
 矩形平移view及静态多piece view共用查询与物化，并有实际Instr/SPM验证。
@@ -39,6 +58,8 @@ Driver的完整共享/局部选择、跨retile绑定、mixed分支、缓存确�
 私有packed-i1更新的三类producer共用实现，动态DDR reinterpret范围、输出降rank及混合copy/load流式写回已修复。
 最后一次代码提交`bd5fde95`包含流式输出与直接load staging收敛修复；66项StructuredToTile、
 六项FP16/BF16 × 1024/1025/1031的16 Tile完整输出模型、源码/IR检查、canonical增量与Ninja no-op通过。
+这些结果保留为迁移回归，不代表完整来源DAG、常数除余块生成或新控制流的target/cost已经闭合。
+需要替换的边界实例枚举、计算循环克隆、单线性grid限制及未闭合的调用路径，见实施计划第2节逐项迁移表。
 
 ### 性能保护与剩余项
 
@@ -49,8 +70,13 @@ Driver的完整共享/局部选择、跨retile绑定、mixed分支、缓存确�
 用户本轮指出可能属于常规波动；现有证据更支持运行波动，尚无证据认定为编译器代码退化。
 原性能时间门槛的超出结果保留，不把波动判断写成已证明的性能通过。
 
-未完成：通用reshape常数floor/mod周期、累计预算审查、S1025 metadata/package与完整no-card、
-两项长LM实卡，以及性能波动的验收结论。实现及证据详见[子集物化计划](plans/tensor-subset-materialization.md)。
+未完成项按上表推进：完整参数化DAG、块证明与有界生成、实际下游与成本、入口迁移/旧路径清除、
+fresh产品及S1025打包、两项长LM实卡和性能验收。历史性能波动判断未被改写为通过，原门槛保持。
+实现及证据详见[子集物化计划](plans/tensor-subset-materialization.md)。
+
+### 历史接续记录
+
+以下记录保留当时授权与验收边界；其中的先后安排以顶部“当前执行顺序与直接前置”为准。
 
 2026-09-23用户要求将BF16 NCx GEMM M=N4096/K1024与2048、28-head attention纳入正式case集合，
 并让后续全部PyTorch板测case的耗时同时记录kernel本体与外层event，仍归 `board-testing`。
@@ -73,7 +99,7 @@ Driver的完整共享/局部选择、跨retile绑定、mixed分支、缓存确�
 fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 原算术、搜索预算、数值门槛保持，默认 Tensor 两项 fresh Instr/目标LLVM与原记录逐byte一致；
 完成合同与覆盖见08号及板测计划顶部，性能与限制见[整改记录](../docs/board-performance-results.md#2026-09-23ncx-输入复用与直接-dma-整改)。
-本轮指定修复已闭合；Tensor 子集物化整改仍按下方独立合同待推进。
+本轮指定修复已闭合；Tensor子集物化整改按顶部当前调度推进。
 
 2026-09-23用户追加直接 NCx DDR 输入/输出测量：M=N4096/K1024 BF16 GEMM 与 2048、28-head BF16 causal attention。
 仍归 `board-testing`；08 号外部物理布局和 15 号 caller 编解码已接通，两项 fresh 构包/no-card及各三次实卡通过。
@@ -87,11 +113,11 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 见[记录](../docs/board-performance-results.md#2026-09-23mn4096k1024-gemm测量)。本次指定测量已完成，未扩大优化范围。
 容量调查临时打印已撤除并恢复正式构建；Tensor整改及四项保护的后续状态按顶部检查点和实施计划执行。
 
-2026-09-23最新要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
+2026-09-23原始要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
 06/08/18号边界与[实施计划](plans/tensor-subset-materialization.md)已同步；纯来源/覆盖分析已拆分，
 静态Spatial窗口已用实际来源物化；Temporal有界线性循环的多轴完整assembly窗口及共用静态片段组装已接通，
 动态partial insert与共享选择、fresh产品及实卡尚未完成。
-后续顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；仍归`board-testing`，
+当时顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；已由顶部重排替代，仍归`board-testing`，
 不新增队列项，不把扩展AccessReuse中间存储资格列为前置，不重开attention专项优化。
 任一保护项回退或不可比，整改不得签完成；固定case、seed、预算、guard、健康样本和比较门槛见实施计划第7节。
 
@@ -368,6 +394,10 @@ FP16→BF16连续执行均通过；此前超时未复现、根因未知，不声
 单独抽出的原1 MiB GatherScatter也完整通过，尚未定位整包异常根因。用户要求暂缓该问题，当前转入第4项，先处理ViT S1024/1025编译失败；
 第3项剩余decode性能及TDMA定位保留未完成，第5项待第4项闭合后推进。上板前检查全系统占用、异常即停。所有修改须通用，
 LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门槛，具体矩阵见同一板测计划。
+
+## 当前任务队列
+
+`board-testing`当前先完成顶部的Tensor子集物化整改交付，再继续其余已授权缺口；原模型、预算和验收门槛不变。
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |

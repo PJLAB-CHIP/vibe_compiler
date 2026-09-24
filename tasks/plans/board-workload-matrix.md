@@ -117,7 +117,9 @@ caller 按 manifest 打包/解码。runtime 直接传输物理字节，不使用
 用户要求基于代码细化通用方案，并明确保护大GEMM及2048 attention性能。任务状态只看progress，
 稳定边界已进入06/08/18号，具体算法、迁移、覆盖及硬性门槛集中在
 [Tensor子集物化实施计划](tensor-subset-materialization.md)。当前已完成来源/覆盖职责拆分及静态Spatial窗口物化；
-Temporal动态窗口、共同生成入口、候选选择及板端门槛仍未完成，以progress和该计划的检查点为准。
+后续已补部分动态窗口、shared/local选择及产品能力，历史证据见该计划，不能代签通用算法完成。
+2026-09-24用户授权按算法复审重排：完整DAG/参数化需求→块证明与有界生成→包含target/LLVM及成本的首条纵向
+→生产入口迁移和旧路径清除→metadata/package与fresh产品→原板端验收。当前状态和直接前置只看progress。
 
 该整改处理已选窗口的Tensor来源与局部物化，计算融合、共享选择和物理复用各归原层级；
 不扩展AccessReuse中间存储资格，不以重新实现缓存或增加搜索预算作为两个长LM可行的前置。
@@ -142,8 +144,9 @@ timing companion，执行一次轻量capture并列记录最长Tile本体、16 Ti
 | S1025 FP16，非整除尾部 | 同一完整图及`[1,1025,32000]`全部logits；真实尾块的package/no-card、全量相似度与guard |
 | 两项共同生命周期 | 每次launch前系统占用检查；原cosine≥0.9999且relative L2≤0.01；正常completion/readback/厂商清理，执行窗口无fatal/timeout |
 
-当前处于主机准备。先核对历史编译失败是否仍能由current source复现；如需修复，归对应编号设计补通用根因及覆盖，
-不从旧失败推定当前不可用。异常停止批次，不自动retry/reset；实卡完成前不签本项通过。
+接续须等待progress中通用子集整改及产品准备的直接前置；下面保留首次失败的定位证据，不从旧失败推定当前不可用。
+S1025 metadata/package缺口按15号修复，不能代签上游算法；最新产品结果看progress。
+异常停止批次，不自动retry/reset；实卡完成前不签本项通过。
 
 本轮默认8/42首次准备均失败：S1024为42次actual capacity拒绝；S1025为29次capacity、13次unsupported。
 后者包含非byte对齐i1 store；两者后续容量样本仍有完整K/V规模的SPM allocation。
@@ -658,7 +661,7 @@ Trace插桩占入口跨度约43%，逐site engine归属为ambiguous；不据此�
 本轮发现profile request remap漏传`memoryGuardPolicy`，外层因缺失guard证据报失败；不能标本轮完整guard验收通过。
 这是Host配置传递缺陷，无设备fatal/timeout；失败记录保留，未重跑。后续设备采集前先补齐该通用请求传递及直接consumer回归，
 再按上述热点核查广播直接消费与布局转换的产生owner、合法条件和实际收益，不继续凭静态数量修零散小项。
-本轮热点、限制及外部采集启动修正见[报告](../../docs/board-performance-results.md#2026-09-21：2048-bf16完整profile热点)
+本轮热点、限制及外部采集启动修正见[报告](../../docs/board-performance-results.md#2026-09-212048-bf16完整profile热点)
 与[机器证据](../../docs/data/board-performance/attention-bf16-2048-profile-20260921.json)。
 3ms目标仍未达到，诊断结果与无插桩性能样本分开；
 不能把PMU累计周期直接当作墙钟占比，也不能未归因就改变指令或数值语义。
