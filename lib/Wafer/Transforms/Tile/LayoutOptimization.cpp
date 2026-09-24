@@ -1046,9 +1046,14 @@ preflightOutputPieces(StructuredMaterializationRelations &relations,
             !staticStrides || !pieceType ||
             llvm::any_of(*staticStrides,
                          [](int64_t stride) { return stride != 1; }) ||
-            llvm::ArrayRef<int64_t>(*staticSizes) != pieceType.getShape()) {
+            !pieceType.hasStaticShape() ||
+            !mlir::computeRankReductionMask(*staticSizes,
+                                            pieceType.getShape())) {
           detail =
               "observable insert_slice is not one exact static output piece";
+          llvm::raw_string_ostream stream(detail);
+          stream << ": ";
+          insert.print(stream, mlir::OpPrintingFlags().skipRegions());
           return mlir::failure();
         }
         offsets = std::move(*staticOffsets);
@@ -1205,8 +1210,12 @@ materializeOutputDestinations(mlir::ModuleOp module,
       sizes.push_back(builder.getIndexAttr(size));
       strides.push_back(builder.getIndexAttr(1));
     }
+    auto pieceType = mlir::cast<mlir::RankedTensorType>(piece.getType());
+    auto subviewType = mlir::cast<mlir::MemRefType>(
+        mlir::memref::SubViewOp::inferRankReducedResultType(
+            pieceType.getShape(), destinationType, offsets, sizes, strides));
     auto subview = builder.create<mlir::memref::SubViewOp>(
-        piece.getLoc(), destination, offsets, sizes, strides);
+        piece.getLoc(), subviewType, destination, offsets, sizes, strides);
     auto publication =
         builder.create<mlir::bufferization::MaterializeInDestinationOp>(
             piece.getLoc(), piece, subview.getResult());

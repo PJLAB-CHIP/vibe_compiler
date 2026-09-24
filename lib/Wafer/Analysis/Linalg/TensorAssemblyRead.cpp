@@ -8,6 +8,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace wafer::analysis {
 namespace {
@@ -32,6 +33,106 @@ struct ReadCoordinate {
   int64_t first = 0;
   std::optional<TensorLoopGrid> grid;
 };
+
+TensorAssemblyReadResult
+queryStaticViewRead(const TensorViewIndexing &view,
+                    llvm::ArrayRef<int64_t> resultShape,
+                    const StaticRectangularIndexSet &requested,
+                    const IndexRelationLimits &limits) {
+  auto fromRelation = [&](IndexRelationStatus status, llvm::StringRef reason) {
+    return fail(status == IndexRelationStatus::ResourceExhausted
+                    ? TensorAssemblyStatus::ResourceExhausted
+                : status == IndexRelationStatus::Invalid
+                    ? TensorAssemblyStatus::BrokenContract
+                    : TensorAssemblyStatus::Unsupported,
+                reason);
+  };
+  auto images = view.resultToSource.getExactStaticRectangularImagePieces(
+      requested.offsets, requested.sizes, limits);
+  if (!images.isExact())
+    return fromRelation(images.status, "view source image: " + images.reason);
+  TensorAssemblyReadResult result;
+  result.status = TensorAssemblyStatus::Exact;
+  result.shape = requested.sizes;
+  result.cases.emplace_back();
+  auto &pieces = result.cases.front().pieces;
+  uint64_t work = 0;
+  int64_t covered = 0, volume = 1;
+  for (int64_t size : requested.sizes)
+    if (llvm::MulOverflow(volume, size, volume))
+      return fail(TensorAssemblyStatus::ResourceExhausted,
+                  "view read volume overflow");
+  for (const auto &image : images.domains) {
+    if (++work > limits.maxConstraintWork)
+      return fail(TensorAssemblyStatus::ResourceExhausted,
+                  "view read exceeded its piece query budget");
+    auto demand = queryTensorAssemblyDemand(view.source, image, limits);
+    if (!demand.isExact())
+      return fail(demand.status, demand.detail);
+    for (const auto &piece : demand.pieces) {
+      if (++work > limits.maxConstraintWork ||
+          pieces.size() >= limits.maxRectangularPieces)
+        return fail(TensorAssemblyStatus::ResourceExhausted,
+                    "view read exceeded its piece query budget");
+      auto query = getTensorViewTilePiece(view, resultShape, requested,
+                                          piece.resultWindow, limits);
+      if (!query.isExact()) {
+        std::string detail = "view result piece: " + query.reason;
+        llvm::raw_string_ostream stream(detail);
+        stream << "; source offsets=[";
+        llvm::interleaveComma(piece.resultWindow.offsets, stream);
+        stream << "], sizes=[";
+        llvm::interleaveComma(piece.resultWindow.sizes, stream);
+        stream << "]";
+        return fromRelation(query.status, detail);
+      }
+      if (!query.piece ||
+          query.piece->source.offsets != piece.resultWindow.offsets ||
+          query.piece->source.sizes != piece.resultWindow.sizes)
+        return fail(TensorAssemblyStatus::BrokenContract,
+                    "view piece lost part of its exact assembly demand");
+      auto window = std::move(query.piece->result);
+      int64_t pieceVolume = 1;
+      for (unsigned axis = 0; axis < window.offsets.size(); ++axis) {
+        window.offsets[axis] -= requested.offsets[axis];
+        if (llvm::MulOverflow(pieceVolume, window.sizes[axis], pieceVolume))
+          return fail(TensorAssemblyStatus::ResourceExhausted,
+                      "view read piece volume overflow");
+      }
+      for (const auto &previous : pieces) {
+        bool disjoint = false;
+        for (unsigned axis = 0; axis < window.offsets.size(); ++axis) {
+          if (++work > limits.maxConstraintWork)
+            return fail(TensorAssemblyStatus::ResourceExhausted,
+                        "view read exceeded its coverage proof budget");
+          disjoint |= window.offsets[axis] + window.sizes[axis] <=
+                          previous.resultWindow.offsets[axis] ||
+                      previous.resultWindow.offsets[axis] +
+                              previous.resultWindow.sizes[axis] <=
+                          window.offsets[axis];
+        }
+        if (!disjoint)
+          return fail(TensorAssemblyStatus::BrokenContract,
+                      "view read has overlapping result pieces");
+      }
+      if (llvm::AddOverflow(covered, pieceVolume, covered))
+        return fail(TensorAssemblyStatus::ResourceExhausted,
+                    "view read coverage volume overflow");
+      llvm::SmallVector<mlir::AffineExpr, 4> offsets;
+      for (int64_t offset : piece.sourceWindow.offsets)
+        offsets.push_back(
+            mlir::getAffineConstantExpr(offset, view.source.getContext()));
+      pieces.push_back(
+          {piece.source,
+           mlir::AffineMap::get(0, 0, offsets, view.source.getContext()),
+           piece.sourceWindow.sizes, std::move(window)});
+    }
+  }
+  if (covered != volume)
+    return fail(TensorAssemblyStatus::BrokenContract,
+                "view read does not cover its complete result");
+  return result;
+}
 
 TensorAssemblyReadResult
 queryAssemblyRead(mlir::Value value, llvm::ArrayRef<ReadCoordinate> coordinates,
@@ -331,6 +432,8 @@ TensorAssemblyReadResult queryTensorAssemblyRead(
   if (loops.empty()) {
     auto source =
         getTensorViewTileSource(*view, type.getShape(), first, limits);
+    if (source.status == IndexRelationStatus::Unsupported)
+      return queryStaticViewRead(*view, type.getShape(), first, limits);
     if (!source.isExact())
       return fromRelation(source.status, source.reason);
     coordinates.clear();

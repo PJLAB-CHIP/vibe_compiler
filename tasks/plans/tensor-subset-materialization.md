@@ -75,14 +75,44 @@ S1024/S1025仍在原8/42预算内编译，不能签LM board-ready。
 四项性能保护和两项LM实卡。已修复显式局部选择误用外层不变循环共享限制的问题；
 普通确定性局部化继续保留原动态共享次数。该反例已通过：分段后重新查询，若相关轴成为singleton，
 可在不跨剩余IV依赖的前提下共享局部SSA；实际动态组装量按生成后的循环逐项核对。
-独立deep计费/收尾本轮重跑仍在执行，未使用历史结果代签。
+独立deep计费/收尾本轮实际重跑通过（1250.878秒），六个已收费方案全部收尾。
 S1024继续暴露组合分支的排序缺陷：继承实际reuse选择的局部分支丢失了父分支的收益排序hint。
 组合发现保持同一hint，仍独立计费、物化及actual容量/cost求值；不改SPM准入或扩大width/trials。
 
 本轮实卡保护已完成前两项：FP16 4096 GEMM为7.374/7.231/7.343ms，中位数7.343ms，
 通过7.414ms门槛；BF16为7.256/7.308/7.416ms，中位数7.308ms，高于7.271ms，性能保护未通过。
 两项六次完整数值、guard、16 Tile completion、占用及运行窗口诊断均通过，无fatal/timeout。
-保留全部样本，继续其余保护及实际IR差异核对；不放宽门槛或用健康数值代签性能。
+随后4097 FP16为8.684/8.662/8.780ms，中位8.684ms，通过8.717ms门槛；2048 BF16 attention
+为3.654/3.710/3.769ms，中位3.710ms，高于3.649ms，性能保护未通过。12次完整数值与健康均通过。
+四项新包逐字节匹配对应基线，不能据此代签时间门槛；全部样本及身份见
+[本轮证据](../../docs/data/board-performance/tensor-demand-20260924.json)。
+
+S1024修正组合排序后的完整8/42结果为38次actual capacity与4次读取组消失拒绝，无accepted。
+完整局部实现实际求值3次后，一个mixed实现连续消耗该结构后续机会。已定位standard在实现选择处
+优先连续推进当前repair的旁路，已按06号轮转合同修正；方案内部仍优先自身actual容量链。
+S1025本轮首次完整编译另外重现output publication拒绝，已按当前静态insert的unit rank reduction核对
+Tensor→memref边界；输出subview须保持原完整destination的offset/stride并采用实际source shape，不能补allocation。
+该修正后的Driver共享/局部专项通过；四项重新构包及no-card通过，完整包与首轮实卡包逐字节一致。
+新增实际访问序列的轮转oracle后，完整Driver（除单列deep）152项全部通过；deep本轮独立结果见上文。
+轮转修正后的S1024正式8/42仍为42次actual容量拒绝，无accepted；完整96组局部实现现在获得多次
+独立容量修正。后续捕获的actual Tensor/Instr IR确认：主块已局部读取，但外层N循环retile为62列后，
+新生成的16列尾块仍读取完整assembly，保留`memref<1x1024x1x4096xf16>`的8 MiB allocation。
+尾循环单次展开丢失了读取组使用的外层iteration coordinate；内层K循环仍存在，因此被当成另一组。
+主块/新尾块的实际对应尚待修复，不能用继续缩小tile或scope子集匹配代替。
+S1025的本轮publication修正后编译已越过原gate，42次结果为20次SPM、12次Tile-to-Instr、
+7次reuse绑定、2次assembly绑定和1次BoundaryMovement拒绝；未生成package。
+本轮Instr日志明确见stride 1025的packed-i1 load/copy；BoundaryMovement则重建subview时
+遗漏已有的rank-reduced result type，造成实际store的source/destination rank不一致。
+后者已用1024/1025/1031专项先复现再修复，保留相同type、offset和stride，直接Instr/SPM通过。
+
+静态多piece view已消费同一exact relation的分片image、逆向consumer窗口及局部row-major证明；
+Spatial沿用同一证明helper。`StaticAssemblyViewPreservesMultipleExactImages`按独立逐点oracle
+覆盖1024/1025/1031、非零origin、partial last-writer与紧预算拒绝；
+`StaticMultiPieceAssemblyViewReachesInstrAndSPM`直接下游通过。Analysis全组件145项通过，
+这只闭合静态多piece子集，通用动态floor/mod周期与累计预算审查仍待完成。
+最后一次边界修复后，Analysis 145项、Temporal/Layout/StructuredToTile 173项及三个受影响Spatial专项
+实际通过；canonical完整增量及Ninja no-op通过。四项新构包与guard no-card再次通过，
+完整包与首轮实卡包逐字节相同，身份分别记录在同一证据文件，不改写首轮编译器身份。
 
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
 Driver 151项组件单测全部实际通过，共831项，无跳过。随后补强组合反例的逐行执行覆盖计数，六组输入重新通过，
@@ -196,6 +226,10 @@ offset 不必是常量或裸 IV，`base + iv * step` 与等价 affine 写法使�
 多个读取对同一循环取分段点并集，克隆后通过同次IRMapping绑定并重新查询。此过程中不构造带holes需求的包围框，
 也不读取未被实际窗口消费的tensor.empty。跨边界实例、区间笛卡尔积、SSA链步数和生成片段共同受显式工作预算限制。
 
+静态多piece view先求当前relation的精确image分片，再对每片查询last-writer需求；各需求沿同一view关系
+求回consumer窗口，并证明局部row-major次序。Spatial的实际fragment与Temporal的assembly需求共用这一
+片段证明；输入绑定和循环生成仍由各自owner负责。结果片段必须无重叠、精确覆盖实际窗口，预算失败保持typed。
+
 ### 3.3 Preflight、输出与失败
 
 首次 mutation 前确认来源、覆盖、rank reduction、局部次序、scope、类型和所选生成方式。
@@ -303,9 +337,12 @@ cache-off/eviction不改变实际候选序列。绑定只使用父SSA、同次IR
 | 1024/1025/1031、partial overlap、rank-reduced source，窗口1/32，步长16/32/64 | `BoundedAssemblyReadsPreservePartialLastWriters`逐点核对来源、原source坐标和恰好一次覆盖；保留单位维歧义的先失败证据 | 同一动态查询供Temporal生成 |
 | 2048行中的两个32行定义窗口，中间为未定义holes | `BoundedAssemblyReadsDoNotDemandUndefinedHoles`只读实际窗口；扩大到33行明确Unsupported | 不把稀疏读取包围框当需求 |
 | partial insert后的expand，带非零局部origin和两轴读取 | `BoundedAssemblyViewUsesTheWholeCurrentRelation`验证全族次序；`ParameterizedPartialAssemblyViewReachesInstrAndSPM`覆盖1024/1025/1031 | 实际layout、bufferization、Instr与SPM通过 |
+| 非零起点的collapse窗口跨多个精确image，1024/1025/1031及partial last-writer | `StaticAssemblyViewPreservesMultipleExactImages`逐坐标证明来源、无重叠与恰好覆盖；piece/work紧预算返回ResourceExhausted | `StaticMultiPieceAssemblyViewReachesInstrAndSPM`实际纯物化、layout、Instr及SPM通过 |
+| rank4输出中的rank3静态piece，1024/1025/1031及非零origin | `RankReducedOutputPieceKeepsItsExactDestinationCoordinates`验证完整输出offset/stride；先复现BoundaryMovement遗漏降rank后修复 | 实际publication、physical store、Instr/completion与SPM通过 |
 | 同loop的两个偏移读取、两种遍历顺序、partial last-writer | `AssemblyReadFamiliesUnionBoundariesAndHoistIndices`扩到12组，逐元素解释实际生成SSA | 验证、Instr/SPM通过 |
 | 片段预算0、未定义source、非单位stride、scalar source | `AssemblyReadFailuresAreTypedAndLeaveIRUnchanged`整批mutation前拒绝，IR逐字不变 | typed失败，无assert |
 | 共享/局部implementation分别发生actual容量拒绝 | `AssemblyGroupsHaveIndependentActualImplementations`两边独立observeCapacity/refinement，observer验证actual demand；不以估算准入 | 原controller与SPM leaf；cache序列包含容量反馈 |
+| standard容量链与其它存活implementation交错 | 同一测试按实际trace检查：两次访问同一存活实现之间，其它实现不能重复消费机会；包含非空见证 | 完整Driver 152项通过，另列deep收尾也通过；未代签真实LM可行性 |
 
 ## 7. 大 GEMM 与 2048 attention 的硬性性能保护
 

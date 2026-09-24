@@ -38,7 +38,9 @@
 
 #include "TestSupport/CodeGen/ExecutableTestSupport.h"
 
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -1401,6 +1403,55 @@ void expectAssemblyGroupSearch(AssemblySearchConfiguration config,
               statistics.sharedAssemblyCapacityRejected);
     EXPECT_LE(statistics.localAssemblyCapacityRefinements,
               statistics.localAssemblyCapacityRejected);
+
+    // Two visits to one implementation witness that its owner remained live
+    // in between (a retired owner cannot restart). No other implementation
+    // may consume two evaluations in that interval. This checks the actual
+    // traversal independently of the scheduler's queues and priorities.
+    struct Visit {
+      std::optional<uint64_t> implementation;
+      std::optional<uint64_t> structure;
+    };
+    std::map<uint64_t, Visit> visits;
+    llvm::SmallVector<llvm::StringRef> lines;
+    llvm::StringRef(text).split(lines, '\n');
+    for (auto line : lines) {
+      if (!line.consume_front("wafer-compile: compile-counter "
+                              "category=search-temporal name=choice-"))
+        continue;
+      auto [ordinalText, rest] = line.split('-');
+      auto [field, valueText] = rest.split(" value=");
+      if (field != "implementation" && field != "structural-stratum")
+        continue;
+      uint64_t ordinal, value;
+      ASSERT_FALSE(ordinalText.getAsInteger(10, ordinal));
+      ASSERT_FALSE(valueText.split(' ').first.getAsInteger(10, value));
+      auto &visit = visits[ordinal];
+      (field == "implementation" ? visit.implementation : visit.structure) =
+          value;
+    }
+    ASSERT_EQ(visits.size(), statistics.temporalCandidateActualizations);
+    std::map<uint64_t, std::vector<uint64_t>> traversals;
+    for (const auto &[ordinal, visit] : visits) {
+      ASSERT_TRUE(visit.implementation && visit.structure);
+      traversals[*visit.structure].push_back(*visit.implementation);
+    }
+    unsigned witnesses = 0;
+    for (const auto &[structure, traversal] : traversals) {
+      for (size_t begin = 0; begin < traversal.size(); ++begin) {
+        auto end = std::find(traversal.begin() + begin + 1, traversal.end(),
+                             traversal[begin]);
+        if (end == traversal.end())
+          continue;
+        std::set<uint64_t> intervening;
+        for (auto it = traversal.begin() + begin + 1; it != end; ++it)
+          EXPECT_TRUE(intervening.insert(*it).second)
+              << "structure=" << structure << " waiting=" << traversal[begin]
+              << " repeated=" << *it;
+        witnesses += !intervening.empty();
+      }
+    }
+    EXPECT_GT(witnesses, 0u);
 
   } else {
     EXPECT_EQ(statistics.traversal.schemesStarted, config.trials);

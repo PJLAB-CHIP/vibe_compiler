@@ -5236,6 +5236,55 @@ TEST(TemporalTilingTest, ParameterizedPartialAssemblyViewReachesInstrAndSPM) {
   }
 }
 
+TEST(TemporalTilingTest, StaticMultiPieceAssemblyViewReachesInstrAndSPM) {
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    std::string full = "tensor<2x" + std::to_string(extent) + "x4x32xf16>";
+    std::string view = "tensor<2x" + std::to_string(extent * 4) + "x32xf16>";
+    std::string output = "tensor<2x" + std::to_string(extent) + "x32xf16>";
+    std::string body;
+    llvm::raw_string_ostream os(body);
+    os << " %source = tensor.extract_slice %arg[0,10,0,0] [2,8,4,32] "
+          "[1,1,1,1] : "
+       << full << " to tensor<2x8x4x32xf16>\n"
+       << " %assembly = tensor.insert_slice %source into %arg[0,0,0,0] "
+          "[2,8,4,32] [1,1,1,1] : tensor<2x8x4x32xf16> into "
+       << full << "\n"
+       << " %view = tensor.collapse_shape %assembly [[0], [1,2], [3]] : "
+       << full << " into " << view << "\n"
+       << " %read = tensor.extract_slice %view[0,1,0] [2," << extent
+       << ",32] [1,1,1] : " << view << " to " << output << "\n"
+       << " %empty = tensor.empty() : " << output << "\n"
+       << " %value = linalg.generic {indexing_maps = "
+          "[affine_map<(b,m,n)->(b,m,n)>, affine_map<(b,m,n)->(b,m,n)>], "
+          "iterator_types = [\"parallel\",\"parallel\",\"parallel\"]} "
+          "ins(%read : "
+       << output << ") outs(%empty : " << output << ") {\n"
+       << " ^bb0(%x: f16, %y: f16): %double = arith.addf %x, %x : f16\n "
+          "linalg.yield %double : f16\n } -> "
+       << output;
+    auto module = parseModule(*context, body, full, output);
+    ASSERT_TRUE(module);
+    auto region = findRegion(*module);
+    StructuredMaterializationRelations relations;
+    relations.structuralOutputs.push_back({0, region.getResult(0)});
+    auto reads = findTestAssemblyReads(region);
+    ASSERT_EQ(reads.size(), 1u);
+    TemporalTilingFailure failure;
+    auto localized =
+        materializeLocalTensorAssemblyReads(region, reads, relations, &failure);
+    ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
+    EXPECT_EQ(localized->fusedProducers, 0u);
+    EXPECT_GT(localized->assembledSegments, 1u);
+    EXPECT_EQ(countOps<mlir::scf::IfOp>(module->getOperation()), 0u);
+    region.walk([&](mlir::tensor::InsertSliceOp insert) {
+      EXPECT_NE(insert.getDestType().getRank(), 4);
+    });
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    expectTemporalSPM(std::move(module), relations);
+  }
+}
+
 TEST(TemporalTilingTest, AssemblyLocalizationPreservesInvariantAxisReuse) {
   for (auto kind :
        {TemporalTraversalKind::Joint, TemporalTraversalKind::Independent}) {

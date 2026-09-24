@@ -177,6 +177,11 @@ Observable output的完整SSA结果按完整destination绑定，不根据其prod
 交给DPS/bufferization分析实际alias与写入。不能要求最外层update的destination必须直接由某一种loop op产生。
 覆盖1024/1025/1031与第二轴非整除tile的组合，检查完整输出覆盖、局部拼接及实际Instr/SPM。
 
+已证明的静态publication piece允许按原`insert_slice`语义删除单位维；destination `memref.subview`
+使用实际piece shape，保留完整输出的offset和stride。BoundaryMovement将临时输出参数换成实际DDR
+allocation时保留同一个subview result type，不重新推导成未降rank的形状。覆盖1024/1025/1031、
+非零origin及单位维歧义，检查实际store两端shape、完整输出坐标和直接Instr/SPM。
+
 函数边界的memory space按当前FuncOp的symbol uses判定，每个函数的参数与结果共用同一个选择。该选择仅活于一次layout/bufferization调用；
 pinned One-Shot的FuncOp/CallOp转换保留函数身份和callee引用，改变的buffer类型不需要重新扫描symbol uses。跨候选或下一次调用重新判定。
 覆盖大量rank3静态参数、1024/1025/1031、外部entry与被调用helper；检查逐参数/结果memory space及查询次数，并以同输入实际编译记录核对工作量与耗时。

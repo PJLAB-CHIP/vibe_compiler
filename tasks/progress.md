@@ -29,8 +29,13 @@ standard 8/42的mixed分支已实际验证；缓存关闭/淘汰保持候选序�
 纯片段生成与计算融合调用已分开；动态partial insert、矩形平移view的共同查询/生成及文件归属已接通，
 共享/局部的实际Instr/SPM容量对照和controller独立容量修正专项通过。四项保护的新包已通过no-card；
 修正实际读取适用性及组合排序后，S1024已实际启动完整局部分支并独立容量修正，仍待accepted package。
-四项保护已跑前两项实卡：FP16 4096 GEMM性能通过，BF16完整数值健康但中位数7.308ms高于7.271ms门槛，
-保留性能未通过。通用reshape周期、多piece view、剩余性能保护及S1024/1025产品和实卡仍待闭合。
+四项首轮实卡12次完整数值及健康通过；两项FP16 GEMM性能通过，BF16 GEMM/attention中位数
+7.308/3.710ms高于7.271/3.649ms门槛，保留未通过；四项包与基线逐字节相同。
+standard容量链跨实现独占已修正，完整Driver回归通过；S1024在同一8/42预算下仍全部容量拒绝，
+actual失败IR已定位retile新增外层尾块丢失读取组坐标，保留完整assembly，待修复。
+静态多piece view已接通来源证明及Instr/SPM专项。
+S1025已越过原output publication拒绝，后续确认packed-i1搬运限制及BoundaryMovement丢失subview降rank；
+后者已复现并修复，真实产品仍待重验。通用reshape周期、性能门槛及S1024/1025产品和实卡仍待闭合。
 此检查点不改变`board-testing`的`doing`状态，细节见
 [子集物化计划](plans/tensor-subset-materialization.md)。
 

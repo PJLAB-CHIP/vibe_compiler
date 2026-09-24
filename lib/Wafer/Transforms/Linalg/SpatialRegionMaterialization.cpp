@@ -1654,27 +1654,19 @@ struct GroupBuilder {
         request.set->getSpace());
     llvm::SmallVector<ViewTilePiece, 4> pieces;
     for (const auto &box : normalized->getBoxes()) {
-      auto sourceDomain = analysis::IndexRelation::staticRectangularDomain(
-          box.offsets, box.sizes);
-      if (!sourceDomain.isExact())
+      auto query = analysis::getTensorViewTilePiece(indexing, resultShape,
+                                                    requested, box);
+      if (!query.isExact())
         return mlir::failure();
-      auto result = indexing.resultToSource.preimage(*sourceDomain.set);
-      if (!result.isExact())
-        return mlir::failure();
-      *result.set = result.set->intersect(*request.set);
-      if (result.set->isIntegerEmpty())
+      if (!query.piece)
         continue;
-      auto rectangle = result.getExactStaticRectangularDomain();
-      if (!rectangle.isExact() ||
-          !covered.intersect(*result.set).isIntegerEmpty())
-        return mlir::failure();
-      auto source = analysis::getTensorViewTileSource(
-          indexing, resultShape, *rectangle.domain);
-      if (!source.isExact())
+      auto result = analysis::IndexRelation::staticRectangularDomain(
+          query.piece->result.offsets, query.piece->result.sizes);
+      if (!result.isExact() || !covered.intersect(*result.set).isIntegerEmpty())
         return mlir::failure();
       covered.unionInPlace(*result.set);
       pieces.push_back(
-          {std::move(*rectangle.domain), std::move(*source.domain)});
+          {std::move(query.piece->result), std::move(query.piece->source)});
     }
     if (!covered.isEqual(*request.set))
       return mlir::failure();

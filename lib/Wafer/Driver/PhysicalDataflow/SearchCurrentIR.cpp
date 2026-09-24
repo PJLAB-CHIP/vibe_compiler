@@ -1166,10 +1166,10 @@ private:
         return true;
       }
     }
-    if (options.mode == SearchMode::Standard && active && current().proposals &&
-        !current().bestDuration &&
-        current().proposals->prepareNext(TemporalProposalKind::Repair))
-      return true;
+    // Repair priority belongs inside each implementation's proposal process.
+    // Across implementations, resume the least recently evaluated owner in
+    // both modes. Draining one capacity chain here can starve an already
+    // started implementation for the entire standard evaluation budget.
     std::optional<size_t> selected;
     for (size_t i = 0; i < implementations.size(); ++i) {
       auto &branch = *implementations[i];

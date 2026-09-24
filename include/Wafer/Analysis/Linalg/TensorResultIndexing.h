@@ -132,6 +132,28 @@ StaticRectangularIndexSetResult getTensorViewTileSource(
     const StaticRectangularIndexSet &requested,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
+struct TensorViewTilePiece {
+  StaticRectangularIndexSet result;
+  StaticRectangularIndexSet source;
+};
+
+struct TensorViewTilePieceResult {
+  IndexRelationStatus status = IndexRelationStatus::Unsupported;
+  /// Exact with no piece means the source domain does not meet this request.
+  std::optional<TensorViewTilePiece> piece;
+  std::string reason;
+
+  bool isExact() const { return status == IndexRelationStatus::Exact; }
+};
+
+/// Intersect one actual source rectangle with the selected view demand and
+/// prove the resulting pair of rectangles and their local element order.
+TensorViewTilePieceResult getTensorViewTilePiece(
+    const TensorViewIndexing &indexing, llvm::ArrayRef<int64_t> resultShape,
+    const StaticRectangularIndexSet &requested,
+    const StaticRectangularIndexSet &sourceWindow,
+    const IndexRelationLimits &limits = IndexRelationLimits());
+
 /// Map a finite result demand to one operand of an exact current support
 /// result. Insert destinations exclude the overwritten source window; empty
 /// images have no rectangles. The query preserves exactness and bounds work.

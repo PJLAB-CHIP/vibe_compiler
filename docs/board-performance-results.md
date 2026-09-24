@@ -21,6 +21,25 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-24：Tensor 子集物化的首轮性能保护
+
+四项均从本轮新 source/package 和新输入/reference 出发，standard 8/42、16 Tile、guard 开启；
+使用普通 tx-stream-events，关闭 kernel timing、profile 和 Host 寄存器采集。每项固定三次，
+12 次完整数值、guard、completion、厂商清理与运行窗口诊断全部通过，无 fatal/timeout。
+
+| Case / dtype | 三次 Primary（ms） | 中位数 / 固定门槛（ms） | 性能保护 |
+| --- | --- | --- | --- |
+| 4096³ GEMM / FP16 | 7.374 / 7.231 / 7.343 | 7.343 / 7.414 | 通过 |
+| 4096³ GEMM / BF16 | 7.256 / 7.308 / 7.416 | 7.308 / 7.271 | 未通过 |
+| 4097³ GEMM / FP16 | 8.684 / 8.662 / 8.780 | 8.684 / 8.717 | 通过 |
+| 2048、28-head attention / BF16 | 3.654 / 3.710 / 3.769 | 3.710 / 3.649 | 未通过 |
+
+四项新包与对应基线的 manifest、program data 和设备 ELF 均逐字节一致；本轮只读核对历史摘要，
+未执行历史包。该结果排除了这些产物发生变化，但不能单凭一致性消除耗时差异或签过两项性能门槛。
+本轮存在并发主机编译；其影响尚未由测量确认，保留原样本及未通过结论。
+完整身份、数值审计及各次诊断见[本轮证据](data/board-performance/tensor-demand-20260924.json)。
+完整 LM S1024/S1025 尚未达到 board-ready。
+
 ## 2026-09-23：NCx case 注册与统一计时
 
 BF16 NCx的M=N4096/K1024 GEMM和2048、28-head causal attention现有正式case名，分别为

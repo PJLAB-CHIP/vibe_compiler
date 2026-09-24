@@ -17,6 +17,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace wafer::analysis {
@@ -278,6 +279,80 @@ getTensorViewTileSource(const TensorViewIndexing &indexing,
             std::nullopt,
             "selected source tile does not preserve row-major order"};
   return image;
+}
+
+TensorViewTilePieceResult
+getTensorViewTilePiece(const TensorViewIndexing &indexing,
+                       llvm::ArrayRef<int64_t> resultShape,
+                       const StaticRectangularIndexSet &requested,
+                       const StaticRectangularIndexSet &sourceWindow,
+                       const IndexRelationLimits &limits) {
+  if (resultShape.size() != indexing.resultToSource.getDestinationRank() ||
+      requested.offsets.size() != resultShape.size() ||
+      sourceWindow.offsets.size() != indexing.resultToSource.getSourceRank())
+    return {IndexRelationStatus::Invalid, std::nullopt,
+            "view piece has inconsistent coordinate ranks"};
+  auto request = IndexRelation::staticRectangularDomain(
+      requested.offsets, requested.sizes, limits);
+  auto source = IndexRelation::staticRectangularDomain(
+      sourceWindow.offsets, sourceWindow.sizes, limits);
+  for (const auto *domain : {&request, &source})
+    if (!domain->isExact())
+      return {domain->status, std::nullopt, domain->reason};
+  // Preserve the relation's exact reshape construction when inverting a
+  // rectangle. This removes quotient/remainder coordinates before set
+  // intersection; the generic preimage remains available for other views.
+  auto inverse = indexing.resultToSource.inverse(limits);
+  if (!inverse.isExact())
+    return {inverse.status, std::nullopt, inverse.reason};
+  auto inverseImage = inverse.get()->getExactStaticRectangularImage(
+      sourceWindow.offsets, sourceWindow.sizes, limits);
+  IndexSetResult result;
+  if (inverseImage.isExact())
+    result = IndexRelation::staticRectangularDomain(
+        inverseImage.domain->offsets, inverseImage.domain->sizes, limits);
+  else if (inverseImage.status == IndexRelationStatus::Unsupported) {
+    auto restricted = indexing.resultToSource.intersectDestinationDomain(
+        *request.set, limits);
+    if (!restricted.isExact())
+      return {restricted.status, std::nullopt, restricted.reason};
+    result = restricted.get()->preimage(*source.set, limits);
+  } else
+    return {inverseImage.status, std::nullopt, inverseImage.reason};
+  if (!result.isExact())
+    return {result.status, std::nullopt, result.reason};
+  if (inverseImage.isExact()) {
+    StaticRectangularIndexSet intersection;
+    for (unsigned axis = 0; axis < resultShape.size(); ++axis) {
+      int64_t lower =
+          std::max(requested.offsets[axis], inverseImage.domain->offsets[axis]);
+      int64_t upper = std::min(requested.offsets[axis] + requested.sizes[axis],
+                               inverseImage.domain->offsets[axis] +
+                                   inverseImage.domain->sizes[axis]);
+      if (lower >= upper)
+        return {IndexRelationStatus::Exact, std::nullopt, {}};
+      intersection.offsets.push_back(lower);
+      intersection.sizes.push_back(upper - lower);
+    }
+    result = IndexRelation::staticRectangularDomain(intersection.offsets,
+                                                    intersection.sizes, limits);
+    if (!result.isExact())
+      return {result.status, std::nullopt, result.reason};
+  }
+  if (result.set->isIntegerEmpty())
+    return {IndexRelationStatus::Exact, std::nullopt, {}};
+  auto rectangle = result.getExactStaticRectangularDomain(limits);
+  if (!rectangle.isExact())
+    return {rectangle.status, std::nullopt,
+            "view preimage: " + rectangle.reason};
+  auto image =
+      getTensorViewTileSource(indexing, resultShape, *rectangle.domain, limits);
+  if (!image.isExact())
+    return {image.status, std::nullopt, "view local image: " + image.reason};
+  return {IndexRelationStatus::Exact,
+          TensorViewTilePiece{std::move(*rectangle.domain),
+                              std::move(*image.domain)},
+          {}};
 }
 
 mlir::FailureOr<mlir::AffineMap>
