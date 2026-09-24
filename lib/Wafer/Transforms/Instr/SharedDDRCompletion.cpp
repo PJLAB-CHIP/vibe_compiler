@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Instr/SharedDDRCompletion.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,6 +27,7 @@
 namespace wafer {
 namespace {
 using Result = SharedDDRCompletionResult;
+using Execution = memory_planning::detail::StaticIndexExecution;
 static Result contract(llvm::StringRef detail) {
   return {SharedDDRCompletionFailure::Contract, detail.str()};
 }
@@ -83,6 +85,7 @@ struct Access {
   TileRegionOp region;
   mlir::Operation *first;
   mlir::Operation *last;
+  Execution execution;
 };
 struct Resource {
   std::optional<Access> writer;
@@ -104,7 +107,15 @@ static TileRegionOp getTopLevelRegion(mlir::Operation *op) {
 
 // A publication covers every actual write in this one Region invocation. A
 // static loop is therefore one cut, not one notification per iteration.
-static mlir::Operation *getAccessCut(mlir::Operation *op, TileRegionOp region) {
+struct AccessCut {
+  mlir::Operation *operation = nullptr;
+  Execution execution = Execution::Unknown;
+};
+
+static AccessCut getAccessCut(mlir::Operation *op, TileRegionOp region,
+                              bool write) {
+  auto *access = op;
+  bool conditional = false;
   while (op->getParentOp() != region) {
     auto *parent = op->getParentOp();
     if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(parent)) {
@@ -112,13 +123,21 @@ static mlir::Operation *getAccessCut(mlir::Operation *op, TileRegionOp region) {
       auto upper = mlir::getConstantIntValue(loop.getUpperBound());
       auto step = mlir::getConstantIntValue(loop.getStep());
       if (!lower || !upper || !step || *step <= 0 || *lower >= *upper)
-        return nullptr;
+        return {};
+    } else if (!write && mlir::isa<mlir::scf::IfOp>(parent)) {
+      conditional = true;
     } else if (!analysis::getSingleExecutionRegionFlow(parent)) {
-      return nullptr;
+      return {};
     }
     op = parent;
   }
-  return op;
+  // Reads remain in their original branches. A single acquisition is justified
+  // only if the current static execution actually needs this immutable
+  // resource. Its cut is still outside repeated execution; the joint wait graph
+  // checks all resulting publication/DTE dependencies after materialization.
+  return {op, conditional ? memory_planning::detail::proveStaticIndexExecution(
+                                access, region)
+                          : Execution::Proven};
 }
 
 // Compare current operations through unconditional, single-execution parents.
@@ -254,10 +273,11 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
         return;
       auto root = getEntryRoot(buffer);
       auto region = getTopLevelRegion(op);
-      auto *cut = region ? getAccessCut(op, region) : nullptr;
+      auto accessCut = region ? getAccessCut(op, region, write) : AccessCut{};
+      auto *cut = accessCut.operation;
       if (!cut) {
-        result = unsupported("shared DDR DMA requires an unconditional, "
-                             "single-execution TileRegion");
+        result = unsupported("shared DDR DMA requires guaranteed execution "
+                             "and a single-execution notification cut");
         return;
       }
       Resource &resource = out.resources[binding.getResourceId()];
@@ -269,7 +289,7 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
           return;
         }
         if (!resource.writer)
-          resource.writer = Access{root, region, cut, cut};
+          resource.writer = Access{root, region, cut, cut, Execution::Proven};
         if (cut->isBeforeInBlock(resource.writer->first))
           resource.writer->first = cut;
         if (resource.writer->last->isBeforeInBlock(cut))
@@ -280,8 +300,12 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
               return access.root == root && access.region == region;
             });
         if (reader == resource.readers.end()) {
-          resource.readers.push_back({root, region, cut, cut});
+          resource.readers.push_back(
+              {root, region, cut, cut, accessCut.execution});
         } else {
+          if (accessCut.execution == Execution::Proven ||
+              reader->execution == Execution::Unknown)
+            reader->execution = accessCut.execution;
           if (cut->isBeforeInBlock(reader->first))
             reader->first = cut;
           if (reader->last->isBeforeInBlock(cut))
@@ -296,9 +320,18 @@ static Result collect(llvm::ArrayRef<mlir::ModuleOp> modules, Collection &out) {
     if (!resource.writer || resource.readers.empty())
       return contract(
           "shared DDR DMA resource lacks an actual writer or reader");
-    for (const Access &reader : resource.readers)
+    for (const Access &reader : resource.readers) {
       if (reader.root.getOwner() == resource.writer->root.getOwner())
         return contract("shared DDR communication resource has a local reader");
+      // One resource needs one acquisition. In particular, an unreachable tail
+      // read does not negate another current read's must-execute witness.
+      if (reader.execution != Execution::Proven)
+        return {reader.execution == Execution::ResourceExhausted
+                    ? SharedDDRCompletionFailure::Indeterminate
+                    : SharedDDRCompletionFailure::Unsupported,
+                "shared DDR conditional reader has no proven execution "
+                "in its single-execution scope"};
+    }
   }
   return {};
 }
@@ -859,11 +892,14 @@ analyzeCurrentCommunicationOrder(llvm::ArrayRef<mlir::ModuleOp> modules,
     result = verifyOrder(collection, tileIds, &analysis.cycle);
   if (result.succeeded())
     result = verifyPublications(collection);
-  analysis.status = !analysis.cycle.empty() ? CommunicationOrderStatus::Cycle
-                    : result.succeeded()    ? CommunicationOrderStatus::Acyclic
-                    : result.failure == SharedDDRCompletionFailure::Contract
-                        ? CommunicationOrderStatus::Contract
-                        : CommunicationOrderStatus::Unsupported;
+  analysis.status =
+      !analysis.cycle.empty() ? CommunicationOrderStatus::Cycle
+      : result.succeeded()    ? CommunicationOrderStatus::Acyclic
+      : result.failure == SharedDDRCompletionFailure::Contract
+          ? CommunicationOrderStatus::Contract
+      : result.failure == SharedDDRCompletionFailure::Indeterminate
+          ? CommunicationOrderStatus::Indeterminate
+          : CommunicationOrderStatus::Unsupported;
   analysis.detail = std::move(result.detail);
   return analysis;
 }

@@ -26,7 +26,13 @@ struct SharedDDRCompletionResult {
   bool succeeded() const { return failure == SharedDDRCompletionFailure::None; }
 };
 
-enum class CommunicationOrderStatus { Acyclic, Cycle, Unsupported, Contract };
+enum class CommunicationOrderStatus {
+  Acyclic,
+  Cycle,
+  Unsupported,
+  Indeterminate,
+  Contract
+};
 struct CommunicationOrderAnalysis {
   CommunicationOrderStatus status = CommunicationOrderStatus::Acyclic;
   // These are actual operations in this read-only IR epoch. Any mutation

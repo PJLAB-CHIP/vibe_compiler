@@ -16,7 +16,79 @@
 整改仍是**已选tile的Tensor子集物化**：保留现有`IndexRelation`，补完整结构DAG传播、参数化块证明和有界生成，
 纠正旧调用链，再验证原完整LM目标。首条纵向必须包含target/LLVM及实际成本；metadata/package问题仍按15号修复，
 不能把当前打包失败当成唯一剩余缺口，也没有证据将metadata膨胀直接归因于Tensor代码展开。
-本轮仅更新设计与任务安排，不宣称下面的新算法或旧代码整改已经实现。
+该次复审只更新设计与任务安排；后续实施按下面的依赖推进，逐项记录实际验证边界。
+
+## 本轮实现检查点
+
+2026-09-25用户授权先收敛13号的有限条件读取支持：保持生成器算法，先证明确定发布、只读resource的静态执行需求，
+再验证单次通知位置及当前4/16 Tile、1024/1025/1031失败组合。合同与正反例矩阵归13号；
+若需要新增runtime状态、迭代通知协议或通用条件调度，停止该扩展并重新评估，不在本项顺手扩大范围。
+
+本轮13号修补已接入：静态循环索引条件从actual Instr证明至少一次读取，需求按resource及reader Region合并，
+复用循环外现有单次publish/acquire；writer、只读生命周期和联合wait graph的要求保持。
+原始路径条件在独立坐标求值中重新验证；Affine lowering后的signed Arith平移沿用相同范围约束。
+没有新增runtime状态、迭代协议、通用调度或计算循环拆分。
+
+生产覆盖现已逐项执行，不能以首个ASSERT提前退出代签其余配置：
+
+| 当前组合 | 实际结果 | 未闭合边界 |
+| --- | --- | --- |
+| 1024，4 Tile，整特征 | 来源/覆盖、紧凑allocation、实际Instr/completion/SPM及executable均通过 | 无本用例缺口 |
+| 1025/1031，4 Tile，整特征 | 两种extent均已进入同一actual memory/target gate并产生executable | 两个非整除配置仍有完整尺寸allocation，紧凑性断言失败 |
+| 1024/1025/1031的4 Tile分特征，以及16 Tile整特征/分特征，共九组 | 在Tensor子集来源证明处typed拒绝，未到13号 | domain条件或表达式超过有界flattening支持，归原入口迁移 |
+
+上表保留失败，不提高预算或删断言；本轮先签有限通信改动的直接回归，再按原计划修复这些上游缺口。
+最终源码的166项Analysis、42个DDR/DTE正反例配置、九组多resource配置及三项StructuredToTile通信回归通过。
+其中六组条件读取配置覆盖4/16 Tile与三种extent，实际完成NCC/SPM规划并核对allocation offset；
+正例核对唯一通知与循环外位置，反例包括fresh verifier的缺失/重复/错位、DTE依赖环和typed预算耗尽。
+none/search原DDR产品回归通过（813.382秒）；该长测先于最终资源合并/预算分类变化，后两者由上述直接回归重签。
+canonical完整增量、随后Ninja no-op、源码/IR组织检查及`git diff --check`通过。
+生产整特征4 Tile的三组已用本轮构建再次执行，仍只有上述两处紧凑allocation断言失败；
+本轮没有执行新的no-card或实卡，未签整体完成。
+
+2026-09-24用户授权继续实施。当前新增入口尚未替换Spatial/Temporal/none/search的全部生产调用，
+以下证据不代签第4—6项或新的board-ready资格。
+
+- `IndexRelation::getIndexFunction`从同一relation恢复标准表达式及域；有界整数空域证明共享请求预算。
+  `queryTensorIndexExpressions`保留实际IV范围、step和算术语义，`queryTensorSubsetDemand`沿insert两边与透明view传播。
+  嵌套/展平来源、同shape不同SSA、部分覆盖、分支/零次循环、周期reshape及rank投影已有逐坐标oracle。
+  非整除单次尾循环曾因有理数放宽缺少整数约束收紧而被拒绝，新增反例后修正。
+- `queryTensorSubsetBlock`区分整块copy充分证明与细分；负系数、嵌套floor/mod、否定域、置换拒绝及预算失败已有反例。
+  连续row-major快路径单独证明序号恒等与源矩形对齐，不能只依赖逐坐标“不进位”条件。
+- `materializeTensorSubsetRead`在同一次查询与预算内预检静态块，并在原read处生成Tensor/SCF destination更新。
+  1024/1025/1031/4097的周期窗口、32行主块及17行尾块通过独立元素身份解释；完整观察者和原计算循环保持，
+  新循环均为两次迭代的copy细分。低预算失败发生在首次mutation前，原IR逐字保持。
+- 首条生产helper纵向已在1024/1025/1031周期窗口上通过layout/bufferization、movement、Instr/completion、
+  实际SPM/DDR规划、正式出口ABI准备和target/LLVM。地址分析从actual SSA恢复等价affine约束、
+  常数除余的整数收紧范围及布尔不可达证明；DDR descriptor不为已证明不可达的动态view增加访问需求。
+  Instr→LLVM复用pinned `populateAffineToStdConversionPatterns`，没有私有floor/mod发射语义。
+- 成本查询对无法证明控制分区的周期循环使用有界结构摘要，计入当前`affine.apply`与Arith标量operation；
+  原两槽交替选择按actual modulo 2的两步周期保留。1024/1025/1031、1031与十亿次外层迭代、
+  7与1048573周期的工作量对照通过，明确保留conditional上下界/coarse质量。成本相关65项实际通过。
+  新索引/范围相关80项通过，Instr→LLVM全组件48项通过；后续源码变化仍须重签受影响检查。
+- 滑动Tensor与NCx整行窗口已在1024/1025/1031通过同一生成器到target/LLVM，实际NCx RDMA、SPM offset、
+  CPU成本和无非终端join均有witness。整块来源覆盖证明先保留固定整数坐标、每步投影重新GCD收紧，
+  消除不可达的窄C细分；缺一行反例仍拒绝。组合/补集预检继续累计表达式工作，预算与能力边界仍在复审。
+- Analysis全组件曾实际通过152项；一次完整组件回归的Planning通过、Driver通过（2582.29秒），
+  Transforms为544/546，两项attention循环结构断言失败；恢复旧索引parser的对照仍复现，根因与迁移回归待收敛。
+  最终提交前须用最终源码重新执行受影响检查、canonical增量及no-op，不能复用早期结果代签。
+- 2026-09-25迁移中：Temporal已接入共同生成并删除按concat边界克隆计算循环的路径；主/尾块保留
+  原明确选择的计算producer，经当前调用的replacement listener跟踪assembly SSA，生成后只融合实际source reads。
+  1024/1025/1031的concat计算融合、周期元素oracle与Tensor/NCx到target纵向专项通过。
+  静态目的矩形支持参数化源offset；独立批次维与坐标同余保留连续copy，不从独立商的松散范围推断进位。
+- Tensor准备已拆出，none/search及命名pipeline连接同一`prepareCurrentTensorInput`，search在最终读取组发现前调用，
+  每个内部变换转交SSA replacement。Spatial开始改为绑定实际fragment后由共同生成器读取完整结构DAG，旧纯片段生成接口已删除。
+  这一轮完整回归仍未通过；当前暴露多fragment下的证明预算、测试解释器覆盖及旧结构断言，不能签第4项完成。
+  Driver的Temporal/Spatial预算耗尽须传为indeterminate，unsupported与compiler failure保持区分。
+- 2026-09-25接续检查：12个读取组变体的完整元素oracle和actual Instr/SPM通过；累计82项索引/范围检查通过。
+  Spatial的1024/1025/1031展开/展平列分片已通过相同覆盖与layout检查，来源保持独立owner。
+  完整DAG中的常数除余先提出可整除项，再按实际请求box共享有界常量证明；构造预算区分矩阵构造和真正的rank投影消元。
+  当时多组件分片仅执行4 Tile、1024的首个配置，下游被13号条件DMA限制拒绝；本轮有限修补后的完整组合结果见上表。
+  此前一类全量allocation来自边界窗口忽略分支约束；当前复用同一地址范围分析，依次消费已证明的外层路径，
+  并在约束epoch之间失效缓存。非整除配置仍存在完整尺寸allocation，不能以该局部修复签整体紧凑性。
+
+仍须闭合：完整预算与能力边界复审、布局拒绝和成本/次数矩阵、全部入口迁移/旧路径删除、
+fresh产品与metadata/package修复，以及原四项性能保护和两项完整LM实卡。
 
 ## 历史实施证据
 

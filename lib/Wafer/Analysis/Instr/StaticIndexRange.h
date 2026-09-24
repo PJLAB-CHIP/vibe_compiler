@@ -47,20 +47,32 @@ struct StaticIndexRangeResult {
 /// bounded scf.for induction variables with a proven positive step,
 /// checked addition/subtraction and bounded-interval multiplication,
 /// unsigned division / signed ceil division by a positive constant,
-/// signed min/max intervals,
+/// affine.apply including bounded constant floor/mod, signed min/max intervals,
 /// and identity-preserving
 /// wafer.tile.region block/result edges.
 /// Fixed-width integer SSA and integer/index casts use InferIntRangeInterface
 /// with full type ranges for unknown leaves. Only a proven non-negative final
 /// range is accepted; finite-width truncation and wrapping are preserved.
 /// When `use` is present, bounded integer comparisons on enclosing scf.if
-/// paths refine the same SSA values and preserve proven induction grids.
-/// Bounds used for these constraints are evaluated without path assumptions.
-/// Unknown
-/// expressions and arithmetic overflow fail closed.
+/// paths refine SSA values and proven affine equivalents, preserving induction
+/// grids. Boolean composition only adds facts implied by the selected path;
+/// a proved unreachable path returns an empty range. Bounds used for these
+/// constraints use only already proved enclosing paths, with caches invalidated
+/// between constraint epochs. Affine projection and
+/// equivalence work is bounded; unknown expressions and overflow fail closed.
 StaticIndexRangeResult
 evaluateNonNegativeStaticIndexRange(mlir::Value value,
                                     mlir::Operation *use = nullptr);
+
+enum class StaticIndexExecution { Proven, Unknown, ResourceExhausted };
+
+/// Prove that an operation executes at least once whenever its enclosing scope
+/// executes. Only static nonempty SCF loops, single-execution regions and
+/// provable integer conditions are traversed. A candidate iteration from the
+/// path bounds must independently satisfy every original condition; nonempty
+/// interval bounds alone are not a proof. No iterations are enumerated.
+StaticIndexExecution proveStaticIndexExecution(mlir::Operation *operation,
+                                               mlir::Operation *scope);
 
 /// Prove that every reachable invocation of this current loop executes at
 /// least once. Bounded, nonconstant upper limits are allowed; unknown is false.

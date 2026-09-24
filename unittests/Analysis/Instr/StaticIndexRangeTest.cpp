@@ -3,6 +3,7 @@
 #include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/ControlFlow/IndexValueBounds.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -31,8 +32,9 @@ protected:
     mlir::arith::registerValueBoundsOpInterfaceExternalModels(registry);
     wafer::analysis::registerIndexValueBoundsModels(registry);
     context.appendDialectRegistry(registry);
-    context.loadDialect<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                        mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+    context.loadDialect<mlir::affine::AffineDialect, mlir::arith::ArithDialect,
+                        mlir::func::FuncDialect, mlir::memref::MemRefDialect,
+                        mlir::scf::SCFDialect>();
   }
 
   static std::string print(mlir::ModuleOp module) {
@@ -50,6 +52,159 @@ protected:
 
   mlir::MLIRContext context;
 };
+
+TEST_F(StaticIndexRangeTest, BranchConstraintsFollowEquivalentAffineValues) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @bounds() {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c1031 = arith.constant 1031 : index
+      scf.for %i = %c0 to %c1031 step %c1 {
+        %lower = affine.apply affine_map<(d0) -> (d0 floordiv 2 - 256)>(%i)
+        %upper = affine.apply affine_map<()[s0] -> (300 - s0 floordiv 2)>()[%i]
+        %lo = arith.cmpi sge, %lower, %c0 : index
+        %hi = arith.cmpi sge, %upper, %c0 : index
+        %both = arith.andi %lo, %hi : i1
+        scf.if %both {
+          %source = affine.apply affine_map<()[s0] -> (s0 floordiv 2 - 256)>()[%i]
+          %translated = affine.apply affine_map<(d0) -> (d0 floordiv 2 - 200)>(%i)
+          %unrelated = affine.apply affine_map<(d0) -> (d0 mod 7 - 4)>(%i)
+        }
+        %outside = affine.apply affine_map<(d0) -> (d0 floordiv 2 - 256)>(%i)
+      }
+      return
+    }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::affine::AffineApplyOp> values;
+  module->walk([&](mlir::affine::AffineApplyOp op) { values.push_back(op); });
+  ASSERT_EQ(values.size(), 6u);
+  auto source = evaluateNonNegativeStaticIndexRange(values[2], values[2]);
+  ASSERT_TRUE(source.succeeded());
+  EXPECT_EQ(source.range.min, 0);
+  EXPECT_EQ(source.range.max, 44);
+  auto translated = evaluateNonNegativeStaticIndexRange(values[3], values[3]);
+  ASSERT_TRUE(translated.succeeded());
+  EXPECT_EQ(translated.range.min, 56);
+  EXPECT_EQ(translated.range.max, 100);
+  EXPECT_EQ(evaluateNonNegativeStaticIndexRange(values[4], values[4]).failure,
+            StaticIndexRangeFailureKind::NegativeRange);
+  EXPECT_EQ(evaluateNonNegativeStaticIndexRange(values[5], values[5]).failure,
+            StaticIndexRangeFailureKind::NegativeRange);
+}
+
+TEST_F(StaticIndexRangeTest, StaticExecutionRequiresAnIndependentPathWitness) {
+  for (int64_t extent : {1024, 1025, 1031, 1000000000}) {
+    SCOPED_TRACE(extent);
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(llvm::formatv(R"mlir(
+    func.func @paths(%data: memref<2x{0}x64xf16>, %unknown: i1) {{
+      %c0 = arith.constant 0 : index
+      %c5 = arith.constant 5 : index
+      %c128 = arith.constant 128 : index
+      %c256 = arith.constant 256 : index
+      %end = arith.constant {0} : index
+      scf.for %i = %c0 to %end step %c128 {{
+        %earlier = arith.cmpi slt, %i, %c256 : index
+        scf.if %earlier {{
+          %a = memref.load %data[%c0, %i, %c0] {{test.executes = true} : memref<2x{0}x64xf16>
+        } else {{
+          %b = memref.load %data[%c0, %i, %c0] {{test.executes = true} : memref<2x{0}x64xf16>
+        }
+        %offGrid = arith.cmpi eq, %i, %c5 : index
+        scf.if %offGrid {{
+          %c = memref.load %data[%c0, %i, %c0] {{test.executes = false} : memref<2x{0}x64xf16>
+        }
+        scf.if %unknown {{
+          %d = memref.load %data[%c0, %i, %c0] {{test.executes = false} : memref<2x{0}x64xf16>
+        }
+        scf.for %j = %c0 to %c256 step %c128 {{
+          %sum = arith.addi %i, %j : index
+          %coupled = arith.cmpi eq, %sum, %c128 : index
+          scf.if %coupled {{
+            // Independent interval minima are not a joint satisfying tuple.
+            // Failing to find a witness must stay unknown, not infer execution.
+            %e = memref.load %data[%c0, %i, %c0] {{test.executes = false} : memref<2x{0}x64xf16>
+          }
+        }
+      }
+      scf.for %i = %c0 to %c0 step %c128 {{
+        %f = memref.load %data[%c0, %i, %c0] {{test.executes = false} : memref<2x{0}x64xf16>
+      }
+      return
+    }
+    )mlir",
+                                                                        extent)
+                                                              .str(),
+                                                          &context);
+    ASSERT_TRUE(module);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    std::string before = print(*module);
+    unsigned checked = 0;
+    module->walk([&](mlir::memref::LoadOp read) {
+      auto expected = read->getAttrOfType<mlir::BoolAttr>("test.executes");
+      ASSERT_TRUE(expected);
+      EXPECT_EQ(proveStaticIndexExecution(
+                    read, read->getParentOfType<mlir::func::FuncOp>()),
+                expected.getValue() ? StaticIndexExecution::Proven
+                                    : StaticIndexExecution::Unknown);
+      ++checked;
+    });
+    EXPECT_EQ(checked, 6u);
+    EXPECT_EQ(print(*module), before);
+  }
+}
+
+TEST_F(StaticIndexRangeTest, BooleanGuardsProveOnlyReachableAddressBounds) {
+  // Scalar predicate oracle paired with rank3 subset-to-LLVM coverage.
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @bounds(%unknown: i1) {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c1031 = arith.constant 1031 : index
+      %true = arith.constant true
+      scf.for %i = %c0 to %c1031 step %c1 {
+        %remainder = affine.apply affine_map<(d0) -> (d0 - (d0 floordiv 7) * 7)>(%i)
+        %lo = arith.cmpi sge, %remainder, %c0 : index
+        %upper = affine.apply affine_map<(d0) -> (6 - d0 + (d0 floordiv 7) * 7)>(%i)
+        %hi = arith.cmpi sge, %upper, %c0 : index
+        %always = arith.andi %lo, %hi : i1
+        scf.if %always {} else {
+          %unreachable = affine.apply affine_map<(d0) -> (d0 - 9999)>(%i)
+        }
+        %bound = affine.apply affine_map<(d0) -> (d0 - 512)>(%i)
+        %test = arith.cmpi sge, %bound, %c0 : index
+        %both = arith.andi %always, %test : i1
+        %negated = arith.xori %both, %true : i1
+        scf.if %negated {
+          %bounded = affine.apply affine_map<(d0) -> (d0 + 512)>(%i)
+        }
+        %ambiguous = arith.andi %unknown, %test : i1
+        scf.if %ambiguous {} else {
+          %unbounded = affine.apply affine_map<(d0) -> (d0 + 512)>(%i)
+        }
+      }
+      return
+    }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::affine::AffineApplyOp> values;
+  module->walk([&](mlir::affine::AffineApplyOp op) { values.push_back(op); });
+  ASSERT_EQ(values.size(), 6u);
+  auto unreachable = evaluateNonNegativeStaticIndexRange(values[2], values[2]);
+  ASSERT_TRUE(unreachable.succeeded());
+  EXPECT_TRUE(unreachable.range.empty);
+  auto bounded = evaluateNonNegativeStaticIndexRange(values[4], values[4]);
+  ASSERT_TRUE(bounded.succeeded());
+  EXPECT_FALSE(bounded.range.empty);
+  EXPECT_EQ(bounded.range.min, 512);
+  EXPECT_EQ(bounded.range.max, 1023);
+  auto unknown = evaluateNonNegativeStaticIndexRange(values[5], values[5]);
+  ASSERT_TRUE(unknown.succeeded());
+  EXPECT_FALSE(unknown.range.empty);
+  EXPECT_EQ(unknown.range.max, 1542);
+}
 
 // Scalar interface oracle. These bounds also feed the real attention loop
 // and physical preparation placement tests.
@@ -642,6 +797,80 @@ TEST_F(StaticIndexRangeTest, BoundedEqualityIntersectsIntervalsNotEndpoints) {
   EXPECT_EQ(range.range.min, 1);
   EXPECT_EQ(range.range.max, 1031);
 }
+TEST_F(StaticIndexRangeTest, NestedAlternativesRefineBareLoopInduction) {
+  for (int64_t extent : {1024, 1025, 1031})
+    for (bool lowered : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(lowered);
+      std::string text = llvm::formatv(R"mlir(module {{
+          func.func @entry(%buffer: memref<2x{0}x64xf16>) {{
+            %zero = arith.constant 0 : index
+            %step = arith.constant 128 : index
+            %end = arith.constant {0} : index
+            %true = arith.constant true
+            scf.for %i = %zero to %end step %step {{
+              %a = affine.apply affine_map<(d0)->(128-d0)>(%i)
+              %first = arith.cmpi sge, %a, %zero : index
+              scf.if %first {{
+                %x = memref.load %buffer[%zero, %i, %zero] : memref<2x{0}x64xf16>
+              } else {{
+                %b = affine.apply affine_map<(d0)->(255-d0)>(%i)
+                %before = arith.cmpi sge, %b, %zero : index
+                %after = arith.xori %before, %true : i1
+                %c = affine.apply affine_map<(d0)->(384-d0)>(%i)
+                %limit = arith.cmpi sge, %c, %zero : index
+                %second = arith.andi %after, %limit : i1
+                scf.if %second {{
+                  %y = memref.load %buffer[%zero, %i, %zero] : memref<2x{0}x64xf16>
+                } else {{
+                  %z = memref.load %buffer[%zero, %i, %zero] : memref<2x{0}x64xf16>
+                }
+              }
+            }
+            return
+          }
+        })mlir",
+                                       extent)
+                             .str();
+      if (lowered) {
+        auto replace = [&](llvm::StringRef from, llvm::StringRef to) {
+          auto position = text.find(from.str());
+          ASSERT_NE(position, std::string::npos);
+          text.replace(position, from.size(), to.str());
+        };
+        replace("%a = affine.apply affine_map<(d0)->(128-d0)>(%i)",
+                "%minus = arith.constant -1 : index\n"
+                "%negative = arith.muli %i, %minus : index\n"
+                "%a = arith.addi %negative, %step : index");
+        replace("%b = affine.apply affine_map<(d0)->(255-d0)>(%i)",
+                "%c255 = arith.constant 255 : index\n"
+                "%b = arith.subi %c255, %i : index");
+        replace("%c = affine.apply affine_map<(d0)->(384-d0)>(%i)",
+                "%c384 = arith.constant 384 : index\n"
+                "%c = arith.addi %negative, %c384 : index");
+      }
+      auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+      ASSERT_TRUE(module);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      llvm::SmallVector<mlir::memref::LoadOp> loads;
+      module->walk([&](mlir::memref::LoadOp load) { loads.push_back(load); });
+      ASSERT_EQ(loads.size(), 3u);
+      const std::array<std::pair<int64_t, int64_t>, 3> expected{
+          {{0, 128}, {256, 384}, {512, (extent - 1) / 128 * 128}}};
+      for (auto [load, bounds] : llvm::zip_equal(loads, expected)) {
+        auto result =
+            evaluateNonNegativeStaticIndexRange(load.getIndices()[1], load);
+        ASSERT_TRUE(result.succeeded());
+        EXPECT_FALSE(result.range.empty);
+        EXPECT_EQ(result.range.min, bounds.first);
+        EXPECT_EQ(result.range.max, bounds.second);
+        EXPECT_EQ(proveStaticIndexExecution(
+                      load, load->getParentOfType<mlir::func::FuncOp>()),
+                  StaticIndexExecution::Proven);
+      }
+    }
+}
+
 TEST_F(StaticIndexRangeTest, BoundedProductsPreserveSignsAndRejectOverflow) {
   // Bounded scalar oracle for interval multiplication; the load-pipeline
   // matrix consumes count * runtime-positive-step on rank3 1024/1025/1031.

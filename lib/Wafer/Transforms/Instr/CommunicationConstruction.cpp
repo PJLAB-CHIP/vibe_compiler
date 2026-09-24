@@ -625,7 +625,9 @@ constructCommunication(llvm::ArrayRef<mlir::ModuleOp> modules,
   auto order = analyzeCurrentCommunicationOrder(modules, tileIds);
   if (order.status != CommunicationOrderStatus::Acyclic) {
     result.outcome = fail(
-        SharedDDRCompletionFailure::Contract,
+        order.status == CommunicationOrderStatus::Indeterminate
+            ? SharedDDRCompletionFailure::Indeterminate
+            : SharedDDRCompletionFailure::Contract,
         "constructed communication order failed independent verification: " +
             order.detail);
     return result;

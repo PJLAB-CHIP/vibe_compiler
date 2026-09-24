@@ -3,9 +3,12 @@
 #include "StaticIndexRange.h"
 
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
+#include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -41,6 +44,8 @@ public:
   }
 
   Result evaluate(mlir::Value value) {
+    if (unreachable)
+      return Result{StaticIndexRange{0, 0, /*empty=*/true}};
     auto cached = cache.find(value);
     if (cached != cache.end())
       return cached->second;
@@ -53,7 +58,69 @@ public:
     return result;
   }
 
+  static StaticIndexExecution proveExecution(mlir::Operation *operation,
+                                             mlir::Operation *scope) {
+    using Execution = StaticIndexExecution;
+    if (!operation || !scope || !scope->isProperAncestor(operation))
+      return Execution::Unknown;
+    llvm::SmallVector<analysis::StaticLoopDomain> loops;
+    llvm::SmallVector<std::pair<mlir::Value, bool>> paths;
+    for (auto *child = operation; child->getParentOp() != scope;) {
+      auto *parent = child->getParentOp();
+      if (auto loop = analysis::getStaticLoopDomain(parent)) {
+        loops.push_back(*loop);
+      } else if (auto branch = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
+        paths.emplace_back(branch.getCondition(),
+                           child->getParentRegion() == &branch.getThenRegion());
+      } else {
+        auto flow = analysis::getSingleExecutionRegionFlow(parent);
+        if (!flow || child->getParentRegion() != flow->region)
+          return Execution::Unknown;
+      }
+      child = parent;
+    }
+    // Bounds merely propose one tuple of actual induction values. In a
+    // deterministic static nest, a tuple satisfying every path condition is
+    // a constructive must-execute witness, not sampled coverage of the nest.
+    StaticIndexRangeEvaluator bounds(operation), point(nullptr);
+    auto unproved = [&]() {
+      return bounds.resourceExhausted || point.resourceExhausted ||
+                     bounds.rangeWork.isExhausted() ||
+                     point.rangeWork.isExhausted()
+                 ? Execution::ResourceExhausted
+                 : Execution::Unknown;
+    };
+    for (auto domain : loops) {
+      if (!bounds.rangeWork.charge())
+        return Execution::ResourceExhausted;
+      auto iv = domain.loop.getInductionVar();
+      auto candidate = bounds.evaluate(iv);
+      if (!candidate.succeeded() || candidate.range.empty)
+        return unproved();
+      int64_t value = candidate.range.min;
+      if (value < domain.lower || value >= domain.upper ||
+          (value - domain.lower) % domain.step != 0)
+        return Execution::Unknown;
+      point.cache.try_emplace(iv,
+                              Result{StaticIndexRange{value, value, false}});
+    }
+    // This evaluator has no path constraints, nor cached Boolean assumptions.
+    // A runtime-dependent/unknown branch cannot establish the witness.
+    for (auto [condition, selected] : paths)
+      if (point.knownBoolean(condition, point) != selected)
+        return unproved();
+    return Execution::Proven;
+  }
+
 private:
+  bool chargePredicate(unsigned depth) {
+    if (depth >= 64) {
+      resourceExhausted = true;
+      return false;
+    }
+    return rangeWork.charge();
+  }
+
   struct Constraint {
     std::optional<int64_t> minimum;
     std::optional<int64_t> maximum;
@@ -137,6 +204,8 @@ private:
       return;
     Constraint &constraint =
         isUnsigned ? unsignedConstraints[value] : constraints[value];
+    if (constrainedSet.insert(value).second)
+      constrainedValues.push_back(value);
     switch (predicate) {
     case Predicate::eq:
       constrainMinimum(constraint, other.min);
@@ -166,15 +235,185 @@ private:
     llvm_unreachable("unhandled integer comparison predicate");
   }
 
+  // Evaluate Boolean structure only from proven current SSA intervals. This
+  // also recognizes unreachable branches without enumerating loop instances.
+  std::optional<bool> knownBoolean(mlir::Value condition,
+                                   StaticIndexRangeEvaluator &unconditioned,
+                                   unsigned depth = 0) {
+    if (!chargePredicate(depth))
+      return std::nullopt;
+    auto found = booleans.find(condition);
+    if (found != booleans.end())
+      return found->second;
+    std::optional<bool> result;
+    if (auto constant = mlir::getConstantIntValue(condition)) {
+      result = *constant != 0;
+    } else if (auto compare = condition.getDefiningOp<mlir::arith::CmpIOp>()) {
+      auto lhs = unconditioned.evaluate(compare.getLhs());
+      auto rhs = unconditioned.evaluate(compare.getRhs());
+      if (lhs.succeeded() && rhs.succeeded() && !lhs.range.empty &&
+          !rhs.range.empty) {
+        using P = mlir::arith::CmpIPredicate;
+        auto predicate = compare.getPredicate();
+        bool unsignedCompare = predicate == P::ult || predicate == P::ule ||
+                               predicate == P::ugt || predicate == P::uge;
+        if (!unsignedCompare || (lhs.range.min >= 0 && rhs.range.min >= 0)) {
+          auto a = lhs.range, b = rhs.range;
+          switch (predicate) {
+          case P::eq:
+          case P::ne:
+            if (a.max < b.min || b.max < a.min)
+              result = predicate == P::ne;
+            else if (a.min == a.max && b.min == b.max)
+              result = predicate == P::eq;
+            break;
+          case P::slt:
+          case P::ult:
+            if (a.max < b.min)
+              result = true;
+            else if (a.min >= b.max)
+              result = false;
+            break;
+          case P::sle:
+          case P::ule:
+            if (a.max <= b.min)
+              result = true;
+            else if (a.min > b.max)
+              result = false;
+            break;
+          case P::sgt:
+          case P::ugt:
+            if (a.min > b.max)
+              result = true;
+            else if (a.max <= b.min)
+              result = false;
+            break;
+          case P::sge:
+          case P::uge:
+            if (a.min >= b.max)
+              result = true;
+            else if (a.max < b.min)
+              result = false;
+            break;
+          }
+        }
+      }
+    } else if (auto *op = condition.getDefiningOp();
+               op && mlir::isa<mlir::arith::AndIOp, mlir::arith::OrIOp,
+                               mlir::arith::XOrIOp>(op)) {
+      auto lhs = knownBoolean(op->getOperand(0), unconditioned, depth + 1);
+      auto rhs = knownBoolean(op->getOperand(1), unconditioned, depth + 1);
+      if (mlir::isa<mlir::arith::AndIOp>(op)) {
+        if (lhs == false || rhs == false)
+          result = false;
+        else if (lhs && rhs)
+          result = *lhs && *rhs;
+      } else if (mlir::isa<mlir::arith::OrIOp>(op)) {
+        if (lhs == true || rhs == true)
+          result = true;
+        else if (lhs && rhs)
+          result = *lhs || *rhs;
+      } else if (lhs && rhs) {
+        result = *lhs != *rhs;
+      }
+    }
+    booleans.try_emplace(condition, result);
+    return result;
+  }
+
+  void constrainComparison(mlir::Value value,
+                           mlir::arith::CmpIPredicate predicate,
+                           StaticIndexRange other,
+                           StaticIndexRangeEvaluator &unconditioned,
+                           unsigned depth = 0) {
+    if (!chargePredicate(depth))
+      return;
+    addComparisonConstraint(value, predicate, other);
+    // Affine lowering spells signed translations as arith.addi/subi and
+    // multiplication by -1. Preserve the same bounds through these exact
+    // identities, after checking that their index arithmetic cannot overflow.
+    // Unsigned comparisons are not invariant under signed translation.
+    using P = mlir::arith::CmpIPredicate;
+    if (!value.getType().isIndex() || predicate == P::ult ||
+        predicate == P::ule || predicate == P::ugt || predicate == P::uge)
+      return;
+    auto *op = value.getDefiningOp();
+    if (!op || !mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp,
+                          mlir::arith::MulIOp>(op))
+      return;
+    auto range = unconditioned.evaluate(value);
+    if (!range.succeeded() || range.range.empty || other.empty)
+      return;
+    auto lhs = mlir::getConstantIntValue(op->getOperand(0));
+    auto rhs = mlir::getConstantIntValue(op->getOperand(1));
+    if (!lhs && !rhs)
+      return;
+    mlir::Value variable = op->getOperand(rhs ? 0 : 1);
+    int64_t constant = rhs ? *rhs : *lhs;
+    int64_t offset = 0;
+    bool negate = false;
+    if (mlir::isa<mlir::arith::AddIOp>(op)) {
+      offset = constant;
+    } else if (mlir::isa<mlir::arith::SubIOp>(op)) {
+      negate = !rhs;
+      if (negate)
+        offset = constant;
+      else if (llvm::SubOverflow(int64_t{0}, constant, offset))
+        return;
+    } else {
+      if (constant != 1 && constant != -1)
+        return;
+      negate = constant == -1;
+    }
+    StaticIndexRange translated;
+    if (negate) {
+      if (llvm::SubOverflow(offset, other.max, translated.min) ||
+          llvm::SubOverflow(offset, other.min, translated.max))
+        return;
+      predicate = swapPredicate(predicate);
+    } else if (llvm::SubOverflow(other.min, offset, translated.min) ||
+               llvm::SubOverflow(other.max, offset, translated.max)) {
+      return;
+    }
+    constrainComparison(variable, predicate, translated, unconditioned,
+                        depth + 1);
+  }
+
   void collectComparisonConstraint(mlir::Value condition, bool selected,
-                                   StaticIndexRangeEvaluator &unconditioned) {
-    // A true conjunction and a false disjunction each imply both operands.
+                                   StaticIndexRangeEvaluator &unconditioned,
+                                   unsigned depth = 0) {
+    if (!chargePredicate(depth))
+      return;
+    if (auto known = knownBoolean(condition, unconditioned)) {
+      unreachable |= *known != selected;
+      return;
+    }
     auto *definition = condition.getDefiningOp();
     if (definition &&
-        ((selected && mlir::isa<mlir::arith::AndIOp>(definition)) ||
-         (!selected && mlir::isa<mlir::arith::OrIOp>(definition)))) {
-      for (mlir::Value operand : definition->getOperands())
-        collectComparisonConstraint(operand, selected, unconditioned);
+        mlir::isa<mlir::arith::AndIOp, mlir::arith::OrIOp, mlir::arith::XOrIOp>(
+            definition)) {
+      auto lhs = definition->getOperand(0), rhs = definition->getOperand(1);
+      bool conjunction = mlir::isa<mlir::arith::AndIOp>(definition);
+      bool disjunction = mlir::isa<mlir::arith::OrIOp>(definition);
+      // True AND and false OR imply both operands. The opposite selection
+      // only refines an operand when its sibling is proved neutral.
+      if ((conjunction && selected) || (disjunction && !selected)) {
+        collectComparisonConstraint(lhs, selected, unconditioned, depth + 1);
+        collectComparisonConstraint(rhs, selected, unconditioned, depth + 1);
+      } else {
+        for (unsigned i = 0; i < 2; ++i)
+          if (auto known =
+                  knownBoolean(definition->getOperand(1 - i), unconditioned)) {
+            bool operandSelection = selected;
+            if (!conjunction && !disjunction)
+              operandSelection ^= *known;
+            else if (*known != conjunction)
+              continue;
+            collectComparisonConstraint(definition->getOperand(i),
+                                        operandSelection, unconditioned,
+                                        depth + 1);
+          }
+      }
       return;
     }
     auto compare = condition.getDefiningOp<mlir::arith::CmpIOp>();
@@ -186,29 +425,45 @@ private:
 
     Result rhs = unconditioned.evaluate(compare.getRhs());
     if (rhs.succeeded())
-      addComparisonConstraint(compare.getLhs(), predicate, rhs.range);
+      constrainComparison(compare.getLhs(), predicate, rhs.range,
+                          unconditioned);
     Result lhs = unconditioned.evaluate(compare.getLhs());
     if (lhs.succeeded())
-      addComparisonConstraint(compare.getRhs(), swapPredicate(predicate),
-                              lhs.range);
+      constrainComparison(compare.getRhs(), swapPredicate(predicate), lhs.range,
+                          unconditioned);
   }
 
   void collectEnclosingBranchConstraints(mlir::Operation *use) {
     if (!use)
       return;
-    // Never populate the query cache while branch constraints are incomplete.
-    StaticIndexRangeEvaluator unconditioned(nullptr);
+    // Process outer paths first. Each condition may use facts from its
+    // already selected enclosing paths, never facts inferred from itself.
+    // Reset value/Boolean caches at each constraint epoch.
+    llvm::SmallVector<std::pair<mlir::Value, bool>> paths;
     mlir::Operation *nested = use;
     while (mlir::Operation *parent = nested->getParentOp()) {
       if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(parent)) {
         if (nested->getBlock() == ifOp.thenBlock())
-          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/true,
-                                      unconditioned);
+          paths.push_back({ifOp.getCondition(), true});
         else if (nested->getBlock() == ifOp.elseBlock())
-          collectComparisonConstraint(ifOp.getCondition(), /*selected=*/false,
-                                      unconditioned);
+          paths.push_back({ifOp.getCondition(), false});
       }
       nested = parent;
+    }
+    StaticIndexRangeEvaluator prior(nullptr);
+    for (auto [condition, selected] : llvm::reverse(paths)) {
+      if (!rangeWork.charge(1 + constrainedValues.size()))
+        break;
+      prior.constraints = constraints;
+      prior.unsignedConstraints = unsignedConstraints;
+      prior.constrainedValues = constrainedValues;
+      prior.cache.clear();
+      booleans.clear();
+      collectComparisonConstraint(condition, selected, prior);
+      resourceExhausted |=
+          prior.resourceExhausted || prior.rangeWork.isExhausted();
+      if (unreachable)
+        break;
     }
   }
 
@@ -227,6 +482,73 @@ private:
     apply(constraints);
     if (result.range.min >= 0)
       apply(unsignedConstraints);
+    // Guard and address materializations may be distinct affine.apply SSA
+    // values. Recover only a proven constant signed difference (or sum),
+    // with actual operand bindings; no operation order or spelling is used.
+    if (value.getType().isIndex() && result.range.min != result.range.max)
+      for (mlir::Value guarded : constrainedValues) {
+        if (guarded == value || !guarded.getType().isIndex())
+          continue;
+        auto addressSize = boundedAffineCone(value);
+        auto guardSize = boundedAffineCone(guarded);
+        if (!addressSize || !guardSize)
+          continue;
+        auto found = constraints.find(guarded);
+        if (found == constraints.end())
+          continue;
+        auto identity =
+            mlir::AffineMap::getMultiDimIdentityMap(1, value.getContext());
+        mlir::affine::AffineValueMap address(identity, value);
+        for (int64_t sign : {int64_t{1}, int64_t{-1}}) {
+          if (affineWork == 0)
+            break;
+          --affineWork;
+          uint64_t nodes = addressSize->nodes + guardSize->nodes + 4;
+          if (!rangeWork.charge(nodes * nodes))
+            break;
+          auto map = mlir::AffineMap::get(
+              1, 0, mlir::getAffineDimExpr(0, value.getContext()) * sign);
+          mlir::affine::AffineValueMap other(map, guarded);
+          address.composeSimplifyAndCanonicalize();
+          other.composeSimplifyAndCanonicalize();
+          llvm::SmallVector<mlir::Value> bindings;
+          auto bind = [&](mlir::affine::AffineValueMap &valueMap) {
+            llvm::SmallVector<mlir::AffineExpr> replacements;
+            for (mlir::Value operand : valueMap.getOperands()) {
+              auto found = llvm::find(bindings, operand);
+              unsigned position = std::distance(bindings.begin(), found);
+              if (found == bindings.end())
+                bindings.push_back(operand);
+              replacements.push_back(
+                  mlir::getAffineDimExpr(position, value.getContext()));
+            }
+            return valueMap.getResult(0).replaceDimsAndSymbols(
+                llvm::ArrayRef(replacements).take_front(valueMap.getNumDims()),
+                llvm::ArrayRef(replacements).drop_front(valueMap.getNumDims()));
+          };
+          auto lhs = bind(address), rhs = bind(other);
+          auto offset = mlir::dyn_cast<mlir::AffineConstantExpr>(
+              mlir::simplifyAffineExpr(lhs - rhs, bindings.size(), 0));
+          if (!offset)
+            continue;
+          const auto &bounds = found->second;
+          auto translate =
+              [&](std::optional<int64_t> bound) -> std::optional<int64_t> {
+            int64_t scaled, translated;
+            if (!bound || llvm::MulOverflow(*bound, sign, scaled) ||
+                llvm::AddOverflow(scaled, offset.getValue(), translated))
+              return std::nullopt;
+            return translated;
+          };
+          if (auto lower =
+                  translate(sign > 0 ? bounds.minimum : bounds.maximum))
+            result.range.min = std::max(result.range.min, *lower);
+          if (auto upper =
+                  translate(sign > 0 ? bounds.maximum : bounds.minimum))
+            result.range.max = std::min(result.range.max, *upper);
+          break;
+        }
+      }
     if (result.range.min > result.range.max)
       result.range = StaticIndexRange{/*min=*/0, /*max=*/0, /*empty=*/true};
     auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
@@ -265,6 +587,80 @@ private:
         result.range.max -
         ((result.range.max - result.range.min) / stride) * stride;
     return result;
+  }
+
+  struct AffineComplexity {
+    uint64_t norm;
+    uint64_t nodes;
+  };
+
+  std::optional<AffineComplexity> boundedAffineCone(mlir::Value value,
+                                                    unsigned depth = 0) {
+    auto cached = affineComplexity.find(value);
+    if (cached != affineComplexity.end())
+      return cached->second;
+    if (depth >= 16 || affineWork == 0) {
+      resourceExhausted = true;
+      return std::nullopt;
+    }
+    --affineWork;
+    constexpr uint64_t limit = uint64_t{1} << 50;
+    constexpr uint64_t nodeLimit = 512;
+    if (auto constant = mlir::getConstantIntValue(value)) {
+      if (*constant < -int64_t(limit) || *constant > int64_t(limit))
+        return std::nullopt;
+      return AffineComplexity{uint64_t(*constant < 0 ? -*constant : *constant),
+                              1};
+    }
+    auto apply = value.getDefiningOp<mlir::affine::AffineApplyOp>();
+    if (!apply)
+      return AffineComplexity{1, 1};
+    llvm::SmallVector<AffineComplexity> operands;
+    for (mlir::Value operand : apply.getMapOperands()) {
+      auto complexity = boundedAffineCone(operand, depth + 1);
+      if (!complexity)
+        return std::nullopt;
+      operands.push_back(*complexity);
+    }
+    std::function<std::optional<AffineComplexity>(mlir::AffineExpr, unsigned)>
+        visit = [&](mlir::AffineExpr expression,
+                    unsigned nesting) -> std::optional<AffineComplexity> {
+      if (nesting >= 32 || affineWork == 0) {
+        resourceExhausted = true;
+        return std::nullopt;
+      }
+      --affineWork;
+      if (auto c = mlir::dyn_cast<mlir::AffineConstantExpr>(expression)) {
+        if (c.getValue() < -int64_t(limit) || c.getValue() > int64_t(limit))
+          return std::nullopt;
+        return AffineComplexity{
+            uint64_t(c.getValue() < 0 ? -c.getValue() : c.getValue()), 1};
+      }
+      if (auto d = mlir::dyn_cast<mlir::AffineDimExpr>(expression))
+        return operands[d.getPosition()];
+      if (auto s = mlir::dyn_cast<mlir::AffineSymbolExpr>(expression))
+        return operands[apply.getAffineMap().getNumDims() + s.getPosition()];
+      auto binary = mlir::cast<mlir::AffineBinaryOpExpr>(expression);
+      auto lhs = visit(binary.getLHS(), nesting + 1),
+           rhs = visit(binary.getRHS(), nesting + 1);
+      if (!lhs || !rhs || lhs->nodes + rhs->nodes + 1 > nodeLimit)
+        return std::nullopt;
+      uint64_t norm;
+      if (expression.getKind() == mlir::AffineExprKind::Mul) {
+        if (rhs->norm && lhs->norm > limit / rhs->norm)
+          return std::nullopt;
+        norm = lhs->norm * rhs->norm;
+      } else {
+        if (lhs->norm > limit - rhs->norm)
+          return std::nullopt;
+        norm = lhs->norm + rhs->norm;
+      }
+      return AffineComplexity{norm, lhs->nodes + rhs->nodes + 1};
+    };
+    auto complexity = visit(apply.getAffineMap().getResult(0), 0);
+    if (complexity)
+      affineComplexity.try_emplace(value, *complexity);
+    return complexity;
   }
 
   Result evaluateImpl(mlir::Value value) {
@@ -566,26 +962,6 @@ private:
     mlir::AffineMap map = apply.getAffineMap();
     if (map.getNumResults() != 1)
       return evaluateInterfaceBounds(apply.getResult());
-    bool supported = true;
-    map.getResult(0).walk([&](mlir::AffineExpr expr) {
-      switch (expr.getKind()) {
-      case mlir::AffineExprKind::Add:
-      case mlir::AffineExprKind::Mul:
-      case mlir::AffineExprKind::Constant:
-      case mlir::AffineExprKind::DimId:
-      case mlir::AffineExprKind::SymbolId:
-        return;
-      case mlir::AffineExprKind::Mod:
-      case mlir::AffineExprKind::FloorDiv:
-      case mlir::AffineExprKind::CeilDiv:
-        supported = false;
-        return;
-      }
-      llvm_unreachable("unhandled affine expression kind");
-    });
-    if (!supported)
-      return evaluateInterfaceBounds(apply.getResult());
-
     mlir::OperandRange operands = apply.getMapOperands();
     std::function<Result(mlir::AffineExpr)> evaluateExpr =
         [&](mlir::AffineExpr expr) -> Result {
@@ -618,8 +994,24 @@ private:
             return failed(Failure::ArithmeticOverflow);
           return Result{StaticIndexRange{minimum, maximum, /*empty=*/false}};
         }
-        assert(expr.getKind() == mlir::AffineExprKind::Mul &&
-               "unsupported affine binary expression passed validation");
+        if (expr.getKind() == mlir::AffineExprKind::FloorDiv ||
+            expr.getKind() == mlir::AffineExprKind::CeilDiv ||
+            expr.getKind() == mlir::AffineExprKind::Mod) {
+          if (rhs.range.min <= 0 || rhs.range.min != rhs.range.max)
+            return failed(Failure::InvalidSignedDivision);
+          int64_t divisor = rhs.range.min;
+          if (expr.getKind() == mlir::AffineExprKind::FloorDiv)
+            return Result{StaticIndexRange{
+                llvm::divideFloorSigned(lhs.range.min, divisor),
+                llvm::divideFloorSigned(lhs.range.max, divisor), false}};
+          if (expr.getKind() == mlir::AffineExprKind::CeilDiv)
+            return Result{StaticIndexRange{
+                llvm::divideCeilSigned(lhs.range.min, divisor),
+                llvm::divideCeilSigned(lhs.range.max, divisor), false}};
+          return Result{StaticIndexRange{0, divisor - 1, false}};
+        }
+        if (expr.getKind() != mlir::AffineExprKind::Mul)
+          return failed(Failure::UnsupportedExpression);
         const bool lhsSingleton = lhs.range.min == lhs.range.max;
         const bool rhsSingleton = rhs.range.min == rhs.range.max;
         if (!lhsSingleton && !rhsSingleton)
@@ -639,13 +1031,61 @@ private:
         return failed(Failure::UnsupportedExpression);
       return evaluate(operands[operand]);
     };
-    return evaluateExpr(map.getResult(0));
+    Result result = evaluateExpr(map.getResult(0));
+    if (!result.succeeded() || result.range.empty ||
+        result.range.min == result.range.max)
+      return result;
+    bool division = false;
+    map.getResult(0).walk([&](mlir::AffineExpr expression) {
+      division |= expression.getKind() == mlir::AffineExprKind::FloorDiv ||
+                  expression.getKind() == mlir::AffineExprKind::CeilDiv ||
+                  expression.getKind() == mlir::AffineExprKind::Mod;
+    });
+    if (!division || !boundedAffineCone(apply.getResult()))
+      return result;
+    llvm::SmallVector<analysis::ClosedIndexInterval> ranges;
+    llvm::SmallVector<mlir::Value> bindings;
+    llvm::SmallVector<mlir::AffineExpr> replacements;
+    for (mlir::Value operand : operands) {
+      auto found = llvm::find(bindings, operand);
+      unsigned position = std::distance(bindings.begin(), found);
+      if (found == bindings.end()) {
+        auto range = evaluate(operand);
+        if (!range.succeeded() || range.range.empty)
+          return result;
+        bindings.push_back(operand);
+        ranges.push_back({range.range.min, range.range.max});
+      }
+      replacements.push_back(
+          mlir::getAffineDimExpr(position, apply.getContext()));
+    }
+    auto expression = map.getResult(0).replaceDimsAndSymbols(
+        llvm::ArrayRef(replacements).take_front(map.getNumDims()),
+        llvm::ArrayRef(replacements).drop_front(map.getNumDims()));
+    auto interval = analysis::boundIndexExpression(
+        mlir::AffineMap::get(bindings.size(), 0, expression), ranges,
+        rangeWork);
+    resourceExhausted |=
+        interval.status == analysis::IndexRelationStatus::ResourceExhausted;
+    if (interval.status == analysis::IndexRelationStatus::SoundBound) {
+      result.range.min = std::max(result.range.min, interval.interval->minimum);
+      result.range.max = std::min(result.range.max, interval.interval->maximum);
+    }
+    return result;
   }
 
   llvm::DenseMap<mlir::Value, Result> cache;
   llvm::DenseSet<mlir::Value> active;
   llvm::DenseMap<mlir::Value, Constraint> constraints;
   llvm::DenseMap<mlir::Value, Constraint> unsignedConstraints;
+  llvm::SmallVector<mlir::Value> constrainedValues;
+  llvm::DenseSet<mlir::Value> constrainedSet;
+  llvm::DenseMap<mlir::Value, AffineComplexity> affineComplexity;
+  bool unreachable = false;
+  bool resourceExhausted = false;
+  llvm::DenseMap<mlir::Value, std::optional<bool>> booleans;
+  uint64_t affineWork = 4096;
+  analysis::IndexRelationWork rangeWork{analysis::IndexRelationLimits{}};
 };
 
 class IndexRemainderEvaluator {
@@ -723,6 +1163,11 @@ evaluateNonNegativeStaticIndexRange(mlir::Value value, mlir::Operation *use) {
   if (result.succeeded() && !result.range.empty && result.range.min < 0)
     result.failure = StaticIndexRangeFailureKind::NegativeRange;
   return result;
+}
+
+StaticIndexExecution proveStaticIndexExecution(mlir::Operation *operation,
+                                               mlir::Operation *scope) {
+  return StaticIndexRangeEvaluator::proveExecution(operation, scope);
 }
 
 std::optional<uint64_t> getKnownIndexRemainder(mlir::Value value,
