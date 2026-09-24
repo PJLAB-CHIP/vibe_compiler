@@ -125,14 +125,35 @@ S1024正式8/42编译已成功，完整96组局部实现通过actual SPM及目�
 wall 1273秒、max RSS 4460064 KiB。随后正式PyTorch入口重新导出并核对source相等，
 生成完整reference（527284 ms）和payload，普通guard no-card通过。i64 IDs包含0/31999及重复值，
 expected为完整`[1,1024,32000]` FP16、65536000字节，规划guard为383040字节；没有执行实卡。
-按用户后加的统一计时要求，正式入口正在生成15号companion并准备fresh reference及timing no-card；
-保持原8/42预算，profile多产物的主机deadline显式为3600秒，不改设备timeout。
+按用户后加的统一计时要求，正式入口生成15号companion，但首轮在profile JSON超过16 MiB时拒绝发布；
+四套target已生成，transaction按合同回滚。后续writer改为紧凑JSON并保留同一预算，产品profile/no-card及
+22项reader检查通过；完整S1024普通包及count/trace/timing三种companion已实际生成，site-map为14052470字节，
+plan为20377字节，均处于原16 MiB预算内；本轮完整reference及guard no-card仍在执行。保持原8/42预算，profile多产物的主机deadline显式为3600秒，
+不改设备timeout。
 S1025五次候选的只读诊断确认：完整BOOL写回可降低；切为512列后，actual私有DDR allocation的
 stride仍为1025，main与1列tail都含非字节对齐写回。诊断使用独立限额，不作为正式8/42资格；
 临时IR捕获已撤除。后续修复须保留packed字节覆盖合同，不能在lowering内自动改tile或补写邻接bit。
 S1025正式8/42复验未生成package：20次SPM、12次Tile→Instr、2次assembly绑定和8次reuse绑定拒绝；
 wall 1023.66秒、max RSS 3419364 KiB。后续按10号补齐已定位的私有packed BOOL更新，
 必须实际保留邻接bits并经过completion/SPM，不用估算或自动改tile规避现有失败。
+
+私有packed更新已在function范围的同一conversion preparation实现，生产driver与named pipeline共用；
+从实际alias/use closure证明私有性，读取包围字节、展开并精确覆盖目标坐标后再打包写回。新增scratch及effect
+全部进入原Instr/completion/SPM路径，不选择新tile，不改变BOOL存储或原浮点语义。
+rank3/4的1024/1025/1031、全部8种余数、动态主块/尾块及DDR/SPM逐bit oracle通过，邻接bits、holes、padding保持；
+外部参数、逃逸调用、并行访问、未知offset、越界、非injective view与unranked copy反例保持明确拒绝或不改写。
+完整Conversion组件48项及补强的3项直接测试通过；Tile→Instr及源码/IR组织35项检查通过。
+16 Tile完整SystemC专项先暴露DDR范围分析遗漏中间reinterpret_cast；按标准offset替换语义修复后，
+DDR/SPM × 1024/1025/1031六项全输出逐字节一致，动态主循环join为零；非零旧offset及越界反例和DDR lit矩阵通过。
+滑窗attention的FP16/BF16 × none/search四项完整numeric model及no-card通过。canonical完整增量及随后Ninja no-op通过。
+受影响Driver四项实际通过（506226 ms）；四项保护重新构包和guard no-card通过，包与本轮首批实卡逐字节相同。
+私有更新后的S1025正式8/42仍未产包：37次actual SPM capacity和5次Tile→Instr拒绝，transaction为1474312.829 ms；
+剩余失败涉及Tile load/copy_into。该轮早于DDR reinterpret范围修复，最新构建的复验另记，不能合并为同一编译器身份。
+这些检查只签主机机制边界；两项LM产品与四项保护的板端门槛继续保留。
+
+两项BF16的唯一有界追加组三次已结束：4096 GEMM为7.322/7.469/7.252ms，中位数7.322ms；
+2048 attention为3.733/3.719/3.811ms，中位数3.733ms。完整数值、guard、16 Tile completion、清理和健康均通过，
+性能仍高于原7.271/3.649ms门槛；本轮合计18次健康实卡，不继续重复到出现快样本。
 
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
 Driver 151项组件单测全部实际通过，共831项，无跳过。随后补强组合反例的逐行执行覆盖计数，六组输入重新通过，

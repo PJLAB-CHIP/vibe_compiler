@@ -1,6 +1,6 @@
 // RUN: split-file %s %t
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr %t/full.mlir | FileCheck %s --check-prefix=FULL
-// RUN: not wafer-opt --wafer-lower-tile-region-to-instr %t/partial.mlir 2>&1 | FileCheck %s --check-prefix=PARTIAL
+// RUN: wafer-opt --wafer-lower-tile-region-to-instr %t/partial.mlir | FileCheck %s --check-prefix=PARTIAL
 // RUN: not wafer-opt --wafer-lower-tile-region-to-instr %t/unaligned.mlir 2>&1 | FileCheck %s --check-prefix=UNALIGNED
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr --wafer-lower-instr-to-target-llvm %t/dynamic.mlir | FileCheck %s --check-prefix=DYNAMIC
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr --wafer-lower-instr-to-target-llvm %t/strided.mlir | FileCheck %s --check-prefix=STRIDED
@@ -108,7 +108,15 @@ func.func @partial() {
   }
   return
 }
-// PARTIAL: failed to legalize operation 'memref.copy'
+// PARTIAL: wafer.instr.gather_scatter
+// PARTIAL-SAME: byte_count = 129 : i64
+// PARTIAL-COUNT-2: wafer.instr.bit2fp
+// PARTIAL: wafer.instr.gather_scatter
+// PARTIAL-SAME: byte_count = 2062 : i64
+// PARTIAL: wafer.instr.elementwise <ne>
+// PARTIAL: wafer.instr.gather_scatter
+// PARTIAL-SAME: byte_count = 129 : i64
+// PARTIAL-NOT: memref.copy
 
 //--- unaligned.mlir
 // The view must not overwrite live neighboring bits.

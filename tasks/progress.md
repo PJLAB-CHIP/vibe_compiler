@@ -24,13 +24,17 @@
 Driver按父SSA和实际读取组维护完整共享/局部选择；跨retile绑定、mixed分支、缓存开关/淘汰确定性及
 standard实现轮转已修复并验证。尾块的实际单次循环scope保留至Tensor选择消费，layout入口再展开；
 主尾块全组绑定及逐坐标覆盖通过。完整S1024已在原standard 8/42预算内通过actual SPM和目标后端并生成普通package；
-完整reference/payload及普通guard no-card已通过；正在准备15号计时companion，实卡尚未执行。
+完整reference/payload及普通guard no-card已通过；15号计时companion此前因profile metadata超过JSON预算而打包失败。
+Writer已改为紧凑JSON、保留原预算并通过产品及reader边界测试；完整S1024计时包已生成，完整reference及guard no-card在执行，实卡尚未执行。
 S1025的output publication与BoundaryMovement降rank缺陷已修复；正式8/42复验仍未生成package，
-20次SPM、12次Tile→Instr及10次选择绑定拒绝。后续处理已定位的packed-i1非字节对齐写回/拼接缺口，
-按10号先明确私有allocation、邻接bit保持及实际effect/内存规划合同，不能放松覆盖证明或lowering自动改tile。
+20次SPM、12次Tile→Instr及10次选择绑定拒绝。已按10号补齐私有packed-i1更新，并按12号修复动态窗口经过
+reinterpret_cast的DDR范围证明；逐bit覆盖、私有性拒绝及16 Tile完整数值模型通过。私有更新后的复验仍有
+actual SPM与Tile load/copy_into拒绝；最新DDR修复构建的正式构包仍待结果，
+不放松覆盖证明、不在lowering改tile，也不代签S1025产品资格。
 
-四项性能保护的新source/reference/package及guard no-card通过；12次实卡完整数值、guard及健康通过。
+四项性能保护的新source/reference/package及guard no-card通过；首轮12次及有界追加6次实卡完整数值、guard及健康通过。
 两项FP16 GEMM性能通过；BF16 GEMM/attention中位数7.308/3.710ms高于7.271/3.649ms门槛，保留未通过。
+主机编译/回归结束后的唯一追加组三次中位数为7.322/3.733ms，两项仍未通过；不继续重复到出现快样本。
 后续轮转、view、输出降rank及尾scope修复后的四项包均与本轮已板测包逐字节相同，不能据此代签时间门槛。
 通用reshape的常数floor/mod周期、累计预算审查、两项性能门槛及S1024/1025产品和实卡仍待闭合。
 此检查点不改变`board-testing`的`doing`状态，覆盖和完整证据见

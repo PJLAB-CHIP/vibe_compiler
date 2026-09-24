@@ -1240,6 +1240,355 @@ TEST(LowerInstrToTargetLLVMTest,
       }
 }
 
+TEST(LowerInstrToTargetLLVMTest,
+     PrivatePackedUpdatesPreserveEveryUntouchedBit) {
+  for (int64_t rows : {1024, 1025, 1031})
+    for (int64_t column = 0; column < 8; ++column)
+      for (bool dynamic : {false, true})
+        for (bool local : {false, true}) {
+          SCOPED_TRACE(
+              llvm::formatv("rows={0}, col={1}, dynamic={2}, local={3}", rows,
+                            column, dynamic, local)
+                  .str());
+          mlir::DialectRegistry registry;
+          registerTargetConversionDialects(registry);
+          mlir::MLIRContext context(registry);
+          context.loadAllAvailableDialects();
+          const std::string rootShape =
+              (dynamic ? "1x1x" : "1x") + std::to_string(rows);
+          auto text = llvm::formatv(R"mlir(module {{
+            func.func @main() {{
+              %root = memref.alloc() : memref<{0}x1031xi1, #wafer.memory<{1}, tensor>>
+              wafer.tile.region(%root : memref<{0}x1031xi1, #wafer.memory<{1}, tensor>>) -> () {{
+              ^bb0(%dst: memref<{0}x1031xi1, #wafer.memory<{1}, tensor>>):
+                wafer.tile.yield
+              }
+              return
+            }
+          })mlir",
+                                    rootShape, local ? "spm" : "ddr")
+                          .str();
+          if (local)
+            text = llvm::formatv(R"mlir(module {{
+              func.func @main() {{
+                wafer.tile.region() -> () {{
+                  %dst = memref.alloc() : memref<{0}x1031xi1, #wafer.memory<spm, tensor>>
+                  wafer.tile.yield
+                }
+                return
+              }
+            })mlir",
+                                 rootShape)
+                       .str();
+          auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+          ASSERT_TRUE(module);
+          auto function = *module->getOps<mlir::func::FuncOp>().begin();
+          wafer::TileRegionOp region;
+          module->walk([&](wafer::TileRegionOp op) { region = op; });
+          mlir::OpBuilder builder(region.getBody().front().getTerminator());
+          auto loc = region.getLoc();
+          mlir::Value root;
+          if (local)
+            root = region.getBody().front().front().getResult(0);
+          else
+            root = region.getBody().getArgument(0);
+          auto update = [&](int64_t count, mlir::OpFoldResult row) {
+            llvm::SmallVector<mlir::OpFoldResult> offsets{
+                builder.getIndexAttr(0), row, builder.getIndexAttr(column)};
+            llvm::SmallVector<int64_t> shape{1, count, 1024};
+            if (dynamic) {
+              offsets.insert(offsets.begin(), builder.getIndexAttr(0));
+              shape.insert(shape.begin(), 1);
+            }
+            auto view = builder.create<mlir::memref::SubViewOp>(
+                loc, root, offsets,
+                mlir::getAsIndexOpFoldResult(&context, shape),
+                mlir::getAsIndexOpFoldResult(
+                    &context, llvm::SmallVector<int64_t>(shape.size(), 1)));
+            auto sourceType = mlir::MemRefType::get(
+                shape, builder.getI1Type(), mlir::MemRefLayoutAttrInterface{},
+                wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::Tensor));
+            auto source =
+                builder.create<mlir::memref::AllocOp>(loc, sourceType);
+            if (local)
+              builder.create<mlir::memref::CopyOp>(loc, source, view);
+            else
+              builder.create<wafer::StorageStoreOp>(loc, source, view);
+          };
+          mlir::scf::ForOp loop;
+          if (dynamic) {
+            auto zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+            auto end = builder.create<mlir::arith::ConstantIndexOp>(loc, 1024);
+            auto step = builder.create<mlir::arith::ConstantIndexOp>(loc, 256);
+            loop = builder.create<mlir::scf::ForOp>(loc, zero, end, step);
+            builder.setInsertionPoint(loop.getBody()->getTerminator());
+            update(256, loop.getInductionVar());
+            builder.setInsertionPointAfter(loop);
+          } else {
+            for (int64_t row = 0; row < 1024; row += 256)
+              update(256, builder.getIndexAttr(row));
+          }
+          if (rows != 1024)
+            update(rows - 1024, builder.getIndexAttr(1024));
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          wafer::TileRegionToInstrLoweringSession session(context);
+          ASSERT_TRUE(mlir::succeeded(
+              wafer::convertPrivatePackedUpdatesToInstr(function, session)));
+          ASSERT_TRUE(mlir::succeeded(
+              wafer::convertTileRegionToInstr(region, session)));
+          ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+          EXPECT_EQ(countOps<wafer::StorageStoreOp>(*module), 0u);
+          EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), 0u);
+          EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(*module), 0u);
+
+          // Each original destination bit has a distinct positive identity;
+          // source bits have distinct negative identities. Execute the actual
+          // window and scatter descriptors and compare the entire allocation,
+          // including holes and the physical last byte, to a logical oracle.
+          const int64_t physicalBits = (rows * 1031 + 7) / 8 * 8;
+          std::vector<int64_t> actual(physicalBits), expected(physicalBits);
+          for (int64_t i = 0; i < physicalBits; ++i)
+            actual[i] = expected[i] = i + 1;
+          for (int64_t r = 0; r < rows; ++r)
+            for (int64_t c = 0; c < 1024; ++c)
+              expected[r * 1031 + column + c] = -1 - r * 1024 - c;
+          llvm::SmallVector<wafer::InstrElementwiseOp> repacks;
+          module->walk(
+              [&](wafer::InstrElementwiseOp op) { repacks.push_back(op); });
+          int64_t firstRow = 0;
+          for (auto repack : repacks) {
+            auto expanded = repack.getInputs().front();
+            auto packed = repack.getDest();
+            mlir::Value window;
+            for (auto *user : packed.getUsers()) {
+              if (auto read = mlir::dyn_cast<wafer::InstrRDMAOp>(user))
+                if (read.getDest() == packed)
+                  window = read.getSource();
+              if (auto copy = mlir::dyn_cast<wafer::InstrGatherScatterOp>(user))
+                if (copy.getDest() == packed)
+                  window = copy.getSource();
+            }
+            ASSERT_TRUE(window);
+            auto view = window.getDefiningOp<mlir::memref::SubViewOp>();
+            ASSERT_TRUE(view);
+            auto size =
+                mlir::cast<mlir::MemRefType>(window.getType()).getNumElements();
+            unsigned writebacks = 0;
+            for (auto *user : packed.getUsers()) {
+              if (auto write = mlir::dyn_cast<wafer::InstrWDMAOp>(user)) {
+                EXPECT_EQ(write.getDest(), window);
+                EXPECT_EQ(write.getByteCount() * 8, size);
+                EXPECT_EQ(write.getInnerBytes() * 8, size);
+                ++writebacks;
+              }
+              if (auto write =
+                      mlir::dyn_cast<wafer::InstrGatherScatterOp>(user)) {
+                if (write.getSource() != packed)
+                  continue;
+                EXPECT_EQ(write.getDest(), window);
+                EXPECT_EQ(write.getByteCount() * 8, size);
+                EXPECT_EQ(write.getInnerBytes() * 8, size);
+                ++writebacks;
+              }
+            }
+            EXPECT_EQ(writebacks, 1u);
+            llvm::SmallVector<wafer::InstrGatherScatterOp> inserts;
+            for (auto *user : expanded.getUsers())
+              if (auto insert =
+                      mlir::dyn_cast<wafer::InstrGatherScatterOp>(user))
+                if (insert.getDest() == expanded)
+                  inserts.push_back(insert);
+            ASSERT_FALSE(inserts.empty());
+            auto compact = mlir::cast<mlir::MemRefType>(
+                inserts.front().getSource().getType());
+            const int64_t count = compact.getNumElements();
+            unsigned repeats =
+                repack->getParentOfType<mlir::scf::ForOp>() ? 4 : 1;
+            for (unsigned repeat = 0; repeat < repeats; ++repeat) {
+              std::function<int64_t(mlir::Value)> evaluate =
+                  [&](mlir::Value value) -> int64_t {
+                if (auto constant = mlir::getConstantIntValue(value))
+                  return *constant;
+                if (loop && value == loop.getInductionVar())
+                  return repeat * 256;
+                auto *operation = value.getDefiningOp();
+                if (auto add =
+                        mlir::dyn_cast_or_null<mlir::arith::AddIOp>(operation))
+                  return evaluate(add.getLhs()) + evaluate(add.getRhs());
+                if (auto sub =
+                        mlir::dyn_cast_or_null<mlir::arith::SubIOp>(operation))
+                  return evaluate(sub.getLhs()) - evaluate(sub.getRhs());
+                if (auto mul =
+                        mlir::dyn_cast_or_null<mlir::arith::MulIOp>(operation))
+                  return evaluate(mul.getLhs()) * evaluate(mul.getRhs());
+                ADD_FAILURE() << "unexpected window offset";
+                return -1;
+              };
+              auto offset = view.getMixedOffsets().front();
+              auto constant = mlir::getConstantIntValue(offset);
+              int64_t start = constant
+                                  ? *constant
+                                  : evaluate(mlir::cast<mlir::Value>(offset));
+              ASSERT_GE(start, 0);
+              ASSERT_EQ(start % 8, 0);
+              ASSERT_LE(start + size, physicalBits);
+              std::vector<int64_t> bits(actual.begin() + start,
+                                        actual.begin() + start + size);
+              std::vector<unsigned> coverage(count, 0);
+              for (auto insert : inserts) {
+                ASSERT_FALSE(insert.getSrcOffsetValue());
+                ASSERT_FALSE(insert.getDstOffsetValue());
+                auto addresses = [&](auto strides, auto counts, int64_t base) {
+                  std::vector<int64_t> result;
+                  for (int64_t k = 0; k < counts[2]; ++k)
+                    for (int64_t j = 0; j < counts[1]; ++j)
+                      for (int64_t i = 0; i < counts[0]; ++i)
+                        for (uint64_t b = 0; b < insert.getInnerBytes(); b += 2)
+                          result.push_back(base + k * strides[2] +
+                                           j * strides[1] + i * strides[0] + b);
+                  return result;
+                };
+                auto src =
+                    addresses(insert.getSrcStrides(), insert.getSrcIterations(),
+                              insert.getSrcOffset().value_or(0));
+                auto dst =
+                    addresses(insert.getDstStrides(), insert.getDstIterations(),
+                              insert.getDstOffset().value_or(0));
+                ASSERT_EQ(src.size(), dst.size());
+                for (auto [s, d] : llvm::zip_equal(src, dst)) {
+                  ASSERT_EQ(s % 2, 0);
+                  ASSERT_EQ(d % 2, 0);
+                  ASSERT_GE(s, 0);
+                  ASSERT_GE(d, 0);
+                  ASSERT_LT(s / 2, count);
+                  ASSERT_LT(d / 2, size);
+                  ASSERT_EQ(coverage[s / 2]++, 0u);
+                  bits[d / 2] = -1 - firstRow * 1024 - s / 2;
+                }
+              }
+              EXPECT_TRUE(llvm::all_of(
+                  coverage, [](unsigned visits) { return visits == 1; }));
+              std::copy(bits.begin(), bits.end(), actual.begin() + start);
+              firstRow += count / 1024;
+            }
+          }
+          // The aligned one-row tail uses the original byte path.
+          if (rows == 1025 && column == 0) {
+            ASSERT_EQ(firstRow, 1024);
+            for (int64_t c = 0; c < 1024; ++c)
+              actual[1024 * 1031 + c] = -1 - 1024 * 1024 - c;
+            ++firstRow;
+          }
+          EXPECT_EQ(firstRow, rows);
+          EXPECT_EQ(actual, expected);
+        }
+}
+
+TEST(LowerInstrToTargetLLVMTest, PrivatePackedUpdateRejectsUnprovedStorage) {
+  for (llvm::StringRef failure :
+       {"external", "escape", "unknown", "outside", "parallel"}) {
+    SCOPED_TRACE(failure.str());
+    mlir::DialectRegistry registry;
+    registerTargetConversionDialects(registry);
+    mlir::MLIRContext context(registry);
+    context.loadAllAvailableDialects();
+    std::string otherUse;
+    if (failure == "escape")
+      otherUse = "func.call @escape(%root) : (memref<1x1025x1031xi1, "
+                 "#wafer.memory<ddr, tensor>>) -> ()";
+    if (failure == "parallel")
+      otherUse = R"mlir(
+        %zero = arith.constant 0 : index
+        %one = arith.constant 1 : index
+        %copy = memref.alloc() : memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>
+        scf.parallel (%iv) = (%zero) to (%one) step (%one) {
+          memref.copy %root, %copy : memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>
+            to memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>
+          scf.reduce
+        }
+      )mlir";
+    auto text =
+        llvm::formatv(
+            R"mlir(module {{
+      func.func private @escape(memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>)
+      func.func @main(%external: memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>, %column: index) {{
+        {0}
+        {1}
+        wafer.tile.region(%root, %column : memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>, index) -> () {{
+        ^bb0(%dest: memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>, %offset: index):
+          %view = memref.subview %dest[0, {2}, {3}] [1, 1024, 32] [1, 1, 1]
+            : memref<1x1025x1031xi1, #wafer.memory<ddr, tensor>>
+            to memref<1x1024x32xi1, strided<[1056775, 1031, 1], offset: {4}>, #wafer.memory<ddr, tensor>>
+          %source = memref.alloc() : memref<1x1024x32xi1, #wafer.memory<spm, tensor>>
+          wafer.tile.store %source, %view
+            : memref<1x1024x32xi1, #wafer.memory<spm, tensor>>
+            -> memref<1x1024x32xi1, strided<[1056775, 1031, 1], offset: {4}>, #wafer.memory<ddr, tensor>>
+          wafer.tile.yield
+        }
+        return
+      }
+    })mlir",
+            failure == "external"
+                ? ""
+                : "%root = memref.alloc() : memref<1x1025x1031xi1, "
+                  "#wafer.memory<ddr, tensor>>",
+            otherUse, failure == "outside" ? "2" : "0",
+            failure == "unknown" ? "%offset" : "3",
+            failure == "unknown" ? "?" : (failure == "outside" ? "2065" : "3"))
+            .str();
+    if (failure == "external") {
+      auto position = text.find("%root,");
+      ASSERT_NE(position, std::string::npos);
+      text.replace(position, 5, "%external");
+    }
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+    ASSERT_TRUE(module);
+    auto function = module->lookupSymbol<mlir::func::FuncOp>("main");
+    auto print = [&]() {
+      std::string result;
+      llvm::raw_string_ostream stream(result);
+      module->print(stream);
+      return result;
+    };
+    auto before = print();
+    wafer::TileRegionToInstrLoweringSession session(context);
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::convertPrivatePackedUpdatesToInstr(function, session)));
+    EXPECT_EQ(print(), before);
+    wafer::TileRegionOp region;
+    module->walk([&](wafer::TileRegionOp op) { region = op; });
+    mlir::ScopedDiagnosticHandler expectedDiagnostic(
+        &context, [](mlir::Diagnostic &) { return mlir::success(); });
+    EXPECT_TRUE(mlir::failed(wafer::convertTileRegionToInstr(region, session)));
+    EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  }
+}
+
+TEST(LowerInstrToTargetLLVMTest, PrivatePackedPreparationLeavesUnrankedCopy) {
+  // An unsupported but verifier-valid standard copy must not assert during
+  // candidate discovery. No static rank/shape is known in this negative case.
+  mlir::DialectRegistry registry;
+  registerTargetConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @unknown(%src: memref<*xi1>, %dst: memref<*xi1>) {
+      memref.copy %src, %dst : memref<*xi1> to memref<*xi1>
+      return
+    }
+  )mlir",
+                                                        &context);
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  wafer::TileRegionToInstrLoweringSession session(context);
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::convertPrivatePackedUpdatesToInstr(function, session)));
+  EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), 1u);
+  EXPECT_EQ(countOps<wafer::InstrBit2FpOp>(*module), 0u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
 TEST(LowerInstrToTargetLLVMTest, PackedDmaCoversRowsAndPreservesAdjacentBytes) {
   for (bool local : {false, true})
     for (int64_t rows : {1024, 1025, 1031}) {

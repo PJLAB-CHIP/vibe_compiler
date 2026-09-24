@@ -622,6 +622,36 @@ private:
       return evaluate(expand.getSrc());
     if (auto cast = view.getDefiningOp<mlir::memref::CastOp>())
       return evaluate(cast.getSource());
+    if (auto cast = view.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
+      auto sourceType =
+          mlir::dyn_cast<mlir::MemRefType>(cast.getSource().getType());
+      auto resultType = mlir::cast<mlir::MemRefType>(cast.getType());
+      llvm::SmallVector<int64_t> strides;
+      int64_t oldOffset = 0;
+      auto newOffset =
+          mlir::getConstantIntValue(cast.getMixedOffsets().front());
+      if (!sourceType ||
+          sourceType.getElementType() != resultType.getElementType() ||
+          sourceType.getMemorySpace() != resultType.getMemorySpace() ||
+          !newOffset || *newOffset < 0 ||
+          mlir::failed(getStaticMemrefViewInfo(anchor, sourceType, strides,
+                                               oldOffset, role)))
+        return anchor->emitError() << "unsupported_ddr_view: reinterpret_cast "
+                                      "requires static address metadata";
+      auto range = evaluate(cast.getSource());
+      if (mlir::failed(range) || range->empty)
+        return range;
+      // reinterpret_cast keeps the underlying base and replaces the metadata
+      // offset. The source range already includes its old offset.
+      __int128 delta = static_cast<__int128>(*newOffset) - oldOffset;
+      __int128 minimum = range->min + delta;
+      __int128 maximum = range->max + delta;
+      if (minimum < 0 || maximum > std::numeric_limits<int64_t>::max())
+        return anchor->emitError() << "range_end_overflow: reinterpret_cast "
+                                      "DDR offset range is not representable";
+      return StaticIndexRange{static_cast<int64_t>(minimum),
+                              static_cast<int64_t>(maximum)};
+    }
 
     auto subview = view.getDefiningOp<mlir::memref::SubViewOp>();
     if (!subview)

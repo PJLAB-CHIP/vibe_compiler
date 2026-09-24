@@ -271,6 +271,12 @@ ExecutableCompilationResult compileCurrentIRCandidateToExecutable(
             [&](TileRegionOp region) { regions.push_back(region); });
 
         TileRegionToInstrLoweringSession session(*tile.module->getContext());
+        for (auto function : tile.module->getOps<mlir::func::FuncOp>())
+          if (mlir::failed(
+                  convertPrivatePackedUpdatesToInstr(function, session)))
+            return fail(ExecutableCompilationStatus::CompilerFailure,
+                        "tile-to-instr",
+                        "private packed update conversion failed verification");
         for (TileRegionOp region : regions)
           if (mlir::failed(convertTileRegionToInstr(region, session)))
             return fail(ExecutableCompilationStatus::UnsupportedFailure,

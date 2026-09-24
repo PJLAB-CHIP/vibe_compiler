@@ -1071,6 +1071,20 @@
       "expected_sha256": "ee385225776dcaed5a491e02ee9501f4872f22895ec2a5c490669f57a872ad1e",
       "planned_memory_guard_bytes": 383040,
       "board_execution": false
+    },
+    "timing_companion": {
+      "passed": false,
+      "gate": "package-assembly",
+      "reason": "profile instrumentation metadata exceeds JSON byte limit",
+      "transaction_wall_ms": 1554682.107,
+      "target_captures_generated": [
+        "count",
+        "trace",
+        "timing"
+      ],
+      "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-timing31.log",
+      "ordinary_target_call_count": 44616,
+      "ordinary_target_call_count_note": "16 Tile目标LLVM中的wafer_tx81调用数量，用于定位metadata规模；不是已验证的profile site count。"
     }
   },
   "bounded_bf16_remeasurement": {
@@ -1081,8 +1095,369 @@
     ],
     "fixed_launches_per_case": 3,
     "attempt_limit": 1,
-    "state": "pending; no additional launch has occurred",
-    "retention": "保留原组和新增组全部样本；不放宽门槛、不继续重复直到通过。"
+    "state": "completed; both performance thresholds still failed; no further repeat planned",
+    "retention": "保留原组和新增组全部样本；不放宽门槛、不继续重复直到通过。",
+    "results": [
+      {
+        "case_key": "gemm4096-bf16",
+        "samples_ms": [
+          7.322,
+          7.469,
+          7.252
+        ],
+        "median_ms": 7.322,
+        "threshold_ms": 7.271,
+        "performance_passed": false,
+        "numeric_audits": [
+          {
+            "case": "single-card-gemm-m4096-k4096-n4096",
+            "external_layout": "tensor",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+            "comparison_passed": true,
+            "device_timing": null,
+            "memory_guard_bytes": 20800,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+              "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 1.0,
+                "cosine_similarity": 0.9999999873937028,
+                "relative_l2_error": 0.00015884460990067264,
+                "elementwise_mismatches": 1310,
+                "mean_abs_error": 0.00024054590936373188
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=7322000"
+            ]
+          },
+          {
+            "case": "single-card-gemm-m4096-k4096-n4096",
+            "external_layout": "tensor",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+            "comparison_passed": true,
+            "device_timing": null,
+            "memory_guard_bytes": 20800,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+              "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 1.0,
+                "cosine_similarity": 0.9999999873937028,
+                "relative_l2_error": 0.00015884460990067264,
+                "elementwise_mismatches": 1310,
+                "mean_abs_error": 0.00024054590936373188
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=7469000"
+            ]
+          },
+          {
+            "case": "single-card-gemm-m4096-k4096-n4096",
+            "external_layout": "tensor",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+            "comparison_passed": true,
+            "device_timing": null,
+            "memory_guard_bytes": 20800,
+            "comparison": {
+              "rtol": 0.016,
+              "atol": 1e-05,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b2282beebe6d48dd83def5ca3d69dccc5b9ea70346539ad1006f350430290de2",
+              "card_00_user_input_1.bf16.raw": "1b0ab910387072a8ae03e2ea78c54ce6c47c35494ab973300305aa45888f98cc"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 16777216,
+                "max_abs_error": 1.0,
+                "cosine_similarity": 0.9999999873937028,
+                "relative_l2_error": 0.00015884460990067264,
+                "elementwise_mismatches": 1310,
+                "mean_abs_error": 0.00024054590936373188
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=7252000"
+            ]
+          }
+        ],
+        "diagnostics": [
+          {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "launched": true
+          },
+          {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "launched": true
+          },
+          {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "launched": true
+          }
+        ],
+        "work_dir": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-bf16-confirm31",
+        "command_file": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-bf16-confirm31-command.json"
+      },
+      {
+        "case_key": "attention2048-bf16",
+        "samples_ms": [
+          3.733,
+          3.719,
+          3.811
+        ],
+        "median_ms": 3.733,
+        "threshold_ms": 3.649,
+        "performance_passed": false,
+        "numeric_audits": [
+          {
+            "case": "attention-prefill-28-heads-2048",
+            "external_layout": "tensor",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+            "comparison_passed": true,
+            "device_timing": null,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3733000"
+            ]
+          },
+          {
+            "case": "attention-prefill-28-heads-2048",
+            "external_layout": "tensor",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+            "comparison_passed": true,
+            "device_timing": null,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3719000"
+            ]
+          },
+          {
+            "case": "attention-prefill-28-heads-2048",
+            "external_layout": "tensor",
+            "step": 1,
+            "policy": "search",
+            "search_mode": "standard",
+            "search_width": 8,
+            "search_trials": 42,
+            "manifest_sha256": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+            "comparison_passed": true,
+            "device_timing": null,
+            "memory_guard_bytes": 10752,
+            "comparison": {
+              "rtol": 0.006,
+              "atol": 0.008,
+              "equal_nan": false,
+              "min_cosine": 0.9999,
+              "max_relative_l2": 0.01
+            },
+            "inputs": {
+              "card_00_user_input_0.bf16.raw": "b57b2ac4f44d1c269b26cd050b7fa9501fa94cb308f42217dd14a1797e21a6e0",
+              "card_00_user_input_1.bf16.raw": "7665d06ac28c31f6be8233276e4fb352c0176fc1815c04e317efae9d096159e2",
+              "card_00_user_input_2.bf16.raw": "9f12954a4a4b806ee9db2f638bca9fe3564bde179e5d41655e50468f52bbbbf3"
+            },
+            "outputs": [
+              {
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "torch.bfloat16",
+                "elements": 7340032,
+                "max_abs_error": 0.015625,
+                "cosine_similarity": 0.9999981330706693,
+                "relative_l2_error": 0.0019323393761810942,
+                "elementwise_mismatches": 0,
+                "mean_abs_error": 3.965543557693617e-05
+              }
+            ],
+            "timing": [
+              "board_timing: kind=tx-stream-events device_elapsed_ns=3811000"
+            ]
+          }
+        ],
+        "diagnostics": [
+          {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "launched": true
+          },
+          {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "launched": true
+          },
+          {
+            "boot_id": "455a763d-e9b8-4cc6-a4a8-50ea5794ca21",
+            "driver": "F64164C6460FEE30EBF66E2",
+            "passed": true,
+            "returncode": 0,
+            "alarms": [],
+            "problems": [],
+            "host_register_capture": false,
+            "launched": true
+          }
+        ],
+        "work_dir": "/data/vibe_compiler-validation/tensor-demand-20260924/attention2048-bf16-confirm31",
+        "command_file": "/data/vibe_compiler-validation/tensor-demand-20260924/attention2048-bf16-confirm31-command.json"
+      }
+    ],
+    "compiler_sha256": "ca9baf363962da59d117fcc5ee83ed4c24208e0a2f9413a32d2f8d464619f876"
   },
   "lm_tail_compilation_followup": {
     "case": "llama-2-7b-single-layer-lm-tail-1025",
@@ -1106,5 +1481,120 @@
     "accepted_candidates": 0,
     "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-tail31.log",
     "qualification": "未生成package；非字节对齐packed-i1写回/拼接仍拒绝，未签no-card或实卡。"
+  },
+  "private_packed_update_followup": {
+    "recorded_utc": "2026-09-24T05:24:33.506383+00:00",
+    "implementation": "private packed BOOL update, dynamic DDR reinterpret range, compact profile JSON",
+    "tool_sha256": {
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile": "70a889f30ef6b3056f2cb8df780a6d31e9c813fa03f281c4b645351d9740c7e2",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+    },
+    "guard_packages": [
+      {
+        "name": "gemm4096-fp16",
+        "source_sha256": {
+          "functions/forward.meta": "902aa6d51ba7e700d15451474a86bf66659ae3f300aa806bebafe4078cef874c",
+          "functions/forward.stablehlo.bc": "9458e730d6db3067f8570743725503ee3e512099e46debde21ab69e1bebe485d"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+          "modules/module_00000.so": "403da6e98f10079cbc3860e86ba4d65cf00b6ac8952f8f0051a99b3dd96a77b8"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-fp16-packed40-no-card.log",
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-fp16-packed40-compile.log",
+        "planned_memory_guard_bytes": 20800
+      },
+      {
+        "name": "gemm4096-bf16",
+        "source_sha256": {
+          "functions/forward.meta": "6cdfbd1680fd9543dd287efde185d12a2366d3300240abb8e28befa5c8ac1cb0",
+          "functions/forward.stablehlo.bc": "bcd022f90de143ace20093fd2acc522cbe66049eb3288de26d8843832cee0c1a"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+          "modules/module_00000.so": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-bf16-packed40-no-card.log",
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-bf16-packed40-compile.log",
+        "planned_memory_guard_bytes": 20800
+      },
+      {
+        "name": "gemm4097-fp16",
+        "source_sha256": {
+          "functions/forward.meta": "9c083b4428da5fe73fd590d03847ca0ecb55454e39aeb8b1ec89abbadbd285d3",
+          "functions/forward.stablehlo.bc": "8d04d9c70898810c603d80f099fc3adb88da088af2f2574511d43c65678cfce2"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "884d48520300d8a6ecdf0976d1f210490462363f6222151ded86618d02005176",
+          "modules/module_00000.so": "914d9f63b1c05577c2cd12f1c9f5ac7733e4b16fc425b4b5e2304532b79575bd"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4097-fp16-packed40-no-card.log",
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4097-fp16-packed40-compile.log",
+        "planned_memory_guard_bytes": 21562
+      },
+      {
+        "name": "attention2048-bf16",
+        "source_sha256": {
+          "constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+          "constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+          "constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+          "functions/forward.meta": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+          "functions/forward.stablehlo.bc": "0eebf1e15f9fe1e2c09d3e23ae0a9ea9aa1b7abd684f3645a7b069a653e96223"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+          "manifest.json": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+          "modules/module_00000.so": "1f87ea33ea764406caf9dd9bf1ffaf61db584f1731ecc39771c84e939763ac6a"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/attention2048-bf16-packed40-no-card.log",
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/attention2048-bf16-packed40-compile.log",
+        "planned_memory_guard_bytes": 10752
+      }
+    ],
+    "host_checks": {
+      "conversion_tests": 48,
+      "tile_to_instr_and_organization_lit": 35,
+      "systemc_full_output_cases": 6,
+      "steady_state_joins": 0,
+      "driver_direct_tests": 4,
+      "sliding_attention_model_cases": 4,
+      "profile_runtime_tests": 22,
+      "canonical_incremental_build": true,
+      "ninja_noop": true
+    },
+    "board_execution": false,
+    "qualification": "主机机制及四项新包guard no-card通过；完整包与本轮首批实卡逐字节一致，不代签两项BF16性能或LM产品资格。",
+    "lm1025_attempt": {
+      "tool_sha256": {
+        "build/bin/wafer-compile": "050b73ead3ef32233833c17dde1c6fe7002f5064ffd413d38fca690c81015666",
+        "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+      },
+      "compile_exit_code": 1,
+      "search": {
+        "mode": "standard",
+        "width": 8,
+        "trials": 42
+      },
+      "rejected_candidates_by_gate": {
+        "spm-allocation": 37,
+        "tile-to-instr": 5
+      },
+      "transaction_wall_ms": 1474312.829,
+      "package_published": false,
+      "board_execution": false,
+      "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing34.log",
+      "qualification": "私有store/memref.copy更新后仍无accepted候选；剩余Tile load/copy_into不支持与actual SPM容量拒绝分别保留。此轮早于DDR reinterpret范围修复，后续编译另记。"
+    }
   }
 }

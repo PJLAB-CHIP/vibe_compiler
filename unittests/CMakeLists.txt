@@ -546,6 +546,20 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorAccessReuseTest)
   target_include_directories(WaferSystemCSimulatorAccessReuseTest PRIVATE
     ${CMAKE_SOURCE_DIR}/unittests)
+  add_executable(WaferSystemCSimulatorPackedUpdateTest
+    Simulator/SystemC/SystemCTargetModelPackedUpdateTest.cpp)
+  llvm_update_compile_flags(WaferSystemCSimulatorPackedUpdateTest)
+  target_link_libraries(WaferSystemCSimulatorPackedUpdateTest PRIVATE
+    WaferSystemCSimulatorTestSupport GTest::gtest)
+  foreach(case RANGE 0 5)
+    add_test(NAME WaferSystemCSimulatorPackedUpdateTest.${case}
+      COMMAND WaferSystemCSimulatorPackedUpdateTest
+        --gtest_filter=Windows/SystemCTargetModelPackedUpdateTest.MainAndTailPreserveNeighbouringBits/${case})
+    set_tests_properties(WaferSystemCSimulatorPackedUpdateTest.${case} PROPERTIES
+      LABELS "systemc-model;managed-dependencies;component"
+      ENVIRONMENT "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}")
+  endforeach()
+  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorPackedUpdateTest)
   add_custom_target(check-wafer-systemc-model
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
       -R "^WaferSystemCSimulator"

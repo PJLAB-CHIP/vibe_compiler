@@ -3,6 +3,15 @@
 #ifndef WAFER_CONVERSION_TILETOINSTR_PASSES_TD
 #define WAFER_CONVERSION_TILETOINSTR_PASSES_TD
 
+def ConvertPrivatePackedUpdatesToInstrPass
+    : Pass<"wafer-convert-private-packed-updates-to-instr", "mlir::func::FuncOp"> {
+  let summary = "Lower private packed BOOL updates with exact neighbouring bits";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "wafer::WaferDialect"];
+}
+
 def ConvertTileRegionToInstrPass
     : Pass<"wafer-convert-tile-region-to-instr", "wafer::TileRegionOp"> {
   let summary = "Convert one executable wafer.tile.region to wafer.instr IR";

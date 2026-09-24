@@ -114,6 +114,10 @@ materializePackedRead(mlir::Operation *owner, mlir::Value source,
                       TileRegionToInstrBufferRecorder *bufferRecorder,
                       MovementDescriptorCache *descriptorCache);
 
+mlir::LogicalResult convertPrivatePackedUpdates(
+    mlir::func::FuncOp function, TileRegionToInstrBufferRecorder *recorder,
+    MovementDescriptorCache &cache, mlir::RewriterBase::Listener *listener);
+
 using CanonicalReshapeMovementRelations = analysis::CanonicalReshapeRelations;
 
 inline std::optional<CanonicalReshapeMovementRelations>
