@@ -208,11 +208,12 @@ bool hasPrivateSequentialStorage(mlir::Value localRoot,
         pending.push_back(
             region.getBody().front().getArgument(use.getOperandNumber()));
       } else if (!mlir::isa<mlir::memref::CopyOp, mlir::memref::DeallocOp,
-                            StorageLoadOp, StorageStoreOp, ComputeFillOp,
-                            ComputeElementwiseOp, ComputeElementwiseIntoOp,
-                            InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp,
-                            InstrTDMADataMoveOp, InstrFillOp, InstrBit2FpOp,
-                            InstrElementwiseOp>(operation)) {
+                            StorageLoadOp, StorageStoreOp, MoveCopyIntoOp,
+                            ComputeFillOp, ComputeElementwiseOp,
+                            ComputeElementwiseIntoOp, InstrRDMAOp, InstrWDMAOp,
+                            InstrGatherScatterOp, InstrTDMADataMoveOp,
+                            InstrFillOp, InstrBit2FpOp, InstrElementwiseOp>(
+                     operation)) {
         // In particular, calls, returns, pointer exposure, peer transfers and
         // unproved loop-carried aliases do not establish private storage.
         return false;
@@ -377,10 +378,10 @@ template <typename Op> struct PrivatePackedUpdate : mlir::OpRewritePattern<Op> {
   matchAndRewrite(Op operation,
                   mlir::PatternRewriter &rewriter) const override {
     mlir::Value destination;
-    if constexpr (std::is_same_v<Op, StorageStoreOp>)
-      destination = operation.getDest();
-    else
+    if constexpr (std::is_same_v<Op, mlir::memref::CopyOp>)
       destination = operation.getTarget();
+    else
+      destination = operation.getDest();
     return materializePrivateUpdate(operation, operation.getSource(),
                                     destination, function, rewriter, recorder,
                                     *cache);
@@ -397,7 +398,8 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertPrivatePackedUpdates(
     MovementDescriptorCache &cache, mlir::RewriterBase::Listener *listener) {
   llvm::SmallVector<mlir::Operation *> operations;
   function.walk([&](mlir::Operation *operation) {
-    if (!mlir::isa<StorageStoreOp, mlir::memref::CopyOp>(operation))
+    if (!mlir::isa<StorageStoreOp, MoveCopyIntoOp, mlir::memref::CopyOp>(
+            operation))
       return;
     auto source =
         mlir::dyn_cast<mlir::MemRefType>(operation->getOperand(0).getType());
@@ -408,6 +410,7 @@ mlir::LogicalResult wafer::tile_region_to_instr::convertPrivatePackedUpdates(
     return mlir::success();
   mlir::RewritePatternSet patterns(function.getContext());
   patterns.add<PrivatePackedUpdate<StorageStoreOp>,
+               PrivatePackedUpdate<MoveCopyIntoOp>,
                PrivatePackedUpdate<mlir::memref::CopyOp>>(
       function.getContext(), function, recorder, &cache);
   mlir::GreedyRewriteConfig config;

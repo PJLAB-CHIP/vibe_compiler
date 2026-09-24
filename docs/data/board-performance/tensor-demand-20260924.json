@@ -1596,5 +1596,123 @@
       "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-packed-timing34.log",
       "qualification": "私有store/memref.copy更新后仍无accepted候选；剩余Tile load/copy_into不支持与actual SPM容量拒绝分别保留。此轮早于DDR reinterpret范围修复，后续编译另记。"
     }
+  },
+  "lm1024_profile_followup": {
+    "case": "llama-2-7b-single-layer-lm-1024",
+    "dtype": "float16",
+    "seed": 20260803,
+    "tool_sha256": {
+      "build/bin/wafer-compile": "050b73ead3ef32233833c17dde1c6fe7002f5064ffd413d38fca690c81015666",
+      "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
+    },
+    "command": [
+      "/home/ubuntu/hxf_dev/vibe_compiler/third_party/python-importer/bin/python",
+      "-B",
+      "/home/ubuntu/hxf_dev/vibe_compiler/test/Board/PyTorch/wafer_board_pytorch_test.py",
+      "--case",
+      "llama-2-7b-single-layer-lm-1024",
+      "--dtype",
+      "float16",
+      "--seed",
+      "20260803",
+      "--wafer-compile",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/bin/wafer-compile",
+      "--wafer-run",
+      "/home/ubuntu/hxf_dev/vibe_compiler/build/board-bin/wafer-run",
+      "--work-dir",
+      "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-packed-timing34",
+      "--optimization-policy",
+      "search",
+      "--search-mode",
+      "standard",
+      "--search-width",
+      "8",
+      "--search-trials",
+      "42",
+      "--compile-timing",
+      "--compile-timeout-seconds",
+      "3600",
+      "--dump-compiler-ir",
+      "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-packed-timing34/compiler-ir",
+      "--memory-guards",
+      "--kernel-timing",
+      "--no-card"
+    ],
+    "harness_exit_code": 0,
+    "transaction_wall_ms": 1512046.364,
+    "reference_wall_ms": 504336,
+    "payload_wall_ms": 299,
+    "source_sha256": {
+      "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+      "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+      "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+      "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+      "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+      "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+      "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+      "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+      "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+      "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+      "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a",
+      "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+      "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+      "functions/forward.meta": "96dd9df1f7374940f06ab1d3c276d9bae42062ac81eb3fd3ff0c915995782ab2",
+      "functions/forward.stablehlo.bc": "de0aa30b44472199af879695146f0e3582046f8887cfadb02a863e4e2677911e"
+    },
+    "delivery_sha256": {
+      "package/data/program-data.bin": "2d29b37938a6e0dcbf8da7448f0b3c6bd21394e5f70c07ca4f6d0fcb6de7f322",
+      "package/manifest.json": "3528e7c540e7179bc67fcedfbfd470707b873bb1d692ca8472a0dd4098e69433",
+      "package/modules/module_00000.so": "5c01963ef6cc00f940f5e5c06be829c18ef85be74876d21aa8564e268304473e",
+      "package.profile/activation.json": "870a03ca9df686afe97a148ab6c602ea8a8929432dac054b5cf33f7f5a7e980c",
+      "package.profile/captures/count/data/program-data.bin": "2d29b37938a6e0dcbf8da7448f0b3c6bd21394e5f70c07ca4f6d0fcb6de7f322",
+      "package.profile/captures/count/manifest.json": "c251e74e6e3e2199611b20620b14562480b30ce35ff2afa7cd2a1d7683e032c3",
+      "package.profile/captures/count/modules/module_00000.so": "e8eaf2032e66201d6585f4c56b2c9c7c4fc7c943613a072ebeb5f3acf9a9d312",
+      "package.profile/captures/timing/data/program-data.bin": "2d29b37938a6e0dcbf8da7448f0b3c6bd21394e5f70c07ca4f6d0fcb6de7f322",
+      "package.profile/captures/timing/manifest.json": "438964c2400a7e646ffdff1cdf38847e17cb51a3c27d1fe2f41b6df9d352ce30",
+      "package.profile/captures/timing/modules/module_00000.so": "5b7cfe27534de0228ba15ba4478696cd69e2c5afddde77e0e94a61dcbe64f56b",
+      "package.profile/captures/trace/data/program-data.bin": "2d29b37938a6e0dcbf8da7448f0b3c6bd21394e5f70c07ca4f6d0fcb6de7f322",
+      "package.profile/captures/trace/manifest.json": "7a42e8efd1b546aa38220c7e761f03ec4e7802e25c820927f7a81a4180a5f997",
+      "package.profile/captures/trace/modules/module_00000.so": "e8eaf2032e66201d6585f4c56b2c9c7c4fc7c943613a072ebeb5f3acf9a9d312",
+      "package.profile/plan.json": "2cdb9ecd857bb6cae7b38374687f0a07eee786a9d475b8a1d57f1d39e0714bfa",
+      "package.profile/site-map.json": "e1faaf141d58851f5cae2b5b3a5e5f1d3af3b0d3512f9ba597bc64d5ae4c6f96"
+    },
+    "profile_json_bytes": {
+      "site-map.json": 14052470,
+      "activation.json": 334,
+      "plan.json": 20377
+    },
+    "profile_json_limit_bytes": 16777216,
+    "target_call_sites": 44616,
+    "capture_count": 3,
+    "input": {
+      "dtype": "i64",
+      "shape": [
+        1,
+        1024
+      ],
+      "minimum": 0,
+      "maximum": 31999,
+      "repeated_ids": true,
+      "sha256": "2d6f42d5d224744954334ac6aa20b77cfef533f4a247eb29342ebe9f77ecfd6a"
+    },
+    "expected": {
+      "dtype": "f16",
+      "shape": [
+        1,
+        1024,
+        32000
+      ],
+      "bytes": 65536000,
+      "sha256": "77c14e2ae8a48441976603fbcf5499afa890d12af0d0aa7cd20d0c760152ab3f"
+    },
+    "guard_no_card_passed": true,
+    "planned_memory_guard_bytes": 390272,
+    "kernel_timing_ready": true,
+    "board_execution": false,
+    "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-packed-timing34.log",
+    "qualification": "本轮完整source/reference、普通及count/trace/timing包、guard no-card通过；材料已准备。实卡仍等待原计划性能保护和S1025产品前置。"
   }
 }

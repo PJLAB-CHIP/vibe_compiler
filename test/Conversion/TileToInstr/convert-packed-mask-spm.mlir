@@ -1,7 +1,7 @@
 // RUN: split-file %s %t
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr %t/full.mlir | FileCheck %s --check-prefix=FULL
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr %t/partial.mlir | FileCheck %s --check-prefix=PARTIAL
-// RUN: not wafer-opt --wafer-lower-tile-region-to-instr %t/unaligned.mlir 2>&1 | FileCheck %s --check-prefix=UNALIGNED
+// RUN: wafer-opt --wafer-lower-tile-region-to-instr %t/unaligned.mlir | FileCheck %s --check-prefix=UNALIGNED
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr --wafer-lower-instr-to-target-llvm %t/dynamic.mlir | FileCheck %s --check-prefix=DYNAMIC
 // RUN: wafer-opt --wafer-lower-tile-region-to-instr --wafer-lower-instr-to-target-llvm %t/strided.mlir | FileCheck %s --check-prefix=STRIDED
 
@@ -133,7 +133,16 @@ func.func @unaligned() {
   }
   return
 }
-// UNALIGNED: failed to legalize operation 'wafer.tile.copy_into'
+// UNALIGNED: wafer.instr.gather_scatter
+// UNALIGNED-SAME: byte_count = 129 : i64
+// UNALIGNED-COUNT-2: wafer.instr.bit2fp
+// UNALIGNED: wafer.instr.gather_scatter
+// UNALIGNED-SAME: byte_count = 2048 : i64
+// UNALIGNED-SAME: dst_offset = 2 : i64
+// UNALIGNED: wafer.instr.elementwise <ne>
+// UNALIGNED: wafer.instr.gather_scatter
+// UNALIGNED-SAME: byte_count = 129 : i64
+// UNALIGNED-NOT: wafer.tile.copy_into
 
 //--- dynamic.mlir
 func.func @dynamic() {

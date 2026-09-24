@@ -551,7 +551,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   llvm_update_compile_flags(WaferSystemCSimulatorPackedUpdateTest)
   target_link_libraries(WaferSystemCSimulatorPackedUpdateTest PRIVATE
     WaferSystemCSimulatorTestSupport GTest::gtest)
-  foreach(case RANGE 0 5)
+  foreach(case RANGE 0 8)
     add_test(NAME WaferSystemCSimulatorPackedUpdateTest.${case}
       COMMAND WaferSystemCSimulatorPackedUpdateTest
         --gtest_filter=Windows/SystemCTargetModelPackedUpdateTest.MainAndTailPreserveNeighbouringBits/${case})

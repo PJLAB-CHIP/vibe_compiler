@@ -1245,10 +1245,11 @@ TEST(LowerInstrToTargetLLVMTest,
   for (int64_t rows : {1024, 1025, 1031})
     for (int64_t column = 0; column < 8; ++column)
       for (bool dynamic : {false, true})
-        for (bool local : {false, true}) {
+        for (unsigned movement : {0u, 1u, 2u}) {
+          bool local = movement != 0;
           SCOPED_TRACE(
-              llvm::formatv("rows={0}, col={1}, dynamic={2}, local={3}", rows,
-                            column, dynamic, local)
+              llvm::formatv("rows={0}, col={1}, dynamic={2}, movement={3}",
+                            rows, column, dynamic, movement)
                   .str());
           mlir::DialectRegistry registry;
           registerTargetConversionDialects(registry);
@@ -1311,7 +1312,9 @@ TEST(LowerInstrToTargetLLVMTest,
                                        wafer::MemLayout::Tensor));
             auto source =
                 builder.create<mlir::memref::AllocOp>(loc, sourceType);
-            if (local)
+            if (movement == 2)
+              builder.create<wafer::MoveCopyIntoOp>(loc, source, view);
+            else if (local)
               builder.create<mlir::memref::CopyOp>(loc, source, view);
             else
               builder.create<wafer::StorageStoreOp>(loc, source, view);
@@ -1339,6 +1342,7 @@ TEST(LowerInstrToTargetLLVMTest,
               wafer::convertTileRegionToInstr(region, session)));
           ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
           EXPECT_EQ(countOps<wafer::StorageStoreOp>(*module), 0u);
+          EXPECT_EQ(countOps<wafer::MoveCopyIntoOp>(*module), 0u);
           EXPECT_EQ(countOps<mlir::memref::CopyOp>(*module), 0u);
           EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(*module), 0u);
 

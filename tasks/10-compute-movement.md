@@ -187,7 +187,7 @@ Instr、DDR/SPM规划及SystemC exact后，原ViT完整package/no-card与实卡�
 
 ### 私有packed BOOL更新
 
-输入为current Tile store或SPM `memref.copy`：source是连续且已证明byte-aligned的SPM BOOL，
+输入为current Tile store、SPM `tile.copy_into`或`memref.copy`：source是连续且已证明byte-aligned的SPM BOOL，
 destination是Tensor布局的静态正stride BOOL view，shape与source相同。该层负责在保持原packed布局的条件下
 精确更新这些逻辑bit；输出为原Instr搬运、Bit2Fp、GatherScatter和非零比较，以及具有原movement owner的实际scratch。
 直接下游为唯一completion、DDR/SPM规划和target lowering。私有性需要完整alias/use closure，
@@ -217,7 +217,7 @@ view与effect语义按[MLIR MemRef](https://mlir.llvm.org/docs/Dialects/MemRef/)
 | 输入等价类 / 分支 | Exact要求及失败边界 | 直接下游 |
 | --- | --- | --- |
 | rank3/4、1024/1025/1031行、所有模8起点、静态/SCF动态main和tail | source每bit恰好一次，目的邻接bits/holes/padding逐bit不变；窗口不越界 | actual descriptor独立oracle、Instr verifier及target |
-| 私有DDR store / 私有SPM copy、region实参和嵌套view | 实际alias/use closure、实际scratch owner与动态执行次数；新旧byte路径分别覆盖 | 唯一DDR/SPM规划、completion及完整numeric model |
+| 私有DDR store / 私有SPM copy_into及memref.copy、region实参和嵌套view | 三个producer使用同一更新实现；实际alias/use closure、实际scratch owner与动态执行次数；新旧byte路径分别覆盖 | 唯一DDR/SPM规划、completion及完整numeric model |
 | 外部目的参数、未知/逃逸use、动态余数未知、越界或非injective目的 | mutation前typed拒绝，原IR完整，不误签容量 | verifier-valid负例及原整字节正例 |
 | 原完整LM S1025及四项性能保护 | source、数值语义、输出、搜索预算不变；完整日志保留其它独立失败 | fresh package/reference/guard no-card，再依当前板测顺序实卡 |
 

@@ -128,7 +128,9 @@ expected为完整`[1,1024,32000]` FP16、65536000字节，规划guard为383040�
 按用户后加的统一计时要求，正式入口生成15号companion，但首轮在profile JSON超过16 MiB时拒绝发布；
 四套target已生成，transaction按合同回滚。后续writer改为紧凑JSON并保留同一预算，产品profile/no-card及
 22项reader检查通过；完整S1024普通包及count/trace/timing三种companion已实际生成，site-map为14052470字节，
-plan为20377字节，均处于原16 MiB预算内；本轮完整reference及guard no-card仍在执行。保持原8/42预算，profile多产物的主机deadline显式为3600秒，
+plan为20377字节，均处于原16 MiB预算内。本轮正式PyTorch入口的完整reference（504336 ms）、payload和guard no-card通过；
+实际44616 sites、三种capture、16 Tile与kernel timing合同校验通过，guard规划为390272字节；未执行实卡。
+保持原8/42预算，profile多产物的主机deadline显式为3600秒，
 不改设备timeout。
 S1025五次候选的只读诊断确认：完整BOOL写回可降低；切为512列后，actual私有DDR allocation的
 stride仍为1025，main与1列tail都含非字节对齐写回。诊断使用独立限额，不作为正式8/42资格；
@@ -150,6 +152,11 @@ DDR/SPM × 1024/1025/1031六项全输出逐字节一致，动态主循环join为
 私有更新后的S1025正式8/42仍未产包：37次actual SPM capacity和5次Tile→Instr拒绝，transaction为1474312.829 ms；
 剩余失败涉及Tile load/copy_into。该轮早于DDR reinterpret范围修复，最新构建的复验另记，不能合并为同一编译器身份。
 这些检查只签主机机制边界；两项LM产品与四项保护的板端门槛继续保留。
+
+copy_into接续复用同一私有更新实现，补入实际alias/use closure；没有第二套bit插入或存储合同。
+三类producer的逐bit主尾块检查通过，DDR store/SPM memref.copy/SPM copy_into × 1024/1025/1031的
+九项16 Tile完整模型通过，动态主循环join仍为零；Tile→Instr 33项lit及canonical/no-op通过。
+该补齐尚未代签S1025产品资格；后续正式构包保留独立身份和原8/42预算。
 
 两项BF16的唯一有界追加组三次已结束：4096 GEMM为7.322/7.469/7.252ms，中位数7.322ms；
 2048 attention为3.733/3.719/3.811ms，中位数3.733ms。完整数值、guard、16 Tile completion、清理和健康均通过，

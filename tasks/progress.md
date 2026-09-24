@@ -25,11 +25,11 @@ Driver按父SSA和实际读取组维护完整共享/局部选择；跨retile绑�
 standard实现轮转已修复并验证。尾块的实际单次循环scope保留至Tensor选择消费，layout入口再展开；
 主尾块全组绑定及逐坐标覆盖通过。完整S1024已在原standard 8/42预算内通过actual SPM和目标后端并生成普通package；
 完整reference/payload及普通guard no-card已通过；15号计时companion此前因profile metadata超过JSON预算而打包失败。
-Writer已改为紧凑JSON、保留原预算并通过产品及reader边界测试；完整S1024计时包已生成，完整reference及guard no-card在执行，实卡尚未执行。
+Writer已改为紧凑JSON、保留原预算并通过产品及reader边界测试；完整S1024计时包、完整reference及guard no-card已通过，实卡尚未执行。
 S1025的output publication与BoundaryMovement降rank缺陷已修复；正式8/42复验仍未生成package，
 20次SPM、12次Tile→Instr及10次选择绑定拒绝。已按10号补齐私有packed-i1更新，并按12号修复动态窗口经过
 reinterpret_cast的DDR范围证明；逐bit覆盖、私有性拒绝及16 Tile完整数值模型通过。私有更新后的复验仍有
-actual SPM与Tile load/copy_into拒绝；最新DDR修复构建的正式构包仍待结果，
+actual SPM与Tile load/copy_into拒绝；copy_into已接入同一更新实现并通过逐bit与完整数值模型，最新正式构包仍待结果，
 不放松覆盖证明、不在lowering改tile，也不代签S1025产品资格。
 
 四项性能保护的新source/reference/package及guard no-card通过；首轮12次及有界追加6次实卡完整数值、guard及健康通过。

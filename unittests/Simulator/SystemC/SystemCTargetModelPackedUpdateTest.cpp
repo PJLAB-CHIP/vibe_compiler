@@ -36,7 +36,8 @@ frontend::ProgramBoundaryBinding boundary(int64_t index,
   return result;
 }
 
-std::string makeInput(int64_t rows, bool local) {
+std::string makeInput(int64_t rows, unsigned movement) {
+  bool local = movement != 0;
   std::string text;
   llvm::raw_string_ostream out(text);
   auto tensor = [](int64_t batches, int64_t rows, int64_t columns,
@@ -97,7 +98,10 @@ std::string makeInput(int64_t rows, bool local) {
           << "] [1, " << count
           << ", 32] [1, 1, 1] : " << (local ? localBits : initial) << " to "
           << view(39, local ? "spm" : "ddr") << " ";
-      if (local)
+      if (movement == 2)
+        out << "wafer.tile.copy_into %values" << tag << " into %write" << tag
+            << " : " << compact << " into " << view(39, "spm") << " ";
+      else if (local)
         out << "memref.copy %values" << tag << ", %write" << tag << " : "
             << compact << " to " << view(39, "spm") << " ";
       else
@@ -130,17 +134,17 @@ std::string makeInput(int64_t rows, bool local) {
 }
 
 class SystemCTargetModelPackedUpdateTest
-    : public ::testing::TestWithParam<std::tuple<int64_t, bool>> {};
+    : public ::testing::TestWithParam<std::tuple<int64_t, unsigned>> {};
 
 TEST_P(SystemCTargetModelPackedUpdateTest,
        MainAndTailPreserveNeighbouringBits) {
-  auto [rows, local] = GetParam();
+  auto [rows, movement] = GetParam();
   mlir::DialectRegistry registry;
   registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
   context->loadAllAvailableDialects();
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(makeInput(rows, local),
-                                                        context.get());
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      makeInput(rows, movement), context.get());
   ASSERT_TRUE(module);
   auto boolean = llvm::cantFail(parseProgramElementType("i1"));
   frontend::FrontendProgramVerificationResult program;
@@ -221,7 +225,7 @@ INSTANTIATE_TEST_SUITE_P(Windows, SystemCTargetModelPackedUpdateTest,
                          ::testing::Combine(::testing::Values(int64_t(1024),
                                                               int64_t(1025),
                                                               int64_t(1031)),
-                                            ::testing::Bool()));
+                                            ::testing::Values(0u, 1u, 2u)));
 } // namespace
 
 extern "C" int sc_main(int argc, char **argv) {
