@@ -171,6 +171,8 @@ source与出口必须通过current-root alias证明不重叠，未知alias或动
 已停止当时的主机构包，不计入正式资格。补齐结构固定点：单load直接写入自身allocation的既有紧凑staging不改写，
 新增staging也不会再次匹配。修复后StructuredToTile全部66项实际通过（31591 ms），六项SystemC再次通过；
 canonical/no-op及两项源码/IR组织检查通过，临时捕获已撤除，原8/42的新正式构包正在执行。
+四项性能保护再次构包和guard no-card通过，与本轮已板测包逐字节一致；原基线摘要核对中，三个GEMM完整包以及
+attention ELF/manifest均一致。该只读证据排除了这些交付字节的变化，不能证明实际计时相同或代签两项BF16性能门槛。
 
 两项BF16的唯一有界追加组三次已结束：4096 GEMM为7.322/7.469/7.252ms，中位数7.322ms；
 2048 attention为3.733/3.719/3.811ms，中位数3.733ms。完整数值、guard、16 Tile completion、清理和健康均通过，

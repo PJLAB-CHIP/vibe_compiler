@@ -39,7 +39,8 @@ DDR范围修复后的正式复验仍为37次SPM及5次Tile→Instr拒绝；独�
 四项性能保护的新source/reference/package及guard no-card通过；首轮12次及有界追加6次实卡完整数值、guard及健康通过。
 两项FP16 GEMM性能通过；BF16 GEMM/attention中位数7.308/3.710ms高于7.271/3.649ms门槛，保留未通过。
 主机编译/回归结束后的唯一追加组三次中位数为7.322/3.733ms，两项仍未通过；不继续重复到出现快样本。
-后续轮转、view、输出降rank及尾scope修复后的四项包均与本轮已板测包逐字节相同，不能据此代签时间门槛。
+本次混合writer修复后的四项新包及guard no-card通过，包与本轮已板测包逐字节相同；
+三个GEMM完整包与原性能基线摘要一致，attention ELF/manifest也一致，仍不能据此代签时间门槛。
 通用reshape的常数floor/mod周期、累计预算审查、两项性能门槛及S1024/1025产品和实卡仍待闭合。
 此检查点不改变`board-testing`的`doing`状态，覆盖和完整证据见
 [子集物化计划](plans/tensor-subset-materialization.md)。

@@ -1716,7 +1716,7 @@
     "qualification": "本轮完整source/reference、普通及count/trace/timing包、guard no-card通过；材料已准备。实卡仍等待原计划性能保护和S1025产品前置。"
   },
   "mixed_output_writers_followup": {
-    "recorded_utc": "2026-09-24T05:54:07.975760+00:00",
+    "recorded_utc": "2026-09-24T06:02:16.243206+00:00",
     "implementation": "BoundaryMovement streams actual copy/load writers through compact current-IR staging; current-root NoAlias proof preserves source snapshots",
     "prior_formal_attempt": {
       "tool_sha256": {
@@ -1820,7 +1820,7 @@
       "direct_load_staging_fixed_point": true
     },
     "board_execution": false,
-    "qualification": "主机机制检查通过；S1025正式产品复验另记，未完成板端资格。",
+    "qualification": "本轮主机机制及四项新包guard no-card通过；新包与本轮首批实卡逐字节一致，GEMM完整包及attention ELF/manifest也与原基线摘要一致。两项BF16计时仍超门槛，不能由代码等价代签。S1025正式产品复验另记，未完成板端资格。",
     "stopped_attempt": {
       "tools_sha256": {
         "build/bin/wafer-compile": "1234dfdef6f968b0618d9cc45c6c9cf4760188026139922fd0759369641a3607",
@@ -1833,6 +1833,95 @@
     "tool_sha256": {
       "build/bin/wafer-compile": "ea5780ed1c1a9458224522ed53343ed14b186c906c0e25c99c512ab82ba36b04",
       "build/board-bin/wafer-run": "a7e1c72a50a0a344d6c0c50d6f474c7eb2ff1aa74142a0182f0e23851f3becd7"
-    }
+    },
+    "guard_packages": [
+      {
+        "name": "gemm4096-fp16",
+        "source_sha256": {
+          "functions/forward.meta": "902aa6d51ba7e700d15451474a86bf66659ae3f300aa806bebafe4078cef874c",
+          "functions/forward.stablehlo.bc": "9458e730d6db3067f8570743725503ee3e512099e46debde21ab69e1bebe485d"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+          "modules/module_00000.so": "403da6e98f10079cbc3860e86ba4d65cf00b6ac8952f8f0051a99b3dd96a77b8"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-fp16-packed47-compile.log",
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-fp16-packed47-no-card.log",
+        "baseline_comparison": {
+          "record": "board-regression-20260922.json",
+          "name": "single-card-gemm-4096-float16",
+          "package_sha256_equal": true
+        }
+      },
+      {
+        "name": "gemm4096-bf16",
+        "source_sha256": {
+          "functions/forward.meta": "6cdfbd1680fd9543dd287efde185d12a2366d3300240abb8e28befa5c8ac1cb0",
+          "functions/forward.stablehlo.bc": "bcd022f90de143ace20093fd2acc522cbe66049eb3288de26d8843832cee0c1a"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+          "modules/module_00000.so": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-bf16-packed47-compile.log",
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4096-bf16-packed47-no-card.log",
+        "baseline_comparison": {
+          "record": "board-regression-20260922.json",
+          "name": "single-card-gemm-4096-bfloat16",
+          "package_sha256_equal": true
+        }
+      },
+      {
+        "name": "gemm4097-fp16",
+        "source_sha256": {
+          "functions/forward.meta": "9c083b4428da5fe73fd590d03847ca0ecb55454e39aeb8b1ec89abbadbd285d3",
+          "functions/forward.stablehlo.bc": "8d04d9c70898810c603d80f099fc3adb88da088af2f2574511d43c65678cfce2"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "884d48520300d8a6ecdf0976d1f210490462363f6222151ded86618d02005176",
+          "modules/module_00000.so": "914d9f63b1c05577c2cd12f1c9f5ac7733e4b16fc425b4b5e2304532b79575bd"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4097-fp16-packed47-compile.log",
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/gemm4097-fp16-packed47-no-card.log",
+        "baseline_comparison": {
+          "record": "board-regression-20260922.json",
+          "name": "single-card-gemm-tail-4097-float16",
+          "package_sha256_equal": true
+        }
+      },
+      {
+        "name": "attention2048-bf16",
+        "source_sha256": {
+          "constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+          "constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+          "constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+          "functions/forward.meta": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+          "functions/forward.stablehlo.bc": "0eebf1e15f9fe1e2c09d3e23ae0a9ea9aa1b7abd684f3645a7b069a653e96223"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+          "manifest.json": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+          "modules/module_00000.so": "1f87ea33ea764406caf9dd9bf1ffaf61db584f1731ecc39771c84e939763ac6a"
+        },
+        "same_package_as_current": true,
+        "guard_no_card_passed": true,
+        "compile_log": "/data/vibe_compiler-validation/tensor-demand-20260924/attention2048-bf16-packed47-compile.log",
+        "no_card_log": "/data/vibe_compiler-validation/tensor-demand-20260924/attention2048-bf16-packed47-no-card.log",
+        "baseline_comparison": {
+          "record": "attention-fixed-arguments-20260922.json",
+          "elf_sha256_equal": true,
+          "manifest_sha256_equal": true
+        }
+      }
+    ]
   }
 }
