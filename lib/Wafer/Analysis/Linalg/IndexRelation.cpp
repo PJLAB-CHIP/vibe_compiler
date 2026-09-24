@@ -4,9 +4,11 @@
 
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <functional>
 #include <limits>
 
 using namespace mlir;
@@ -495,12 +497,850 @@ getRowMajorStrides(llvm::ArrayRef<int64_t> shape) {
 
 } // namespace
 
+namespace {
+// Bound the pinned flattener before calling it: it has no interruptible work
+// callback and uses signed 64-bit coefficient rows. Count expression visits
+// (including repeated subtrees), quotient locals and dense row operations.
+static IndexRelationStatus
+reserveAffineFlattening(llvm::ArrayRef<AffineExpr> expressions, unsigned dims,
+                        IndexRelationWork &work) {
+  const auto &limits = work.getLimits();
+  if (dims > limits.maxVariables ||
+      expressions.size() > limits.maxConstraintsPerDisjunct)
+    return IndexRelationStatus::ResourceExhausted;
+  const llvm::DynamicAPInt maximum(
+      std::min<uint64_t>(limits.maxAbsoluteCoefficient, INT64_MAX / 4));
+  uint64_t nodes = 0, divisions = 0;
+  llvm::DenseSet<AffineExpr> quotientExpressions;
+  IndexRelationStatus status = IndexRelationStatus::Exact;
+  std::function<std::optional<llvm::DynamicAPInt>(AffineExpr, unsigned)> visit =
+      [&](AffineExpr expression,
+          unsigned depth) -> std::optional<llvm::DynamicAPInt> {
+    if (depth >= limits.maxVariables || !work.charge()) {
+      status = IndexRelationStatus::ResourceExhausted;
+      return std::nullopt;
+    }
+    ++nodes;
+    llvm::DynamicAPInt norm(1);
+    if (auto constant = dyn_cast<AffineConstantExpr>(expression)) {
+      norm = llvm::abs(llvm::DynamicAPInt(constant.getValue()));
+    } else if (auto dim = dyn_cast<AffineDimExpr>(expression)) {
+      if (dim.getPosition() >= dims) {
+        status = IndexRelationStatus::Invalid;
+        return std::nullopt;
+      }
+    } else if (auto binary = dyn_cast<AffineBinaryOpExpr>(expression)) {
+      auto lhs = visit(binary.getLHS(), depth + 1);
+      auto rhs = visit(binary.getRHS(), depth + 1);
+      if (!lhs || !rhs)
+        return std::nullopt;
+      if (expression.getKind() == AffineExprKind::Add) {
+        norm = *lhs + *rhs;
+      } else {
+        auto constant = dyn_cast<AffineConstantExpr>(binary.getRHS());
+        if (!constant || (expression.getKind() != AffineExprKind::Mul &&
+                          constant.getValue() <= 0)) {
+          status = IndexRelationStatus::Unsupported;
+          return std::nullopt;
+        }
+        if (expression.getKind() == AffineExprKind::Mul) {
+          norm = *lhs * *rhs;
+        } else {
+          norm = *lhs + *rhs + 1;
+          // The pinned flattener interns an identical quotient expression
+          // through findLocalId. Repeated visits still cost work, but do not
+          // require another Presburger variable or another pair of bounds.
+          divisions += quotientExpressions.insert(expression).second;
+        }
+      }
+    } else {
+      status = IndexRelationStatus::Unsupported;
+      return std::nullopt;
+    }
+    if (norm > maximum || divisions > limits.maxLocalVariablesPerDisjunct ||
+        dims + divisions > limits.maxVariables ||
+        expressions.size() + 2 * divisions > limits.maxConstraintsPerDisjunct) {
+      status = IndexRelationStatus::ResourceExhausted;
+      return std::nullopt;
+    }
+    return norm;
+  };
+  for (auto expression : expressions)
+    if (!visit(expression, 0))
+      return status;
+  uint64_t rows = nodes + divisions * divisions + expressions.size();
+  uint64_t width = dims + divisions + 1;
+  if (rows > UINT64_MAX / width / 2 || !work.charge(2 * rows * width))
+    return IndexRelationStatus::ResourceExhausted;
+  return IndexRelationStatus::Exact;
+}
+
+using Row = llvm::SmallVector<llvm::DynamicAPInt>;
+struct BoundedProjection {
+  IndexRelationStatus status;
+  llvm::SmallVector<Row> inequalities;
+  bool empty = false;
+  std::string reason;
+};
+
+// Integer-tightened rational projection is a sound bound. It can certify
+// emptiness or an interval, never an integer witness or resource legality.
+static BoundedProjection projectIntegerBounds(IntegerRelation current,
+                                              unsigned retained,
+                                              IndexRelationWork &work) {
+  const auto &limits = work.getLimits();
+  auto failProjection = [](llvm::StringRef reason) {
+    return BoundedProjection{
+        IndexRelationStatus::ResourceExhausted, {}, false, reason.str()};
+  };
+  while (true) {
+    unsigned variablesBefore = current.getNumVars();
+    // Preserve fixed integer coordinates before relaxing quotient variables.
+    // Bounds such as 0 <= c <= 0 can otherwise lose c floordiv 64 == 0 when
+    // Fourier-Motzkin chooses the quotient as its first elimination variable.
+    llvm::SmallVector<std::optional<llvm::DynamicAPInt>> lower(
+        current.getNumVars()),
+        upper(current.getNumVars());
+    for (unsigned row = 0; row < current.getNumInequalities(); ++row) {
+      if (!work.charge(current.getNumVars() + 1))
+        return failProjection(
+            "domain proof exceeded its fixed-coordinate budget");
+      std::optional<unsigned> axis;
+      bool multiple = false;
+      for (unsigned col = 0; col < current.getNumVars(); ++col) {
+        if (current.atIneq(row, col) == 0)
+          continue;
+        if (axis) {
+          multiple = true;
+          break;
+        }
+        axis = col;
+      }
+      if (!axis || multiple)
+        continue;
+      auto coefficient = current.atIneq(row, *axis);
+      auto constant = current.atIneq(row, current.getNumVars());
+      if (coefficient > 0) {
+        auto value = llvm::ceilDiv(-constant, coefficient);
+        if (!lower[*axis] || value > *lower[*axis])
+          lower[*axis] = value;
+      } else {
+        auto value = llvm::floorDiv(constant, -coefficient);
+        if (!upper[*axis] || value < *upper[*axis])
+          upper[*axis] = value;
+      }
+    }
+    // Propagate known integer intervals through the current inequalities
+    // before eliminating quotient locals. For example 0<=c<=31 implies
+    // floor(c/128)=0; relaxing that local first loses the no-carry proof.
+    // A fixed number of sweeps is sufficient for sound bounds; convergence
+    // is only an optimization and is not required for correctness.
+    for (unsigned sweep = 0; sweep < current.getNumVars(); ++sweep) {
+      bool changed = false;
+      for (unsigned row = 0; row < current.getNumInequalities(); ++row) {
+        for (unsigned axis = 0; axis < current.getNumVars(); ++axis) {
+          if (!work.charge())
+            return failProjection("domain proof exceeded its propagation budget");
+          auto coefficient = current.atIneq(row, axis);
+          if (coefficient == 0)
+            continue;
+          auto rest = current.atIneq(row, current.getNumVars());
+          bool known = true;
+          for (unsigned col = 0; col < current.getNumVars(); ++col) {
+            if (!work.charge())
+              return failProjection("domain proof exceeded its propagation budget");
+            if (col == axis || current.atIneq(row, col) == 0)
+              continue;
+            auto &bound = current.atIneq(row, col) > 0 ? upper[col] : lower[col];
+            if (!bound) {
+              known = false;
+              break;
+            }
+            rest += current.atIneq(row, col) * *bound;
+          }
+          if (!known)
+            continue;
+          if (coefficient > 0) {
+            auto value = llvm::ceilDiv(-rest, coefficient);
+            if (!lower[axis] || value > *lower[axis]) {
+              lower[axis] = value;
+              changed = true;
+            }
+          } else {
+            auto value = llvm::floorDiv(rest, -coefficient);
+            if (!upper[axis] || value < *upper[axis]) {
+              upper[axis] = value;
+              changed = true;
+            }
+          }
+          if (lower[axis] && upper[axis] && *lower[axis] > *upper[axis])
+            return {IndexRelationStatus::SoundBound, {}, true, {}};
+        }
+      }
+      if (!changed)
+        break;
+    }
+    for (unsigned axis = retained; axis < current.getNumVars(); ++axis) {
+      if (!lower[axis] || !upper[axis])
+        continue;
+      if (*lower[axis] > *upper[axis])
+        return {IndexRelationStatus::SoundBound, {}, true, {}};
+      if (*lower[axis] == *upper[axis]) {
+        if (!work.charge(current.getNumVars() + 1) ||
+            current.getNumEqualities() + current.getNumInequalities() >=
+                limits.maxConstraintsPerDisjunct)
+          return failProjection(
+              "domain proof exceeded its fixed-coordinate budget");
+        Row equation(current.getNumVars() + 1);
+        equation[axis] = 1;
+        equation.back() = -*lower[axis];
+        current.addEquality(equation);
+      }
+    }
+    uint64_t remaining = limits.maxConstraintWork - work.getConsumed();
+    uint64_t before = remaining;
+    bool eliminated = eliminateUnitLocals(current, remaining, limits);
+    if (!work.charge(before - remaining) || !eliminated)
+      return failProjection("domain proof exceeded its substitution budget");
+    if (current.getNumVars() == variablesBefore)
+      break;
+  }
+  if (!work.charge(uint64_t(current.getNumInequalities()) *
+                   (current.getNumVars() + 1)))
+    return failProjection(
+        "domain proof exceeded its integer tightening budget");
+  // The pinned IntegerRelation implementation keeps integer tightening
+  // protected. Apply the same coefficient GCD rule with explicit work
+  // accounting before relaxing integer variables for the emptiness proof.
+  for (unsigned row = 0; row < current.getNumInequalities(); ++row) {
+    llvm::DynamicAPInt divisor(0);
+    for (unsigned col = 0; col < current.getNumVars(); ++col)
+      divisor = llvm::gcd(divisor, llvm::abs(current.atIneq(row, col)));
+    if (divisor <= 1)
+      continue;
+    for (unsigned col = 0; col < current.getNumVars(); ++col)
+      current.atIneq(row, col) /= divisor;
+    current.atIneq(row, current.getNumVars()) =
+        llvm::floorDiv(current.atIneq(row, current.getNumVars()), divisor);
+  }
+  // Integer equalities are tested before the rational relaxation.
+  if (current.isEmptyByGCDTest() || current.isObviouslyEmpty())
+    return {IndexRelationStatus::SoundBound, {}, true, {}};
+  llvm::SmallVector<Row> inequalities;
+  for (unsigned i = 0; i < current.getNumInequalities(); ++i)
+    inequalities.emplace_back(current.getInequality(i));
+  for (unsigned i = 0; i < current.getNumEqualities(); ++i) {
+    inequalities.emplace_back(current.getEquality(i));
+    Row negative(current.getEquality(i));
+    for (auto &coefficient : negative)
+      coefficient = -coefficient;
+    inequalities.push_back(std::move(negative));
+  }
+  const llvm::DynamicAPInt maximum(int64_t(limits.maxAbsoluteCoefficient));
+  unsigned variables = current.getNumVars();
+  while (variables > retained) {
+    unsigned axis = retained;
+    uint64_t bestPairs = std::numeric_limits<uint64_t>::max();
+    for (unsigned col = retained; col < variables; ++col) {
+      uint64_t positive = 0, negative = 0;
+      for (const auto &row : inequalities) {
+        if (!work.charge())
+          return failProjection("domain proof exceeded its elimination budget");
+        positive += row[col] > 0;
+        negative += row[col] < 0;
+      }
+      if (positive * negative < bestPairs) {
+        bestPairs = positive * negative;
+        axis = col;
+      }
+    }
+    if (bestPairs > limits.maxConstraintsPerDisjunct)
+      return failProjection("domain proof exceeds its pair budget");
+    llvm::SmallVector<Row> next;
+    auto append = [&](Row row) -> bool {
+      row.erase(row.begin() + axis);
+      if (!work.charge(row.size()))
+        return false;
+      // Projection can expose a common divisor that was hidden by the
+      // eliminated variable. Tighten again before the next rational step,
+      // matching IntegerRelation's Fourier-Motzkin integer relaxation.
+      llvm::DynamicAPInt divisor(0);
+      for (const auto &coefficient : llvm::ArrayRef(row).drop_back())
+        divisor = llvm::gcd(divisor, llvm::abs(coefficient));
+      if (divisor > 1) {
+        for (unsigned i = 0; i + 1 < row.size(); ++i)
+          row[i] /= divisor;
+        row.back() = llvm::floorDiv(row.back(), divisor);
+      }
+      next.push_back(std::move(row));
+      return true;
+    };
+    for (const auto &row : inequalities)
+      if (row[axis] == 0 && !append(row))
+        return failProjection("domain proof exceeded its tightening budget");
+    for (const auto &lower : inequalities) {
+      if (lower[axis] <= 0)
+        continue;
+      for (const auto &upper : inequalities) {
+        if (upper[axis] >= 0)
+          continue;
+        if (!work.charge(variables + 1) ||
+            next.size() >= limits.maxConstraintsPerDisjunct)
+          return failProjection("domain proof exceeded its pair work budget");
+        Row row(variables + 1);
+        for (unsigned i = 0; i <= variables; ++i) {
+          row[i] = lower[i] * -upper[axis] + upper[i] * lower[axis];
+          if (llvm::abs(row[i]) > maximum)
+            return failProjection("domain proof coefficient limit exceeded");
+        }
+        if (!append(std::move(row)))
+          return failProjection("domain proof exceeded its tightening budget");
+      }
+    }
+    inequalities = std::move(next);
+    --variables;
+    for (const auto &row : inequalities)
+      if (row.back() < 0 && llvm::all_of(llvm::ArrayRef(row).drop_back(),
+                                         [](const auto &coefficient) {
+                                           return coefficient == 0;
+                                         }))
+        return {IndexRelationStatus::SoundBound, {}, true, {}};
+  }
+  return {IndexRelationStatus::SoundBound, std::move(inequalities), false, {}};
+}
+} // namespace
+
 unsigned IndexRelation::getDestinationRank() const {
   return relation.getNumDomainVars();
 }
 
+IndexMapResult composeIndexMap(AffineMap outer, AffineMap inner,
+                               IndexRelationWork &work) {
+  auto reject = [](IndexRelationStatus status, llvm::StringRef reason) {
+    return IndexMapResult{status, {}, reason.str()};
+  };
+  if (!outer || !inner || outer.getNumSymbols() || inner.getNumSymbols() ||
+      outer.getNumDims() != inner.getNumResults() ||
+      outer.getContext() != inner.getContext())
+    return reject(IndexRelationStatus::Invalid,
+                  "inconsistent index-map substitution");
+  if (!work.charge())
+    return reject(IndexRelationStatus::ResourceExhausted,
+                  "index-map request budget");
+  auto key = std::make_pair(outer, inner);
+  if (auto found = work.compositions.find(key);
+      found != work.compositions.end())
+    return {IndexRelationStatus::Exact, found->second, {}};
+  const auto &limits = work.getLimits();
+  if (inner.getNumDims() > limits.maxVariables)
+    return reject(IndexRelationStatus::ResourceExhausted,
+                  "index-map dimension limit");
+  struct Complexity {
+    llvm::DynamicAPInt norm;
+    uint64_t nodes;
+    unsigned depth;
+  };
+  const llvm::DynamicAPInt maximum(
+      std::min<uint64_t>(limits.maxAbsoluteCoefficient, INT64_MAX / 4));
+  IndexRelationStatus status = IndexRelationStatus::Exact;
+  std::function<std::optional<Complexity>(AffineExpr,
+                                          llvm::ArrayRef<Complexity>, unsigned)>
+      measure = [&](AffineExpr expression,
+                    llvm::ArrayRef<Complexity> dimensions,
+                    unsigned depth) -> std::optional<Complexity> {
+    if (depth >= limits.maxVariables || !work.charge()) {
+      status = IndexRelationStatus::ResourceExhausted;
+      return std::nullopt;
+    }
+    Complexity result{llvm::DynamicAPInt(1), 1, 1};
+    if (auto constant = dyn_cast<AffineConstantExpr>(expression)) {
+      result.norm = llvm::abs(llvm::DynamicAPInt(constant.getValue()));
+    } else if (auto dim = dyn_cast<AffineDimExpr>(expression)) {
+      if (dim.getPosition() >= dimensions.size()) {
+        status = IndexRelationStatus::Invalid;
+        return std::nullopt;
+      }
+      result = dimensions[dim.getPosition()];
+    } else if (auto binary = dyn_cast<AffineBinaryOpExpr>(expression)) {
+      auto lhs = measure(binary.getLHS(), dimensions, depth + 1);
+      auto rhs = measure(binary.getRHS(), dimensions, depth + 1);
+      if (!lhs || !rhs)
+        return std::nullopt;
+      if (lhs->nodes > UINT64_MAX - rhs->nodes - 1) {
+        status = IndexRelationStatus::ResourceExhausted;
+        return std::nullopt;
+      }
+      result.nodes = lhs->nodes + rhs->nodes + 1;
+      result.depth = std::max(lhs->depth, rhs->depth) + 1;
+      if (expression.getKind() == AffineExprKind::Add) {
+        result.norm = lhs->norm + rhs->norm;
+      } else {
+        auto constant = dyn_cast<AffineConstantExpr>(binary.getRHS());
+        if (!constant || (expression.getKind() != AffineExprKind::Mul &&
+                          constant.getValue() <= 0)) {
+          status = IndexRelationStatus::Unsupported;
+          return std::nullopt;
+        }
+        result.norm = expression.getKind() == AffineExprKind::Mul
+                          ? lhs->norm * rhs->norm
+                          : lhs->norm + rhs->norm + 1;
+      }
+    } else {
+      status = IndexRelationStatus::Unsupported;
+      return std::nullopt;
+    }
+    if (result.norm > maximum || result.depth > limits.maxVariables ||
+        result.nodes > limits.maxConstraintWork) {
+      status = IndexRelationStatus::ResourceExhausted;
+      return std::nullopt;
+    }
+    return result;
+  };
+  llvm::SmallVector<Complexity> input(inner.getNumDims(),
+                                      Complexity{llvm::DynamicAPInt(1), 1, 1});
+  llvm::SmallVector<Complexity> replacements;
+  for (auto expression : inner.getResults()) {
+    auto complexity = measure(expression, input, 0);
+    if (!complexity)
+      return reject(status,
+                    "index-map operand exceeds bounded expression support");
+    replacements.push_back(std::move(*complexity));
+  }
+  for (auto expression : outer.getResults()) {
+    auto complexity = measure(expression, replacements, 0);
+    if (!complexity)
+      return reject(
+          status, "index-map substitution exceeds bounded expression support");
+    uint64_t nodes = complexity->nodes + 1;
+    if (nodes > UINT64_MAX / nodes || !work.charge(nodes * nodes))
+      return reject(
+          IndexRelationStatus::ResourceExhausted,
+          "index-map substitution exceeded its expression work budget");
+  }
+  auto composed = simplifyAffineMap(outer.compose(inner));
+  // Keep integral terms outside quotient/remainder locals. Leaving a term
+  // such as 128*row inside floor((128*row+column)/128) loses its correlation
+  // with row when a later bounded rational proof projects quotient locals.
+  // This identity holds on the whole integer domain, including negatives.
+  llvm::DenseMap<AffineExpr, AffineExpr> divided;
+  std::function<AffineExpr(AffineExpr)> normalize = [&](AffineExpr expr) {
+    if (!work.charge())
+      return AffineExpr{};
+    if (auto found = divided.find(expr); found != divided.end())
+      return found->second;
+    auto binary = dyn_cast<AffineBinaryOpExpr>(expr);
+    if (!binary)
+      return expr;
+    auto lhs = normalize(binary.getLHS());
+    auto rhs = normalize(binary.getRHS());
+    if (!lhs || !rhs)
+      return AffineExpr{};
+    auto result = getAffineBinaryOpExpr(expr.getKind(), lhs, rhs);
+    if (expr.getKind() == AffineExprKind::FloorDiv ||
+        expr.getKind() == AffineExprKind::CeilDiv ||
+        expr.getKind() == AffineExprKind::Mod) {
+      int64_t divisor = cast<AffineConstantExpr>(rhs).getValue();
+      auto quotient = getAffineConstantExpr(0, expr.getContext());
+      auto residual = quotient;
+      llvm::SmallVector<AffineExpr> pending{lhs};
+      while (!pending.empty()) {
+        if (!work.charge())
+          return AffineExpr{};
+        auto term = pending.pop_back_val();
+        if (term.getLargestKnownDivisor() % divisor == 0) {
+          quotient = quotient + term.floorDiv(divisor);
+        } else if (auto sum = dyn_cast<AffineBinaryOpExpr>(term);
+                   sum && term.getKind() == AffineExprKind::Add) {
+          pending.push_back(sum.getRHS());
+          pending.push_back(sum.getLHS());
+        } else {
+          residual = residual + term;
+        }
+      }
+      result = getAffineBinaryOpExpr(expr.getKind(), residual, rhs);
+      if (expr.getKind() != AffineExprKind::Mod)
+        result = quotient + result;
+    }
+    divided.try_emplace(expr, result);
+    return result;
+  };
+  llvm::SmallVector<AffineExpr> results;
+  for (auto expression : composed.getResults()) {
+    auto result = normalize(expression);
+    if (!result)
+      return reject(IndexRelationStatus::ResourceExhausted,
+                    "index-map quotient normalization exceeded its work budget");
+    results.push_back(result);
+  }
+  composed = AffineMap::get(composed.getNumDims(), 0, results,
+                            composed.getContext());
+  work.compositions.try_emplace(key, composed);
+  return {IndexRelationStatus::Exact, composed, {}};
+}
+
+static IndexRelationQueryResult
+proveBooleanConjunctionEmpty(llvm::ArrayRef<IndexDomainCondition> conditions,
+                             unsigned dims, IndexRelationWork &work) {
+  llvm::DenseMap<AffineExpr, unsigned> positive;
+  for (const auto &condition : conditions) {
+    if (!condition.set.getAsOpaquePointer() ||
+        condition.set.getNumDims() != dims || condition.set.getNumSymbols())
+      return failQuery(IndexRelationStatus::Invalid,
+                       "index domain conditions have inconsistent parameters");
+    if (condition.complement)
+      continue;
+    for (auto [expression, equality] : llvm::zip_equal(
+             condition.set.getConstraints(), condition.set.getEqFlags())) {
+      if (!work.charge())
+        return failQuery(IndexRelationStatus::ResourceExhausted,
+                         "domain conjunction exceeded its work budget");
+      if (auto constant = dyn_cast<AffineConstantExpr>(expression))
+        if (equality ? constant.getValue() != 0 : constant.getValue() < 0)
+          return {IndexRelationStatus::Exact, true, {}};
+      positive[expression] |= equality ? 3u : 1u;
+    }
+  }
+  // Retain the source DAG's Boolean sharing before any complement expansion.
+  // A conjunction and its negation are empty even when the positive members
+  // were split across separate block guards. This does not project or relax
+  // an index relation.
+  for (const auto &condition : conditions) {
+    if (!condition.complement)
+      continue;
+    bool contradicted = true;
+    for (auto [expression, equality] : llvm::zip_equal(
+             condition.set.getConstraints(), condition.set.getEqFlags())) {
+      if (!work.charge())
+        return failQuery(IndexRelationStatus::ResourceExhausted,
+                         "domain conjunction exceeded its work budget");
+      if (auto constant = dyn_cast<AffineConstantExpr>(expression))
+        if (equality ? constant.getValue() == 0 : constant.getValue() >= 0)
+          continue;
+      auto found = positive.find(expression);
+      if (found == positive.end() || !(found->second & (equality ? 2u : 1u))) {
+        contradicted = false;
+        break;
+      }
+    }
+    if (contradicted)
+      return {IndexRelationStatus::Exact, true, {}};
+  }
+  return failQuery(IndexRelationStatus::Unsupported,
+                   "Boolean conjunction has no literal contradiction");
+}
+
+IndexRelationQueryResult
+proveIndexDomainEmpty(llvm::ArrayRef<IndexDomainCondition> conditions,
+                      IndexRelationWork &work) {
+  if (conditions.empty())
+    return failQuery(IndexRelationStatus::Unsupported,
+                     "unconstrained index domain is not empty");
+  const auto &limits = work.getLimits();
+  if (conditions.size() > limits.maxConstraintsPerDisjunct)
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "domain proof exceeds its condition depth limit");
+  for (const auto &condition : conditions) {
+    if (!condition.set.getAsOpaquePointer())
+      return failQuery(IndexRelationStatus::Invalid,
+                       "missing index domain condition");
+    // Validate before constructing a complemented expression: negating an
+    // unchecked INT64_MIN coefficient would overflow inside AffineExpr.
+    auto reserved = reserveAffineFlattening(condition.set.getConstraints(),
+                                            condition.set.getNumDims(), work);
+    if (reserved != IndexRelationStatus::Exact)
+      return failQuery(reserved,
+                       "domain condition exceeds bounded expression support");
+  }
+  unsigned dims = conditions.front().set.getNumDims();
+  auto *context = conditions.front().set.getContext();
+  auto literal = proveBooleanConjunctionEmpty(conditions, dims, work);
+  if (literal.status != IndexRelationStatus::Unsupported)
+    return literal;
+  llvm::SmallVector<AffineExpr> constraints;
+  llvm::SmallVector<bool> equalities;
+  llvm::DenseMap<AffineExpr, AffineExpr> normalized, opposites;
+  auto prefixConflict = [&]() -> IndexRelationQueryResult {
+    llvm::DenseSet<AffineExpr> positive;
+    llvm::SmallVector<AffineExpr> ordered;
+    for (auto expression : constraints) {
+      if (!work.charge())
+        return failQuery(IndexRelationStatus::ResourceExhausted,
+                         "domain prefix exceeded its work budget");
+      auto found = normalized.find(expression);
+      if (found == normalized.end()) {
+        auto map =
+            composeIndexMap(AffineMap::getMultiDimIdentityMap(1, context),
+                            AffineMap::get(dims, 0, expression), work);
+        if (!map.isExact())
+          return failQuery(map.status, map.reason);
+        found = normalized.try_emplace(expression, map.map.getResult(0)).first;
+      }
+      expression = found->second;
+      if (auto c = dyn_cast<AffineConstantExpr>(expression)) {
+        if (c.getValue() < 0)
+          return {IndexRelationStatus::Exact, true, {}};
+        continue;
+      }
+      if (positive.insert(expression).second)
+        ordered.push_back(expression);
+    }
+    // e >= 0 and -e-1 >= 0 are already contradictory. Prune that
+    // complement branch before expanding the remaining source domains.
+    for (auto expression : ordered) {
+      auto found = opposites.find(expression);
+      if (found == opposites.end()) {
+        auto map = composeIndexMap(
+            AffineMap::get(1, 0, -getAffineDimExpr(0, context) - 1),
+            AffineMap::get(dims, 0, expression), work);
+        if (!map.isExact())
+          return failQuery(map.status, map.reason);
+        found = opposites.try_emplace(expression, map.map.getResult(0)).first;
+      }
+      if (positive.contains(found->second))
+        return {IndexRelationStatus::Exact, true, {}};
+    }
+    return failQuery(IndexRelationStatus::Unsupported,
+                     "no prefix contradiction");
+  };
+  auto conjunctionEmpty = [&]() -> IndexRelationQueryResult {
+    if (!work.charge(constraints.size() + 1))
+      return failQuery(IndexRelationStatus::ResourceExhausted,
+                       "domain proof exceeded the request work budget");
+    FlatLinearConstraints flat(dims);
+    std::vector<llvm::SmallVector<int64_t, 8>> rows;
+    auto set = constraints.empty()
+                   ? IntegerSet::get(
+                         dims, 0, {getAffineConstantExpr(0, context)}, {true})
+                   : IntegerSet::get(dims, 0, constraints, equalities);
+    auto reserved = reserveAffineFlattening(set.getConstraints(), dims, work);
+    if (reserved != IndexRelationStatus::Exact)
+      return failQuery(reserved,
+                       "domain expression exceeds bounded flattening support");
+    if (failed(getFlattenedAffineExprs(set, &rows, &flat)))
+      return failQuery(IndexRelationStatus::Unsupported,
+                       "domain proof cannot flatten its expressions");
+    for (unsigned i = 0; i < rows.size(); ++i) {
+      if (!work.charge(rows[i].size()))
+        return failQuery(IndexRelationStatus::ResourceExhausted,
+                         "domain proof exceeded the request work budget");
+      if (set.isEq(i))
+        flat.addEquality(rows[i]);
+      else
+        flat.addInequality(rows[i]);
+    }
+    if (exceedsDisjunctWorkLimits(flat, limits))
+      return failQuery(IndexRelationStatus::ResourceExhausted,
+                       "domain proof exceeds the constraint limits");
+    IntegerRelation current = flat;
+    current.convertVarKind(VarKind::Range, 0, dims, VarKind::Local, 0);
+    auto projected = projectIntegerBounds(std::move(current), 0, work);
+    if (projected.status != IndexRelationStatus::SoundBound)
+      return failQuery(projected.status, projected.reason);
+    if (projected.empty)
+      return {IndexRelationStatus::Exact, true, {}};
+    return failQuery(IndexRelationStatus::Unsupported,
+                     "domain emptiness was not proved by bounded elimination");
+  };
+  std::function<IndexRelationQueryResult(unsigned)> visit =
+      [&](unsigned position) -> IndexRelationQueryResult {
+    if (!work.charge())
+      return failQuery(IndexRelationStatus::ResourceExhausted,
+                       "domain proof exceeded its branch budget");
+    if (position) {
+      auto prefix = prefixConflict();
+      if (prefix.status != IndexRelationStatus::Unsupported)
+        return prefix;
+    }
+    if (position == conditions.size())
+      return conjunctionEmpty();
+    const auto &condition = conditions[position];
+    if (condition.set.getNumDims() != dims || condition.set.getNumSymbols())
+      return failQuery(IndexRelationStatus::Invalid,
+                       "index domain conditions have inconsistent parameters");
+    size_t size = constraints.size();
+    if (!condition.complement) {
+      constraints.append(condition.set.getConstraints().begin(),
+                         condition.set.getConstraints().end());
+      equalities.append(condition.set.getEqFlags().begin(),
+                        condition.set.getEqFlags().end());
+      auto result = visit(position + 1);
+      constraints.resize(size);
+      equalities.resize(size);
+      return result;
+    }
+    // Visit one violated constraint at a time. No DNF or rectangle inventory
+    // is constructed, and every recursive branch shares the caller's budget.
+    for (unsigned i = 0; i < condition.set.getNumConstraints(); ++i) {
+      for (int sign : {-1, 1}) {
+        if (sign == 1 && !condition.set.isEq(i))
+          continue;
+        constraints.push_back(condition.set.getConstraint(i) * sign - 1);
+        equalities.push_back(false);
+        auto result = visit(position + 1);
+        constraints.resize(size);
+        equalities.resize(size);
+        if (!result.isProvenTrue())
+          return result;
+      }
+    }
+    return {IndexRelationStatus::Exact, true, {}};
+  };
+  return visit(0);
+}
+
+IndexRelationQueryResult proveIndexDomainCovered(
+    llvm::ArrayRef<IndexDomainCondition> domain,
+    llvm::ArrayRef<llvm::ArrayRef<IndexDomainCondition>> alternatives,
+    IndexRelationWork &work) {
+  if (alternatives.size() > work.getLimits().maxVariables)
+    return failQuery(IndexRelationStatus::ResourceExhausted,
+                     "coverage proof exceeds its branch depth limit");
+  std::optional<unsigned> dimensions;
+  auto validate = [&](llvm::ArrayRef<IndexDomainCondition> conditions) {
+    for (auto condition : conditions) {
+      if (!work.charge())
+        return IndexRelationStatus::ResourceExhausted;
+      if (!condition.set.getAsOpaquePointer() || condition.set.getNumSymbols())
+        return IndexRelationStatus::Invalid;
+      unsigned current = condition.set.getNumDims();
+      if (current > work.getLimits().maxVariables)
+        return IndexRelationStatus::ResourceExhausted;
+      if (dimensions && current != *dimensions)
+        return IndexRelationStatus::Invalid;
+      dimensions = current;
+    }
+    return IndexRelationStatus::Exact;
+  };
+  auto valid = validate(domain);
+  if (valid != IndexRelationStatus::Exact)
+    return failQuery(valid, "invalid or over-budget coverage domain");
+  for (auto alternative : alternatives) {
+    valid = validate(alternative);
+    if (valid != IndexRelationStatus::Exact)
+      return failQuery(valid, "invalid or over-budget coverage alternative");
+  }
+  llvm::SmallVector<IndexDomainCondition> path(domain);
+  std::function<IndexRelationQueryResult(unsigned)> visit =
+      [&](unsigned position) -> IndexRelationQueryResult {
+    if (!work.charge())
+      return failQuery(IndexRelationStatus::ResourceExhausted,
+                       "coverage proof exceeded its cumulative work budget");
+    if (position && !path.empty()) {
+      auto literal = proveBooleanConjunctionEmpty(
+          path, path.front().set.getNumDims(), work);
+      if (literal.status != IndexRelationStatus::Unsupported)
+        return literal;
+    }
+    if (position == alternatives.size())
+      return proveIndexDomainEmpty(path, work);
+    // To miss this alternative, at least one of its conjunction members must
+    // be false. Prove every such branch empty without storing a DNF expansion.
+    for (auto condition : alternatives[position]) {
+      condition.complement = !condition.complement;
+      path.push_back(condition);
+      auto result = visit(position + 1);
+      path.pop_back();
+      if (!result.isProvenTrue())
+        return result;
+    }
+    return {IndexRelationStatus::Exact, true, {}};
+  };
+  return visit(0);
+}
+
 unsigned IndexRelation::getSourceRank() const {
   return relation.getNumRangeVars();
+}
+
+IndexIntervalBoundResult
+boundIndexExpression(AffineMap map,
+                     llvm::ArrayRef<ClosedIndexInterval> operands,
+                     IndexRelationWork &work) {
+  auto reject = [](IndexRelationStatus status, llvm::StringRef reason) {
+    return IndexIntervalBoundResult{status, std::nullopt, reason.str()};
+  };
+  const auto &limits = work.getLimits();
+  if (!map || map.getNumResults() != 1 || map.getNumSymbols() ||
+      map.getNumDims() != operands.size())
+    return reject(IndexRelationStatus::Invalid,
+                  "inconsistent affine interval query");
+  auto reserved =
+      reserveAffineFlattening(map.getResults(), map.getNumDims(), work);
+  if (reserved != IndexRelationStatus::Exact)
+    return reject(reserved,
+                  "affine expression exceeds bounded flattening support");
+  unsigned dims = operands.size() + 1;
+  if (dims > limits.maxVariables || !work.charge(dims))
+    return reject(IndexRelationStatus::ResourceExhausted,
+                  "affine interval variable limit");
+  auto *context = map.getContext();
+  llvm::SmallVector<AffineExpr> constraints;
+  llvm::SmallVector<bool> equalities;
+  const llvm::DynamicAPInt maximum(int64_t(limits.maxAbsoluteCoefficient));
+  for (auto [i, interval] : llvm::enumerate(operands)) {
+    if (interval.minimum > interval.maximum)
+      return reject(IndexRelationStatus::Invalid,
+                    "empty affine operand interval");
+    if (llvm::abs(llvm::DynamicAPInt(interval.minimum)) > maximum ||
+        llvm::abs(llvm::DynamicAPInt(interval.maximum)) > maximum)
+      return reject(IndexRelationStatus::ResourceExhausted,
+                    "affine interval coefficient limit");
+    auto dim = getAffineDimExpr(i, context);
+    constraints.push_back(dim - interval.minimum);
+    constraints.push_back(interval.maximum - dim);
+    equalities.append(2, false);
+  }
+  constraints.push_back(getAffineDimExpr(operands.size(), context) -
+                        map.getResult(0));
+  equalities.push_back(true);
+  auto set = IntegerSet::get(dims, 0, constraints, equalities);
+  FlatLinearConstraints flat(dims);
+  std::vector<llvm::SmallVector<int64_t, 8>> rows;
+  reserved = reserveAffineFlattening(set.getConstraints(), dims, work);
+  if (reserved != IndexRelationStatus::Exact)
+    return reject(reserved,
+                  "affine interval exceeds bounded flattening support");
+  if (failed(getFlattenedAffineExprs(set, &rows, &flat)))
+    return reject(IndexRelationStatus::Unsupported,
+                  "affine interval cannot flatten expression");
+  for (unsigned i = 0; i < rows.size(); ++i) {
+    if (!work.charge(rows[i].size()))
+      return reject(IndexRelationStatus::ResourceExhausted,
+                    "affine interval construction budget");
+    if (set.isEq(i))
+      flat.addEquality(rows[i]);
+    else
+      flat.addInequality(rows[i]);
+  }
+  if (exceedsDisjunctWorkLimits(flat, limits))
+    return reject(IndexRelationStatus::ResourceExhausted,
+                  "affine interval constraint limit");
+  IntegerRelation current = flat;
+  // Keep the result range variable first; operands and quotient locals are
+  // eliminated together. No projection is claimed integer-exact.
+  current.convertVarKind(VarKind::Range, 0, operands.size(), VarKind::Local, 0);
+  auto projection = projectIntegerBounds(std::move(current), 1, work);
+  if (projection.status != IndexRelationStatus::SoundBound)
+    return reject(projection.status, projection.reason);
+  if (projection.empty)
+    return reject(IndexRelationStatus::Invalid,
+                  "nonempty expression has an empty projection");
+  std::optional<int64_t> minimum, upper;
+  for (const auto &row : projection.inequalities) {
+    if (row[0] > 0) {
+      int64_t value = int64_t(llvm::ceilDiv(-row[1], row[0]));
+      minimum = minimum ? std::max(*minimum, value) : value;
+    } else if (row[0] < 0) {
+      int64_t value = int64_t(llvm::floorDiv(row[1], -row[0]));
+      upper = upper ? std::min(*upper, value) : value;
+    }
+  }
+  if (!minimum || !upper)
+    return reject(IndexRelationStatus::Unsupported,
+                  "affine interval projection is unbounded");
+  return {IndexRelationStatus::SoundBound,
+          ClosedIndexInterval{*minimum, *upper},
+          {}};
 }
 
 bool IndexRelation::contains(llvm::ArrayRef<int64_t> destination,
@@ -585,6 +1425,204 @@ IndexRelation::getProjectedAffineMap(MLIRContext *context) const {
     results.push_back(*projected);
   }
   return AffineMap::get(destinationRank, 0, results, context);
+}
+
+IndexFunctionResult
+IndexRelation::getIndexFunction(MLIRContext *context,
+                                IndexRelationWork &work) const {
+  auto reject = [](IndexRelationStatus status, llvm::StringRef reason) {
+    return IndexFunctionResult{status, std::nullopt, reason.str()};
+  };
+  auto exhausted = [&] {
+    return reject(IndexRelationStatus::ResourceExhausted,
+                  "index function exceeded the request work budget");
+  };
+  if (!context || status != IndexRelationStatus::Exact)
+    return reject(IndexRelationStatus::Unsupported,
+                  "index function requires an exact relation");
+  const auto &limits = work.getLimits();
+  if (exceedsRelationLimits(relation, limits))
+    return exhausted();
+  if (relation.getNumDisjuncts() != 1 || relation.getNumSymbolVars() != 0)
+    return reject(IndexRelationStatus::Unsupported,
+                  "index function requires one symbol-free relation piece");
+
+  IntegerRelation piece = relation.getDisjunct(0);
+  uint64_t remaining = limits.maxConstraintWork - work.getConsumed();
+  uint64_t before = remaining;
+  bool eliminated = eliminateUnitLocals(piece, remaining, limits);
+  if (!work.charge(before - remaining) || !eliminated)
+    return exhausted();
+  unsigned inputs = getDestinationRank(), outputs = getSourceRank();
+  auto zero = getAffineConstantExpr(0, context);
+  llvm::SmallVector<AffineExpr> expressions(piece.getNumVars());
+  for (unsigned i = 0; i < inputs; ++i)
+    expressions[i] = getAffineDimExpr(i, context);
+
+  // Reuse the relation's construction proof, including its original ordered
+  // dimension groups. Shape equality by itself does not prove this mapping.
+  if (rowMajorRectangleMappings && rectangleDestinationShape &&
+      rectangleSourceShape) {
+    for (const auto &group : *rowMajorRectangleMappings) {
+      AffineExpr ordinal = zero;
+      for (unsigned d : group.destinationDimensions) {
+        if (!work.charge())
+          return exhausted();
+        ordinal = ordinal * (*rectangleDestinationShape)[d] + expressions[d];
+      }
+      int64_t stride = 1;
+      auto firstNonUnit =
+          llvm::find_if(group.sourceDimensions, [&](unsigned s) {
+            return (*rectangleSourceShape)[s] != 1;
+          });
+      for (unsigned s : llvm::reverse(group.sourceDimensions)) {
+        if (!work.charge())
+          return exhausted();
+        int64_t extent = (*rectangleSourceShape)[s];
+        if (extent <= 0)
+          return reject(IndexRelationStatus::Unsupported,
+                        "empty reshape has no generated index function");
+        expressions[inputs + s] =
+            extent == 1 ? zero
+            : firstNonUnit != group.sourceDimensions.end() && s == *firstNonUnit
+                ? ordinal.floorDiv(stride)
+                : ordinal.floorDiv(stride) % extent;
+        if (llvm::MulOverflow(stride, extent, stride))
+          return reject(IndexRelationStatus::Invalid,
+                        "index function reshape stride overflows");
+      }
+    }
+  }
+
+  std::optional<DivisionRepr> divisions;
+  IndexRelationStatus expressionStatus = IndexRelationStatus::Exact;
+  auto rowExpression =
+      [&](llvm::ArrayRef<llvm::DynamicAPInt> row,
+          std::optional<unsigned> skip) -> std::optional<AffineExpr> {
+    if (!work.charge(row.size()))
+      return std::nullopt;
+    AffineExpr expression = getAffineConstantExpr(int64_t(row.back()), context);
+    for (unsigned i = 0; i < piece.getNumVars(); ++i) {
+      if (i == skip || row[i] == 0)
+        continue;
+      if (!expressions[i])
+        return std::nullopt;
+      expression = expression + getAffineDimExpr(i, context) * int64_t(row[i]);
+    }
+    auto replacements = expressions;
+    for (auto &replacement : replacements)
+      if (!replacement)
+        replacement = zero;
+    auto composed =
+        composeIndexMap(AffineMap::get(piece.getNumVars(), 0, expression),
+                        AffineMap::get(inputs, 0, replacements, context), work);
+    if (!composed.isExact()) {
+      expressionStatus = composed.status;
+      return std::nullopt;
+    }
+    return composed.map.getResult(0);
+  };
+  // Each successful sweep resolves at least one unknown. An unresolved
+  // source/local remains Unsupported, never an invented zero coordinate.
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (unsigned i = inputs; i < piece.getNumVars(); ++i) {
+      if (!work.charge())
+        return exhausted();
+      if (expressions[i])
+        continue;
+      if (divisions && divisions->hasRepr(i - inputs)) {
+        unsigned local = i - inputs;
+        auto dividend = rowExpression(divisions->getDividend(local), i);
+        if (dividend) {
+          expressions[i] =
+              dividend->floorDiv(int64_t(divisions->getDenom(local)));
+          changed = true;
+          continue;
+        }
+      }
+      for (unsigned row = 0; row < piece.getNumEqualities(); ++row) {
+        if (!work.charge())
+          return exhausted();
+        int64_t coefficient = int64_t(piece.atEq(row, i));
+        if (!coefficient)
+          continue;
+        auto rest = rowExpression(piece.getEquality(row), i);
+        if (!rest)
+          continue;
+        expressions[i] = coefficient < 0 ? rest->floorDiv(-coefficient)
+                                         : (-*rest).floorDiv(coefficient);
+        changed = true;
+        break;
+      }
+    }
+    if (expressionStatus != IndexRelationStatus::Exact)
+      return reject(expressionStatus,
+                    "index function expression construction failed");
+    if (!changed && !divisions &&
+        llvm::any_of(expressions,
+                     [](AffineExpr expression) { return !expression; })) {
+      // Unit equations and the row-major construction usually resolve all
+      // coordinates. Only unresolved division locals need the pinned pair
+      // scan, whose full structural work is reserved before entering it.
+      IntegerRelation dependent = piece;
+      dependent.convertVarKind(VarKind::Range, 0, outputs, VarKind::Local, 0);
+      uint64_t localWork = dependent.getNumLocalVars();
+      for (uint64_t factor : {uint64_t(dependent.getNumLocalVars() + 1),
+                              uint64_t(piece.getNumConstraints() + 1),
+                              uint64_t(piece.getNumConstraints() + 1),
+                              uint64_t(piece.getNumVars() + 1)}) {
+        if (factor && localWork > limits.maxConstraintWork / factor)
+          return exhausted();
+        localWork *= factor;
+      }
+      if (!work.charge(localWork))
+        return exhausted();
+      divisions = dependent.getLocalReprs();
+      changed = true;
+    }
+  }
+  if (work.isExhausted())
+    return exhausted();
+  if (llvm::any_of(expressions,
+                   [](AffineExpr expression) { return !expression; }))
+    return reject(IndexRelationStatus::Unsupported,
+                  "relation has no constructible single-valued index function");
+
+  llvm::SmallVector<AffineExpr> constraints;
+  llvm::SmallVector<bool> equalities;
+  auto appendConstraint = [&](llvm::ArrayRef<llvm::DynamicAPInt> row,
+                              bool equality) {
+    auto expression = rowExpression(row, std::nullopt);
+    if (!expression)
+      return false;
+    auto simplified = *expression;
+    if (auto constant = dyn_cast<AffineConstantExpr>(simplified)) {
+      if (equality ? constant.getValue() == 0 : constant.getValue() >= 0)
+        return true;
+    }
+    constraints.push_back(simplified);
+    equalities.push_back(equality);
+    return true;
+  };
+  for (unsigned row = 0; row < piece.getNumEqualities(); ++row)
+    if (!appendConstraint(piece.getEquality(row), true))
+      return exhausted();
+  for (unsigned row = 0; row < piece.getNumInequalities(); ++row)
+    if (!appendConstraint(piece.getInequality(row), false))
+      return exhausted();
+  if (constraints.empty()) {
+    constraints.push_back(zero);
+    equalities.push_back(true);
+  }
+  llvm::SmallVector<AffineExpr> results;
+  for (unsigned i = 0; i < outputs; ++i)
+    results.push_back(expressions[inputs + i]);
+  return {IndexRelationStatus::Exact,
+          IndexFunction{AffineMap::get(inputs, 0, results, context),
+                        IntegerSet::get(inputs, 0, constraints, equalities)},
+          {}};
 }
 
 IndexRelationResult IndexRelation::identity(llvm::ArrayRef<int64_t> shape,

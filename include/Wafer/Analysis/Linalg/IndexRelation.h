@@ -5,13 +5,16 @@
 
 #include "mlir/Analysis/Presburger/PresburgerRelation.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace wafer::analysis {
 
@@ -48,6 +51,40 @@ struct IndexRelationQueryResult;
 struct StaticRectangularIndexSetResult;
 struct StaticRectangularIndexSetPiecesResult;
 struct RectangularTileImageResult;
+struct IndexFunctionResult;
+struct IndexMapResult;
+
+/// One request owns this non-copyable accounting object, including all of its
+/// recursive queries. Charges describe analysis work, never resource demand.
+class IndexRelationWork {
+public:
+  explicit IndexRelationWork(const IndexRelationLimits &limits)
+      : limits(limits), remaining(limits.maxConstraintWork) {}
+  IndexRelationWork(const IndexRelationWork &) = delete;
+  IndexRelationWork &operator=(const IndexRelationWork &) = delete;
+  bool charge(uint64_t count = 1) {
+    if (exhausted || count > remaining) {
+      exhausted = true;
+      return false;
+    }
+    remaining -= count;
+    return true;
+  }
+  uint64_t getConsumed() const { return limits.maxConstraintWork - remaining; }
+  bool isExhausted() const { return exhausted; }
+  const IndexRelationLimits &getLimits() const { return limits; }
+
+private:
+  friend IndexMapResult composeIndexMap(mlir::AffineMap, mlir::AffineMap,
+                                        IndexRelationWork &);
+  IndexRelationLimits limits;
+  uint64_t remaining;
+  bool exhausted = false;
+  // Derived expressions only, scoped to this request and its MLIR context.
+  // No SSA, storage or legality result survives a current-IR mutation.
+  llvm::DenseMap<std::pair<mlir::AffineMap, mlir::AffineMap>, mlir::AffineMap>
+      compositions;
+};
 
 /// A transformation-local adapter over MLIR Presburger relations. Domain
 /// variables are destination logical indexes and range variables are source
@@ -78,6 +115,12 @@ public:
   /// relations such as a general reshape return std::nullopt.
   std::optional<mlir::AffineMap>
   getProjectedAffineMap(mlir::MLIRContext *context) const;
+
+  /// Derive a single-valued quasi-affine map and its exact validity domain.
+  /// Unlike getProjectedAffineMap, this retains constant division locals.
+  /// Failure to construct an expression is not loss of relation exactness.
+  IndexFunctionResult getIndexFunction(mlir::MLIRContext *context,
+                                       IndexRelationWork &work) const;
 
   static IndexRelationResult
   identity(llvm::ArrayRef<int64_t> shape,
@@ -287,6 +330,74 @@ struct IndexRelationResult {
   const IndexRelation *get() const { return relation ? &*relation : nullptr; }
   IndexRelation *get() { return relation ? &*relation : nullptr; }
 };
+
+struct IndexFunction {
+  mlir::AffineMap map;
+  mlir::IntegerSet domain;
+};
+
+struct IndexFunctionResult {
+  IndexRelationStatus status = IndexRelationStatus::Unsupported;
+  std::optional<IndexFunction> function;
+  std::string reason;
+
+  bool isExact() const {
+    return status == IndexRelationStatus::Exact && function.has_value();
+  }
+};
+
+struct IndexMapResult {
+  IndexRelationStatus status = IndexRelationStatus::Unsupported;
+  mlir::AffineMap map;
+  std::string reason;
+
+  bool isExact() const { return status == IndexRelationStatus::Exact && map; }
+};
+
+/// Substitute a derived index map with checked coefficient growth and a
+/// precharged expression-size bound before MLIR composition/simplification.
+/// Both maps use dimensions only and remain standard affine expressions.
+IndexMapResult composeIndexMap(mlir::AffineMap outer, mlir::AffineMap inner,
+                               IndexRelationWork &work);
+
+/// A conjunction or its complement. Keeping complements explicit avoids
+/// expanding a last-writer path into a Cartesian product of rectangles.
+struct IndexDomainCondition {
+  mlir::IntegerSet set;
+  bool complement = false;
+};
+
+/// A bounded construction proof. Exact/true certifies emptiness; an
+/// inconclusive rational relaxation is Unsupported, never an integer witness.
+IndexRelationQueryResult
+proveIndexDomainEmpty(llvm::ArrayRef<IndexDomainCondition> conditions,
+                      IndexRelationWork &work);
+
+/// Prove that a union of guarded alternatives covers a domain. Alternatives
+/// and domain are conjunctions; negations remain lazy and share one budget.
+IndexRelationQueryResult proveIndexDomainCovered(
+    llvm::ArrayRef<IndexDomainCondition> domain,
+    llvm::ArrayRef<llvm::ArrayRef<IndexDomainCondition>> alternatives,
+    IndexRelationWork &work);
+
+struct ClosedIndexInterval {
+  int64_t minimum = 0;
+  int64_t maximum = 0;
+};
+
+struct IndexIntervalBoundResult {
+  IndexRelationStatus status = IndexRelationStatus::Unsupported;
+  std::optional<ClosedIndexInterval> interval;
+  std::string reason;
+};
+
+/// A bounded integer-tightened rational projection of a standard expression.
+/// SoundBound encloses every result for the supplied closed operand ranges.
+/// It does not assert that every enclosed integer is attained.
+IndexIntervalBoundResult
+boundIndexExpression(mlir::AffineMap map,
+                     llvm::ArrayRef<ClosedIndexInterval> operands,
+                     IndexRelationWork &work);
 
 struct IndexSetResult {
   IndexRelationStatus status = IndexRelationStatus::Invalid;
