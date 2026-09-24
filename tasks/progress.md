@@ -18,25 +18,22 @@
 
 ## 当前调度
 
-2026-09-23接续完整单层LLaMA2长序列：当前S1024 FP16的正式fresh no-card编译复现42/42个actual SPM
-capacity拒绝，未生成package。只读首候选诊断同时见完整MLP权重及K/V状态allocation，不能仅归因于attention
-内部块大小。已按Tensor子集物化计划拆开纯来源/覆盖分析与Temporal融合职责，并接通静态Spatial窗口的
-last-writer局部物化；Temporal已接通有界线性循环的多轴完整assembly窗口，按实际来源边界分段，
-与Spatial共用静态片段组装。部分insert的动态Temporal需求、共享/局部容量反馈验收、四项性能保护及S1024/1025实卡仍待完成。
-审查后已修正多读取分段遗漏与提升索引的支配关系，局部物化接口改为只处理明确选中的读取，并恢复1031覆盖。
-临时配对attempt及全局共享/局部开关已移除；Driver按父SSA和实际读取组维护完整选择，跨retile重新绑定及
-standard 8/42的mixed分支已实际验证；缓存关闭/淘汰保持候选序列与最终IR相同，deep独立计费及预算收尾通过。
-纯片段生成与计算融合调用已分开；动态partial insert、矩形平移view的共同查询/生成及文件归属已接通，
-共享/局部的实际Instr/SPM容量对照和controller独立容量修正专项通过。四项保护的新包已通过no-card；
-修正实际读取适用性及组合排序后，S1024已实际启动完整局部分支并独立容量修正，仍待accepted package。
-四项首轮实卡12次完整数值及健康通过；两项FP16 GEMM性能通过，BF16 GEMM/attention中位数
-7.308/3.710ms高于7.271/3.649ms门槛，保留未通过；四项包与基线逐字节相同。
-standard容量链跨实现独占已修正，完整Driver回归通过；S1024在同一8/42预算下仍全部容量拒绝，
-actual失败IR已定位retile新增外层尾块丢失读取组坐标，保留完整assembly，待修复。
-静态多piece view已接通来源证明及Instr/SPM专项。
-S1025已越过原output publication拒绝，后续确认packed-i1搬运限制及BoundaryMovement丢失subview降rank；
-后者已复现并修复，真实产品仍待重验。通用reshape周期、性能门槛及S1024/1025产品和实卡仍待闭合。
-此检查点不改变`board-testing`的`doing`状态，细节见
+2026-09-24接续完整单层LLaMA2长序列及Tensor子集物化整改，仍归`board-testing`。
+纯来源/覆盖分析、共同片段生成与Temporal计算融合已分开；静态Spatial、动态partial insert、
+多轴窗口、矩形平移view及静态多piece view已进入共同查询与物化路径，并有实际Instr/SPM验证。
+Driver按父SSA和实际读取组维护完整共享/局部选择；跨retile绑定、mixed分支、缓存开关/淘汰确定性及
+standard实现轮转已修复并验证。尾块的实际单次循环scope保留至Tensor选择消费，layout入口再展开；
+主尾块全组绑定及逐坐标覆盖通过。完整S1024已在原standard 8/42预算内通过actual SPM和目标后端并生成普通package；
+完整reference/payload及普通guard no-card已通过；正在准备15号计时companion，实卡尚未执行。
+S1025的output publication与BoundaryMovement降rank缺陷已修复；正式8/42复验仍未生成package，
+20次SPM、12次Tile→Instr及10次选择绑定拒绝。后续处理已定位的packed-i1非字节对齐写回/拼接缺口，
+按10号先明确私有allocation、邻接bit保持及实际effect/内存规划合同，不能放松覆盖证明或lowering自动改tile。
+
+四项性能保护的新source/reference/package及guard no-card通过；12次实卡完整数值、guard及健康通过。
+两项FP16 GEMM性能通过；BF16 GEMM/attention中位数7.308/3.710ms高于7.271/3.649ms门槛，保留未通过。
+后续轮转、view、输出降rank及尾scope修复后的四项包均与本轮已板测包逐字节相同，不能据此代签时间门槛。
+通用reshape的常数floor/mod周期、累计预算审查、两项性能门槛及S1024/1025产品和实卡仍待闭合。
+此检查点不改变`board-testing`的`doing`状态，覆盖和完整证据见
 [子集物化计划](plans/tensor-subset-materialization.md)。
 
 2026-09-23用户要求将BF16 NCx GEMM M=N4096/K1024与2048、28-head attention纳入正式case集合，

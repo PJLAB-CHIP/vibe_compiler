@@ -114,6 +114,26 @@ Spatial沿用同一证明helper。`StaticAssemblyViewPreservesMultipleExactImage
 实际通过；canonical完整增量及Ninja no-op通过。四项新构包与guard no-card再次通过，
 完整包与首轮实卡包逐字节相同，身份分别记录在同一证据文件，不改写首轮编译器身份。
 
+尾块读取组修复接续：`AssemblyReadChoiceBindsFreshRetiledMainAndTail`先在1024行、128→127行retile
+复现实际两个读取只选择一个。按06/08号将实际单次坐标scope保留到Tensor选择消费，layout入口再展开；
+1024/1025/1031的128/127/64行、loop-order及full extent通过，独立枚举实际动态窗口核对每个坐标恰好一次。
+局部物化后原assembly读取为零；layout后单次scope消失，实际Instr/SPM通过。
+Temporal/Layout/StructuredToTile 173项、补强后的四项直接回归、canonical完整增量及Ninja no-op通过；
+完整Driver 153项全部实际通过（2457303 ms），其中deep为1221811 ms，缓存关闭/淘汰对照亦通过，
+没有skip。四项保护重新构包和guard no-card通过，包仍与本轮首批实卡逐字节相同。
+S1024正式8/42编译已成功，完整96组局部实现通过actual SPM及目标后端并生成普通package；
+wall 1273秒、max RSS 4460064 KiB。随后正式PyTorch入口重新导出并核对source相等，
+生成完整reference（527284 ms）和payload，普通guard no-card通过。i64 IDs包含0/31999及重复值，
+expected为完整`[1,1024,32000]` FP16、65536000字节，规划guard为383040字节；没有执行实卡。
+按用户后加的统一计时要求，正式入口正在生成15号companion并准备fresh reference及timing no-card；
+保持原8/42预算，profile多产物的主机deadline显式为3600秒，不改设备timeout。
+S1025五次候选的只读诊断确认：完整BOOL写回可降低；切为512列后，actual私有DDR allocation的
+stride仍为1025，main与1列tail都含非字节对齐写回。诊断使用独立限额，不作为正式8/42资格；
+临时IR捕获已撤除。后续修复须保留packed字节覆盖合同，不能在lowering内自动改tile或补写邻接bit。
+S1025正式8/42复验未生成package：20次SPM、12次Tile→Instr、2次assembly绑定和8次reuse绑定拒绝；
+wall 1023.66秒、max RSS 3419364 KiB。后续按10号补齐已定位的私有packed BOOL更新，
+必须实际保留邻接bits并经过completion/SPM，不用估算或自动改tile规避现有失败。
+
 本轮主机修复检查点：canonical完整增量构建与后续Ninja no-op通过；Analysis 141、Transforms 539、
 Driver 151项组件单测全部实际通过，共831项，无跳过。随后补强组合反例的逐行执行覆盖计数，六组输入重新通过，
 再次通过canonical增量与no-op；未改变production代码。`git diff --check`通过，Wafer-owned源码目录无Python缓存。
@@ -133,7 +153,7 @@ Driver 151项组件单测全部实际通过，共831项，无跳过。随后补�
 | 1024/1025/1031、Joint/Independent、完整值/中间快照观察者 | `AssemblyLocalizationRetainsObservableSharedValues`恢复1031并通过；原观察者保持，尾块新暴露的输出递推读取单独证明来自旧destination | 共享与局部分支均实际进入Instr/SPM |
 | 正常叶子、未定义旧值、非单位stride、受限关系/索引查询、无效选择 | `AssemblyReadFailuresAreTypedAndLeaveIRUnchanged`与`ParameterizedLoopGridUsesAffineCoordinates`通过；NotApplicable、Unsupported、ResourceExhausted、BrokenContract分开；整批preflight失败前后IR一致 | verifier有效，无半修改；不伪造capacity结果 |
 | rank3的1024/1025/1031、不同父SSA与读取scope、CSE和erase | `TensorAssemblySelectionTest`通过；完整选择按集合去重，同次IRMapping克隆，缺失组不扩展成新组合 | Region closure及后续clone保持精确对应 |
-| 128/64行retile、loop-order置换和full extent | `AssemblyReadChoiceBindsFreshRetiledMainAndTail`通过；main/tail重新绑定，消失scope不能由其它读取替代 | 选中成员实际进入Instr/SPM |
+| 128/127/64行retile、loop-order置换和full extent | `AssemblyReadChoiceBindsFreshRetiledMainAndTail`新增外轴由整除变非整除、内轴仍循环反例；先复现只选中主块、漏掉新尾块，修复后全组、逐坐标覆盖及下游通过；消失scope不能由其它读取替代 | 全组选择、实际局部化、layout单次scope展开及Instr/SPM |
 | 16 Tile、1024/1025/1031、共享与局部组合 | `AssemblyGroupsHaveIndependentActualImplementations`通过；standard 8/42独立启动并接受mixed候选；1031的cache 0/1/8实际trace和executable IR一致 | 实际Driver搜索、SPM与accepted owner |
 | 16 Tile、1031、deep预算收尾 | `AssemblyImplementationFinishesItsChargedDeepProcess`通过；width/trials=6/6，六方案全部完成、实际求值多于六次，局部分支accepted且缺失选择typed拒绝 | 独立proposal、计费与完整有限内搜；capacity反馈另行验收 |
 | 1024/1031、共享assembly的实际计算来源 | `LocalAssemblyDoesNotRetileItsComputedSource`通过；来源乘法恰一个、原owner/scope保留，局部化没有producer fusion | 多块/tail的实际Instr/SPM |

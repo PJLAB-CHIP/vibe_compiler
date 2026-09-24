@@ -941,5 +941,170 @@
       }
     ],
     "scope": "Four fresh packages and guard no-card passed after the static multi-piece view and rank-reduced boundary fixes; all packages match the first board group byte-for-byte. Performance thresholds remain unsigned for the two BF16 cases."
+  },
+  "singleton_scope_followup": {
+    "compiler_sha256": "ca9baf363962da59d117fcc5ee83ed4c24208e0a2f9413a32d2f8d464619f876",
+    "purpose": "Fresh guards after retaining singleton iteration scopes through Tensor choice consumption",
+    "packages": [
+      {
+        "name": "gemm4096-fp16",
+        "source_sha256": {
+          "functions/forward.meta": "902aa6d51ba7e700d15451474a86bf66659ae3f300aa806bebafe4078cef874c",
+          "functions/forward.stablehlo.bc": "9458e730d6db3067f8570743725503ee3e512099e46debde21ab69e1bebe485d"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "f85dd471aa14b3a437caf7ee4df1273cfca4b416915c196eed2ea36b5183b005",
+          "modules/module_00000.so": "403da6e98f10079cbc3860e86ba4d65cf00b6ac8952f8f0051a99b3dd96a77b8"
+        },
+        "same_package_as_current": true
+      },
+      {
+        "name": "gemm4096-bf16",
+        "source_sha256": {
+          "functions/forward.meta": "6cdfbd1680fd9543dd287efde185d12a2366d3300240abb8e28befa5c8ac1cb0",
+          "functions/forward.stablehlo.bc": "bcd022f90de143ace20093fd2acc522cbe66049eb3288de26d8843832cee0c1a"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "d26b08860789389f0f571d355bdea14c95b22384cb8674ebb12518650fd2ec1b",
+          "modules/module_00000.so": "d7afa7db7a13485f4961a0fe84dc0b657729d47dad7acbe415a5619d64295305"
+        },
+        "same_package_as_current": true
+      },
+      {
+        "name": "gemm4097-fp16",
+        "source_sha256": {
+          "functions/forward.meta": "9c083b4428da5fe73fd590d03847ca0ecb55454e39aeb8b1ec89abbadbd285d3",
+          "functions/forward.stablehlo.bc": "8d04d9c70898810c603d80f099fc3adb88da088af2f2574511d43c65678cfce2"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "manifest.json": "884d48520300d8a6ecdf0976d1f210490462363f6222151ded86618d02005176",
+          "modules/module_00000.so": "914d9f63b1c05577c2cd12f1c9f5ac7733e4b16fc425b4b5e2304532b79575bd"
+        },
+        "same_package_as_current": true
+      },
+      {
+        "name": "attention2048-bf16",
+        "source_sha256": {
+          "constants/0": "d3524dbb86809d46ffb47489c7cc3f56801071ab050c0c7715a7d4db3da83d4e",
+          "constants/1": "c81ced21136331a13e18aaeb19bdd74bbd547610f9baf36059aa554bcc1f1adb",
+          "constants/2": "1de13ec1aa5c895d99e4dcacd4cd61e567bd8f9be263bafd59d7abf1071b7944",
+          "functions/forward.meta": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+          "functions/forward.stablehlo.bc": "0eebf1e15f9fe1e2c09d3e23ae0a9ea9aa1b7abd684f3645a7b069a653e96223"
+        },
+        "package_sha256": {
+          "data/program-data.bin": "3786b242674ead769d360642865c103432707db12fb4cf60f9ad1f7f4bf0bf9b",
+          "manifest.json": "78c1f8b74df364c7f8db178fc5d0cf26f9ba9b4087d962635cd292c788177137",
+          "modules/module_00000.so": "1f87ea33ea764406caf9dd9bf1ffaf61db584f1731ecc39771c84e939763ac6a"
+        },
+        "same_package_as_current": true
+      }
+    ],
+    "scope": "The singleton-scope fix recompiled all four guards and passed guard no-card. Full packages are byte-identical to the first board group. The two BF16 performance gates remain open."
+  },
+  "lm_compilation_followup": {
+    "case": "llama-2-7b-single-layer-lm-1024",
+    "dtype": "float16",
+    "seed": 20260803,
+    "search": {
+      "mode": "standard",
+      "width": 8,
+      "trials": 42
+    },
+    "compiler_sha256": "ca9baf363962da59d117fcc5ee83ed4c24208e0a2f9413a32d2f8d464619f876",
+    "compile_exit_code": 0,
+    "wall_seconds": 1273.0,
+    "max_rss_kib": 4460064,
+    "accepted_candidates": [
+      "pipeline=0 local_assembly_groups=96 estimated_picoseconds=416616054741"
+    ],
+    "source_sha256": {
+      "constants/0": "524f881151d25f91662f1a5a15c6b7e73babc97d10b8150453f5b2654691873c",
+      "constants/1": "117e949db7925cebe7993c059d2edf758c9fb9014c2156d83ff9d56951330c68",
+      "constants/2": "a0b8a320569d2362197e166757d340e9c5359f646fba6673f932d07e9feb38ee",
+      "data/model.lm_head.weight": "b995fed5d3921401d321338ec034f7f23c0a8921237d9a232d72b05e7d4ce184",
+      "data/model.model.embed_tokens.weight": "b88eab88a4af7d0c24a8dc0fdbe38e5266bb951c0e80a3477eb402e066702b2d",
+      "data/model.model.layers.0.input_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/model.model.layers.0.mlp.down_proj.weight": "9db819443f5202279397069fb4beb605bb57c2cc59e474f381003a6014319044",
+      "data/model.model.layers.0.mlp.gate_proj.weight": "27dec2b7e6471bf8992037f0d730e7d0eacdf585bfb358c409cb8ca6e4feb790",
+      "data/model.model.layers.0.mlp.up_proj.weight": "5470debb3bdaf4658b3cb7b9c5a7861f1ae1284d88903b3ff874958ea0f796fd",
+      "data/model.model.layers.0.post_attention_layernorm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/model.model.layers.0.self_attn.k_proj.weight": "81362fca88461ff3be9d49da40d92b641d5ea66360be85d4133761ca06377803",
+      "data/model.model.layers.0.self_attn.o_proj.weight": "40c8e21d9f9ad7ec4befde8927111154557ad98514e18ba4ff69af3ab81600d4",
+      "data/model.model.layers.0.self_attn.q_proj.weight": "7f670589c9764e466715cb35d455b5ea8189f2532d7474f2fbbcd33052829d0a",
+      "data/model.model.layers.0.self_attn.v_proj.weight": "f7281d4fd7e31814ab299d634ecb152323119a8e532d8c39b2a876ea27c005c9",
+      "data/model.model.norm.weight": "7f0d5cf12b1ca95ccc331080381500f17ba03a62572e685bc6332075dbd14734",
+      "data/model.model.rotary_emb.inv_freq": "91c93c924dc0976cdd8b804e8ebcce1398725dcee92da6ee7cfe872c58157214",
+      "functions/forward.meta": "96dd9df1f7374940f06ab1d3c276d9bae42062ac81eb3fd3ff0c915995782ab2",
+      "functions/forward.stablehlo.bc": "de0aa30b44472199af879695146f0e3582046f8887cfadb02a863e4e2677911e"
+    },
+    "package_sha256": {
+      "data/program-data.bin": "2d29b37938a6e0dcbf8da7448f0b3c6bd21394e5f70c07ca4f6d0fcb6de7f322",
+      "manifest.json": "3528e7c540e7179bc67fcedfbfd470707b873bb1d692ca8472a0dd4098e69433",
+      "modules/module_00000.so": "5c01963ef6cc00f940f5e5c06be829c18ef85be74876d21aa8564e268304473e"
+    },
+    "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-tail28.log",
+    "qualification": "普通package、完整reference/payload及guard no-card通过；timing companion和实卡尚未完成。",
+    "ordinary_no_card": {
+      "passed": true,
+      "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1024-ordinary-no-card31.log",
+      "source_equal": true,
+      "reference_wall_ms": 527284,
+      "input_dtype": "i64",
+      "input_shape": [
+        1,
+        1024
+      ],
+      "input_id_min": 0,
+      "input_id_max": 31999,
+      "repeated_ids": true,
+      "input_sha256": "2d6f42d5d224744954334ac6aa20b77cfef533f4a247eb29342ebe9f77ecfd6a",
+      "expected_dtype": "f16",
+      "expected_shape": [
+        1,
+        1024,
+        32000
+      ],
+      "expected_bytes": 65536000,
+      "expected_sha256": "ee385225776dcaed5a491e02ee9501f4872f22895ec2a5c490669f57a872ad1e",
+      "planned_memory_guard_bytes": 383040,
+      "board_execution": false
+    }
+  },
+  "bounded_bf16_remeasurement": {
+    "reason": "两项BF16首组略高于固定门槛，当前包与本轮首组及历史基线逐字节相同；首组期间主机有编译活动。按计划7.1允许的有界追加测量，在主机编译/回归结束后各追加一组，检验本轮时间差是否仍存在；不预断言波动原因。",
+    "cases": [
+      "single-card-gemm-4096/bfloat16",
+      "attention-prefill-28-heads-2048/bfloat16"
+    ],
+    "fixed_launches_per_case": 3,
+    "attempt_limit": 1,
+    "state": "pending; no additional launch has occurred",
+    "retention": "保留原组和新增组全部样本；不放宽门槛、不继续重复直到通过。"
+  },
+  "lm_tail_compilation_followup": {
+    "case": "llama-2-7b-single-layer-lm-tail-1025",
+    "dtype": "float16",
+    "seed": 20260803,
+    "compiler_sha256": "ca9baf363962da59d117fcc5ee83ed4c24208e0a2f9413a32d2f8d464619f876",
+    "search": {
+      "mode": "standard",
+      "width": 8,
+      "trials": 42
+    },
+    "compile_exit_code": 1,
+    "wall_seconds": 1023.66,
+    "max_rss_kib": 3419364,
+    "rejections_by_gate": {
+      "spm-allocation": 20,
+      "tile-to-instr": 12,
+      "search-tensor-assembly-binding": 2,
+      "search-reuse-binding": 8
+    },
+    "accepted_candidates": 0,
+    "log": "/data/vibe_compiler-validation/tensor-demand-20260924/lm1025-tail31.log",
+    "qualification": "未生成package；非字节对齐packed-i1写回/拼接仍拒绝，未签no-card或实卡。"
   }
 }

@@ -131,7 +131,9 @@ Temporal动态窗口、共同生成入口、候选选择及板端门槛仍未完
 计算精度FP16，seed20260803，沿用standard search width8/trials42及16号完整LM合同。
 输入为原HF完整单层module、合法i64 IDs及当前compiler/runtime；本项通过唯一PyTorch runner重新导出source，
 生成全部logits reference、ExecutablePackage与guard no-card。直接下游为原`wafer-run`及完整数值/生命周期检查。
-两项均准备完成后逐case单次普通实卡，记录耗时但不以单样本声称性能提升；默认关闭寄存器采集和设备插桩。
+两项均准备完成后逐case单次实卡。按用户随后要求及15号统一计时合同，由同一accepted executable生成
+timing companion，执行一次轻量capture并列记录最长Tile本体、16 Tile duration及同次外层event；
+不以单样本声称性能提升。寄存器采集保持关闭，不执行完整Primary/Count/Trace协议。
 不裁剪词表、token、模型计算或输出，不改变dtype/容差/搜索预算；不启动deep、其它模型调优或attention优化。
 
 | 覆盖输入 | 本轮exact要求与直接消费者 |

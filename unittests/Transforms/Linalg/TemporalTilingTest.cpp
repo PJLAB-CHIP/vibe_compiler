@@ -328,7 +328,8 @@ TEST(TemporalTilingTest, AlignedAndRaggedOrdinaryLoopsHaveOnlyOneTail) {
     EXPECT_EQ(tiled->tiledTraversals, 1u);
     EXPECT_EQ(tiled->loops, 1u);
     EXPECT_EQ(tiled->specializedTails, extent == 1024 ? 0u : 1u);
-    EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 1u);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()),
+              extent == 1024 ? 1u : 2u);
     EXPECT_EQ(countOps<mlir::linalg::GenericOp>(module->getOperation()),
               extent == 1024 ? 1u : 2u);
 
@@ -596,7 +597,8 @@ TEST(TemporalTilingTest, TwoRaggedAxesProduceAtMostFourStaticBodies) {
   EXPECT_EQ(tiled->loops, 2u);
   EXPECT_EQ(tiled->specializedTails, 2u);
   EXPECT_EQ(countOps<mlir::linalg::GenericOp>(module->getOperation()), 4u);
-  EXPECT_LE(countOps<mlir::scf::ForOp>(module->getOperation()), 3u);
+  // The four static bodies retain their three singleton coordinate scopes.
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 6u);
   module->walk([&](mlir::linalg::GenericOp generic) {
     EXPECT_TRUE(
         mlir::cast<mlir::RankedTensorType>(generic.getResult(0).getType())
@@ -711,7 +713,7 @@ TEST(TemporalTilingTest,
   EXPECT_EQ(tiled->fusedProducers, 0u);
   EXPECT_EQ(tiled->loops, 2u);
   EXPECT_EQ(tiled->specializedTails, 2u);
-  EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 4u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 
@@ -2182,7 +2184,8 @@ TEST(TemporalTilingTest,
     EXPECT_EQ(tiled->fusedProducers, 1u);
     EXPECT_EQ(tiled->loops, 1u);
     EXPECT_EQ(tiled->specializedTails, extent == 1025 ? 1u : 0u);
-    EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()), 1u);
+    EXPECT_EQ(countOps<mlir::scf::ForOp>(module->getOperation()),
+              extent == 1025 ? 2u : 1u);
     unsigned sharedOccurrences = 0;
     module->walk([&](mlir::linalg::GenericOp operation) {
       auto name = mlir::dyn_cast<mlir::NameLoc>(operation.getLoc());
@@ -3348,6 +3351,17 @@ void expectTemporalSPM(mlir::OwningOpRef<mlir::ModuleOp> module,
   auto &context = *module->getContext();
   auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
   ASSERT_TRUE(layout.succeeded()) << layout.detail;
+  module->walk([&](mlir::scf::ForOp loop) {
+    if (!getIterationCoordinates(loop))
+      return;
+    auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+    auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+    auto step = mlir::getConstantIntValue(loop.getStep());
+    if (lower && upper && step && *step > 0) {
+      EXPECT_GT(*upper - *lower, *step)
+          << "layout must consume singleton Tensor selection scopes";
+    }
+  });
   auto lowered = lowerStructuredComputeToTile(*module, relations);
   ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
   auto movement = materializeTileBoundaryMovement(*module, relations);
@@ -4417,7 +4431,7 @@ TEST(TemporalTilingTest, SharedPackConsumersUseTheCommonTilingInterfaceLoop) {
       EXPECT_EQ(coordinates.getCoordinates(),
                 llvm::ArrayRef(expectedCoordinates));
     });
-    EXPECT_EQ(loops, 1u);
+    EXPECT_EQ(loops, extent == 1024 ? 1u : 2u);
     EXPECT_EQ(countOps<mlir::tensor::PackOp>(module->getOperation()), 0u);
     int64_t produced = 0;
     module->walk([&](mlir::linalg::GenericOp op) {
@@ -4657,31 +4671,9 @@ TEST(TemporalTilingTest, AssemblyLocalizationRetainsObservableSharedValues) {
               findRegion(*localModule), localRelations, &failure);
           ASSERT_TRUE(mlir::succeeded(localized)) << failure.detail;
           EXPECT_GT(localized->tileLocalAssemblies, 0u);
-          auto remaining = findTestAssemblyReads(findRegion(*localModule));
-          ASSERT_EQ(remaining.size(), extent == 1024 ? 0u : 1u);
-          for (auto read : remaining) {
-            // Canonicalization exposes a disjoint read of the output
-            // recurrence's old destination. This is a different assembly
-            // from the selected 128-column input and keeps its own choice.
-            EXPECT_EQ(read.getSourceType().getShape(),
-                      (llvm::ArrayRef<int64_t>{2, extent, 96}));
-            EXPECT_EQ(read.getStaticOffsets(),
-                      (llvm::ArrayRef<int64_t>{0, 1024, 48}));
-            EXPECT_EQ(read.getStaticSizes(),
-                      (llvm::ArrayRef<int64_t>{2, extent - 1024, 48}));
-            auto update =
-                read.getSource().getDefiningOp<mlir::tensor::InsertSliceOp>();
-            ASSERT_TRUE(update);
-            analysis::StaticRectangularIndexSet demand{{0, 1024, 48},
-                                                       {2, extent - 1024, 48}};
-            auto source =
-                analysis::queryTensorAssemblyDemand(read.getSource(), demand);
-            ASSERT_TRUE(source.isExact()) << source.detail;
-            ASSERT_EQ(source.pieces.size(), 1u);
-            EXPECT_EQ(source.pieces.front().source, update.getDest());
-            EXPECT_EQ(source.pieces.front().sourceWindow.offsets,
-                      demand.offsets);
-          }
+          // The tail still has its actual one-iteration scope. Input reads
+          // are all localized; scope promotion belongs to layout preparation.
+          EXPECT_TRUE(findTestAssemblyReads(findRegion(*localModule)).empty());
           unsigned observablePieces = 0;
           findRegion(*localModule)
               .walk([&](mlir::tensor::InsertSliceOp insert) {
@@ -4709,7 +4701,9 @@ TEST(TemporalTilingTest, AssemblyReadChoiceBindsFreshRetiledMainAndTail) {
     ASSERT_TRUE(original.succeeded());
     auto parentBindings = TensorChoiceBindings::capture(parent->getOperation());
     std::optional<TensorAssemblyIntent> selected;
-    for (int64_t rows : {int64_t(128), int64_t(64), extent}) {
+    // 128 divides 1024, while 127 introduces a new outer tail around the
+    // still-tiled inner axis. Every derived read must keep the same choice.
+    for (int64_t rows : {int64_t(128), int64_t(127), int64_t(64), extent}) {
       SCOPED_TRACE(rows);
       mlir::IRMapping mapping;
       auto candidate = mlir::OwningOpRef<mlir::ModuleOp>(
@@ -4734,6 +4728,57 @@ TEST(TemporalTilingTest, AssemblyReadChoiceBindsFreshRetiledMainAndTail) {
           << failure.detail;
       auto reads = findTestAssemblyReads(region);
       ASSERT_FALSE(reads.empty());
+      // Independently enumerate the actual dynamic windows, including a
+      // newly introduced outer tail. Every consumed coordinate is read once.
+      std::vector<unsigned> coverage(2 * extent * 128, 0);
+      for (auto read : reads) {
+        llvm::SmallVector<mlir::scf::ForOp> loops;
+        for (auto *owner = read->getParentOp(); owner != region;
+             owner = owner->getParentOp())
+          if (auto loop = mlir::dyn_cast<mlir::scf::ForOp>(owner))
+            loops.push_back(loop);
+        std::reverse(loops.begin(), loops.end());
+        llvm::DenseMap<mlir::Value, int64_t> indices;
+        std::function<void(unsigned)> visit = [&](unsigned depth) {
+          if (depth < loops.size()) {
+            auto loop = loops[depth];
+            auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+            auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+            auto step = mlir::getConstantIntValue(loop.getStep());
+            ASSERT_TRUE(lower && upper && step && *step > 0);
+            for (int64_t iv = *lower; iv < *upper; iv += *step) {
+              indices[loop.getInductionVar()] = iv;
+              visit(depth + 1);
+            }
+            return;
+          }
+          llvm::SmallVector<int64_t> offsets;
+          for (auto offset : read.getMixedOffsets()) {
+            if (auto constant = mlir::getConstantIntValue(offset)) {
+              offsets.push_back(*constant);
+              continue;
+            }
+            auto found = indices.find(mlir::cast<mlir::Value>(offset));
+            ASSERT_NE(found, indices.end());
+            offsets.push_back(found->second);
+          }
+          auto sizes = read.getStaticSizes();
+          ASSERT_EQ(offsets.size(), 3u);
+          ASSERT_EQ(sizes.size(), 3u);
+          for (int64_t b = offsets[0]; b < offsets[0] + sizes[0]; ++b)
+            for (int64_t m = offsets[1]; m < offsets[1] + sizes[1]; ++m)
+              for (int64_t n = offsets[2]; n < offsets[2] + sizes[2]; ++n) {
+                ASSERT_TRUE(b >= 0 && b < 2 && m >= 0 && m < extent && n >= 0 &&
+                            n < 128);
+                ++coverage[(b * extent + m) * 128 + n];
+              }
+        };
+        visit(0);
+      }
+      for (int64_t b = 0; b < 2; ++b)
+        for (int64_t m = 0; m < extent; ++m)
+          for (int64_t n = 0; n < 128; ++n)
+            ASSERT_EQ(coverage[(b * extent + m) * 128 + n], n < 96 ? 1u : 0u);
       auto families = groupTensorAssemblyReads(reads, *bindings);
       ASSERT_TRUE(families.unavailable.empty())
           << families.unavailable.front().detail;
@@ -4783,6 +4828,7 @@ TEST(TemporalTilingTest, AssemblyReadChoiceBindsFreshRetiledMainAndTail) {
           findRegion(*local), materialized, localRelations, &failure);
       ASSERT_TRUE(mlir::succeeded(changed)) << failure.detail;
       EXPECT_GT(changed->tileLocalAssemblies, 0u);
+      EXPECT_TRUE(findTestAssemblyReads(findRegion(*local)).empty());
       expectTemporalSPM(std::move(local), localRelations);
     }
   }

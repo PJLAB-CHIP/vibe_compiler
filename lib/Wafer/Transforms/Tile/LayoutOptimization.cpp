@@ -2367,6 +2367,25 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     return result;
   }
 
+  // Tensor read choices have already been consumed. Their actual singleton
+  // scopes may now be promoted through SCF's standard SSA rewrite before
+  // layout, boundary publication and bufferization inspect the current IR.
+  {
+    StructuredBufferReplacementListener listener(relations);
+    mlir::IRRewriter rewriter(module.getContext(), &listener);
+    llvm::SmallVector<mlir::scf::ForOp> loops;
+    module.walk<mlir::WalkOrder::PostOrder>([&](mlir::scf::ForOp loop) {
+      if (getIterationCoordinates(loop))
+        loops.push_back(loop);
+    });
+    for (auto loop : loops)
+      (void)loop.promoteIfSingleIteration(rewriter);
+    if (!listener.finalizeAfterRewrite()) {
+      result.detail = "singleton loop promotion left stale buffer relations";
+      return result;
+    }
+  }
+
   // Make every uniform tensor initializer visible to the layout query,
   // including Generate from standard tiling of an all-padding window.
   {

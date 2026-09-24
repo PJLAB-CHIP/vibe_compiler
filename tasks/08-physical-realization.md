@@ -150,6 +150,8 @@ post-attention bounded logical normalization
 Spatial/Temporal共享纯索引与片段生成；计算融合由Temporal拥有，layout只消费其实际结果。
 “保留共享”与“按窗口局部物化”是两个明确的Tensor实现，不能由bufferization/allocator临时互换，
 也不能因局部IR物化失败而在这里重建完整输入。真实full-use保留完整值，不能仅凭allocation大就删去。
+Tensor选择消费前保留的单次带坐标尾循环，在`prepareCurrentLayoutInput`通过标准SCF接口展开；
+该步骤只规范化已有控制流和SSA，不生成或补绑读取选择。展开后才检查边界发布和建立layout query。
 `prepareCurrentLayoutInput`中的已有Tensor preparation若暴露新的需求，调用同一子集helper闭合后再建立layout query；
 相关IR mutation后重建analysis，不让早期查询成为当前buffer的事实来源。具体算法与覆盖由
 [06号合同](06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)拥有。

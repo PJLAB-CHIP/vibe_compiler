@@ -1911,6 +1911,12 @@ Region closure 的克隆也必须交出该次 IRMapping。无法建立对应的�
 iterator为接口坐标；共享循环记录实际实现的全部坐标。Annotation不含tile size、memory或completion事实，
 clone/bufferization保留，共同Instr入口移除。旧load/loop句柄不跨mutation，不按名称、顺序或首个可用对象恢复选择。
 
+尾块特化保留实际单次`scf.for`及其iteration coordinates，直到Tensor读取选择已经消费；
+只将已证明的单次IV和初始region参数替换为当前SSA。Tensor阶段的局部canonicalization不得提前展开此scope。
+Layout输入规范化再通过标准SCF接口展开单次循环；此时读取已实际局部化或明确保留共享。
+这保留真实控制流中的选择边界，不新增尾块身份、旁路读取inventory或缺失scope的推断。
+覆盖必须包含retile从整除外轴变为非整除外轴、内轴仍循环的情况，并证明新增尾块与主块绑定同一完整选择。
+
 **参数分组与多尺度过程。** 从actual partition、iterator角色、indexing/access映射及typed协调关系提出成组参数，
 只减少提案的独立自由度，不删除真实scope、不声明cost等价；shape相同本身不足以分组。
 其它条件相同时优先较大parallel轴及保留访问复用的方向，依据来自接口；未知不猜测，容量证据要求的轴不能被永久排除。

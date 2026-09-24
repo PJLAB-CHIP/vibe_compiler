@@ -39,6 +39,7 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <functional>
+#include <memory>
 
 namespace wafer {
 namespace {
@@ -1146,6 +1147,33 @@ eraseFusedProducers(mlir::IRRewriter &rewriter,
   return mlir::success();
 }
 
+// Keep the actual one-iteration scope until Tensor choices have consumed it.
+// Promoting it here would silently detach a retiled tail from the main read
+// family. Its IV and initial values are nevertheless known current SSA.
+mlir::LogicalResult specializeSingleIteration(mlir::IRRewriter &rewriter,
+                                              mlir::scf::ForOp loop) {
+  auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+  auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+  auto step = mlir::getConstantIntValue(loop.getStep());
+  int64_t extent = 0;
+  if (!lower || !upper || !step || *step <= 0 ||
+      llvm::SubOverflow(*upper, *lower, extent) || extent <= 0 ||
+      extent > *step)
+    return mlir::failure();
+  if (!getIterationCoordinates(loop))
+    return loop.promoteIfSingleIteration(rewriter);
+  rewriter.replaceAllUsesWith(loop.getInductionVar(), loop.getLowerBound());
+  rewriter.replaceAllUsesWith(loop.getRegionIterArgs(), loop.getInitArgs());
+  // Normalize the one actual iteration so later ragged-loop discovery does
+  // not peel this same tail again.
+  mlir::OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(loop);
+  auto exactStep =
+      rewriter.create<mlir::arith::ConstantIndexOp>(loop.getLoc(), extent);
+  rewriter.modifyOpInPlace(loop, [&] { loop.setStep(exactStep); });
+  return mlir::success();
+}
+
 mlir::LogicalResult specializeRaggedTails(
     mlir::IRRewriter &rewriter,
     const compiler::detail::TemporalScopeDescriptor &descriptor,
@@ -1169,7 +1197,7 @@ mlir::LogicalResult specializeRaggedTails(
     if (mlir::failed(mlir::scf::peelForLoopAndSimplifyBounds(
             rewriter, loop, partialIteration)) ||
         !partialIteration ||
-        mlir::failed(partialIteration.promoteIfSingleIteration(rewriter)))
+        mlir::failed(specializeSingleIteration(rewriter, partialIteration)))
       return mlir::failure();
     ++statistics.specializedTails;
   }
@@ -1762,6 +1790,33 @@ localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
   return mlir::success();
 }
 
+// Delegate the pinned canonicalizations, keeping coordinate-bearing singleton
+// loops intact while they still delimit explicit Tensor read selections.
+struct PreserveIterationScope : mlir::OpRewritePattern<mlir::scf::ForOp> {
+  explicit PreserveIterationScope(std::unique_ptr<mlir::RewritePattern> pattern)
+      : OpRewritePattern(pattern->getContext(), pattern->getBenefit()),
+        pattern(std::move(pattern)) {
+    setHasBoundedRewriteRecursion(this->pattern->hasBoundedRewriteRecursion());
+  }
+  mlir::LogicalResult
+  matchAndRewrite(mlir::scf::ForOp loop,
+                  mlir::PatternRewriter &rewriter) const override {
+    if (getIterationCoordinates(loop)) {
+      auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+      auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+      auto step = mlir::getConstantIntValue(loop.getStep());
+      int64_t extent = 0;
+      if (lower && upper && step && *step > 0 &&
+          !llvm::SubOverflow(*upper, *lower, extent) && extent > 0 &&
+          extent <= *step)
+        return rewriter.notifyMatchFailure(loop,
+                                           "Tensor iteration scope is live");
+    }
+    return pattern->matchAndRewrite(loop, rewriter);
+  }
+  std::unique_ptr<mlir::RewritePattern> pattern;
+};
+
 mlir::LogicalResult
 canonicalizeTiledRegion(TileRegionOp region,
                         mlir::RewriterBase::Listener *listener,
@@ -1783,6 +1838,12 @@ canonicalizeTiledRegion(TileRegionOp region,
                                                 /*foldSingleUseOnly=*/false);
   if (simplifyPackAndUnpack)
     mlir::tensor::populateSimplifyPackAndUnpackPatterns(patterns);
+  for (auto &pattern : patterns.getNativePatterns())
+    if (pattern->getRootKind() ==
+        mlir::OperationName(mlir::scf::ForOp::getOperationName(),
+                            region.getContext()))
+      pattern = mlir::RewritePattern::create<PreserveIterationScope>(
+          std::move(pattern));
   mlir::GreedyRewriteConfig config;
   config.useTopDownTraversal = true;
   config.maxIterations = 10;
@@ -2123,7 +2184,7 @@ specializeCurrentRaggedLoops(mlir::IRRewriter &rewriter, TileRegionOp region,
     mlir::scf::ForOp tail;
     if (mlir::failed(
             mlir::scf::peelForLoopAndSimplifyBounds(rewriter, loop, tail)) ||
-        !tail || mlir::failed(tail.promoteIfSingleIteration(rewriter)))
+        !tail || mlir::failed(specializeSingleIteration(rewriter, tail)))
       return mlir::failure();
     ++statistics.specializedTails;
   }
