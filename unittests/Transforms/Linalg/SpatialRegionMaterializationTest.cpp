@@ -1431,6 +1431,8 @@ TEST_P(SpatialComponentMaterializationTest,
   auto layout = wafer::test::prepareTensorsAndBufferize(*actual->module,
                                                         actual->relations);
   ASSERT_TRUE(layout.succeeded()) << layout.detail;
+  if (extent == 1025 && parts == 4 && !splitFeatures)
+    actual->module->dump();
   actual->module->walk([&](mlir::memref::AllocOp allocation) {
     EXPECT_LT(allocation.getType().getNumElements(),
               3 * extent * parts * columnsPerPart);

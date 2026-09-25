@@ -1059,9 +1059,9 @@ proveIndexDomainEmpty(llvm::ArrayRef<IndexDomainCondition> conditions,
   llvm::SmallVector<AffineExpr> constraints;
   llvm::SmallVector<bool> equalities;
   llvm::DenseMap<AffineExpr, AffineExpr> normalized, opposites;
+  llvm::DenseMap<AffineExpr, std::pair<AffineExpr, int64_t>> shiftedBounds;
   auto prefixConflict = [&]() -> IndexRelationQueryResult {
-    llvm::DenseSet<AffineExpr> positive;
-    llvm::SmallVector<AffineExpr> ordered;
+    llvm::DenseMap<AffineExpr, int64_t> constants;
     for (auto expression : constraints) {
       if (!work.charge())
         return failQuery(IndexRelationStatus::ResourceExhausted,
@@ -1081,23 +1081,52 @@ proveIndexDomainEmpty(llvm::ArrayRef<IndexDomainCondition> conditions,
           return {IndexRelationStatus::Exact, true, {}};
         continue;
       }
-      if (positive.insert(expression).second)
-        ordered.push_back(expression);
-    }
-    // e >= 0 and -e-1 >= 0 are already contradictory. Prune that
-    // complement branch before expanding the remaining source domains.
-    for (auto expression : ordered) {
-      auto found = opposites.find(expression);
-      if (found == opposites.end()) {
+      auto shifted = shiftedBounds.find(expression);
+      if (shifted == shiftedBounds.end()) {
+        int64_t constant = 0;
+        llvm::SmallVector<AffineExpr> terms{expression};
+        while (!terms.empty()) {
+          if (!work.charge())
+            return failQuery(IndexRelationStatus::ResourceExhausted,
+                             "domain prefix exceeded its bound budget");
+          auto term = terms.pop_back_val();
+          if (auto c = dyn_cast<AffineConstantExpr>(term)) {
+            if (llvm::AddOverflow(constant, c.getValue(), constant))
+              return failQuery(IndexRelationStatus::ResourceExhausted,
+                               "domain bound constant overflow");
+          } else if (auto sum = dyn_cast<AffineBinaryOpExpr>(term);
+                     sum && sum.getKind() == AffineExprKind::Add) {
+            terms.push_back(sum.getLHS());
+            terms.push_back(sum.getRHS());
+          }
+        }
+        auto base = expression - constant;
+        shifted = shiftedBounds.try_emplace(
+            expression, std::make_pair(base, constant)).first;
+      }
+      auto [base, constant] = shifted->second;
+      auto tightest = constants.try_emplace(base, constant).first;
+      tightest->second = std::min(tightest->second, constant);
+      auto opposite = opposites.find(base);
+      if (opposite == opposites.end()) {
         auto map = composeIndexMap(
-            AffineMap::get(1, 0, -getAffineDimExpr(0, context) - 1),
-            AffineMap::get(dims, 0, expression), work);
+            AffineMap::get(1, 0, -getAffineDimExpr(0, context)),
+            AffineMap::get(dims, 0, base), work);
         if (!map.isExact())
           return failQuery(map.status, map.reason);
-        found = opposites.try_emplace(expression, map.map.getResult(0)).first;
+        opposite = opposites.try_emplace(base, map.map.getResult(0)).first;
       }
-      if (positive.contains(found->second))
-        return {IndexRelationStatus::Exact, true, {}};
+      // f + a >= 0 and -f + b >= 0 require a + b >= 0. Detect
+      // inconsistent parallel bounds before visiting more complement paths.
+      if (auto other = constants.find(opposite->second);
+          other != constants.end()) {
+        int64_t sum;
+        if (llvm::AddOverflow(tightest->second, other->second, sum))
+          return failQuery(IndexRelationStatus::ResourceExhausted,
+                           "domain bound sum overflow");
+        if (sum < 0)
+          return {IndexRelationStatus::Exact, true, {}};
+      }
     }
     return failQuery(IndexRelationStatus::Unsupported,
                      "no prefix contradiction");
@@ -1113,9 +1142,16 @@ proveIndexDomainEmpty(llvm::ArrayRef<IndexDomainCondition> conditions,
                          dims, 0, {getAffineConstantExpr(0, context)}, {true})
                    : IntegerSet::get(dims, 0, constraints, equalities);
     auto reserved = reserveAffineFlattening(set.getConstraints(), dims, work);
-    if (reserved != IndexRelationStatus::Exact)
+    if (reserved != IndexRelationStatus::Exact) {
+      llvm::errs() << "TEMP subset flatten failure dims=" << dims
+                   << " constraints=" << set.getNumConstraints()
+                   << " consumed=" << work.getConsumed()
+                   << " exhausted=" << work.isExhausted() << "\n";
+      set.print(llvm::errs());
+      llvm::errs() << "\n";
       return failQuery(reserved,
                        "domain expression exceeds bounded flattening support");
+    }
     if (failed(getFlattenedAffineExprs(set, &rows, &flat)))
       return failQuery(IndexRelationStatus::Unsupported,
                        "domain proof cannot flatten its expressions");
