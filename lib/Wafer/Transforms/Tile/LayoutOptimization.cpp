@@ -1,13 +1,9 @@
 //===- LayoutOptimization.cpp - Current layout/bufferization -----------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
-#include "BooleanReduction.h"
 #include "ElementwisePayloads.h"
-#include "GatherLowering.h"
-#include "LoopSubsetState.h"
 
-#include "TensorInitialization.h"
-#include "Wafer/Analysis/ControlFlow/StaticLoopDomain.h"
+#include "Wafer/Analysis/Instr/StaticIndexRange.h"
 #include "Wafer/Analysis/Linalg/IndexRelation.h"
 #include "Wafer/Analysis/Tile/PhysicalLayoutRelation.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
@@ -761,39 +757,21 @@ static mlir::LogicalResult elideBoundarySourceViews(
 }
 
 static bool isOffsetWithinWindow(mlir::OpFoldResult offset, int64_t base,
-                                  int64_t size, int64_t extent) {
+                                  int64_t size, int64_t extent,
+                                  mlir::Operation *use) {
   if (base < 0 || size <= 0 || size > extent)
     return false;
   if (auto constant = mlir::getConstantIntValue(offset))
     return *constant >= base && *constant - base <= extent - size;
-  using mlir::ValueBoundsConstraintSet;
-  using mlir::presburger::BoundType;
-  // The pinned SCF bounds model omits the loop step. Add the last actual IV
-  // from the existing current-loop analysis, then let ValueBounds compose
-  // arbitrary supported index expressions above it.
-  auto stop = [](mlir::Value value, std::optional<int64_t> dimension,
-                 ValueBoundsConstraintSet &bounds) {
-    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
-    if (dimension || !argument)
-      return false;
-    auto domain = analysis::getStaticLoopDomain(
-        argument.getOwner()->getParentOp());
-    if (!domain || value != domain->loop.getInductionVar())
-      return false;
-    int64_t last = domain->lower +
-                   ((domain->upper - domain->lower - 1) / domain->step) *
-                       domain->step;
-    bounds.bound(value) >= domain->lower;
-    bounds.bound(value) <= last;
-    return true;
-  };
-  ValueBoundsConstraintSet::Variable variable(offset);
-  auto lower = ValueBoundsConstraintSet::computeConstantBound(
-      BoundType::LB, variable, stop, /*closedUB=*/true);
-  auto upper = ValueBoundsConstraintSet::computeConstantBound(
-      BoundType::UB, variable, stop, /*closedUB=*/true);
-  return mlir::succeeded(lower) && mlir::succeeded(upper) && *lower >= base &&
-         *upper >= *lower && *upper - base <= extent - size;
+  // A guarded source read only exists on its actual branch. Recompute the
+  // same current-SSA range used by address planning, including enclosing
+  // comparisons and loop steps, rather than widening it to every loop IV.
+  auto range = memory_planning::detail::evaluateNonNegativeStaticIndexRange(
+      mlir::cast<mlir::Value>(offset), use);
+  return range.succeeded() &&
+         (range.range.empty ||
+          (range.range.min >= base && range.range.max >= range.range.min &&
+           range.range.max - base <= extent - size));
 }
 
 static mlir::FailureOr<llvm::SmallVector<BoundaryWindowPlan, 8>>
@@ -878,7 +856,7 @@ preflightBoundaryWindows(mlir::ModuleOp module,
           for (auto [offset, size, base, extent] : llvm::zip_equal(
                    extract.getMixedOffsets(), *consumerSizes, *offsets,
                    *sizes)) {
-            if (!isOffsetWithinWindow(offset, base, size, extent))
+            if (!isOffsetWithinWindow(offset, base, size, extent, extract))
               return false;
           }
           consumerPlan.extracts.push_back(extract);
@@ -2254,29 +2232,6 @@ mlir::LogicalResult verifyLayoutResolvedTileRegions(mlir::ModuleOp module) {
   return mlir::success(valid);
 }
 
-static void localizeEmptySlices(mlir::ModuleOp module,
-                                StructuredMaterializationRelations &relations) {
-  llvm::SmallVector<mlir::tensor::ExtractSliceOp, 16> slices;
-  module.walk([&](mlir::tensor::ExtractSliceOp slice) {
-    if (slice->getParentOfType<TileRegionOp>())
-      slices.push_back(slice);
-  });
-  StructuredBufferReplacementListener listener(relations);
-  mlir::IRRewriter rewriter(module.getContext(), &listener);
-  for (auto slice : slices) {
-    auto empty = slice.getSource().getDefiningOp<mlir::tensor::EmptyOp>();
-    if (!empty || !slice.getType().hasStaticShape())
-      continue;
-    // Empty tensors carry no contents; a selected slice needs only its own
-    // destination shape. This is the pinned Tensor empty/slice fold.
-    rewriter.setInsertionPoint(slice);
-    rewriter.replaceOpWithNewOp<mlir::tensor::EmptyOp>(slice, slice.getType(),
-                                                       mlir::ValueRange{});
-    if (empty->use_empty())
-      rewriter.eraseOp(empty);
-  }
-}
-
 // Arith's bufferization interface creates an immutable DDR global, even
 // when the literal occurs inside a TileRegion. Metadata views retain that
 // backing; stage only the current compute operand's selected window in SPM.
@@ -2386,52 +2341,6 @@ prepareCurrentLayoutInput(mlir::ModuleOp module,
     }
   }
 
-  // Make every uniform tensor initializer visible to the layout query,
-  // including Generate from standard tiling of an all-padding window.
-  {
-    StructuredBufferReplacementListener listener(relations);
-    mlir::IRRewriter rewriter(module.getContext());
-    rewriter.setListener(&listener);
-    if (mlir::failed(lowerUniformTensorInitializers(rewriter, module))) {
-      result.detail =
-          "tensor initialization could not be materialized before layout";
-      return result;
-    }
-    if (!listener.finalizeAfterRewrite()) {
-      result.detail =
-          "tensor initialization left stale current buffer relations";
-      return result;
-    }
-  }
-  if (module
-          .walk([](mlir::Operation *op) {
-            return mlir::isa<mlir::tensor::PadOp, mlir::tensor::GenerateOp>(op)
-                       ? mlir::WalkResult::interrupt()
-                       : mlir::WalkResult::advance();
-          })
-          .wasInterrupted()) {
-    result.status = ExactPBQPStatus::NoSolution;
-    result.detail = "layout input requires uniform tensor initialization";
-    return result;
-  }
-
-  if (mlir::failed(lowerTensorGathers(module, relations))) {
-    result.detail = "selected gather row materialization failed";
-    return result;
-  }
-  if (mlir::failed(lowerBooleanReductions(module, relations))) {
-    result.detail = "boolean reduction representation failed";
-    return result;
-  }
-  if (mlir::failed(normalizeLoopSubsetState(module, relations))) {
-    result.detail = "loop subset state normalization failed";
-    return result;
-  }
-  localizeEmptySlices(module, relations);
-  if (mlir::failed(materializeElementwisePayloads(module, relations))) {
-    result.detail = "pointwise payload materialization failed";
-    return result;
-  }
   materializeConstantReads(module);
 
   std::string detail;
@@ -3287,8 +3196,47 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
     mlir::BlockArgument destination;
     MemLayout layout;
   };
+  struct ConditionalBinding {
+    mlir::OpResult result;
+    MemLayout layout;
+  };
+  auto bindDestination = [&](mlir::Value source, mlir::Value destination,
+                             MemLayout layout, mlir::Operation *before) {
+    std::function<mlir::Value(mlir::Value, mlir::Operation *)> bind =
+        [&](mlir::Value value, mlir::Operation *point) -> mlir::Value {
+      if (value == destination)
+        return value;
+      auto resultValue = mlir::dyn_cast<mlir::OpResult>(value);
+      auto branch =
+          resultValue ? mlir::dyn_cast<mlir::scf::IfOp>(resultValue.getOwner())
+                      : mlir::scf::IfOp{};
+      // Keep independently observed intermediate values intact. Their own
+      // conditional edge is handled by the next fresh analysis epoch.
+      if (branch && value.hasOneUse()) {
+        for (auto yield : {branch.thenYield(), branch.elseYield()}) {
+          unsigned index = resultValue.getResultNumber();
+          auto bound = bind(yield.getOperand(index), yield);
+          assignmentRewriter.modifyOpInPlace(
+              yield, [&] { yield->setOperand(index, bound); });
+        }
+        return value;
+      }
+      if (auto prior = value.getDefiningOp<
+                       mlir::bufferization::MaterializeInDestinationOp>())
+        if (prior.getDest() == destination)
+          return value;
+      assignmentRewriter.setInsertionPoint(point);
+      auto bound = assignmentRewriter
+                       .create<mlir::bufferization::MaterializeInDestinationOp>(
+                           point->getLoc(), value, destination);
+      selectedLayouts.try_emplace(bound.getResult(), layout);
+      return bound.getResult();
+    };
+    return bind(source, before);
+  };
   while (true) {
     llvm::SmallVector<LoopStateBinding, 8> loopBindings;
+    llvm::SmallVector<ConditionalBinding, 8> conditionalBindings;
     {
       support::ScopedCompileTimingSpan epochTiming(
           "analysis-phase", "loop-state-binding", "state-epoch");
@@ -3328,6 +3276,31 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
         return result;
       }
       if (loopBindings.empty()) {
+        auto collectedBranches = module.walk([&](mlir::scf::IfOp branch) {
+          if (!branch->getParentOfType<TileRegionOp>())
+            return mlir::WalkResult::advance();
+          for (auto value : branch.getResults()) {
+            if (!isTensorValue(value) || value.use_empty())
+              continue;
+            unsigned index = value.getResultNumber();
+            if (state.areEquivalentBufferizedValues(
+                    branch.thenYield().getOperand(index),
+                    branch.elseYield().getOperand(index)))
+              continue;
+            auto layout = selectedLayouts.find(value);
+            if (layout == selectedLayouts.end())
+              return mlir::WalkResult::interrupt();
+            conditionalBindings.push_back({value, layout->second});
+          }
+          return mlir::WalkResult::advance();
+        });
+        if (collectedBranches.wasInterrupted()) {
+          result.status = ExactPBQPStatus::BrokenContract;
+          result.detail = "conditional destination has no selected layout";
+          return result;
+        }
+      }
+      if (loopBindings.empty() && conditionalBindings.empty()) {
         // The final analysis still describes this exact IR. The standard
         // state-taking overload resolves conflicts without analyzing again.
         support::ScopedCompileTimingSpan timing("transformation-phase",
@@ -3368,54 +3341,35 @@ LayoutOptimizationResult LayoutAssignmentQuery::apply(
           return result;
         }
       }
-      // Publish on each actual control-flow edge. A conditional result may
-      // choose between a compact allocation and a strided state slice; joining
-      // their memref types first loses the exact copy geometry. The single-use
-      // requirement preserves any independent observer of the original value.
-      bool createdBinding = false;
-      std::function<mlir::Value(mlir::Value, mlir::Operation *)>
-          bindDestination =
-              [&](mlir::Value value, mlir::Operation *before) -> mlir::Value {
-        auto resultValue = mlir::dyn_cast<mlir::OpResult>(value);
-        auto branch =
-            resultValue
-                ? mlir::dyn_cast<mlir::scf::IfOp>(resultValue.getOwner())
-                : mlir::scf::IfOp{};
-        if (branch && value.hasOneUse()) {
-          for (mlir::scf::YieldOp yield :
-               {branch.thenYield(), branch.elseYield()}) {
-            unsigned index = resultValue.getResultNumber();
-            auto bound = bindDestination(yield.getOperand(index), yield);
-            assignmentRewriter.modifyOpInPlace(
-                yield, [&] { yield->setOperand(index, bound); });
-          }
-          return value;
-        }
-        if (value == binding.destination)
-          return value;
-        if (auto prior = value.getDefiningOp<
-                         mlir::bufferization::MaterializeInDestinationOp>())
-          if (prior.getDest() == binding.destination)
-            return value;
-        assignmentRewriter.setInsertionPoint(before);
-        auto bound =
-            assignmentRewriter
-                .create<mlir::bufferization::MaterializeInDestinationOp>(
-                    before->getLoc(), value, binding.destination);
-        selectedLayouts.try_emplace(bound.getResult(), binding.layout);
-        createdBinding = true;
-        return bound.getResult();
-      };
-      auto bound = bindDestination(source, binding.yield);
-      if (!createdBinding) {
-        result.status = ExactPBQPStatus::BrokenContract;
-        result.detail =
-            "conditional state destination did not establish equivalence";
-        return result;
-      }
+      auto bound = bindDestination(source, binding.destination, binding.layout,
+                                   binding.yield);
       assignmentRewriter.modifyOpInPlace(binding.yield, [&] {
         binding.yield->setOperand(binding.index, bound);
       });
+    }
+    // Bind outermost unresolved conditionals first: one actual destination
+    // covers its single-use branch chain instead of allocating at every node.
+    for (auto binding : conditionalBindings) {
+      auto branch = mlir::cast<mlir::scf::IfOp>(binding.result.getOwner());
+      if (llvm::any_of(conditionalBindings, [&](const auto &other) {
+            return other.result.getOwner() != branch.getOperation() &&
+                   other.result.getOwner()->isAncestor(branch);
+          }))
+        continue;
+      assignmentRewriter.setInsertionPoint(branch);
+      auto destination =
+          assignmentRewriter.create<mlir::bufferization::AllocTensorOp>(
+              branch.getLoc(), binding.result.getType(), mlir::ValueRange{});
+      destination.setMemorySpaceAttr(MemoryAttr::get(
+          module.getContext(), MemorySpace::SPM, binding.layout));
+      selectedLayouts.try_emplace(destination.getResult(), binding.layout);
+      for (auto yield : {branch.thenYield(), branch.elseYield()}) {
+        unsigned index = binding.result.getResultNumber();
+        auto bound = bindDestination(yield.getOperand(index), destination,
+                                     binding.layout, yield);
+        assignmentRewriter.modifyOpInPlace(
+            yield, [&] { yield->setOperand(index, bound); });
+      }
     }
   }
   ++result.statistics.bufferizationInvocations;

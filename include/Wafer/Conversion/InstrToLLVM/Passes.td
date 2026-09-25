@@ -7,7 +7,9 @@ def LowerInstrToTargetLLVMPass
     : Pass<"wafer-lower-instr-to-target-llvm", "mlir::ModuleOp"> {
   let summary =
       "Lower memory-planned wafer.instr ops to target LLVM CRT calls";
-  let dependentDialects = ["mlir::cf::ControlFlowDialect",
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::cf::ControlFlowDialect",
                            "mlir::LLVM::LLVMDialect",
                            "wafer::WaferDialect"];
   let options = [

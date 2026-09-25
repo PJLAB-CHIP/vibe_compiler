@@ -1,5 +1,6 @@
 //===- BatchNormFusionTest.cpp - Exact normalization scalar fusion --------===//
 
+#include "TestSupport/Transforms/CurrentTensorPipeline.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
@@ -410,7 +411,7 @@ TEST_F(BatchNormFusionTest, KeepsFeatureTemporariesCompactThroughInstrAndSPM) {
       ASSERT_TRUE(domain.domain->contains(choice));
       ASSERT_TRUE(mlir::succeeded(
           applyTemporalTiling({{*domain.domain, choice}}, relations)));
-      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto layout = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       auto lowered = lowerStructuredComputeToTile(*module, relations);
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;

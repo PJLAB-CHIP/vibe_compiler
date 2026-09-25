@@ -20,6 +20,7 @@
 #include "Wafer/Transforms/Tile/BoundaryMovement.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
+#include "Wafer/Transforms/Tile/TensorPreparation.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Verifier.h"
@@ -342,11 +343,15 @@ ExecutableCompilationResult compileBaselineCurrentIR(
           &spatialFailure);
     });
     if (mlir::failed(candidate))
-      return fail(spatialFailure.kind ==
-                          SpatialRegionMaterializationFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "baseline-spatial-materialization", spatialFailure.detail);
+      return fail(
+          spatialFailure.kind ==
+                  SpatialRegionMaterializationFailureKind::ResourceExhausted
+              ? ExecutableCompilationStatus::IndeterminateFailure
+          : spatialFailure.kind ==
+                  SpatialRegionMaterializationFailureKind::Unsupported
+              ? ExecutableCompilationStatus::UnsupportedFailure
+              : ExecutableCompilationStatus::CompilerFailure,
+          "baseline-spatial-materialization", spatialFailure.detail);
     if (statistics)
       ++statistics->spatialMaterializations;
 
@@ -385,8 +390,13 @@ ExecutableCompilationResult compileBaselineCurrentIR(
                                  &temporalFailure);
     });
     if (mlir::failed(tiled))
-      return fail(ExecutableCompilationStatus::CompilerFailure,
-                  "baseline-temporal-apply", temporalFailure.detail);
+      return fail(
+          temporalFailure.kind == TemporalTilingFailureKind::ResourceExhausted
+              ? ExecutableCompilationStatus::IndeterminateFailure
+          : temporalFailure.kind == TemporalTilingFailureKind::Unsupported
+              ? ExecutableCompilationStatus::UnsupportedFailure
+              : ExecutableCompilationStatus::CompilerFailure,
+          "baseline-temporal-apply", temporalFailure.detail);
     if (statistics)
       statistics->temporalApplications += requests.size();
 
@@ -412,6 +422,13 @@ ExecutableCompilationResult compileBaselineCurrentIR(
               : ExecutableCompilationStatus::CompilerFailure,
           "baseline-attention-decomposition", attentionFailure.detail);
 
+    auto tensorPrepared =
+        prepareCurrentTensorInput(*candidate->module, candidate->relations);
+    if (!tensorPrepared.succeeded())
+      return fail(tensorPrepared.status == TensorPreparationStatus::Unsupported
+                      ? ExecutableCompilationStatus::UnsupportedFailure
+                      : ExecutableCompilationStatus::CompilerFailure,
+                  "baseline-tensor-preparation", tensorPrepared.detail);
     ExternalBufferLayout external;
     external.layout = options.externalLayout;
     for (const auto &input : program.distributedInputs)

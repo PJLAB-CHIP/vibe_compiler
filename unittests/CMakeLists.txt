@@ -148,6 +148,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Linalg/SpatialRegionMaterializationTest.cpp
     Transforms/Linalg/StructuredTilingTest.cpp
     Transforms/Linalg/TemporalTilingTest.cpp
+    Transforms/Linalg/TensorAssemblyMaterializationTest.cpp
     Transforms/Instr/RequiredNCCJoinPlacementTest.cpp
     Transforms/Instr/LifetimeAnalysisTest.cpp
     Transforms/Instr/MiniMallocPackingTest.cpp
@@ -155,6 +156,7 @@ wafer_add_component_unit_test(WaferTransformsUnitTests
     Transforms/Instr/RedundantTransferEliminationTest.cpp
     Transforms/Instr/GatherScatterWorkTest.cpp
   LINK_LIBS
+    WaferCodeGen
     WaferCompiler
     WaferCompilerTestSupport
     WaferExecutableTestSupport

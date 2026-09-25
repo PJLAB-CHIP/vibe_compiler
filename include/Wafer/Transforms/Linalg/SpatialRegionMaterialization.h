@@ -21,6 +21,7 @@ namespace wafer {
 enum class SpatialRegionMaterializationFailureKind : uint8_t {
   None,
   Unsupported,
+  ResourceExhausted,
   BrokenContract,
   CompilerFailure,
 };

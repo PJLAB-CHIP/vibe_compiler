@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/DynamicAPInt.h"
 
 using namespace wafer;
 
@@ -34,25 +35,53 @@ mlir::Value wafer::reshapeStaticTensorTile(mlir::OpBuilder &builder,
     return builder.create<mlir::tensor::ExpandShapeOp>(location, resultType,
                                                        source, *groups);
   }
-  auto flatType = mlir::RankedTensorType::get({sourceType.getNumElements()},
-                                              sourceType.getElementType(),
-                                              sourceType.getEncoding());
-  if (sourceType.getRank() > 1) {
-    mlir::ReassociationIndices axes;
-    for (int64_t axis = 0; axis < sourceType.getRank(); ++axis)
-      axes.push_back(axis);
-    source = builder.create<mlir::tensor::CollapseShapeOp>(
-        location, flatType, source,
-        llvm::ArrayRef<mlir::ReassociationIndices>{axes});
+  // Preserve every common row-major boundary. Collapsing all dimensions
+  // unnecessarily ties independent rows together: a strided slice such as
+  // 1x256x1x128 can become 256x2x64 through 256x128, without requiring the
+  // rows to be contiguous. Bufferization still owns the actual alias choice.
+  llvm::SmallVector<int64_t> common;
+  llvm::SmallVector<mlir::ReassociationIndices> sourceGroups, resultGroups;
+  int64_t sourceAxis = 0, resultAxis = 0;
+  bool positive = !llvm::is_contained(sourceType.getShape(), 0);
+  while (positive && sourceAxis < sourceType.getRank() &&
+         resultAxis < resultType.getRank()) {
+    mlir::ReassociationIndices sourceGroup{sourceAxis++};
+    mlir::ReassociationIndices resultGroup{resultAxis++};
+    llvm::DynamicAPInt sourceProduct(sourceType.getDimSize(sourceGroup.front()));
+    llvm::DynamicAPInt resultProduct(resultType.getDimSize(resultGroup.front()));
+    while (sourceProduct != resultProduct) {
+      if (sourceProduct < resultProduct) {
+        sourceProduct *= sourceType.getDimSize(sourceAxis);
+        sourceGroup.push_back(sourceAxis++);
+      } else {
+        resultProduct *= resultType.getDimSize(resultAxis);
+        resultGroup.push_back(resultAxis++);
+      }
+    }
+    common.push_back(int64_t(sourceProduct));
+    sourceGroups.push_back(std::move(sourceGroup));
+    resultGroups.push_back(std::move(resultGroup));
   }
-  if (resultType.getRank() == 1)
+  // Any remaining dimensions have product one; attach them to the adjacent
+  // common group. Zero-element tensors keep a single zero-sized group.
+  if (!positive) {
+    common.push_back(0);
+    sourceGroups.emplace_back();
+    resultGroups.emplace_back();
+  }
+  while (sourceAxis < sourceType.getRank())
+    sourceGroups.back().push_back(sourceAxis++);
+  while (resultAxis < resultType.getRank())
+    resultGroups.back().push_back(resultAxis++);
+  auto commonType = mlir::RankedTensorType::get(
+      common, sourceType.getElementType(), sourceType.getEncoding());
+  if (sourceType != commonType)
+    source = builder.create<mlir::tensor::CollapseShapeOp>(
+        location, commonType, source, sourceGroups);
+  if (resultType == commonType)
     return source;
-  mlir::ReassociationIndices axes;
-  for (int64_t axis = 0; axis < resultType.getRank(); ++axis)
-    axes.push_back(axis);
   return builder.create<mlir::tensor::ExpandShapeOp>(
-      location, resultType, source,
-      llvm::ArrayRef<mlir::ReassociationIndices>{axes});
+      location, resultType, source, resultGroups);
 }
 
 namespace {

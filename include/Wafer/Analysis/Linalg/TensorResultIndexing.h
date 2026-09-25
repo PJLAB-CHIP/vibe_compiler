@@ -70,6 +70,8 @@ struct TensorResultIndexingResult {
 TensorResultIndexingResult deriveTensorResultIndexing(
     mlir::OpResult result,
     const IndexRelationLimits &limits = IndexRelationLimits());
+TensorResultIndexingResult deriveTensorResultIndexing(mlir::OpResult result,
+                                                      IndexRelationWork &work);
 
 /// One current transparent, total, single-source indexing chain. The source
 /// handle is borrowed for this IR epoch; the relation contains no allocation
@@ -114,6 +116,35 @@ struct TensorLoopGridResult {
   std::optional<TensorLoopGrid> grid;
   std::string detail;
 };
+
+struct TensorIndexParameter {
+  mlir::Value induction;
+  int64_t lower = 0;
+  int64_t upper = 0;
+  int64_t step = 1;
+};
+
+/// Standard expressions with the actual bounded SSA parameter bindings.
+/// Parameters retain loop steps; their rectangular bounds are not their domain.
+struct TensorIndexExpressions {
+  mlir::AffineMap map;
+  llvm::SmallVector<TensorIndexParameter, 4> parameters;
+};
+
+struct TensorIndexExpressionsResult {
+  TensorResultIndexingStatus status = TensorResultIndexingStatus::Unsupported;
+  std::optional<TensorIndexExpressions> expressions;
+  std::string detail;
+  bool isExact() const {
+    return status == TensorResultIndexingStatus::Exact &&
+           expressions.has_value();
+  }
+};
+
+TensorIndexExpressionsResult
+queryTensorIndexExpressions(mlir::MLIRContext *context,
+                            llvm::ArrayRef<mlir::OpFoldResult> values,
+                            IndexRelationWork &work);
 
 TensorLoopGridResult
 queryTensorLoopGrid(mlir::OpFoldResult offset,
@@ -259,6 +290,95 @@ TensorAssemblyReadResult queryTensorAssemblyRead(
     mlir::Value value, llvm::ArrayRef<mlir::OpFoldResult> offsets,
     llvm::ArrayRef<int64_t> sizes,
     const IndexRelationLimits &limits = IndexRelationLimits());
+
+/// One last-writer path through the current structural SSA DAG. Map/domain
+/// dimensions are live parameters followed by consumer-local coordinates.
+struct TensorSubsetSource {
+  mlir::Value source;
+  mlir::AffineMap coordinates;
+  llvm::SmallVector<IndexDomainCondition, 4> conditions;
+};
+
+struct TensorSubsetDemand {
+  llvm::SmallVector<TensorIndexParameter, 4> parameters;
+  llvm::SmallVector<int64_t, 4> shape;
+  mlir::IntegerSet domain;
+  llvm::SmallVector<IndexDomainCondition, 4> scopeConditions;
+  llvm::SmallVector<TensorSubsetSource, 4> sources;
+  /// The visited current DAG contains an insertion with an old destination.
+  /// Discovery uses this fact to distinguish assembly choices from pure views.
+  bool hasDestinationUpdates = false;
+};
+
+struct TensorSubsetDemandResult {
+  TensorAssemblyStatus status = TensorAssemblyStatus::Unsupported;
+  std::optional<TensorSubsetDemand> demand;
+  std::string detail;
+  bool isExact() const {
+    return status == TensorAssemblyStatus::Exact && demand.has_value();
+  }
+};
+
+/// Follow both insertion operands and transparent views without enumerating
+/// dynamic iterations or converting paths to rectangle products. SSA handles,
+/// parameters and proofs are borrowed only for this mutation-free invocation.
+TensorSubsetDemandResult
+queryTensorSubsetDemand(mlir::Value value,
+                        llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                        llvm::ArrayRef<int64_t> sizes, mlir::Operation *scope,
+                        IndexRelationWork &work);
+
+enum class TensorSubsetBlockStatus : uint8_t {
+  Copy,
+  Subdivide,
+  Unsupported,
+  ResourceExhausted,
+  BrokenContract,
+};
+
+/// A sufficient whole-block proof, derived from one current source relation.
+/// Dimensions bind parameters followed by the block's consumer-local origin.
+/// Guards imply a dense source rectangle with exactly the consumer's local
+/// row-major order. This contains mathematical facts, not an operation plan.
+struct TensorSubsetBlock {
+  llvm::SmallVector<IndexDomainCondition, 4> guards;
+  mlir::AffineMap sourceOffsets;
+  llvm::SmallVector<int64_t, 4> sourceSizes;
+};
+
+struct TensorSubsetBlockResult {
+  TensorSubsetBlockStatus status = TensorSubsetBlockStatus::Unsupported;
+  std::optional<TensorSubsetBlock> block;
+  /// Deterministic blocking axes, with outer axes first to preserve contiguous
+  /// inner copies. An empty list leaves the caller's stable nonunit-axis rule.
+  llvm::SmallVector<unsigned, 4> blockingAxes;
+  std::string detail;
+};
+
+TensorSubsetBlockResult queryTensorSubsetBlock(const TensorSubsetDemand &demand,
+                                               const TensorSubsetSource &source,
+                                               llvm::ArrayRef<int64_t> shape,
+                                               IndexRelationWork &work);
+
+struct StaticTensorSubsetBlock {
+  unsigned source;
+  StaticRectangularIndexSet destination;
+  TensorSubsetBlock copy;
+};
+
+struct StaticTensorSubsetBlocksResult {
+  IndexRelationStatus status = IndexRelationStatus::Unsupported;
+  llvm::SmallVector<StaticTensorSubsetBlock, 4> blocks;
+  std::string detail;
+};
+
+/// Recover the existing static rectangular fast path from the same DAG
+/// conditions and ordered-copy proof. Source offsets may vary with actual
+/// parameters; destination rectangles must be fixed over their whole domain.
+/// Nonrectangular or varying partitions remain eligible for subdivision.
+StaticTensorSubsetBlocksResult
+queryStaticTensorSubsetBlocks(const TensorSubsetDemand &demand,
+                              IndexRelationWork &work);
 
 /// Current structured-compute access maps. These adapters expose dialect
 /// semantics only; no fusion, tiling, or placement decisions belong here.

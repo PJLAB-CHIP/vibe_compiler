@@ -10,6 +10,7 @@
 namespace wafer {
 
 void buildResolveLayoutsAndBufferizePipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createPrepareCurrentTensorInputPass());
   pm.addPass(createResolveCurrentLayoutsAndBufferizePass());
 }
 

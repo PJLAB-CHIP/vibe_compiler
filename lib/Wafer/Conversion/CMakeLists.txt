@@ -57,6 +57,8 @@ add_mlir_conversion_library(WaferInstrToLLVM
   WaferIR
   WaferTarget
   WaferTileToInstr
+  MLIRAffineToStandard
+  MLIRAffineDialect
   MLIRArithToLLVM
   MLIRArithDialect
   MLIRArithTransforms

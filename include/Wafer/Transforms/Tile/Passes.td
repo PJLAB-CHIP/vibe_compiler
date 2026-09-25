@@ -3,6 +3,14 @@
 #ifndef WAFER_TRANSFORMS_TILE_PASSES_TD
 #define WAFER_TRANSFORMS_TILE_PASSES_TD
 
+def PrepareCurrentTensorInputPass
+    : Pass<"wafer-prepare-current-tensor-input", "mlir::ModuleOp"> {
+  let summary = "Expose tensor subsets before final read discovery";
+  let dependentDialects = ["mlir::arith::ArithDialect", "mlir::func::FuncDialect",
+                           "mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"];
+}
+
 def ResolveCurrentLayoutsAndBufferizePass
     : Pass<"wafer-resolve-current-layouts-and-bufferize", "mlir::ModuleOp"> {
   let summary =

@@ -153,16 +153,25 @@ Spatial/Temporal共享纯索引与片段生成；计算融合由Temporal拥有�
 也不能因局部IR物化失败而在这里重建完整输入。真实full-use保留完整值，不能仅凭allocation大就删去。
 Tensor选择消费前保留的单次带坐标尾循环，在`prepareCurrentLayoutInput`通过标准SCF接口展开；
 该步骤只规范化已有控制流和SSA，不生成或补绑读取选择。展开后才检查边界发布和建立layout query。
-`prepareCurrentLayoutInput`中会生成新subset的Tensor preparation须分离为本层拥有的原子Tensor准备入口，
+会生成新subset的Tensor preparation由本层的`prepareCurrentTensorInput`原子入口拥有，
 由上层driver/named pipeline在最终读取组发现和选择前调用；再调用06号共同物化，最后处理单次循环规范化、
 边界发布及layout query。剩余layout preparation不得新造未闭合需求；不能从`WaferTileTransforms`回调
 `WaferLinalgTransforms`造成循环依赖，也不通过反复扫描补救调用顺序。named pipeline与none/search复用同一实现。
 相关IR mutation后重建analysis，不让早期查询成为当前buffer的事实来源。具体算法与覆盖由
 [06号合同](06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)拥有。
+Tensor准备包含uniform initializer、gather、boolean reduction、loop subset state与pointwise payload，
+每一步经同一replacement listener转交当前SSA对应。带坐标singleton scope保留到选择消费之后；
+命名`wafer-resolve-layouts-and-bufferize`组合Tensor准备与layout原子pass，默认保留共享实现。
+显式局部选择由上层driver插在两者之间；原子layout入口不再隐含调用Tensor准备。
 
 局部物化可以产生保留原计算循环的嵌套copy循环与条件分支；每个块的shape静态，offset和来源guard可包含常数floor/mod。
 条件内先将实际source slice插入局部destination，再yield同一destination；layout不得要求不同source分支先合流为同一view几何。
 One-Shot从这份DPS/SCF SSA决定in-place/out-of-place，movement只消费已确定的alias与实际encoding。
+标准Tensor折叠可以消去完整insert；layout assignment后的同一One-Shot分析必须检查实际条件合流。
+两条边不是equivalent buffer时，在该条件位置建立具有已选layout的共同destination，并在分支内用标准
+`bufferization.materialize_in_destination`写入，再以fresh analysis确认equivalence；已等价分支不增加copy。
+有独立观察者的内层值保留，不能靠更改memref类型掩盖不同stride/offset，也不能在movement才决定合流allocation。
+rank3的1024/1031共享/局部窗口须经过实际conditional copy、Instr与SPM，完整观察者与零次执行语义保持。
 Tensor逻辑矩形与NCx物理连续性分别证明，沿用上文外部布局支持域；动态窄C tail仍是明确未实现的lowering能力，
 不能因为Tensor查询Exact就放过，也不能静默切回Tensor ABI。若原产品必需的形状落在此边界，须在本owner修复并补矩阵。
 

@@ -18,11 +18,12 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 
@@ -1678,6 +1679,13 @@ static mlir::MemRefType getRetargetedViewType(mlir::Operation *op,
 static bool canRetargetViewUsers(mlir::Value value, mlir::MemRefType source) {
   for (auto &use : value.getUses()) {
     auto *op = use.getOwner();
+    // Compact loading changes physical strides. A structured control-flow
+    // signature is a typed boundary; its destination must have been resolved
+    // by bufferization before this movement optimization is selected.
+    if (value.getType() != source &&
+        (op->hasTrait<mlir::OpTrait::IsTerminator>() ||
+         mlir::isa<mlir::RegionBranchOpInterface>(op)))
+      return false;
     if (!mlir::isa<mlir::ViewLikeOpInterface>(op))
       continue;
     if (!isInputView(op) || use.getOperandNumber() != 0)

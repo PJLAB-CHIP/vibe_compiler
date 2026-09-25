@@ -6,6 +6,7 @@
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 
 namespace wafer::compiler::detail {
@@ -13,9 +14,9 @@ namespace wafer::compiler::detail {
 /// Publish conditional subsets on their incoming edges and promote proven
 /// invariant tensor subsets before layout assignment. All
 /// relations are retargeted through the same rewriter as the current SSA.
-mlir::LogicalResult
-normalizeLoopSubsetState(mlir::ModuleOp module,
-                         StructuredMaterializationRelations &relations);
+mlir::LogicalResult normalizeLoopSubsetState(
+    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
+    mlir::RewriterBase::Listener *externalListener = nullptr);
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_TRANSFORMS_TILE_LOOPSUBSETSTATE_H

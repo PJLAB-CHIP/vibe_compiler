@@ -10,6 +10,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/SubsetInsertionOpInterfaceImpl.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
@@ -56,6 +57,7 @@ module {
     return
   }
 }
+
 )mlir",
                                                         context.get());
   ASSERT_TRUE(module);
@@ -107,6 +109,43 @@ module {
             TensorResultIndexingStatus::Exact);
   EXPECT_EQ(queryTensorLoopGrid(applies[0].getResult(), bounded).status,
             TensorResultIndexingStatus::ResourceExhausted);
+}
+
+TEST(TensorResultIndexingTest, LoopGridNormalizesEquivalentOperandBindings) {
+  // Scalar index expressions are a bounded oracle; the loop spans real tiles.
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @indices() {
+      %c0 = arith.constant 0 : index
+      %c8 = arith.constant 8 : index
+      %c16 = arith.constant 16 : index
+      %c1031 = arith.constant 1031 : index
+      scf.for %i = %c0 to %c1031 step %c16 {
+        %a = affine.apply affine_map<(d0)[s0] -> (d0 + s0)>(%i)[%c8]
+        %b = affine.apply affine_map<(d0, d1) -> (d0 + d1)>(%c8, %i)
+        %c = arith.addi %i, %c16 : index
+        %d = arith.subi %c, %c8 : index
+      }
+      return
+    }
+  )mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::Value> values;
+  module->walk([&](mlir::affine::AffineApplyOp op) {
+    values.push_back(op.getResult());
+  });
+  module->walk(
+      [&](mlir::arith::SubIOp op) { values.push_back(op.getResult()); });
+  ASSERT_EQ(values.size(), 3u);
+  for (auto value : values) {
+    auto result = wafer::analysis::queryTensorLoopGrid(value);
+    ASSERT_TRUE(result.grid) << result.detail;
+    EXPECT_EQ(result.grid->base, 8);
+    EXPECT_EQ(result.grid->scale, 1);
+    EXPECT_EQ(result.grid->step, 16);
+    EXPECT_EQ(result.grid->upper, 1039);
+  }
 }
 
 TEST(TensorResultIndexingTest, ComposedViewsKeepASelectedColumnWindowCompact) {
@@ -944,6 +983,574 @@ TEST(TensorResultIndexingTest, StaticAssemblyViewPreservesMultipleExactImages) {
           }
           ASSERT_EQ(matches, 1u);
         }
+  }
+}
+
+static llvm::SmallVector<int64_t>
+evaluateSubsetMap(mlir::AffineMap map, llvm::ArrayRef<int64_t> point) {
+  llvm::SmallVector<mlir::Attribute> arguments, folded;
+  for (int64_t value : point)
+    arguments.push_back(
+        mlir::IntegerAttr::get(mlir::IndexType::get(map.getContext()), value));
+  EXPECT_TRUE(mlir::succeeded(map.constantFold(arguments, folded)));
+  llvm::SmallVector<int64_t> values;
+  for (auto value : folded)
+    values.push_back(mlir::cast<mlir::IntegerAttr>(value).getInt());
+  return values;
+}
+
+static bool containsSubsetPoint(mlir::IntegerSet domain,
+                                llvm::ArrayRef<int64_t> point) {
+  auto conditions = evaluateSubsetMap(
+      mlir::AffineMap::get(domain.getNumDims(), domain.getNumSymbols(),
+                           domain.getConstraints(), domain.getContext()),
+      point);
+  for (unsigned i = 0; i < conditions.size(); ++i)
+    if (domain.isEq(i) ? conditions[i] != 0 : conditions[i] < 0)
+      return false;
+  return true;
+}
+
+TEST(TensorResultIndexingTest,
+     SubsetDemandTraversesBothSidesOfTheStructuralDAG) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    std::string text = R"mlir(
+      func.func @nested(%base: tensor<2xEXTENTx8xf16>,
+                        %a: tensor<2x256x8xf16>, %b: tensor<2x256x8xf16>) {
+        %empty = tensor.empty() : tensor<2x512x8xf16>
+        %first = tensor.insert_slice %a into %empty[0, 0, 0]
+          [2, 256, 8] [1, 1, 1] : tensor<2x256x8xf16> into tensor<2x512x8xf16>
+        %inner = tensor.insert_slice %b into %first[0, 256, 0]
+          [2, 256, 8] [1, 1, 1] : tensor<2x256x8xf16> into tensor<2x512x8xf16>
+        %nested = tensor.insert_slice %inner into %base[0, 128, 0]
+          [2, 512, 8] [1, 1, 1] : tensor<2x512x8xf16> into tensor<2xEXTENTx8xf16>
+        %f0 = tensor.insert_slice %a into %base[0, 128, 0]
+          [2, 256, 8] [1, 1, 1] : tensor<2x256x8xf16> into tensor<2xEXTENTx8xf16>
+        %flat = tensor.insert_slice %b into %f0[0, 384, 0]
+          [2, 256, 8] [1, 1, 1] : tensor<2x256x8xf16> into tensor<2xEXTENTx8xf16>
+        %zero = arith.constant 0 : index
+        %end = arith.constant END : index
+        %step = arith.constant 31 : index
+        scf.for %i = %zero to %end step %step {
+          %x = tensor.extract_slice %nested[0, %i, 0] [2, 64, 8] [1, 1, 1]
+            : tensor<2xEXTENTx8xf16> to tensor<2x64x8xf16>
+          %y = tensor.extract_slice %flat[0, %i, 0] [2, 64, 8] [1, 1, 1]
+            : tensor<2xEXTENTx8xf16> to tensor<2x64x8xf16>
+        }
+        return
+      }
+    )mlir";
+    for (auto [key, replacement] :
+         {std::pair{std::string("EXTENT"), std::to_string(extent)},
+          std::pair{std::string("END"), std::to_string(extent - 63)}}) {
+      size_t at = 0;
+      while ((at = text.find(key, at)) != std::string::npos) {
+        text.replace(at, key.size(), replacement);
+        at += replacement.size();
+      }
+    }
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
+    module->walk(
+        [&](mlir::tensor::ExtractSliceOp read) { reads.push_back(read); });
+    ASSERT_EQ(reads.size(), 2u);
+    for (auto read : reads) {
+      IndexRelationWork work(IndexRelationLimits{});
+      auto query = queryTensorSubsetDemand(
+          read.getSource(), read.getMixedOffsets(), {2, 64, 8}, read, work);
+      ASSERT_TRUE(query.isExact()) << query.detail << "; extent=" << extent;
+      ASSERT_EQ(query.demand->parameters.size(), 1u);
+      for (int64_t i = 0; i < extent - 63; i += 31)
+        for (int64_t row = 0; row < 64; ++row) {
+          llvm::SmallVector<int64_t> point{i, 1, row, 7};
+          ASSERT_TRUE(containsSubsetPoint(query.demand->domain, point));
+          unsigned owners = 0;
+          for (const auto &source : query.demand->sources) {
+            bool active = true;
+            for (auto condition : source.conditions)
+              active &= containsSubsetPoint(condition.set, point) !=
+                        condition.complement;
+            if (!active)
+              continue;
+            ++owners;
+            int64_t global = i + row;
+            unsigned argument = global < 128 || global >= 640 ? 0
+                                : global < 384                ? 1
+                                                              : 2;
+            EXPECT_EQ(source.source, function.getArgument(argument));
+            auto coordinates = evaluateSubsetMap(source.coordinates, point);
+            EXPECT_EQ(coordinates, (llvm::SmallVector<int64_t>{
+                                       1,
+                                       global - (argument == 1   ? 128
+                                                 : argument == 2 ? 384
+                                                                 : 0),
+                                       7}));
+          }
+          EXPECT_EQ(owners, 1u) << i << ":" << row;
+        }
+      IndexRelationLimits limits;
+      limits.maxConstraintWork = work.getConsumed();
+      IndexRelationWork shared(limits);
+      ASSERT_TRUE(queryTensorSubsetDemand(read.getSource(),
+                                          read.getMixedOffsets(), {2, 64, 8},
+                                          read, shared)
+                      .isExact());
+      EXPECT_EQ(queryTensorSubsetDemand(read.getSource(),
+                                        read.getMixedOffsets(), {2, 64, 8},
+                                        read, shared)
+                    .status,
+                TensorAssemblyStatus::ResourceExhausted);
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest,
+     SubsetDemandUsesActualBranchAndEmptyLoopDomains) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @holes(%source: tensor<2x512x8xf16>) {
+      %empty = tensor.empty() : tensor<2x1031x8xf16>
+      %defined = tensor.insert_slice %source into %empty[0, 0, 0]
+        [2, 512, 8] [1, 1, 1] : tensor<2x512x8xf16> into tensor<2x1031x8xf16>
+      %c0 = arith.constant 0 : index
+      %c16 = arith.constant 16 : index
+      %c481 = arith.constant 481 : index
+      %c1000 = arith.constant 1000 : index
+      scf.for %i = %c0 to %c1000 step %c16 {
+        %in = arith.cmpi slt, %i, %c481 : index
+        scf.if %in {
+          %valid = tensor.extract_slice %defined[0, %i, 0]
+            [2, 32, 8] [1, 1, 1] : tensor<2x1031x8xf16> to tensor<2x32x8xf16>
+        } else {
+          %invalid = tensor.extract_slice %defined[0, %i, 0]
+            [2, 32, 8] [1, 1, 1] : tensor<2x1031x8xf16> to tensor<2x32x8xf16>
+        }
+      }
+      scf.for %i = %c0 to %c0 step %c16 {
+        %never = tensor.extract_slice %empty[0, 768, 0]
+          [2, 32, 8] [1, 1, 1] : tensor<2x1031x8xf16> to tensor<2x32x8xf16>
+      }
+      return
+    }
+  )mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
+  module->walk(
+      [&](mlir::tensor::ExtractSliceOp read) { reads.push_back(read); });
+  ASSERT_EQ(reads.size(), 3u);
+  for (unsigned i = 0; i < reads.size(); ++i) {
+    IndexRelationWork work(IndexRelationLimits{});
+    auto read = reads[i];
+    auto result = queryTensorSubsetDemand(
+        read.getSource(), read.getMixedOffsets(), {2, 32, 8}, read, work);
+    if (i == 1) {
+      EXPECT_EQ(result.status, TensorAssemblyStatus::Unsupported);
+      continue;
+    }
+    ASSERT_TRUE(result.isExact()) << result.detail;
+    if (i == 2)
+      EXPECT_TRUE(result.demand->sources.empty());
+    else {
+      ASSERT_EQ(result.demand->sources.size(), 1u);
+      EXPECT_EQ(result.demand->scopeConditions.size(), 1u);
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest,
+     ParameterExpressionsKeepCoupledDivisionAndIntegerSemantics) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @coordinates() {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c7 = arith.constant 7 : index
+      %c17 = arith.constant 17 : index
+      %c1031 = arith.constant 1031 : index
+      %large = arith.constant 4294967296 : index
+      scf.for %i = %c0 to %c1031 step %c7 {
+        scf.for %j = %c0 to %c17 step %c1 {
+          %a = affine.apply affine_map<(d0)[s0] -> ((d0 * 3 - s0) floordiv 7)>(%i)[%j]
+          %b = affine.apply affine_map<(d0, d1) -> ((d1 * 3 - d0) floordiv 7)>(%j, %i)
+          %negative = arith.subi %c0, %i : index
+          %truncation = arith.divsi %negative, %c7 : index
+          %floor = arith.floordivsi %negative, %c7 : index
+          %unknown = arith.divsi %i, %j : index
+        }
+      }
+      scf.for %i = %c0 to %large step %c1 {
+        %narrow = arith.index_cast %i : index to i32
+      }
+      return
+    }
+  )mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::Value> offsets;
+  module->walk([&](mlir::affine::AffineApplyOp op) { offsets.push_back(op); });
+  for (auto value : offsets) {
+    IndexRelationWork work(IndexRelationLimits{});
+    auto result = queryTensorIndexExpressions(context.get(), {value}, work);
+    ASSERT_TRUE(result.isExact()) << result.detail;
+    ASSERT_EQ(result.expressions->parameters.size(), 2u);
+    for (int64_t i = 0; i < 1031; i += 7)
+      for (int64_t j = 0; j < 17; ++j) {
+        llvm::SmallVector<int64_t> point;
+        for (auto parameter : result.expressions->parameters) {
+          auto loop = mlir::cast<mlir::scf::ForOp>(
+              mlir::cast<mlir::BlockArgument>(parameter.induction)
+                  .getOwner()
+                  ->getParentOp());
+          point.push_back(
+              mlir::getConstantIntValue(loop.getUpperBound()) == 1031 ? i : j);
+        }
+        auto actual = evaluateSubsetMap(result.expressions->map, point);
+        int64_t numerator = 3 * i - j;
+        int64_t expected =
+            numerator / 7 - (numerator < 0 && numerator % 7 != 0);
+        EXPECT_EQ(actual.front(), expected);
+      }
+  }
+  module->walk([&](mlir::arith::DivSIOp op) {
+    IndexRelationWork work(IndexRelationLimits{});
+    EXPECT_EQ(queryTensorIndexExpressions(context.get(), {op.getResult()}, work)
+                  .status,
+              TensorResultIndexingStatus::Unsupported);
+  });
+  module->walk([&](mlir::arith::FloorDivSIOp op) {
+    IndexRelationWork work(IndexRelationLimits{});
+    EXPECT_TRUE(
+        queryTensorIndexExpressions(context.get(), {op.getResult()}, work)
+            .isExact());
+  });
+  module->walk([&](mlir::arith::IndexCastOp op) {
+    IndexRelationWork work(IndexRelationLimits{});
+    EXPECT_EQ(queryTensorIndexExpressions(context.get(), {op.getResult()}, work)
+                  .status,
+              TensorResultIndexingStatus::Unsupported);
+  });
+}
+
+TEST(TensorResultIndexingTest,
+     SubsetDemandComposesPeriodicViewsAndRankProjection) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    std::string text = R"mlir(
+      func.func @view(%a: tensor<512x8xf16>, %b: tensor<TAILx8xf16>) {
+        %empty = tensor.empty() : tensor<1xEXTENTx8xf16>
+        %first = tensor.insert_slice %a into %empty[0, 0, 0]
+          [1, 512, 8] [1, 1, 1] : tensor<512x8xf16> into tensor<1xEXTENTx8xf16>
+        %all = tensor.insert_slice %b into %first[0, 512, 0]
+          [1, TAIL, 8] [1, 1, 1] : tensor<TAILx8xf16> into tensor<1xEXTENTx8xf16>
+        %flat = tensor.collapse_shape %all [[0, 1, 2]]
+          : tensor<1xEXTENTx8xf16> into tensor<FLATxf16>
+        %view = tensor.expand_shape %flat [[0, 1, 2]] output_shape [1, ROWS, 4]
+          : tensor<FLATxf16> into tensor<1xROWSx4xf16>
+        %c0 = arith.constant 0 : index
+        %end = arith.constant END : index
+        %step = arith.constant 31 : index
+        scf.for %i = %c0 to %end step %step {
+          %read = tensor.extract_slice %view[0, %i, 0] [1, 32, 4] [1, 1, 1]
+            : tensor<1xROWSx4xf16> to tensor<1x32x4xf16>
+        }
+        %tailStart = arith.constant LAST : index
+        %tailEnd = arith.constant ROWS : index
+        %tailStep = arith.constant 17 : index
+        scf.for %i = %tailStart to %tailEnd step %tailStep {
+          %readTail = tensor.extract_slice %view[0, %i, 0] [1, 17, 4] [1, 1, 1]
+            : tensor<1xROWSx4xf16> to tensor<1x17x4xf16>
+        }
+        return
+      }
+    )mlir";
+    for (auto [key, number] :
+         {std::pair{"EXTENT", extent}, std::pair{"TAIL", extent - 512},
+          std::pair{"FLAT", extent * 8}, std::pair{"ROWS", extent * 2},
+          std::pair{"END", extent * 2 - 31},
+          std::pair{"LAST", extent * 2 - 17}}) {
+      size_t at = 0;
+      while ((at = text.find(key, at)) != std::string::npos) {
+        auto replacement = std::to_string(number);
+        text.replace(at, std::string(key).size(), replacement);
+        at += replacement.size();
+      }
+    }
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
+    module->walk([&](mlir::tensor::ExtractSliceOp op) { reads.push_back(op); });
+    ASSERT_EQ(reads.size(), 2u);
+    for (auto read : reads) {
+      IndexRelationWork work(IndexRelationLimits{});
+      auto query =
+          queryTensorSubsetDemand(read.getSource(), read.getMixedOffsets(),
+                                  read.getStaticSizes(), read, work);
+      ASSERT_TRUE(query.isExact())
+          << query.detail << "; work=" << work.getConsumed();
+      auto parameter = query.demand->parameters.front();
+      for (int64_t i = parameter.lower; i < parameter.upper;
+           i += parameter.step)
+        for (int64_t row = 0; row < read.getStaticSizes()[1]; ++row)
+          for (int64_t col = 0; col < 4; ++col) {
+            llvm::SmallVector<int64_t> point{i, 0, row, col};
+            unsigned owners = 0;
+            for (const auto &source : query.demand->sources) {
+              bool active = true;
+              for (auto condition : source.conditions)
+                active &= containsSubsetPoint(condition.set, point) !=
+                          condition.complement;
+              if (!active)
+                continue;
+              ++owners;
+              int64_t global = (i + row) * 4 + col;
+              unsigned argument = global / 8 < 512 ? 0 : 1;
+              EXPECT_EQ(source.source, function.getArgument(argument));
+              EXPECT_EQ(evaluateSubsetMap(source.coordinates, point),
+                        (llvm::SmallVector<int64_t>{
+                            global / 8 - (argument ? 512 : 0), global % 8}));
+            }
+            EXPECT_EQ(owners, 1u);
+          }
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest, SubsetBlockGuardsProveDenseOrderedCopies) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @source(%arg: tensor<1x4096x8xf16>) { return }
+  )mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto p = mlir::getAffineDimExpr(0, context.get());
+  auto u = mlir::getAffineDimExpr(2, context.get());
+  auto v = mlir::getAffineDimExpr(3, context.get());
+  auto zero = mlir::getAffineConstantExpr(0, context.get());
+  auto floor = [](int64_t a, int64_t b) { return a / b - (a % b < 0); };
+  // Independent bounded coordinate oracle on a real-sized rank-three source.
+  // Negative coefficients, nested floor/mod and an odd block are deliberate.
+  for (int64_t extent : {1024, 1025, 1031})
+    for (unsigned variant = 0; variant < 3; ++variant) {
+      TensorSubsetDemand demand;
+      demand.shape = {1, extent, 8};
+      demand.parameters.push_back({{}, -37, 44, 3});
+      demand.domain = mlir::IntegerSet::get(4, 0, {zero}, {true});
+      mlir::AffineExpr row = variant == 0 ? 200 - (p - u).floorDiv(7)
+                             : variant == 1
+                                 ? 200 - (p - u).floorDiv(7).floorDiv(3)
+                                 : u * 3 - ((p - u) % 7).floorDiv(3) + 200;
+      TensorSubsetSource source{
+          function.getArgument(0),
+          mlir::AffineMap::get(4, 0, {zero, row, v}, context.get()),
+          {}};
+      IndexRelationWork work(IndexRelationLimits{});
+      uint64_t accepted = 0, rejected = 0;
+      for (int64_t block : {1, 2, 3, 17, 32}) {
+        auto proof =
+            queryTensorSubsetBlock(demand, source, {1, block, 8}, work);
+        ASSERT_TRUE(proof.status == TensorSubsetBlockStatus::Copy ||
+                    proof.status == TensorSubsetBlockStatus::Subdivide)
+            << proof.detail;
+        if (!proof.block)
+          continue;
+        for (int64_t parameter = -37; parameter < 44; parameter += 3)
+          for (int64_t origin = 0; origin + block <= extent; origin += 31) {
+            llvm::SmallVector<int64_t> point{parameter, 0, origin, 0};
+            bool active = true;
+            for (auto guard : proof.block->guards)
+              active &=
+                  containsSubsetPoint(guard.set, point) != guard.complement;
+            if (!active) {
+              ++rejected;
+              continue;
+            }
+            ++accepted;
+            auto offsets = evaluateSubsetMap(proof.block->sourceOffsets, point);
+            int64_t volume = 1;
+            for (int64_t size : proof.block->sourceSizes)
+              volume *= size;
+            ASSERT_EQ(volume, block * 8);
+            for (int64_t i = 0; i < block; ++i)
+              for (int64_t j = 0; j < 8; ++j) {
+                int64_t index = origin + i;
+                int64_t a = parameter - index;
+                int64_t adjustment = variant == 0 ? floor(a, 7)
+                                     : variant == 1
+                                         ? floor(floor(a, 7), 3)
+                                         : floor(a - floor(a, 7) * 7, 3);
+                llvm::SmallVector<int64_t> expected{
+                    0, (variant == 2 ? index * 3 : 0) - adjustment + 200, j};
+                int64_t ordinal = i * 8 + j;
+                llvm::SmallVector<int64_t> actual(3);
+                for (unsigned axis = 3; axis-- > 0;) {
+                  actual[axis] =
+                      offsets[axis] + ordinal % proof.block->sourceSizes[axis];
+                  ordinal /= proof.block->sourceSizes[axis];
+                }
+                EXPECT_EQ(actual, expected);
+              }
+          }
+      }
+      EXPECT_GT(accepted, 0u);
+      EXPECT_GT(rejected, 0u);
+      EXPECT_LT(work.getConsumed(), work.getLimits().maxConstraintWork);
+    }
+}
+
+TEST(TensorResultIndexingTest,
+     SubsetBlockRetainsComplementAndRejectsPermutation) {
+  using namespace wafer::analysis;
+  auto context = createContext();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    func.func @source(%arg: tensor<1x1031x1031xf16>) { return }
+  )mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto u = mlir::getAffineDimExpr(1, context.get());
+  auto v = mlir::getAffineDimExpr(2, context.get());
+  auto zero = mlir::getAffineConstantExpr(0, context.get());
+  TensorSubsetDemand demand;
+  demand.shape = {1, 1031, 1031};
+  demand.domain = mlir::IntegerSet::get(3, 0, {zero}, {true});
+  TensorSubsetSource source{
+      function.getArgument(0),
+      mlir::AffineMap::get(3, 0, {zero, u, v}, context.get()),
+      {{mlir::IntegerSet::get(3, 0, {u - 512, v - 400}, {false, false}),
+        true}}};
+  IndexRelationWork work(IndexRelationLimits{});
+  for (int64_t extent : {1, 17, 32}) {
+    auto proof = queryTensorSubsetBlock(demand, source, {1, extent, 8}, work);
+    ASSERT_EQ(proof.status, TensorSubsetBlockStatus::Copy) << proof.detail;
+    for (int64_t row : {0, 499, 511, 512, 1000})
+      for (int64_t col : {0, 397, 400, 999}) {
+        llvm::SmallVector<int64_t> point{0, row, col};
+        bool active = true;
+        for (auto guard : proof.block->guards)
+          active &= containsSubsetPoint(guard.set, point) != guard.complement;
+        if (active) {
+          for (int64_t i = 0; i < extent; ++i)
+            for (int64_t j = 0; j < 8; ++j)
+              EXPECT_TRUE(row + i < 512 || col + j < 400);
+        }
+      }
+  }
+  source.conditions.clear();
+  source.coordinates = mlir::AffineMap::get(3, 0, {zero, v, u}, context.get());
+  auto permutation = queryTensorSubsetBlock(demand, source, {1, 17, 8}, work);
+  EXPECT_EQ(permutation.status, TensorSubsetBlockStatus::Subdivide);
+  auto unit = queryTensorSubsetBlock(demand, source, {1, 1, 1}, work);
+  EXPECT_EQ(unit.status, TensorSubsetBlockStatus::Copy);
+  IndexRelationLimits limits;
+  limits.maxConstraintWork = 1;
+  IndexRelationWork tight(limits);
+  EXPECT_EQ(queryTensorSubsetBlock(demand, source, {1, 17, 8}, tight).status,
+            TensorSubsetBlockStatus::ResourceExhausted);
+}
+
+TEST(TensorResultIndexingTest, SubsetBlockKeepsBatchedContiguousReshape) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    std::string text = "func.func @source(%arg: tensor<2x" +
+                       std::to_string(extent) + "x4x32xf16>) { return }";
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, context.get());
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto b = mlir::getAffineDimExpr(0, context.get());
+    auto r = mlir::getAffineDimExpr(1, context.get());
+    auto c = mlir::getAffineDimExpr(2, context.get());
+    auto zero = mlir::getAffineConstantExpr(0, context.get());
+    TensorSubsetDemand demand;
+    demand.shape = {2, extent, 32};
+    demand.domain = mlir::IntegerSet::get(3, 0, {zero}, {true});
+    TensorSubsetSource source{
+        function.getArgument(0),
+        mlir::AffineMap::get(3, 0, {b, (r + 1).floorDiv(4), (r + 1) % 4, c},
+                             context.get()),
+        {}};
+    IndexRelationWork work(IndexRelationLimits{});
+    auto proof = queryTensorSubsetBlock(demand, source, {2, 32, 32}, work);
+    ASSERT_EQ(proof.status, TensorSubsetBlockStatus::Copy) << proof.detail;
+    EXPECT_EQ(proof.block->sourceSizes,
+              (llvm::SmallVector<int64_t>{2, 8, 4, 32}));
+    for (int64_t origin = 0; origin + 32 <= extent; origin += 31) {
+      llvm::SmallVector<int64_t> point{0, origin, 0};
+      bool active = true;
+      for (auto guard : proof.block->guards)
+        active &= containsSubsetPoint(guard.set, point) != guard.complement;
+      EXPECT_EQ(active, (origin + 1) % 4 == 0);
+      if (!active)
+        continue;
+      auto offsets = evaluateSubsetMap(proof.block->sourceOffsets, point);
+      for (int64_t batch = 0; batch < 2; ++batch)
+        for (int64_t row = 0; row < 32; ++row)
+          for (int64_t col = 0; col < 32; ++col) {
+            int64_t ordinal = (batch * 32 + row) * 32 + col;
+            llvm::SmallVector<int64_t> actual(4);
+            for (unsigned axis = 4; axis-- > 0;) {
+              actual[axis] =
+                  offsets[axis] + ordinal % proof.block->sourceSizes[axis];
+              ordinal /= proof.block->sourceSizes[axis];
+            }
+            EXPECT_EQ(actual, (llvm::SmallVector<int64_t>{
+                                  batch, (origin + row + 1) / 4,
+                                  (origin + row + 1) % 4, col}));
+          }
+    }
+  }
+}
+
+TEST(TensorResultIndexingTest, SubsetBlockKeepsCoordinateCongruence) {
+  using namespace wafer::analysis;
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto context = createContext();
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(
+        "func.func @source(%arg: tensor<1x" + std::to_string(extent) +
+            "x8xf16>) { return }",
+        context.get());
+    ASSERT_TRUE(module);
+    auto function = *module->getOps<mlir::func::FuncOp>().begin();
+    auto p = mlir::getAffineDimExpr(0, context.get());
+    auto r = mlir::getAffineDimExpr(2, context.get());
+    auto c = mlir::getAffineDimExpr(3, context.get());
+    auto zero = mlir::getAffineConstantExpr(0, context.get());
+    TensorSubsetDemand demand;
+    demand.parameters.push_back({{}, 0, extent * 2 - 31, 31});
+    demand.shape = {1, 32, 4};
+    demand.domain = mlir::IntegerSet::get(4, 0, {zero}, {true});
+    auto ordinal = (p + r) * 4 + c;
+    TensorSubsetSource source{
+        function.getArgument(0),
+        mlir::AffineMap::get(4, 0, {zero, ordinal.floorDiv(8), ordinal % 8},
+                             context.get()),
+        {}};
+    IndexRelationWork work(IndexRelationLimits{});
+    auto proof = queryTensorSubsetBlock(demand, source, {1, 1, 4}, work);
+    ASSERT_EQ(proof.status, TensorSubsetBlockStatus::Copy) << proof.detail;
+    ASSERT_TRUE(proof.block->guards.empty());
+    EXPECT_EQ(proof.block->sourceSizes, (llvm::SmallVector<int64_t>{1, 1, 4}));
+    for (int64_t base = 0; base < extent * 2 - 31; base += 31)
+      for (int64_t row = 0; row < 32; ++row) {
+        auto offsets =
+            evaluateSubsetMap(proof.block->sourceOffsets, {base, 0, row, 0});
+        for (int64_t col = 0; col < 4; ++col) {
+          int64_t index = (base + row) * 4 + col;
+          EXPECT_EQ(offsets[1], index / 8);
+          EXPECT_EQ(offsets[2] + col, index % 8);
+        }
+      }
   }
 }
 

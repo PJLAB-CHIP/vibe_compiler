@@ -6,7 +6,9 @@
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/Error.h"

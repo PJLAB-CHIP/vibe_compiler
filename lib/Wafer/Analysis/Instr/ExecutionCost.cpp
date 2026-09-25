@@ -4,6 +4,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/AsyncTypes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,6 +27,8 @@
 
 namespace wafer::analysis::detail {
 bool isCPUScalarOperation(mlir::Operation *operation) {
+  if (auto apply = mlir::dyn_cast<mlir::affine::AffineApplyOp>(operation))
+    return !apply.getAffineMap().isConstant();
   return operation->getDialect() &&
          operation->getDialect()->getTypeID() ==
              mlir::TypeID::get<mlir::arith::ArithDialect>() &&

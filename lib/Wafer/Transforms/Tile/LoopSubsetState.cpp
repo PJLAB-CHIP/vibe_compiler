@@ -1,6 +1,7 @@
 //===- LoopSubsetState.cpp - Local tensor recurrence normalization --------===//
 
 #include "LoopSubsetState.h"
+#include "TensorPreparation.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -124,10 +125,11 @@ bool canPromoteSubsets(mlir::scf::ForOp loop) {
 
 mlir::LogicalResult
 normalizeLoopSubsetState(mlir::ModuleOp module,
-                         StructuredMaterializationRelations &relations) {
+                         StructuredMaterializationRelations &relations,
+                         mlir::RewriterBase::Listener *externalListener) {
   support::ScopedCompileTimingSpan timing(
       "transform", "layout-and-bufferization", "loop-subset-state");
-  StructuredBufferReplacementListener listener(relations);
+  StructuredBufferReplacementListener listener(relations, externalListener);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
   distributeConditionalInsertions(rewriter, module);
   if (!listener.finalizeAfterRewrite() || mlir::failed(mlir::verify(module)) ||
@@ -136,6 +138,7 @@ normalizeLoopSubsetState(mlir::ModuleOp module,
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::scf::ForOp::getCanonicalizationPatterns(patterns, module.getContext());
   mlir::tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);
+  preserveTensorIterationScopes(patterns);
   mlir::GreedyRewriteConfig config;
   config.maxIterations = 10;
   config.listener = &listener;

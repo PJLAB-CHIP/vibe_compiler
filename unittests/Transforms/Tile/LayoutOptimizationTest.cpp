@@ -1,6 +1,7 @@
 //===- LayoutOptimizationTest.cpp --------------------------------------===//
 
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
+#include "TestSupport/Transforms/CurrentTensorPipeline.h"
 #include "Wafer/Analysis/Instr/CostModel.h"
 #include "Wafer/Analysis/Tile/TransferRealizability.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
@@ -638,7 +639,8 @@ TEST_F(LayoutOptimizationTest, BooleanReductionsPreserveInitAndReachInstr) {
                     initial ? 1.0 : 0.0);
         });
         EXPECT_EQ(reductions, 1u);
-        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        auto layout =
+            wafer::test::prepareTensorsAndBufferize(*module, relations);
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         auto lowered = lowerStructuredComputeToTile(*module, relations);
         ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
@@ -759,7 +761,7 @@ TEST_F(LayoutOptimizationTest, ConstantViewsBecomeExplicitSelectedSPMReads) {
         constant.setValueAttr(mlir::DenseElementsAttr::get(type, elements));
       });
       auto relations = outputRelation(*module);
-      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto layout = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       unsigned copiedWindows = 0;
       module->walk([&](mlir::memref::CopyOp copy) {
@@ -814,7 +816,7 @@ TEST_F(LayoutOptimizationTest, FunctionBoundarySpaceIsQueriedOncePerFunction) {
     module->walk([&](TileRegionOp op) { region = op; });
     StructuredMaterializationRelations relations;
     relations.structuralOutputs = {{0, region.getResult(0)}};
-    auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+    auto result = wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.functionBoundaryQueries, 2u);
     EXPECT_EQ(result.statistics.outputDestinations, 1u);
@@ -928,7 +930,7 @@ TEST_F(LayoutOptimizationTest,
       EXPECT_EQ(writeback.getDest(), outer.getRegionIterArgs().front());
       EXPECT_EQ(writeback.getStaticSizes(),
                 (llvm::ArrayRef<int64_t>{1, 32, 64}));
-      auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto result = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(result.succeeded()) << result.detail;
       EXPECT_TRUE(mlir::succeeded(verifyLayoutResolvedTileRegions(*module)));
       EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
@@ -1193,7 +1195,8 @@ TEST_F(LayoutOptimizationTest, EmptySlicesUseLocalStorageBeforeBufferization) {
         StructuredMaterializationRelations relations;
         relations.structuralOutputs = {{0, region.getResult(0)},
                                        {1, region.getResult(1)}};
-        auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+        auto result =
+            wafer::test::prepareTensorsAndBufferize(*module, relations);
         ASSERT_TRUE(result.succeeded()) << result.detail;
         unsigned large = 0;
         module->walk([&](mlir::memref::AllocOp op) {
@@ -1217,7 +1220,7 @@ TEST_F(LayoutOptimizationTest,
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations = outputRelation(*module);
     LayoutOptimizationResult result =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
+        wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.invocations, 1u);
     EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
@@ -1249,7 +1252,7 @@ TEST_F(LayoutOptimizationTest,
     ASSERT_TRUE(outputType);
     EXPECT_TRUE(isWaferDDRMemRefType(outputType));
     LayoutOptimizationResult repeated =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
+        wafer::test::prepareTensorsAndBufferize(*module, relations);
     EXPECT_EQ(repeated.status, ExactPBQPStatus::BrokenContract);
   }
 }
@@ -1262,8 +1265,8 @@ TEST_F(LayoutOptimizationTest,
       auto module = parse(makeFanoutContractionSource(extent, /*useCount=*/15));
       ASSERT_TRUE(module);
       StructuredMaterializationRelations relations = outputRelation(*module);
-      LayoutOptimizationResult result =
-          resolveCurrentLayoutsAndBufferize(*module, relations, workLimit);
+      LayoutOptimizationResult result = wafer::test::prepareTensorsAndBufferize(
+          *module, relations, workLimit);
       ASSERT_EQ(result.status, ExactPBQPStatus::Feasible) << result.detail;
       EXPECT_EQ(result.statistics.canonicalAssignmentsBuilt, 1u);
       EXPECT_EQ(result.statistics.canonicalAssignmentFallbacks, 1u);
@@ -1333,7 +1336,7 @@ TEST_F(LayoutOptimizationTest,
         std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
     auto result = [&] {
       wafer::support::ScopedCompileTimingActivation activation(timing);
-      return resolveCurrentLayoutsAndBufferize(*module, relations, 0);
+      return wafer::test::prepareTensorsAndBufferize(*module, relations, 0);
     }();
     timing->finishAndPrintSummary();
     EXPECT_NE(diagnosticsText.find("category=loop-state-binding "
@@ -1416,7 +1419,7 @@ TEST_F(LayoutOptimizationTest, DynamicTileCostDoesNotBecomeAnImpossibleLayout) {
     auto module = parse(text);
     ASSERT_TRUE(module);
     auto relations = outputRelation(*module);
-    auto prepared = prepareCurrentLayoutInput(*module, relations);
+    auto prepared = wafer::test::prepareTensorsAndLayout(*module, relations);
     ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
     auto query = queryCurrentLayoutAssignment(*module);
     ASSERT_TRUE(query.query) << query.outcome.detail;
@@ -1507,7 +1510,7 @@ TEST_F(LayoutOptimizationTest,
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations = outputRelation(*module);
     LayoutOptimizationResult result =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
+        wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.bufferizationInvocations, 1u);
     EXPECT_EQ(result.statistics.redundantPublicationCopies, 0u);
@@ -1550,7 +1553,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.outputDestinations, 1u);
   EXPECT_EQ(result.statistics.outputSubviews, 1u);
@@ -1621,7 +1624,7 @@ module {
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations = outputRelation(*module);
     LayoutOptimizationResult result =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
+        wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.outputDestinations, 1u);
     EXPECT_EQ(result.statistics.outputSubviews, 1u);
@@ -1707,7 +1710,7 @@ TEST_F(LayoutOptimizationTest,
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations = outputRelation(*module);
     LayoutOptimizationResult result =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
+        wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     EXPECT_EQ(result.statistics.selectedMaterializations, 1u);
     EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 1u);
@@ -1833,7 +1836,7 @@ TEST_F(LayoutOptimizationTest, InterveningCurrentWritePreventsConversionReuse) {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.selectedMaterializations, 2u);
   EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 2u);
@@ -1849,9 +1852,9 @@ TEST_F(LayoutOptimizationTest,
   StructuredMaterializationRelations firstRelations = outputRelation(*first);
   StructuredMaterializationRelations secondRelations = outputRelation(*second);
   LayoutOptimizationResult firstResult =
-      resolveCurrentLayoutsAndBufferize(*first, firstRelations);
+      wafer::test::prepareTensorsAndBufferize(*first, firstRelations);
   LayoutOptimizationResult secondResult =
-      resolveCurrentLayoutsAndBufferize(*second, secondRelations);
+      wafer::test::prepareTensorsAndBufferize(*second, secondRelations);
   ASSERT_TRUE(firstResult.succeeded()) << firstResult.detail;
   ASSERT_TRUE(secondResult.succeeded()) << secondResult.detail;
   std::string firstText;
@@ -1880,8 +1883,9 @@ TEST_F(LayoutOptimizationTest,
   ASSERT_TRUE(exhausted);
   StructuredMaterializationRelations exhaustedRelations =
       outputRelation(*exhausted);
-  LayoutOptimizationResult exhaustedResult = resolveCurrentLayoutsAndBufferize(
-      *exhausted, exhaustedRelations, /*workLimit=*/0);
+  LayoutOptimizationResult exhaustedResult =
+      wafer::test::prepareTensorsAndBufferize(*exhausted, exhaustedRelations,
+                                              /*workLimit=*/0);
   ASSERT_EQ(exhaustedResult.status, ExactPBQPStatus::Feasible)
       << exhaustedResult.detail;
   EXPECT_EQ(exhaustedResult.statistics.canonicalAssignmentsBuilt, 1u);
@@ -1900,13 +1904,13 @@ TEST_F(LayoutOptimizationTest,
   StructuredMaterializationRelations secondRelations = outputRelation(*second);
   auto start = std::chrono::steady_clock::now();
   LayoutOptimizationResult firstResult =
-      resolveCurrentLayoutsAndBufferize(*first, firstRelations);
+      wafer::test::prepareTensorsAndBufferize(*first, firstRelations);
   const auto wallMilliseconds =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - start)
           .count();
   LayoutOptimizationResult secondResult =
-      resolveCurrentLayoutsAndBufferize(*second, secondRelations);
+      wafer::test::prepareTensorsAndBufferize(*second, secondRelations);
   ASSERT_TRUE(firstResult.succeeded()) << firstResult.detail;
   ASSERT_TRUE(secondResult.succeeded()) << secondResult.detail;
 
@@ -1966,8 +1970,9 @@ TEST_F(LayoutOptimizationTest,
   ASSERT_TRUE(exhausted);
   StructuredMaterializationRelations exhaustedRelations =
       outputRelation(*exhausted);
-  LayoutOptimizationResult exhaustedResult = resolveCurrentLayoutsAndBufferize(
-      *exhausted, exhaustedRelations, /*workLimit=*/0);
+  LayoutOptimizationResult exhaustedResult =
+      wafer::test::prepareTensorsAndBufferize(*exhausted, exhaustedRelations,
+                                              /*workLimit=*/0);
   ASSERT_EQ(exhaustedResult.status, ExactPBQPStatus::Feasible)
       << exhaustedResult.detail;
   EXPECT_EQ(exhaustedResult.statistics.canonicalAssignmentsBuilt, 1u);
@@ -1994,13 +1999,13 @@ TEST_F(LayoutOptimizationTest,
   StructuredMaterializationRelations secondRelations = outputRelation(*second);
   auto start = std::chrono::steady_clock::now();
   LayoutOptimizationResult firstResult =
-      resolveCurrentLayoutsAndBufferize(*first, firstRelations);
+      wafer::test::prepareTensorsAndBufferize(*first, firstRelations);
   const auto wallMilliseconds =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - start)
           .count();
   LayoutOptimizationResult secondResult =
-      resolveCurrentLayoutsAndBufferize(*second, secondRelations);
+      wafer::test::prepareTensorsAndBufferize(*second, secondRelations);
   ASSERT_TRUE(firstResult.succeeded()) << firstResult.detail;
   ASSERT_TRUE(secondResult.succeeded()) << secondResult.detail;
 
@@ -2088,7 +2093,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   unsigned ntensorAllocations = 0;
   module->walk([&](mlir::memref::AllocOp allocation) {
@@ -2128,7 +2133,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   LayoutMaterializeOp conversion;
   module->walk([&](LayoutMaterializeOp current) { conversion = current; });
@@ -2176,7 +2181,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 0u);
   EXPECT_EQ(countOps<mlir::memref::CollapseShapeOp>(module->getOperation()),
@@ -2226,7 +2231,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 0u);
   mlir::memref::CollapseShapeOp collapse;
@@ -2283,7 +2288,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.layoutMaterializationsAfter, 1u);
   EXPECT_EQ(countOps<LayoutMaterializeOp>(module->getOperation()), 1u);
@@ -2338,7 +2343,7 @@ module {
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   mlir::func::FuncOp helper;
   mlir::func::FuncOp entry;
@@ -2406,7 +2411,7 @@ module {
   relations.structuralOutputs.push_back({0, region.getResult(0)});
   relations.structuralOutputs.push_back({1, region.getResult(1)});
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.outputDestinations, 2u);
   EXPECT_EQ(result.statistics.outputSubviews, 2u);
@@ -2479,7 +2484,7 @@ module {
       {regions[0].getResult(0), regions[1].getBody().getArgument(0)});
   relations.structuralOutputs.push_back({0, regions[1].getResult(0)});
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_EQ(result.statistics.boundarySourceViewsElided, 1u);
   ASSERT_EQ(relations.boundaryRelations.size(), 1u);
@@ -2556,7 +2561,7 @@ module {
     StructuredMaterializationRelations relations;
     relations.boundaryRelations.push_back(
         {regions[0].getResult(0), regions[2].getBody().getArgument(0)});
-    auto result = prepareCurrentLayoutInput(*module, relations);
+    auto result = wafer::test::prepareTensorsAndLayout(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     const auto &relation = relations.boundaryRelations.front();
     auto expected = mlir::RankedTensorType::get(
@@ -2635,7 +2640,7 @@ module {
   StructuredMaterializationRelations relations;
   relations.structuralOutputs.push_back({0, regions[1].getResult(0)});
   LayoutOptimizationResult result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   EXPECT_GE(result.statistics.boundarySourceViewsElided, 1u);
   EXPECT_EQ(countOps<mlir::tensor::InsertSliceOp>(module->getOperation()), 0u);
@@ -2677,8 +2682,7 @@ module {
   auto module = parse(input);
   ASSERT_TRUE(module);
   StructuredMaterializationRelations relations = outputRelation(*module);
-  auto result =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
+  auto result = wafer::test::prepareTensorsAndBufferize(*module, relations);
   ASSERT_TRUE(result.succeeded()) << result.detail;
   ASSERT_EQ(relations.structuralOutputs.size(), 1u);
   auto output = relations.structuralOutputs.front().endpoint
@@ -2734,7 +2738,7 @@ module {
     auto module = parse(text);
     ASSERT_TRUE(module);
     StructuredMaterializationRelations relations;
-    auto result = prepareCurrentLayoutInput(*module, relations);
+    auto result = wafer::test::prepareTensorsAndLayout(*module, relations);
     ASSERT_TRUE(result.succeeded()) << result.detail;
     llvm::SmallVector<TileRegionOp> regions;
     module->walk([&](TileRegionOp region) { regions.push_back(region); });
@@ -2770,7 +2774,7 @@ TEST_F(LayoutOptimizationTest,
     auto base = parse(makeSharedContractionSource(extent));
     ASSERT_TRUE(base);
     auto relations = outputRelation(*base);
-    auto prepared = prepareCurrentLayoutInput(*base, relations);
+    auto prepared = wafer::test::prepareTensorsAndLayout(*base, relations);
     ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
     auto query = queryCurrentLayoutAssignment(*base);
     ASSERT_TRUE(query.query) << query.outcome.detail;
@@ -2896,8 +2900,8 @@ TEST_F(LayoutOptimizationTest,
                       ExactPBQPStatus::BrokenContract);
             EXPECT_EQ(countOps<mlir::tensor::PadOp>(*module), 1u);
           }
-          ASSERT_TRUE(
-              prepareCurrentLayoutInput(*module, relations).succeeded());
+          ASSERT_TRUE(wafer::test::prepareTensorsAndLayout(*module, relations)
+                          .succeeded());
           EXPECT_EQ(countOps<mlir::tensor::PadOp>(*module), 0u);
           auto query = queryCurrentLayoutAssignment(*module);
           ASSERT_TRUE(query.query) << query.outcome.detail;
@@ -2947,7 +2951,7 @@ module {
   EXPECT_EQ(countOps<mlir::linalg::FillOp>(*module), 0u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   StructuredMaterializationRelations relations;
-  auto prepared = prepareCurrentLayoutInput(*module, relations);
+  auto prepared = wafer::test::prepareTensorsAndLayout(*module, relations);
   EXPECT_EQ(prepared.status, ExactPBQPStatus::NoSolution) << prepared.detail;
   EXPECT_EQ(countOps<mlir::memref::StoreOp>(*module), 1u);
 }
@@ -2987,7 +2991,7 @@ TEST_F(LayoutOptimizationTest, UniformGenerateIsDPSBeforeLayoutAssignment) {
       auto unprepared = queryCurrentLayoutAssignment(*module);
       EXPECT_EQ(unprepared.outcome.status, ExactPBQPStatus::BrokenContract);
       ASSERT_FALSE(unprepared.query);
-      auto prepared = prepareCurrentLayoutInput(*module, relations);
+      auto prepared = wafer::test::prepareTensorsAndLayout(*module, relations);
       ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
       EXPECT_EQ(countOps<mlir::tensor::GenerateOp>(*module), 0u);
       EXPECT_EQ(countOps<mlir::linalg::FillOp>(*module), 1u);
@@ -3061,7 +3065,8 @@ TEST_F(LayoutOptimizationTest,
       auto module = parse(source);
       ASSERT_TRUE(module);
       StructuredMaterializationRelations relations;
-      ASSERT_TRUE(prepareCurrentLayoutInput(*module, relations).succeeded());
+      ASSERT_TRUE(
+          wafer::test::prepareTensorsAndLayout(*module, relations).succeeded());
       auto query = queryCurrentLayoutAssignment(*module);
       ASSERT_TRUE(query.query) << query.outcome.detail;
       auto assignment = query.query->solve(100000);
@@ -3105,7 +3110,8 @@ TEST_F(LayoutOptimizationTest, AssignmentRejectsAnUnmappedOwnerBeforeMutation) {
   auto base = parse(makeSharedContractionSource(1025));
   ASSERT_TRUE(base);
   auto relations = outputRelation(*base);
-  ASSERT_TRUE(prepareCurrentLayoutInput(*base, relations).succeeded());
+  ASSERT_TRUE(
+      wafer::test::prepareTensorsAndLayout(*base, relations).succeeded());
   auto query = queryCurrentLayoutAssignment(*base);
   ASSERT_TRUE(query.query);
   auto assignment = query.query->solve(1048576);
@@ -3153,7 +3159,7 @@ TEST_F(LayoutOptimizationTest,
       auto module = parse(text);
       ASSERT_TRUE(module) << text;
       auto relations = outputRelation(*module);
-      auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto result = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(result.succeeded()) << result.detail;
       unsigned states = 0, stateRoundtrips = 0;
       module->walk([&](mlir::scf::ForOp loop) {
@@ -3250,7 +3256,8 @@ TEST_F(LayoutOptimizationTest, NestedRecurrenceRetainsComputeLayout) {
           auto module = parse(text);
           ASSERT_TRUE(module) << text;
           auto relations = outputRelation(*module);
-          auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+          auto result =
+              wafer::test::prepareTensorsAndBufferize(*module, relations);
           ASSERT_TRUE(result.succeeded()) << result.detail;
           unsigned innerStates = 0, stateConversions = 0, entryConversions = 0;
           module->walk([&](LayoutMaterializeOp copy) {
@@ -3361,7 +3368,7 @@ TEST_F(LayoutOptimizationTest, PointwiseChainsRetainEveryLegalLayoutChoice) {
       auto module = parse(text);
       ASSERT_TRUE(module);
       auto relations = outputRelation(*module);
-      auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto result = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_EQ(result.status, ExactPBQPStatus::Optimal) << result.detail;
       EXPECT_EQ(result.statistics.layoutMaterializationsAfter,
                 layout == MemLayout::Tensor ? 0u : 1u);
@@ -3439,7 +3446,8 @@ TEST_F(LayoutOptimizationTest, PayloadDestinationsPreserveOldValueObservers) {
           auto module = parse(text);
           ASSERT_TRUE(module) << text;
           auto relations = outputRelation(*module);
-          auto prepared = prepareCurrentLayoutInput(*module, relations);
+          auto prepared =
+              wafer::test::prepareTensorsAndLayout(*module, relations);
           ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
           unsigned multiplications = 0;
           module->walk([&](mlir::linalg::GenericOp op) {
@@ -3540,7 +3548,7 @@ TEST_F(LayoutOptimizationTest, PayloadSSAExposesCompactPredicatesAndCasts) {
       auto relations = outputRelation(*module);
       auto unprepared = queryCurrentLayoutAssignment(*module);
       EXPECT_FALSE(unprepared.query);
-      auto prepared = prepareCurrentLayoutInput(*module, relations);
+      auto prepared = wafer::test::prepareTensorsAndLayout(*module, relations);
       ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
       unsigned steps = 0, predicates = 0, scalarComputes = 0;
       module->walk([&](mlir::linalg::GenericOp op) {
@@ -3633,7 +3641,8 @@ TEST_F(LayoutOptimizationTest, CPUScalarAlternativeKeepsActualCostAndStorage) {
         auto module = parse(text);
         ASSERT_TRUE(module) << text;
         auto relations = outputRelation(*module);
-        auto prepared = prepareCurrentLayoutInput(*module, relations);
+        auto prepared =
+            wafer::test::prepareTensorsAndLayout(*module, relations);
         ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
         ASSERT_TRUE(hasCPUScalarAlternative(*module));
         if (cpu) {
@@ -3846,7 +3855,7 @@ TEST_F(LayoutOptimizationTest, CPUScalarChainsPreserveLoopScopeAndSharedUses) {
     EXPECT_EQ(countOps<mlir::scf::ForOp>(*module), 1u);
     EXPECT_EQ(countOps<mlir::linalg::GenericOp>(*module), 2u);
     auto layout =
-        resolveCurrentLayoutsAndBufferize(*module, relations, 1048576);
+        wafer::test::prepareTensorsAndBufferize(*module, relations, 1048576);
     ASSERT_TRUE(layout.succeeded()) << layout.detail;
     auto lowered = lowerStructuredComputeToTile(*module, relations);
     ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
@@ -3912,7 +3921,7 @@ TEST_F(LayoutOptimizationTest, BlockedPredicateUsesSupportedMappedTraversal) {
       auto module = parse(text);
       ASSERT_TRUE(module);
       auto relations = outputRelation(*module);
-      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto layout = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       auto lowered = lowerStructuredComputeToTile(*module, relations);
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
@@ -3983,7 +3992,7 @@ TEST_F(LayoutOptimizationTest, CastSeparatesCoordinatesAndFixedPublication) {
       auto module = parse(text);
       ASSERT_TRUE(module);
       auto relations = outputRelation(*module);
-      auto prepared = prepareCurrentLayoutInput(*module, relations);
+      auto prepared = wafer::test::prepareTensorsAndLayout(*module, relations);
       ASSERT_TRUE(prepared.succeeded()) << prepared.detail;
       EXPECT_EQ(countOps<mlir::linalg::GenericOp>(*module), 2u);
       auto query = queryCurrentLayoutAssignment(*module);

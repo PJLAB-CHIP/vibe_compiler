@@ -1,6 +1,7 @@
 //===- OnlineAttentionDecompositionTest.cpp ---------------------------===//
 
 #include "Wafer/Transforms/Linalg/OnlineAttentionDecomposition.h"
+#include "TestSupport/Transforms/CurrentTensorPipeline.h"
 #include "Wafer/Transforms/Linalg/AttentionVisibility.h"
 #include "Wafer/Transforms/Linalg/OnlineAttentionStateOrientation.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
@@ -408,12 +409,25 @@ TEST(OnlineAttentionDecompositionTest,
         }
         EXPECT_EQ(op.getPositions().size(), 3u);
         EXPECT_EQ(op.getPositions()[2], end.getResult());
-        if (auto loop = op->getParentOfType<mlir::scf::ForOp>()) {
+        auto loop = op->getParentOfType<mlir::scf::ForOp>();
+        if (op.getKey().getType().getDimSize(2) == 128) {
           ++mainTiles;
+          ASSERT_TRUE(loop);
           EXPECT_EQ(op.getPositions()[1], loop.getInductionVar());
+          EXPECT_EQ(mlir::getConstantIntValue(loop.getLowerBound()), 0);
+          EXPECT_EQ(mlir::getConstantIntValue(loop.getUpperBound()), 1024);
+          EXPECT_EQ(mlir::getConstantIntValue(loop.getStep()), 128);
         } else {
           ++tailTiles;
+          EXPECT_EQ(op.getKey().getType().getDimSize(2), extent - 1024);
           EXPECT_EQ(mlir::getConstantIntValue(op.getPositions()[1]), 1024);
+          // Current selection coordinates keep this singleton scope alive
+          // until final Tensor preparation consumes the read choices.
+          if (loop) {
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getLowerBound()), 1024);
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getUpperBound()), extent);
+            EXPECT_EQ(mlir::getConstantIntValue(loop.getStep()), extent - 1024);
+          }
         }
       });
       EXPECT_EQ(mainTiles, 1u);
@@ -432,7 +446,7 @@ TEST(OnlineAttentionDecompositionTest,
       });
       EXPECT_EQ(validLengthTests, 0u);
       EXPECT_EQ(causalTests, 0u);
-      auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto layout = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(layout.succeeded()) << layout.detail;
       auto lowered = lowerStructuredComputeToTile(*module, relations);
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
@@ -466,6 +480,7 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
         auto region = findRegion(*module);
         LinalgExtOnlineAttentionOp source;
         region.walk([&](LinalgExtOnlineAttentionOp op) { source = op; });
+        const int64_t queryExtent = source.getQuery().getType().getDimSize(2);
         mlir::OpBuilder builder(source);
         auto zero =
             builder.create<mlir::arith::ConstantIndexOp>(source.getLoc(), 0);
@@ -517,7 +532,10 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
         };
         llvm::SmallVector<mlir::scf::ForOp> keyLoops;
         region.walk([&](mlir::scf::ForOp loop) {
-          if (!loop.getBody()->getOps<LinalgExtOnlineAttentionOp>().empty())
+          auto operations =
+              loop.getBody()->getOps<LinalgExtOnlineAttentionOp>();
+          if (!operations.empty() &&
+              (*operations.begin()).getKey().getType().getDimSize(2) == keyTile)
             keyLoops.push_back(loop);
         });
         ASSERT_FALSE(keyLoops.empty());
@@ -535,16 +553,21 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
             EXPECT_FALSE(online.getPositionMapAttr());
           });
           auto outer = full->getParentOfType<mlir::scf::ForOp>();
-          int64_t first = outer ? evaluate(outer.getLowerBound()) : 1024;
-          int64_t last = outer ? evaluate(outer.getUpperBound()) : 1025;
+          auto online =
+              *boundary.getBody()->getOps<LinalgExtOnlineAttentionOp>().begin();
+          int64_t querySize = online.getQuery().getType().getDimSize(2);
+          ASSERT_TRUE(querySize == queryTile ||
+                      querySize == queryExtent % queryTile);
+          int64_t first = outer ? evaluate(outer.getLowerBound())
+                                : (queryExtent / queryTile) * queryTile;
+          int64_t last = outer ? evaluate(outer.getUpperBound()) : queryExtent;
           if (outer) {
-            EXPECT_EQ(mlir::getConstantIntValue(outer.getStep()), queryTile);
+            EXPECT_EQ(mlir::getConstantIntValue(outer.getStep()), querySize);
           }
-          for (int64_t q = first; q < last; q += queryTile) {
+          for (int64_t q = first; q < last; q += querySize) {
             if (outer)
               values[outer.getInductionVar()] = q;
-            int64_t querySize = outer ? queryTile : 1025 % queryTile;
-            int64_t queryBase = outer ? q : (1025 / queryTile) * queryTile;
+            int64_t queryBase = q;
             llvm::SmallVector<int64_t> actual, expected;
             for (auto loop : {full, boundary})
               for (int64_t k = evaluate(loop.getLowerBound());
@@ -596,7 +619,8 @@ TEST(OnlineAttentionDecompositionTest, CausalLoopsVisitOnlyVisibleKeyBlocks) {
         ASSERT_TRUE(mlir::succeeded(decomposeOnlineAttention(
             *module, relations, &decompositionFailure)))
             << decompositionFailure.detail;
-        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        auto layout =
+            wafer::test::prepareTensorsAndBufferize(*module, relations);
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         auto lowered = lowerStructuredComputeToTile(*module, relations);
         ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
@@ -825,7 +849,7 @@ TEST(OnlineAttentionDecompositionTest,
         EXPECT_TRUE(mlir::succeeded(checkStructuredBufferRelationsCurrent(
             module->getOperation(), relations)));
         LayoutOptimizationResult layout =
-            resolveCurrentLayoutsAndBufferize(*module, relations);
+            wafer::test::prepareTensorsAndBufferize(*module, relations);
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         EXPECT_EQ(layout.statistics.bufferizationInvocations, 1u);
         unsigned carriedStates = 0;
@@ -1068,7 +1092,8 @@ TEST(OnlineAttentionDecompositionTest, ScoreRoundingSurvivesMainAndTail) {
           ++scores;
         });
         EXPECT_EQ(scores, updates);
-        auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+        auto layout =
+            wafer::test::prepareTensorsAndBufferize(*module, relations);
         ASSERT_TRUE(layout.succeeded()) << layout.detail;
         auto lowered = lowerStructuredComputeToTile(*module, relations);
         ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
@@ -1111,7 +1136,7 @@ TEST(OnlineAttentionDecompositionTest,
     EXPECT_EQ(maskConsumers, withMask ? onlineBefore : 0u);
     EXPECT_EQ(countOps<LinalgExtOnlineAttentionOp>(module->getOperation()), 0u);
     LayoutOptimizationResult layout =
-        resolveCurrentLayoutsAndBufferize(*module, relations);
+        wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(layout.succeeded()) << layout.detail;
     EXPECT_EQ(layout.statistics.redundantPublicationCopies, 0u);
     StructuredToTileResult tileLowering =
@@ -1174,8 +1199,8 @@ module {
   EXPECT_EQ(failure.kind,
             OnlineAttentionDecompositionFailureKind::BrokenContract);
   LayoutOptimizationResult layout =
-      resolveCurrentLayoutsAndBufferize(*module, relations);
-  EXPECT_EQ(layout.status, ExactPBQPStatus::BrokenContract);
+      wafer::test::prepareTensorsAndBufferize(*module, relations);
+  EXPECT_EQ(layout.status, ExactPBQPStatus::NoSolution);
   std::string after;
   llvm::raw_string_ostream afterStream(after);
   module->print(afterStream);

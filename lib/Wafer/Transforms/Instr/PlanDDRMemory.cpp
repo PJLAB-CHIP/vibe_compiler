@@ -372,10 +372,6 @@ getStaticIndexRange(mlir::Operation *anchor, mlir::OpFoldResult offset,
   using Failure = memory_planning::StaticIndexRangeFailureKind;
   switch (result.failure) {
   case Failure::None:
-    if (result.range.empty)
-      return anchor->emitError()
-             << "unsupported_ddr_view: " << role
-             << " scf.for offset range must be non-empty and non-negative";
     return result.range;
   case Failure::DynamicLoopBounds:
     return anchor->emitError() << "unsupported_ddr_view: " << role
@@ -660,8 +656,8 @@ private:
              << " dynamic view offset to its DDR root";
 
     mlir::FailureOr<StaticIndexRange> total = evaluate(subview.getSource());
-    if (mlir::failed(total))
-      return mlir::failure();
+    if (mlir::failed(total) || total->empty)
+      return total;
     auto sourceType =
         mlir::dyn_cast<mlir::MemRefType>(subview.getSource().getType());
     llvm::SmallVector<int64_t, 4> sourceStrides;
@@ -679,8 +675,8 @@ private:
          llvm::zip(subview.getMixedOffsets(), sourceStrides)) {
       mlir::FailureOr<StaticIndexRange> range =
           getStaticIndexRange(anchor, offset, role);
-      if (mlir::failed(range))
-        return mlir::failure();
+      if (mlir::failed(range) || range->empty)
+        return range;
       int64_t minContribution = 0;
       int64_t maxContribution = 0;
       if (!checkedMul(range->min, stride, minContribution) ||
@@ -824,6 +820,10 @@ resolveDDRViews(mlir::Operation *op, mlir::Value ddrValue,
   const StaticIndexRange &viewOffsetElementsRange = *dynamicOffsetRange;
 
   llvm::SmallVector<DDRView, 2> views;
+  // No dynamic execution means no descriptor demand. This is a current-IR
+  // branch proof, not a guessed zero offset for an unknown address.
+  if (viewOffsetElementsRange.empty)
+    return views;
   for (mlir::Value root : roots) {
     auto rootType = mlir::dyn_cast<mlir::MemRefType>(root.getType());
     if (!rootType || !isWaferDDRMemRefType(rootType))

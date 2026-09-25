@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -17,37 +18,43 @@ namespace wafer::compiler::detail {
 
 std::optional<int64_t> resolveStaticIndex(mlir::OpFoldResult value);
 
-struct TensorAssemblyTilePiece {
-  mlir::Value value;
-  analysis::StaticRectangularIndexSet resultWindow;
-};
-
 struct MaterializedTensorAssemblyRead {
   mlir::Value value;
   llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> sourceReads;
 };
 
-analysis::TensorAssemblyReadResult
-queryTensorAssemblySlice(mlir::tensor::ExtractSliceOp read,
-                         const analysis::IndexRelationLimits &limits =
-                             analysis::IndexRelationLimits());
+enum class TensorSubsetMaterializationStatus {
+  Exact,
+  Unsupported,
+  ResourceExhausted,
+  BrokenContract,
+  CompilerFailure,
+};
 
-// Consume one already-partitioned current read. The caller owns placement,
-// loop mutation, replacement, and any explicitly selected computation fusion.
-mlir::FailureOr<MaterializedTensorAssemblyRead>
-materializeTensorAssemblyRead(mlir::OpBuilder &builder, mlir::Location location,
-                              mlir::RankedTensorType resultType,
-                              llvm::ArrayRef<int64_t> sizes,
-                              const analysis::TensorAssemblyReadResult &read);
+struct TensorSubsetMaterializationResult {
+  TensorSubsetMaterializationStatus status =
+      TensorSubsetMaterializationStatus::Unsupported;
+  std::optional<MaterializedTensorAssemblyRead> materialized;
+  uint64_t work = 0;
+  uint64_t blockTemplates = 0;
+  std::string detail;
+};
 
-// The caller resolves each source against the current IR and supplies its
-// compact tensor. Build the selected demand in result coordinates; no source
-// identity, fusion, loop placement or allocation is inferred here.
-mlir::FailureOr<mlir::Value> materializeTensorAssemblyTile(
-    mlir::OpBuilder &builder, mlir::Location location,
-    mlir::RankedTensorType resultType,
-    const analysis::StaticRectangularIndexSet &requested,
-    llvm::ArrayRef<TensorAssemblyTilePiece> pieces);
+// Query and preflight the actual selected read, then emit compact Tensor/SCF.
+// The caller owns the candidate transaction, source binding, read replacement
+// and any selected producer fusion. No outer compute loop is changed here.
+// A caller-proved invariant placement may name an enclosing nonempty for-loop;
+// the generator rechecks dominance and every crossed loop before emission.
+TensorSubsetMaterializationResult
+materializeTensorSubsetRead(mlir::RewriterBase &rewriter,
+                            mlir::tensor::ExtractSliceOp read,
+                            const analysis::IndexRelationLimits &limits =
+                                analysis::IndexRelationLimits(),
+                            mlir::Operation *insertionPoint = nullptr);
+
+analysis::TensorSubsetDemandResult
+queryTensorSubsetSlice(mlir::tensor::ExtractSliceOp read,
+                       analysis::IndexRelationWork &work);
 
 } // namespace wafer::compiler::detail
 

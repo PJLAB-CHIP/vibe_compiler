@@ -1,6 +1,7 @@
 //===- CapacityFeedbackTest.cpp ----------------------------------------===//
 
 #include "Wafer/Driver/PhysicalDataflow/CapacityFeedback.h"
+#include "TestSupport/Transforms/CurrentTensorPipeline.h"
 #include "Wafer/Conversion/TileToInstr/TileToInstr.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/StandaloneTileModules/StandaloneTileModules.h"
@@ -614,7 +615,7 @@ TEST_F(CapacityFeedbackTest, ActualRegionMergeDoesNotRequireOldBodyHandles) {
         << failure.detail;
     ASSERT_EQ(closure.mergedRegions, 8u);
     ASSERT_EQ(closure.mergedTileScopes, 4u);
-    auto layout = resolveCurrentLayoutsAndBufferize(*module, relations);
+    auto layout = wafer::test::prepareTensorsAndBufferize(*module, relations);
     ASSERT_TRUE(layout.succeeded()) << layout.detail;
     auto compute = lowerStructuredComputeToTile(*module, relations);
     ASSERT_TRUE(compute.succeeded()) << compute.detail;

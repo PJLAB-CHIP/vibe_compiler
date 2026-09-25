@@ -23,6 +23,7 @@
 #include "Wafer/Transforms/Tile/ScalarExecution.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 #include "Wafer/Transforms/Tile/StructuredToTile.h"
+#include "Wafer/Transforms/Tile/TensorPreparation.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -1209,11 +1210,14 @@ private:
         analysis.availableTileIds, analysis.operationNodes, *rootWorks,
         state.getRegionPlan(), &failure);
     if (mlir::failed(materialized))
-      return fail(failure.kind ==
-                          SpatialRegionMaterializationFailureKind::Unsupported
-                      ? ExecutableCompilationStatus::UnsupportedFailure
-                      : ExecutableCompilationStatus::CompilerFailure,
-                  "search-structural", failure.detail);
+      return fail(
+          failure.kind ==
+                  SpatialRegionMaterializationFailureKind::ResourceExhausted
+              ? ExecutableCompilationStatus::IndeterminateFailure
+          : failure.kind == SpatialRegionMaterializationFailureKind::Unsupported
+              ? ExecutableCompilationStatus::UnsupportedFailure
+              : ExecutableCompilationStatus::CompilerFailure,
+          "search-structural", failure.detail);
     structural.emplace(CurrentCandidate{std::move(materialized->module),
                                         std::move(materialized->relations)});
     structural->tensorChoices =
@@ -1355,8 +1359,13 @@ private:
       if (mlir::failed(applyTemporalTiling(requests, candidate->relations,
                                            &temporalFailure,
                                            &candidate->tensorChoices)))
-        return fail(ExecutableCompilationStatus::CompilerFailure,
-                    "search-temporal-apply", temporalFailure.detail);
+        return fail(
+            temporalFailure.kind == TemporalTilingFailureKind::ResourceExhausted
+                ? ExecutableCompilationStatus::IndeterminateFailure
+            : temporalFailure.kind == TemporalTilingFailureKind::Unsupported
+                ? ExecutableCompilationStatus::UnsupportedFailure
+                : ExecutableCompilationStatus::CompilerFailure,
+            "search-temporal-apply", temporalFailure.detail);
       if (statistics)
         statistics->temporalApplications += requests.size();
       SpatialRegionMaterializationFailure failure;
@@ -1450,6 +1459,14 @@ private:
                         ? ExecutableCompilationStatus::UnsupportedFailure
                         : ExecutableCompilationStatus::CompilerFailure,
                     "search-attention-decomposition", attentionFailure.detail);
+      auto tensorPrepared = prepareCurrentTensorInput(
+          *candidate->module, candidate->relations, &candidate->tensorChoices);
+      if (!tensorPrepared.succeeded())
+        return fail(tensorPrepared.status ==
+                            TensorPreparationStatus::Unsupported
+                        ? ExecutableCompilationStatus::UnsupportedFailure
+                        : ExecutableCompilationStatus::CompilerFailure,
+                    "search-tensor-preparation", tensorPrepared.detail);
       llvm::SmallVector<mlir::tensor::ExtractSliceOp> reads;
       candidate->module->walk([&](mlir::tensor::ExtractSliceOp read) {
         if (read->getParentOfType<TileRegionOp>())

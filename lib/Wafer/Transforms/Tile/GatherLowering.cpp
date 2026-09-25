@@ -95,8 +95,10 @@ mlir::Value buildGatherRows(mlir::tensor::GatherOp gather,
 }
 } // namespace
 
-mlir::LogicalResult lowerTensorGathers(
-    mlir::ModuleOp module, StructuredMaterializationRelations &relations) {
+mlir::LogicalResult
+lowerTensorGathers(mlir::ModuleOp module,
+                   StructuredMaterializationRelations &relations,
+                   mlir::RewriterBase::Listener *externalListener) {
   llvm::SmallVector<mlir::tensor::GatherOp> gathers;
   module.walk([&](mlir::tensor::GatherOp gather) {
     if (gather->getParentOfType<TileRegionOp>())
@@ -108,7 +110,7 @@ mlir::LogicalResult lowerTensorGathers(
         !gather.getResultType().hasStaticShape())
       return gather.emitError("selected gather requires static slice extents");
 
-  StructuredBufferReplacementListener listener(relations);
+  StructuredBufferReplacementListener listener(relations, externalListener);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
   for (auto gather : gathers) {
     rewriter.setInsertionPoint(gather);

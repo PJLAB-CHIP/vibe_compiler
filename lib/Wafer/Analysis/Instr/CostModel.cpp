@@ -822,6 +822,20 @@ private:
       auto cmp = mlir::dyn_cast_or_null<mlir::arith::CmpIOp>(op);
       if (!cmp || !cmp.getLhs().getType().isIndex())
         return false;
+      // The clock summary advances by two iterations. A current nonnegative
+      // induction modulo one or two has that exact period, including the
+      // existing alternating-buffer select. This is a proof from SSA, not
+      // extrapolation from observed early branch outcomes.
+      for (unsigned side = 0; side < 2; ++side) {
+        auto remainder =
+            cmp->getOperand(side).getDefiningOp<mlir::arith::RemUIOp>();
+        auto other = mlir::getConstantIntValue(cmp->getOperand(1 - side));
+        auto divisor = remainder ? mlir::getConstantIntValue(remainder.getRhs())
+                                 : std::optional<int64_t>{};
+        if (remainder && remainder.getLhs() == loop.getInductionVar() &&
+            lower >= 0 && other && divisor && (*divisor == 1 || *divisor == 2))
+          return true;
+      }
       auto a = linear(cmp.getLhs()), b = linear(cmp.getRhs());
       if (!a || !b)
         return false;
@@ -889,12 +903,19 @@ private:
           return !argument.getType().isIndex() || argument == result;
         });
     auto intervals = getControlIntervals(loop, *lower, *step, count);
-    canSummarize &= intervals.has_value();
+    // Unknown control partitions (including periodic floor/mod guards) use
+    // one structural service summary. Never visit every dynamic iteration
+    // merely because the clock extrapolator cannot prove a partition.
+    if (!intervals ||
+        (!canSummarize && count > 65536 - std::min(work, uint64_t{65536})))
+      return false;
     size_t interval = 0;
     llvm::SmallVector<Storage> thirdAliases;
     llvm::DenseMap<mlir::Value, uint64_t> thirdTokens;
     uint64_t third = 0;
     for (uint64_t iteration = 0; iteration < count; ++iteration) {
+      if (work >= 65536)
+        return false;
       if (intervals)
         while (iteration >= (*intervals)[interval + 1])
           ++interval;

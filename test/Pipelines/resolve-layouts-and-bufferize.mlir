@@ -1,4 +1,4 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-resolve-current-layouts-and-bufferize)' %s | FileCheck %s --check-prefix=LEAF
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-prepare-current-tensor-input,wafer-resolve-current-layouts-and-bufferize)' %s | FileCheck %s --check-prefix=LEAF
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-resolve-layouts-and-bufferize)' %s | FileCheck %s --check-prefix=COMPOSITE
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-plan-spm-memory)' %s | FileCheck %s --check-prefix=SPM
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-plan-ddr-memory)' %s | FileCheck %s --check-prefix=DDR

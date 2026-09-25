@@ -130,6 +130,8 @@ private:
   friend LayoutQueryResult queryCurrentLayoutAssignment(mlir::ModuleOp);
 };
 
+/// Consumes prepared tensors after all selected reads have been materialized.
+/// This stage must not introduce new tensor subset computations.
 LayoutOptimizationResult
 prepareCurrentLayoutInput(mlir::ModuleOp module,
                           StructuredMaterializationRelations &relations,

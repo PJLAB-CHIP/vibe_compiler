@@ -1,9 +1,10 @@
 //===- GatherLoweringTest.cpp - Indexed slice tiling and storage --------===//
 
+#include "Wafer/Transforms/Tile/GatherLowering.h"
+#include "TestSupport/Transforms/CurrentTensorPipeline.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Linalg/TemporalTiling.h"
-#include "Wafer/Transforms/Tile/GatherLowering.h"
 #include "Wafer/Transforms/Tile/LayoutOptimization.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
@@ -127,7 +128,7 @@ TEST_F(GatherLoweringTest, SelectedRowsBufferizeIntoOneOutputAllocation) {
       module->walk([&](TileRegionOp op) { region = op; });
       StructuredMaterializationRelations relations;
       relations.structuralOutputs.push_back({0, region.getResult(0)});
-      auto result = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto result = wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(result.succeeded()) << result.detail;
       unsigned outputs = 0, scalarReads = 0, copies = 0;
       module->walk([&](mlir::memref::AllocOp alloc) {
@@ -192,7 +193,8 @@ TEST_F(GatherLoweringTest, TemporalBlocksAndTailsKeepStaticGatherOperands) {
       });
       EXPECT_EQ(fullBlocks, 1u);
       EXPECT_EQ(tails, length % 64 ? 1u : 0u);
-      auto lowered = resolveCurrentLayoutsAndBufferize(*module, relations);
+      auto lowered =
+          wafer::test::prepareTensorsAndBufferize(*module, relations);
       ASSERT_TRUE(lowered.succeeded()) << lowered.detail;
       EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
     }

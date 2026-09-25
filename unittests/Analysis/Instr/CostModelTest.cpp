@@ -4,6 +4,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -72,6 +73,76 @@ uint64_t costCounter(llvm::StringRef report, llvm::StringRef name) {
   uint64_t value = 0;
   EXPECT_FALSE(number.getAsInteger(10, value));
   return value;
+}
+
+TEST(CostModelTest, PeriodicGuardsUseBoundedStructuralCost) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::affine::AffineDialect, mlir::arith::ArithDialect,
+                  mlir::func::FuncDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  auto cohort = SearchCostCohort::create(unitCostPolicy());
+  ASSERT_TRUE(mlir::succeeded(cohort));
+  uint64_t previousWork = 0;
+  for (int64_t extent : {1024, 1025, 1031})
+    for (int64_t trips : {1031, 1000000000})
+      for (int64_t period : {7, 1048573}) {
+        SCOPED_TRACE(::testing::Message()
+                     << extent << "/" << trips << "/" << period);
+        std::string type = "memref<1x" + std::to_string(extent) + "x8xf16";
+        std::string ddr = type + ", #wafer.memory<ddr, tensor>>";
+        std::string spm = type + ", #wafer.memory<spm, tensor>>";
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        out << "module { func.func @main(%input: " << ddr << ") {\n"
+            << "%buffer = memref.alloc() {wafer.spm.offset = "
+               "#wafer.spm_offset<65536>} : "
+            << spm
+            << "\n%c0 = arith.constant 0 : index\n%c1 = arith.constant 1 : "
+               "index\n"
+            << "%end = arith.constant " << trips << " : index\n"
+            << "scf.for %i = %c0 to %end step %c1 {\n"
+            << "%index = affine.apply affine_map<(d0) -> ((d0 floordiv 3) mod "
+            << period << ")>(%i)\n"
+            << "%condition = arith.cmpi eq, %index, %c0 : index\n"
+            << "scf.if %condition {\nwafer.instr.rdma %input to %buffer "
+               "{byte_count = "
+            << extent * 16 << " : i64, inner_bytes = " << extent * 16
+            << " : i64, src_strides = array<i64: 0, 0, 0>, "
+            << "src_iterations = array<i64: 1, 1, 1>} : " << ddr << " to "
+            << spm << "\n}\n}\nwafer.instr.ncc_join [0]\nreturn\n}}\n";
+        auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
+        ASSERT_TRUE(module);
+        llvm::SmallVector<TileInstructionProgram> programs{
+            {wafer::TileId(0), *module}};
+        auto cost = analyzeInstructionProgramAggregateCost(
+            programs, wafer::getTargetMemoryPolicy());
+        const auto &work = cost.tileCosts.front().work;
+        EXPECT_EQ(work.cpuScalarOperations.staticSites.value, 2u);
+        ASSERT_TRUE(work.cpuScalarOperations.exactExecutions.isKnown());
+        EXPECT_EQ(work.cpuScalarOperations.exactExecutions.value,
+                  uint64_t(trips * 2));
+        EXPECT_FALSE(work.rdmaIssues.exactExecutions.isKnown());
+        ASSERT_TRUE(work.rdmaIssues.upperBound.isKnown());
+        EXPECT_EQ(work.rdmaIssues.lowerBound.value, 0u);
+        EXPECT_EQ(work.rdmaIssues.upperBound.value, uint64_t(trips));
+        std::string report;
+        llvm::raw_string_ostream stream(report);
+        auto timing =
+            std::make_shared<wafer::support::CompileTimingSession>(stream);
+        wafer::support::ScopedCompileTimingActivation activation(timing);
+        auto objective = deriveSearchObjective(cost, *cohort, programs);
+        timing->finishAndPrintSummary();
+        expectCoarse(objective);
+        uint64_t visited = costCounter(report, "current-ir-estimate-work");
+        EXPECT_LT(visited, 200u);
+        if (previousWork) {
+          EXPECT_EQ(visited, previousWork);
+        }
+        previousWork = visited;
+      }
 }
 
 TEST(CostModelTest, ActualDependenciesAndJoinsChangeOverlapWithIdenticalWork) {

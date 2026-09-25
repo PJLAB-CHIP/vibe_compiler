@@ -245,13 +245,14 @@ bool hasUnmaterializedElementwisePayloads(mlir::ModuleOp module) {
 
 mlir::LogicalResult
 materializeElementwisePayloads(mlir::ModuleOp module,
-                               StructuredMaterializationRelations &relations) {
+                               StructuredMaterializationRelations &relations,
+                               mlir::RewriterBase::Listener *externalListener) {
   llvm::SmallVector<mlir::linalg::GenericOp> operations;
   module.walk([&](mlir::linalg::GenericOp op) {
     if (needsMaterialization(op))
       operations.push_back(op);
   });
-  StructuredBufferReplacementListener listener(relations);
+  StructuredBufferReplacementListener listener(relations, externalListener);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
   for (auto op : operations)
     materialize(op, rewriter, listener);

@@ -12,6 +12,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/SubsetOpInterface.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/Twine.h"
@@ -41,6 +42,248 @@ fromRelationFailure(const IndexRelationResult &result) {
 
 namespace {
 
+struct BoundedIndexExpression {
+  mlir::AffineExpr expression;
+  int64_t lower = 0;
+  int64_t upper = 0;
+};
+
+class IndexExpressionQuery {
+public:
+  IndexExpressionQuery(mlir::MLIRContext *context, IndexRelationWork &work)
+      : context(context), work(work) {}
+
+  std::optional<BoundedIndexExpression> constant(int64_t value) {
+    if (llvm::abs(llvm::DynamicAPInt(value)) >
+        llvm::DynamicAPInt(int64_t(work.getLimits().maxAbsoluteCoefficient))) {
+      depthExhausted = true;
+      return std::nullopt;
+    }
+    return BoundedIndexExpression{mlir::getAffineConstantExpr(value, context),
+                                  value, value};
+  }
+
+  std::optional<BoundedIndexExpression> combine(mlir::AffineExprKind kind,
+                                                BoundedIndexExpression lhs,
+                                                BoundedIndexExpression rhs) {
+    if (!work.charge())
+      return std::nullopt;
+    BoundedIndexExpression result;
+    auto left = mlir::getAffineDimExpr(0, context);
+    auto right = mlir::getAffineDimExpr(1, context);
+    switch (kind) {
+    case mlir::AffineExprKind::Add:
+      if (llvm::AddOverflow(lhs.lower, rhs.lower, result.lower) ||
+          llvm::AddOverflow(lhs.upper, rhs.upper, result.upper))
+        return std::nullopt;
+      result.expression = left + right;
+      break;
+    case mlir::AffineExprKind::Mul: {
+      auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(rhs.expression);
+      if (!constant) {
+        std::swap(lhs, rhs);
+        constant = mlir::dyn_cast<mlir::AffineConstantExpr>(rhs.expression);
+      }
+      if (!constant ||
+          llvm::MulOverflow(lhs.lower, constant.getValue(), result.lower) ||
+          llvm::MulOverflow(lhs.upper, constant.getValue(), result.upper))
+        return std::nullopt;
+      if (result.lower > result.upper)
+        std::swap(result.lower, result.upper);
+      result.expression = left * constant.getValue();
+      break;
+    }
+    case mlir::AffineExprKind::FloorDiv:
+    case mlir::AffineExprKind::CeilDiv:
+    case mlir::AffineExprKind::Mod: {
+      auto divisor = mlir::dyn_cast<mlir::AffineConstantExpr>(rhs.expression);
+      if (!divisor || divisor.getValue() <= 0)
+        return std::nullopt;
+      int64_t c = divisor.getValue();
+      if (kind == mlir::AffineExprKind::Mod) {
+        result.expression = left % c;
+        result.lower = 0;
+        result.upper = c - 1;
+      } else if (kind == mlir::AffineExprKind::FloorDiv) {
+        result.expression = left.floorDiv(c);
+        result.lower = llvm::divideFloorSigned(lhs.lower, c);
+        result.upper = llvm::divideFloorSigned(lhs.upper, c);
+      } else {
+        result.expression = left.ceilDiv(c);
+        result.lower = llvm::divideCeilSigned(lhs.lower, c);
+        result.upper = llvm::divideCeilSigned(lhs.upper, c);
+      }
+      break;
+    }
+    default:
+      return std::nullopt;
+    }
+    auto composed = composeIndexMap(
+        mlir::AffineMap::get(2, 0, result.expression),
+        mlir::AffineMap::get(parameters.size(), 0,
+                             {lhs.expression, rhs.expression}, context),
+        work);
+    if (!composed.isExact()) {
+      depthExhausted |=
+          composed.status == IndexRelationStatus::ResourceExhausted;
+      return std::nullopt;
+    }
+    result.expression = composed.map.getResult(0);
+    return result;
+  }
+
+  std::optional<BoundedIndexExpression>
+  affine(mlir::AffineExpr expression,
+         llvm::ArrayRef<BoundedIndexExpression> operands, unsigned dims,
+         unsigned depth) {
+    if (!work.charge())
+      return std::nullopt;
+    if (depth >= work.getLimits().maxVariables) {
+      depthExhausted = true;
+      return std::nullopt;
+    }
+    if (auto c = mlir::dyn_cast<mlir::AffineConstantExpr>(expression))
+      return constant(c.getValue());
+    if (auto d = mlir::dyn_cast<mlir::AffineDimExpr>(expression))
+      return operands[d.getPosition()];
+    if (auto s = mlir::dyn_cast<mlir::AffineSymbolExpr>(expression))
+      return operands[dims + s.getPosition()];
+    auto binary = mlir::dyn_cast<mlir::AffineBinaryOpExpr>(expression);
+    if (!binary)
+      return std::nullopt;
+    auto lhs = affine(binary.getLHS(), operands, dims, depth + 1);
+    auto rhs = affine(binary.getRHS(), operands, dims, depth + 1);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return combine(expression.getKind(), *lhs, *rhs);
+  }
+
+  std::optional<BoundedIndexExpression> parse(mlir::OpFoldResult input,
+                                              unsigned depth = 0) {
+    if (!work.charge())
+      return std::nullopt;
+    if (depth >= work.getLimits().maxVariables) {
+      depthExhausted = true;
+      return std::nullopt;
+    }
+    mlir::Type inputType;
+    if (auto attribute = mlir::dyn_cast<mlir::Attribute>(input)) {
+      auto integer = mlir::dyn_cast<mlir::IntegerAttr>(attribute);
+      if (!integer)
+        return std::nullopt;
+      inputType = integer.getType();
+    } else if (auto value = mlir::dyn_cast<mlir::Value>(input)) {
+      inputType = value.getType();
+    } else {
+      return std::nullopt;
+    }
+    if (auto integer = mlir::dyn_cast<mlir::IntegerType>(inputType))
+      if (integer.getWidth() > 64)
+        return std::nullopt;
+    if (auto c = mlir::getConstantIntValue(input))
+      return constant(*c);
+    auto value = mlir::dyn_cast<mlir::Value>(input);
+    if (!value || !value.getType().isIntOrIndex())
+      return std::nullopt;
+    auto cached = memo.find(value);
+    if (cached != memo.end())
+      return cached->second;
+    std::optional<BoundedIndexExpression> result;
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      auto loop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
+          argument.getOwner()->getParentOp());
+      if (!loop || loop.getInductionVar() != value)
+        return std::nullopt;
+      auto lower = mlir::getConstantIntValue(loop.getLowerBound());
+      auto upper = mlir::getConstantIntValue(loop.getUpperBound());
+      auto step = mlir::getConstantIntValue(loop.getStep());
+      int64_t distance = 0;
+      if (!lower || !upper || !step || *step <= 0 ||
+          llvm::SubOverflow(*upper, *lower, distance) ||
+          parameters.size() >= work.getLimits().maxVariables)
+        return std::nullopt;
+      const llvm::DynamicAPInt maximum(
+          int64_t(work.getLimits().maxAbsoluteCoefficient));
+      if (llvm::abs(llvm::DynamicAPInt(*lower)) > maximum ||
+          llvm::abs(llvm::DynamicAPInt(*upper)) > maximum ||
+          llvm::DynamicAPInt(*step) > maximum) {
+        depthExhausted = true;
+        return std::nullopt;
+      }
+      int64_t last = *lower;
+      if (distance > 0)
+        last += ((distance - 1) / *step) * *step;
+      result = BoundedIndexExpression{
+          mlir::getAffineDimExpr(parameters.size(), context), *lower, last};
+      parameters.push_back({value, *lower, *upper, *step});
+    } else if (auto apply =
+                   value.getDefiningOp<mlir::affine::AffineApplyOp>()) {
+      llvm::SmallVector<BoundedIndexExpression> operands;
+      for (mlir::Value operand : apply.getMapOperands()) {
+        auto parsed = parse(operand, depth + 1);
+        if (!parsed)
+          return std::nullopt;
+        operands.push_back(*parsed);
+      }
+      result = affine(apply.getAffineMap().getResult(0), operands,
+                      apply.getAffineMap().getNumDims(), 0);
+    } else if (auto *op = value.getDefiningOp();
+               op && op->getNumOperands() == 2) {
+      auto lhs = parse(op->getOperand(0), depth + 1);
+      auto rhs = parse(op->getOperand(1), depth + 1);
+      if (!lhs || !rhs)
+        return std::nullopt;
+      using K = mlir::AffineExprKind;
+      if (mlir::isa<mlir::arith::AddIOp>(op))
+        result = combine(K::Add, *lhs, *rhs);
+      else if (mlir::isa<mlir::arith::SubIOp>(op)) {
+        auto sign = constant(-1);
+        auto negative = sign ? combine(K::Mul, *rhs, *sign) : std::nullopt;
+        if (negative)
+          result = combine(K::Add, *lhs, *negative);
+      } else if (mlir::isa<mlir::arith::MulIOp>(op))
+        result = combine(K::Mul, *lhs, *rhs);
+      else if (mlir::isa<mlir::arith::FloorDivSIOp>(op))
+        result = combine(K::FloorDiv, *lhs, *rhs);
+      else if (mlir::isa<mlir::arith::CeilDivSIOp>(op))
+        result = combine(K::CeilDiv, *lhs, *rhs);
+      else if (mlir::isa<mlir::arith::DivSIOp, mlir::arith::DivUIOp,
+                         mlir::arith::RemSIOp, mlir::arith::RemUIOp>(op) &&
+               lhs->lower >= 0)
+        result =
+            combine(mlir::isa<mlir::arith::RemSIOp, mlir::arith::RemUIOp>(op)
+                        ? K::Mod
+                        : K::FloorDiv,
+                    *lhs, *rhs);
+    } else if (mlir::isa_and_nonnull<mlir::arith::IndexCastOp,
+                                     mlir::arith::IndexCastUIOp>(
+                   value.getDefiningOp())) {
+      auto *op = value.getDefiningOp();
+      result = parse(op->getOperand(0), depth + 1);
+      // Unsigned extension differs for negative source bit patterns.
+      if (result && mlir::isa<mlir::arith::IndexCastUIOp>(op) &&
+          result->lower < 0)
+        return std::nullopt;
+    }
+    if (!result)
+      return std::nullopt;
+    if (auto integer = mlir::dyn_cast<mlir::IntegerType>(value.getType())) {
+      unsigned width = integer.getWidth();
+      if (width > 64 || !llvm::isIntN(width, result->lower) ||
+          !llvm::isIntN(width, result->upper))
+        return std::nullopt;
+    }
+    memo.try_emplace(value, *result);
+    return result;
+  }
+
+  mlir::MLIRContext *context;
+  IndexRelationWork &work;
+  llvm::SmallVector<TensorIndexParameter, 4> parameters;
+  llvm::DenseMap<mlir::Value, BoundedIndexExpression> memo;
+  bool depthExhausted = false;
+};
+
 struct LinearLoopIndex {
   mlir::Value induction;
   int64_t base = 0;
@@ -49,80 +292,63 @@ struct LinearLoopIndex {
 
 std::optional<LinearLoopIndex>
 parseLinearLoopIndex(mlir::Value value, const IndexRelationLimits &limits,
-                     TensorResultIndexingStatus &status, unsigned depth = 0) {
+                     TensorResultIndexingStatus &status) {
   if (!value)
     return std::nullopt;
-  if (depth >= limits.maxVariables) {
-    status = TensorResultIndexingStatus::ResourceExhausted;
+  IndexRelationWork work(limits);
+  auto query = queryTensorIndexExpressions(value.getContext(), {value}, work);
+  if (!query.isExact()) {
+    status = query.status;
     return std::nullopt;
   }
-  if (auto apply = value.getDefiningOp<mlir::affine::AffineApplyOp>()) {
-    auto map = apply.getAffineMap();
-    if (map.getNumDims() != 1 || map.getNumSymbols() != 0 ||
-        apply.getMapOperands().size() != 1)
-      return std::nullopt;
-    auto dim = mlir::getAffineDimExpr(0, value.getContext());
-    auto zero = mlir::getAffineConstantExpr(0, value.getContext());
-    auto one = mlir::getAffineConstantExpr(1, value.getContext());
-    auto atZero = mlir::dyn_cast<mlir::AffineConstantExpr>(
-        mlir::simplifyAffineExpr(map.getResult(0).replace(dim, zero), 1, 0));
-    auto atOne = mlir::dyn_cast<mlir::AffineConstantExpr>(
-        mlir::simplifyAffineExpr(map.getResult(0).replace(dim, one), 1, 0));
-    int64_t scale = 0;
-    if (!atZero || !atOne ||
-        llvm::SubOverflow(atOne.getValue(), atZero.getValue(), scale) ||
-        scale <= 0)
-      return std::nullopt;
-    int64_t base = atZero.getValue();
-    auto expected =
-        dim * mlir::getAffineConstantExpr(scale, value.getContext()) +
-        mlir::getAffineConstantExpr(base, value.getContext());
-    if (mlir::simplifyAffineExpr(map.getResult(0) - expected, 1, 0) != zero)
-      return std::nullopt;
-    auto inner = parseLinearLoopIndex(apply.getMapOperands().front(), limits,
-                                      status, depth + 1);
-    int64_t scaledBase = 0, composedBase = 0, composedScale = 0;
-    if (!inner || llvm::MulOverflow(scale, inner->base, scaledBase) ||
-        llvm::AddOverflow(base, scaledBase, composedBase) ||
-        llvm::MulOverflow(scale, inner->scale, composedScale))
-      return std::nullopt;
-    return LinearLoopIndex{inner->induction, composedBase, composedScale};
-  }
-  if (auto add = value.getDefiningOp<mlir::arith::AddIOp>()) {
-    auto constant = mlir::getConstantIntValue(add.getLhs());
-    mlir::Value other = add.getRhs();
-    if (!constant) {
-      constant = mlir::getConstantIntValue(add.getRhs());
-      other = add.getLhs();
-    }
-    auto inner = constant
-                     ? parseLinearLoopIndex(other, limits, status, depth + 1)
-                     : std::nullopt;
-    int64_t base = 0;
-    if (!inner || llvm::AddOverflow(inner->base, *constant, base))
-      return std::nullopt;
-    return LinearLoopIndex{inner->induction, base, inner->scale};
-  }
-  if (auto multiply = value.getDefiningOp<mlir::arith::MulIOp>()) {
-    auto constant = mlir::getConstantIntValue(multiply.getLhs());
-    mlir::Value other = multiply.getRhs();
-    if (!constant) {
-      constant = mlir::getConstantIntValue(multiply.getRhs());
-      other = multiply.getLhs();
-    }
-    auto inner = constant && *constant > 0
-                     ? parseLinearLoopIndex(other, limits, status, depth + 1)
-                     : std::nullopt;
-    int64_t base = 0, scale = 0;
-    if (!inner || llvm::MulOverflow(inner->base, *constant, base) ||
-        llvm::MulOverflow(inner->scale, *constant, scale))
-      return std::nullopt;
-    return LinearLoopIndex{inner->induction, base, scale};
-  }
-  return LinearLoopIndex{value, 0, 1};
+  if (query.expressions->parameters.size() != 1)
+    return std::nullopt;
+  auto expression = query.expressions->map.getResult(0);
+  auto dim = mlir::getAffineDimExpr(0, value.getContext());
+  auto zero = mlir::getAffineConstantExpr(0, value.getContext());
+  auto one = mlir::getAffineConstantExpr(1, value.getContext());
+  auto base = mlir::dyn_cast<mlir::AffineConstantExpr>(
+      mlir::simplifyAffineExpr(expression.replace(dim, zero), 1, 0));
+  auto atOne = mlir::dyn_cast<mlir::AffineConstantExpr>(
+      mlir::simplifyAffineExpr(expression.replace(dim, one), 1, 0));
+  int64_t scale = 0;
+  if (!base || !atOne ||
+      llvm::SubOverflow(atOne.getValue(), base.getValue(), scale) ||
+      scale <= 0 ||
+      mlir::simplifyAffineExpr(expression - (dim * scale + base.getValue()), 1,
+                               0) != zero)
+    return std::nullopt;
+  return LinearLoopIndex{query.expressions->parameters.front().induction,
+                         base.getValue(), scale};
 }
 
 } // namespace
+
+TensorIndexExpressionsResult
+queryTensorIndexExpressions(mlir::MLIRContext *context,
+                            llvm::ArrayRef<mlir::OpFoldResult> values,
+                            IndexRelationWork &work) {
+  if (!context)
+    return {TensorResultIndexingStatus::BrokenContract, std::nullopt,
+            "index expression query requires a context"};
+  IndexExpressionQuery query(context, work);
+  llvm::SmallVector<mlir::AffineExpr> expressions;
+  for (auto value : values) {
+    auto parsed = query.parse(value);
+    if (!parsed)
+      return {work.isExhausted() || query.depthExhausted
+                  ? TensorResultIndexingStatus::ResourceExhausted
+                  : TensorResultIndexingStatus::Unsupported,
+              std::nullopt,
+              "index expression is unbounded, unsupported, or may overflow"};
+    expressions.push_back(parsed->expression);
+  }
+  auto map =
+      mlir::AffineMap::get(query.parameters.size(), 0, expressions, context);
+  return {TensorResultIndexingStatus::Exact,
+          TensorIndexExpressions{map, std::move(query.parameters)},
+          {}};
+}
 
 TensorLoopGridResult queryTensorLoopGrid(mlir::OpFoldResult offset,
                                          const IndexRelationLimits &limits) {
@@ -470,9 +696,10 @@ IndexRelationResult deriveIterationProducerRelation(
   return relation;
 }
 
-TensorResultIndexingResult
-deriveTensorResultIndexing(mlir::OpResult result,
-                           const IndexRelationLimits &limits) {
+static TensorResultIndexingResult
+deriveTensorResultIndexingImpl(mlir::OpResult result,
+                               const IndexRelationLimits &limits,
+                               IndexRelationWork *work) {
   mlir::Operation *operation = result ? result.getOwner() : nullptr;
   if (!operation || !mlir::isMemoryEffectFree(operation))
     return fail(TensorResultIndexingStatus::Unsupported,
@@ -538,6 +765,27 @@ deriveTensorResultIndexing(mlir::OpResult result,
       return fail(TensorResultIndexingStatus::Unsupported,
                   "tensor indexing operand requires a static ranked tensor");
 
+    if (work) {
+      // The primitive constructors build/copy a linear number of rows and
+      // columns; they do not eliminate variables. Only a rank projection
+      // adds a third coordinate system and invokes relation composition.
+      // Reserve that extra work only when that composition actually occurs.
+      bool projection = resultType.getRank() != operandType.getRank() &&
+                        (description->kind == TensorIndexingTransformKind::ExtractSlice ||
+                         description->kind == TensorIndexingTransformKind::InsertSlice);
+      int64_t variables = 1 + resultType.getRank() + operandType.getRank();
+      if (projection)
+        variables += std::max(resultType.getRank(), operandType.getRank());
+      int64_t construction = 0;
+      if (variables > limits.maxVariables ||
+          llvm::MulOverflow(variables, variables, construction) ||
+          (projection && llvm::MulOverflow(construction, variables, construction)) ||
+          llvm::MulOverflow(construction, int64_t{8}, construction) ||
+          !work->charge(construction))
+        return fail(TensorResultIndexingStatus::ResourceExhausted,
+                    "tensor indexing construction exceeded request budget");
+    }
+
     IndexRelationResult relation;
     switch (description->kind) {
     case TensorIndexingTransformKind::ExpandShape:
@@ -598,6 +846,17 @@ deriveTensorResultIndexing(mlir::OpResult result,
                                  std::move(*relation.relation)});
   }
   return {TensorResultIndexingStatus::Exact, std::move(indexing), {}};
+}
+
+TensorResultIndexingResult
+deriveTensorResultIndexing(mlir::OpResult result,
+                           const IndexRelationLimits &limits) {
+  return deriveTensorResultIndexingImpl(result, limits, nullptr);
+}
+
+TensorResultIndexingResult deriveTensorResultIndexing(mlir::OpResult result,
+                                                      IndexRelationWork &work) {
+  return deriveTensorResultIndexingImpl(result, work.getLimits(), &work);
 }
 
 StaticRectangularIndexSetPiecesResult

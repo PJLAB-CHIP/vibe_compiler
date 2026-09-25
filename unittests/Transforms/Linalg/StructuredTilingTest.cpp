@@ -188,6 +188,41 @@ void expectConstantValues(llvm::ArrayRef<mlir::OpFoldResult> actual,
   }
 }
 
+TEST(StructuredTilingTest, ReshapeKeepsIndependentRowBoundaries) {
+  mlir::DialectRegistry registry;
+  registerTilingDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  mlir::OpBuilder builder(&context);
+  auto location = builder.getUnknownLoc();
+  for (int64_t extent : {1024, 1025, 1031}) {
+    auto sourceType = mlir::RankedTensorType::get(
+        {2, extent, 1, 128}, builder.getF16Type());
+    auto resultType = mlir::RankedTensorType::get(
+        {2, extent, 2, 64}, builder.getF16Type());
+    auto module = mlir::ModuleOp::create(location);
+    mlir::OwningOpRef<mlir::ModuleOp> owner(module);
+    builder.setInsertionPointToStart(module.getBody());
+    auto function = builder.create<mlir::func::FuncOp>(location, "reshape",
+        builder.getFunctionType({sourceType}, {resultType}));
+    builder.setInsertionPointToStart(function.addEntryBlock());
+    auto result = wafer::reshapeStaticTensorTile(
+        builder, location, function.getArgument(0), resultType);
+    builder.create<mlir::func::ReturnOp>(location, result);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
+    auto expand = result.getDefiningOp<mlir::tensor::ExpandShapeOp>();
+    ASSERT_TRUE(expand);
+    EXPECT_EQ(expand.getSrcType().getShape(),
+              (llvm::ArrayRef<int64_t>{2, extent, 128}));
+    auto collapse = expand.getSrc().getDefiningOp<mlir::tensor::CollapseShapeOp>();
+    ASSERT_TRUE(collapse);
+    EXPECT_EQ(collapse.getReassociationIndices()[1],
+              (mlir::ReassociationIndices{1}));
+    EXPECT_EQ(expand.getReassociationIndices()[1],
+              (mlir::ReassociationIndices{1}));
+  }
+}
+
 TEST(StructuredTilingTest, MaterializesGenericConsumerFromBoundaryOperandTile) {
   mlir::DialectRegistry registry;
   registerTilingDialects(registry);

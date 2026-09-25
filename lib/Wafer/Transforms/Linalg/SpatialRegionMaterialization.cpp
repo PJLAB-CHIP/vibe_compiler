@@ -1602,77 +1602,6 @@ struct GroupBuilder {
     return result;
   }
 
-  struct ViewTilePiece {
-    analysis::StaticRectangularIndexSet result;
-    analysis::StaticRectangularIndexSet source;
-  };
-
-  mlir::FailureOr<llvm::SmallVector<ViewTilePiece, 4>> getViewTilePieces(
-      const analysis::TensorViewIndexing &indexing,
-      llvm::ArrayRef<int64_t> resultShape,
-      const analysis::StaticRectangularIndexSet &requested,
-      llvm::ArrayRef<DemandFragmentId> fragments) {
-    auto request = analysis::IndexRelation::staticRectangularDomain(
-        requested.offsets, requested.sizes);
-    if (!request.isExact())
-      return mlir::failure();
-    auto sourceSet = mlir::presburger::PresburgerSet::getEmpty(
-        mlir::presburger::PresburgerSpace::getSetSpace(
-            indexing.resultToSource.getSourceRank()));
-    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> rectangles;
-    for (const DemandFragmentId &fragment : fragments) {
-      bool matches = llvm::any_of(rootWorks, [&](const auto &work) {
-        return llvm::any_of(work.boundaries, [&](const auto &boundary) {
-          return boundary.id == fragment.source &&
-                 boundary.sourceValue == indexing.source;
-        });
-      });
-      if (!matches)
-        continue;
-      const auto *domain = findFragmentDomain(fragment);
-      if (!domain)
-        return mlir::failure();
-      auto normalized = analysis::normalizeFiniteExactIndexSet(*domain);
-      if (mlir::failed(normalized))
-        return mlir::failure();
-      llvm::append_range(rectangles, normalized->getBoxes());
-      for (const auto &box : normalized->getBoxes()) {
-        auto source = analysis::IndexRelation::staticRectangularDomain(
-            box.offsets, box.sizes);
-        if (!source.isExact())
-          return mlir::failure();
-        sourceSet.unionInPlace(*source.set);
-      }
-    }
-    // Coalesce in source coordinates: adjacent result rectangles can still
-    // have a gap between their source columns and must remain separate.
-    auto normalized = analysis::normalizeFiniteExactIndexSet(
-        {std::move(sourceSet), analysis::ExactIndexSetForm::BoxUnion, rectangles});
-    if (mlir::failed(normalized))
-      return mlir::failure();
-    auto covered = mlir::presburger::PresburgerSet::getEmpty(
-        request.set->getSpace());
-    llvm::SmallVector<ViewTilePiece, 4> pieces;
-    for (const auto &box : normalized->getBoxes()) {
-      auto query = analysis::getTensorViewTilePiece(indexing, resultShape,
-                                                    requested, box);
-      if (!query.isExact())
-        return mlir::failure();
-      if (!query.piece)
-        continue;
-      auto result = analysis::IndexRelation::staticRectangularDomain(
-          query.piece->result.offsets, query.piece->result.sizes);
-      if (!result.isExact() || !covered.intersect(*result.set).isIntegerEmpty())
-        return mlir::failure();
-      covered.unionInPlace(*result.set);
-      pieces.push_back(
-          {std::move(query.piece->result), std::move(query.piece->source)});
-    }
-    if (!covered.isEqual(*request.set))
-      return mlir::failure();
-    return pieces;
-  }
-
   mlir::FailureOr<mlir::Value> materializeCompactSupportTile(
       mlir::Value value, const analysis::StaticRectangularIndexSet &requested,
       llvm::ArrayRef<DemandFragmentId> fragments) {
@@ -1689,97 +1618,109 @@ struct GroupBuilder {
         return mlir::failure();
     }
 
-    auto indexing = analysis::deriveTensorViewIndexing(value);
-    if (indexing.isExact()) {
-      auto compactType = mlir::RankedTensorType::get(
-          requested.sizes, type.getElementType(), type.getEncoding());
-      auto sourceType = mlir::cast<mlir::RankedTensorType>(
-          indexing.indexing->source.getType());
-      if (compactType.getRank() == 0 || sourceType.getRank() == 0 ||
-          sourceType.getElementType() != type.getElementType() ||
-          sourceType.getEncoding() != type.getEncoding())
+    auto *definition = value.getDefiningOp();
+    if (definition && mlir::isa<WaferTensorIndexingOpInterface>(definition) &&
+        !mlir::isa<mlir::tensor::PadOp>(definition)) {
+      // Bind the existing structural DAG to this candidate's actual fragment
+      // endpoints. The same clone mapping identifies any explicitly selected
+      // support computation; the common generator only creates source reads.
+      mlir::IRMapping supportMapping;
+      llvm::SmallVector<DemandFragmentId, 4> selectedFragments(fragments);
+      auto source = materializeSupportAfterFragmentAssembly(
+          value, selectedFragments, supportMapping);
+      if (mlir::failed(source))
         return mlir::failure();
-      // A total single-source read preserves a uniform literal even when its
-      // selected source image crosses row boundaries and is not rectangular.
-      // The original scalar attribute preserves every bit, including -0.0.
-      mlir::DenseElementsAttr literal;
-      if (mlir::matchPattern(indexing.indexing->source,
-                            mlir::m_Constant(&literal)) && literal.isSplat())
-        return builder
-            .create<mlir::arith::ConstantOp>(value.getLoc(), compactType,
-                                             literal.resizeSplat(compactType))
-            .getResult();
-      auto piece = analysis::getTensorViewTileSource(
-          *indexing.indexing, type.getShape(), requested);
-      if (piece.isExact()) {
-        auto source = materializeCompactSupportTile(indexing.indexing->source,
-                                                    *piece.domain, fragments);
-        if (mlir::failed(source))
-          return mlir::failure();
-        return reshapeStaticTensorTile(builder, value.getLoc(), *source,
-                                       compactType);
+      llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
+      for (auto offset : requested.offsets)
+        offsets.push_back(builder.getIndexAttr(offset));
+      for (auto size : requested.sizes) {
+        sizes.push_back(builder.getIndexAttr(size));
+        strides.push_back(builder.getIndexAttr(1));
       }
-      if (piece.status != analysis::IndexRelationStatus::Unsupported)
-        return mlir::failure();
-      // Existing exact fragment rectangles supply the decomposition; a shape
-      // bounding box cannot stand in for the gaps in this selected image.
-      auto pieces = getViewTilePieces(*indexing.indexing, type.getShape(),
-                                     requested, fragments);
-      if (mlir::failed(pieces))
-        return mlir::failure();
-      mlir::Value assembled = builder.create<mlir::tensor::EmptyOp>(
-          value.getLoc(), compactType.getShape(), compactType.getElementType(),
-          compactType.getEncoding());
-      for (const auto &selected : *pieces) {
-        auto source = materializeCompactSupportTile(
-            indexing.indexing->source, selected.source, fragments);
-        if (mlir::failed(source))
-          return mlir::failure();
-        auto tileType = mlir::RankedTensorType::get(
-            selected.result.sizes, type.getElementType(), type.getEncoding());
-        auto tile = reshapeStaticTensorTile(builder, value.getLoc(), *source,
-                                           tileType);
-        llvm::SmallVector<mlir::OpFoldResult, 4> offsets, sizes, strides;
-        for (auto [offset, origin, size] : llvm::zip_equal(
-                 selected.result.offsets, requested.offsets,
-                 selected.result.sizes)) {
-          offsets.push_back(builder.getIndexAttr(offset - origin));
-          sizes.push_back(builder.getIndexAttr(size));
-          strides.push_back(builder.getIndexAttr(1));
+      auto read = builder.create<mlir::tensor::ExtractSliceOp>(
+          value.getLoc(), *source, offsets, sizes, strides);
+      mlir::IRRewriter rewriter(builder.getContext());
+      auto generated =
+          compiler::detail::materializeTensorSubsetRead(rewriter, read);
+      using Status = compiler::detail::TensorSubsetMaterializationStatus;
+      if (generated.status != Status::Exact) {
+        auto kind = SpatialRegionMaterializationFailureKind::CompilerFailure;
+        switch (generated.status) {
+        case Status::ResourceExhausted:
+          kind = SpatialRegionMaterializationFailureKind::ResourceExhausted;
+          break;
+        case Status::Unsupported:
+          kind = SpatialRegionMaterializationFailureKind::Unsupported;
+          break;
+        case Status::BrokenContract:
+          kind = SpatialRegionMaterializationFailureKind::BrokenContract;
+          break;
+        case Status::CompilerFailure:
+          kind = SpatialRegionMaterializationFailureKind::CompilerFailure;
+          break;
+        case Status::Exact:
+          llvm_unreachable("exact subset is handled above");
         }
-        assembled = builder.create<mlir::tensor::InsertSliceOp>(
-            value.getLoc(), tile, assembled, offsets, sizes, strides);
+        return fail<mlir::Value>(failure, kind, generated.detail);
       }
-      return assembled;
-    }
-    if (indexing.status != analysis::TensorResultIndexingStatus::Unsupported)
-      return mlir::failure();
-
-    if (value.getDefiningOp<mlir::SubsetInsertionOpInterface>()) {
-      auto demand = analysis::queryTensorAssemblyDemand(value, requested);
-      if (!demand.isExact() || demand.pieces.empty())
-        return mlir::failure();
-      if (llvm::any_of(demand.pieces, [](const auto &piece) {
-            return piece.sourceWindow.sizes.empty();
-          }))
-        return mlir::failure();
-      auto compactType = mlir::RankedTensorType::get(
-          requested.sizes, type.getElementType(), type.getEncoding());
-      llvm::SmallVector<compiler::detail::TensorAssemblyTilePiece, 4> pieces;
-      for (const auto &piece : demand.pieces) {
-        auto source = materializeCompactSupportTile(
-            piece.source, piece.sourceWindow, fragments);
-        if (mlir::failed(source))
+      llvm::DenseMap<mlir::Value, mlir::Value> selectedComputations;
+      for (const auto &[original, actual] : supportMapping.getValueMap())
+        if (original.getDefiningOp() &&
+            mlir::isa<mlir::TilingInterface>(original.getDefiningOp()) &&
+            !mlir::isa<WaferTensorIndexingOpInterface>(
+                original.getDefiningOp()) &&
+            !getSourceValueKey(original, sourceFunction, nodes))
+          selectedComputations.try_emplace(actual, original);
+      for (auto sourceRead : generated.materialized->sourceReads) {
+        auto selected = selectedComputations.find(sourceRead.getSource());
+        if (selected == selectedComputations.end())
+          continue;
+        auto sourceOffsets = getStaticValues(sourceRead.getMixedOffsets());
+        auto sourceSizes = getStaticValues(sourceRead.getMixedSizes());
+        if (!sourceOffsets || !sourceSizes)
+          return fail<mlir::Value>(
+              failure, SpatialRegionMaterializationFailureKind::Unsupported,
+              "spatial support computation requires a static source tile");
+        mlir::OpBuilder::InsertionGuard insertion(builder);
+        builder.setInsertionPoint(sourceRead);
+        auto computed =
+            materializeCompactSupportTile(selected->second,
+                                          {llvm::to_vector<4>(*sourceOffsets),
+                                           llvm::to_vector<4>(*sourceSizes)},
+                                          fragments);
+        if (mlir::failed(computed))
           return mlir::failure();
-        auto pieceType = mlir::RankedTensorType::get(
-            piece.resultWindow.sizes, type.getElementType(),
-            type.getEncoding());
-        mlir::Value tile =
-            reshapeStaticTensorTile(builder, value.getLoc(), *source, pieceType);
-        pieces.push_back({tile, piece.resultWindow});
+        // A single-source generation may return this very read as its result.
+        if (generated.materialized->value == sourceRead.getResult())
+          generated.materialized->value = *computed;
+        rewriter.replaceOp(sourceRead, *computed);
       }
-      return compiler::detail::materializeTensorAssemblyTile(
-          builder, value.getLoc(), compactType, requested, pieces);
+      mlir::Value result = generated.materialized->value;
+      if (result != read.getResult())
+        rewriter.eraseOp(read);
+      // Remove dead structural producers of the adapter, including the
+      // fragment insertions built in this invocation. Cloning only maps the
+      // original view operations; those newly constructed insertions are
+      // equally part of the actual adapter DAG. Live endpoint reads and
+      // retained observers keep their producers alive.
+      llvm::SmallVector<mlir::Operation *> adapters;
+      llvm::SmallVector<mlir::Value> pending{*source};
+      llvm::DenseSet<mlir::Operation *> seen;
+      while (!pending.empty()) {
+        auto *operation = pending.pop_back_val().getDefiningOp();
+        if (!operation || operation->getBlock() != builder.getInsertionBlock() ||
+            !seen.insert(operation).second)
+          continue;
+        adapters.push_back(operation);
+        pending.append(operation->operand_begin(), operation->operand_end());
+      }
+      llvm::sort(adapters, [](auto *lhs, auto *rhs) {
+        return rhs->isBeforeInBlock(lhs);
+      });
+      for (auto *adapter : adapters)
+        if (mlir::isOpTriviallyDead(adapter))
+          rewriter.eraseOp(adapter);
+      return result;
     }
 
     mlir::Value full;
@@ -2745,10 +2686,15 @@ struct GroupBuilder {
         adapter->erase();
       return mlir::failure();
     }
-    if (mlir::failed(materializeOperandTiles(operandTiles, tiled->tiledValues)))
+    if (mlir::failed(
+            materializeOperandTiles(operandTiles, tiled->tiledValues))) {
+      if (failure &&
+          failure->kind != SpatialRegionMaterializationFailureKind::None)
+        return mlir::failure();
       return fail<llvm::SmallVector<mlir::Value, 2>>(
           failure, SpatialRegionMaterializationFailureKind::Unsupported,
           "spatial operand tile cannot be materialized");
+    }
 
     llvm::SmallVector<mlir::Value, 2> fullResults;
     fullResults.reserve(tiled->tiledValues.size());

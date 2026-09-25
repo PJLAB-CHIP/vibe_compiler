@@ -9,4 +9,4 @@ module {
 }
 
 // TILE: builtin.module(func.func(wafer.tile.region(wafer-convert-tile-region-to-instr)),wafer-convert-bufferization-copies-to-instr,func.func(wafer-materialize-gather-scatter-work),func.func(wafer-rebuild-required-ncc-joins))
-// BUFFERIZE: builtin.module(wafer-resolve-current-layouts-and-bufferize)
+// BUFFERIZE: builtin.module(wafer-prepare-current-tensor-input,wafer-resolve-current-layouts-and-bufferize)

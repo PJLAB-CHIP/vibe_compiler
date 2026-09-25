@@ -9,10 +9,12 @@
 #include "Wafer/Target/TargetMemory.h"
 #include "Wafer/Conversion/InstrToLLVM/InstrToLLVM.h"
 
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -265,6 +267,7 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
   populateTargetScalarMemoryConversionPatterns(converter, patterns);
   populateTargetInstructionConversionPatterns(
       converter, patterns, dteDomain ? &*dteDomain : nullptr);
+  mlir::populateAffineToStdConversionPatterns(patterns);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
@@ -276,10 +279,10 @@ mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
     return fence.getSyncscope() != kTargetKcoreReleaseScope ||
            fence.getOrdering() != mlir::LLVM::AtomicOrdering::release;
   });
-  target.addIllegalDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
-                           mlir::cf::ControlFlowDialect,
-                           mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
-                           WaferDialect>();
+  target.addIllegalDialect<
+      mlir::func::FuncDialect, mlir::arith::ArithDialect,
+      mlir::affine::AffineDialect, mlir::cf::ControlFlowDialect,
+      mlir::memref::MemRefDialect, mlir::scf::SCFDialect, WaferDialect>();
   if (mlir::failed(
           mlir::applyFullConversion(moduleOp, target, std::move(patterns))))
     return moduleOp.emitError()

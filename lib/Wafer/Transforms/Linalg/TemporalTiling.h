@@ -48,7 +48,8 @@ struct TemporalTilingStatistics {
   uint64_t tiledTraversals = 0;
   uint64_t loops = 0;
   uint64_t specializedTails = 0;
-  uint64_t specializedConcatBoundaries = 0;
+  uint64_t subsetIndexWork = 0;
+  uint64_t subsetBlockTemplates = 0;
   uint64_t fusedProducers = 0;
   uint64_t viewTransparentProducers = 0;
   uint64_t tileLocalAssemblies = 0;

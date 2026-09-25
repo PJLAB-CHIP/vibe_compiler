@@ -112,8 +112,9 @@ struct InstructionExecutionCount {
 /// A fill is one IR instruction and two CT issues (whole-range XorVV/AddVS).
 struct InstructionProgramWork {
   InstructionExecutionCount instructions;
-  /// Nonconstant scalar Arith operations in current IR, not machine
-  /// instructions or estimated address/loop-control work introduced later.
+  /// Nonconstant scalar Arith and affine.apply operations in current IR.
+  /// This counts actual IR operations, not machine instructions or estimated
+  /// address/loop-control work introduced by later lowering.
   InstructionExecutionCount cpuScalarOperations;
   InstructionExecutionCount asynchronousEvents;
   InstructionExecutionCount rdmaIssues;

@@ -4,6 +4,7 @@
 #include "AttentionVisibility.h"
 #include "TensorAssemblyMaterialization.h"
 #include "Wafer/Transforms/Tile/TensorInitialization.h"
+#include "Wafer/Transforms/Tile/TensorPreparation.h"
 
 #include "Wafer/Analysis/Linalg/TensorResultIndexing.h"
 #include "Wafer/Transforms/Linalg/StructuredTiling.h"
@@ -74,6 +75,11 @@ struct ProducerTiling {
               mlir::OpResult producer);
 };
 
+struct AssemblyProducerFusion {
+  mlir::Value assembly;
+  mlir::OpResult producer;
+};
+
 // Proofs refer only to live source operations of this call. Erasure invalidates
 // membership before an allocator can reuse an address for another operation.
 struct LiveFusionSources : mlir::RewriterBase::ForwardingListener {
@@ -87,6 +93,9 @@ struct LiveFusionSources : mlir::RewriterBase::ForwardingListener {
   };
   llvm::DenseMap<mlir::Operation *, bool> sources;
   llvm::DenseMap<mlir::Operation *, View> views;
+  // Choices are retained across main/tail refinement in this invocation.
+  // They authorize producer fusion only; the final read is queried afresh.
+  llvm::SmallVector<AssemblyProducerFusion, 4> assemblyFusions;
   explicit LiveFusionSources(mlir::OpBuilder::Listener *listener)
       : ForwardingListener(listener) {}
   void invalidate(mlir::Operation *operation) {
@@ -98,12 +107,33 @@ struct LiveFusionSources : mlir::RewriterBase::ForwardingListener {
     }
   }
   void notifyOperationErased(mlir::Operation *operation) override {
-    invalidate(operation);
+    operation->walk([&](mlir::Operation *nested) {
+      invalidate(nested);
+      llvm::erase_if(assemblyFusions, [&](const auto &choice) {
+        return choice.assembly.getDefiningOp() == nested ||
+               choice.producer.getOwner() == nested;
+      });
+    });
     ForwardingListener::notifyOperationErased(operation);
   }
   void notifyOperationModified(mlir::Operation *operation) override {
     invalidate(operation);
+    llvm::erase_if(assemblyFusions, [&](const auto &choice) {
+      return choice.producer.getOwner() == operation;
+    });
     ForwardingListener::notifyOperationModified(operation);
+  }
+  void notifyOperationReplaced(mlir::Operation *operation,
+                               mlir::Operation *replacement) override {
+    notifyOperationReplaced(operation, replacement->getResults());
+  }
+  void notifyOperationReplaced(mlir::Operation *operation,
+                               mlir::ValueRange replacements) override {
+    for (auto &choice : assemblyFusions)
+      if (auto result = mlir::dyn_cast<mlir::OpResult>(choice.assembly);
+          result && result.getOwner() == operation)
+        choice.assembly = replacements[result.getResultNumber()];
+    ForwardingListener::notifyOperationReplaced(operation, replacements);
   }
 };
 
@@ -237,11 +267,6 @@ struct ViewFusionRequest {
 
 struct AssemblyReadRequest {
   mlir::Value assembledValue;
-};
-
-struct AssemblyProducerFusion {
-  mlir::Value assembly;
-  mlir::OpResult producer;
 };
 
 AssemblyReadRequest getAssemblyReadRequest(
@@ -691,35 +716,6 @@ using analysis::getTensorLoopGridFloor;
 using analysis::queryTensorLoopGrid;
 using analysis::TensorLoopGrid;
 
-mlir::FailureOr<mlir::scf::ForOp> splitForLoopAt(mlir::IRRewriter &rewriter,
-                                                 mlir::scf::ForOp loop,
-                                                 int64_t split,
-                                                 mlir::IRMapping &mapping) {
-  std::optional<int64_t> lower =
-      mlir::getConstantIntValue(loop.getLowerBound());
-  std::optional<int64_t> upper =
-      mlir::getConstantIntValue(loop.getUpperBound());
-  std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
-  if (!lower || !upper || !step || *step <= 0 || split <= *lower ||
-      split >= *upper || (split - *lower) % *step != 0)
-    return mlir::failure();
-
-  mlir::RewriterBase::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPoint(loop);
-  mlir::Value splitValue =
-      rewriter.create<mlir::arith::ConstantIndexOp>(loop.getLoc(), split);
-  rewriter.setInsertionPointAfter(loop);
-  auto suffix = mlir::cast<mlir::scf::ForOp>(rewriter.clone(*loop, mapping));
-  rewriter.modifyOpInPlace(
-      suffix, [&] { suffix.getLowerBoundMutable().assign(splitValue); });
-  rewriter.replaceAllUsesWith(loop.getResults(), suffix.getResults());
-  rewriter.modifyOpInPlace(
-      suffix, [&] { suffix.getInitArgsMutable().assign(loop.getResults()); });
-  rewriter.modifyOpInPlace(
-      loop, [&] { loop.getUpperBoundMutable().assign(splitValue); });
-  return suffix;
-}
-
 TensorAssemblyOpportunityKind
 assemblyOutcome(analysis::TensorAssemblyStatus status) {
   using Kind = TensorAssemblyOpportunityKind;
@@ -754,116 +750,22 @@ assemblyFailureKind(TensorAssemblyOpportunityKind kind) {
   llvm_unreachable("unknown assembly read outcome");
 }
 
-mlir::LogicalResult specializeConcatLoopBoundaries(
-    mlir::IRRewriter &rewriter, TileRegionOp region,
-    llvm::ArrayRef<AssemblyReadRequest> requests,
-    TemporalTilingStatistics &statistics,
-    llvm::SmallVectorImpl<mlir::tensor::ExtractSliceOp> *selectedReads =
-        nullptr,
-    TemporalTilingFailure *failure = nullptr,
-    const analysis::IndexRelationLimits &limits =
-        analysis::IndexRelationLimits()) {
-  // Collect every current read before mutation. Different affine origins in
-  // the same loop require different boundary iterations; the loop identity
-  // only groups their union, never suppresses a second read's constraints.
-  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<int64_t, 8>> loopSplits;
-  for (const auto &request : requests) {
-    bool invalid = false;
-    region.walk([&](mlir::tensor::ExtractSliceOp slice) {
-      if (slice.getSource() != request.assembledValue ||
-          (selectedReads && !llvm::is_contained(*selectedReads, slice)))
-        return;
-      auto query = compiler::detail::queryTensorAssemblySlice(slice, limits);
-      if (!query.isExact()) {
-        if (failure)
-          *failure = {assemblyFailureKind(assemblyOutcome(query.status)),
-                      query.detail};
-        invalid = true;
-        return;
-      }
-      for (const auto &partition : query.loops) {
-        auto *loop = mlir::cast<mlir::BlockArgument>(partition.induction)
-                         .getOwner()
-                         ->getParentOp();
-        auto &splits = loopSplits[loop];
-        splits.append(partition.boundaries.begin() + 1,
-                      partition.boundaries.end() - 1);
-      }
-    });
-    if (invalid)
-      return mlir::failure();
+TemporalTilingFailureKind
+subsetFailureKind(compiler::detail::TensorSubsetMaterializationStatus status) {
+  using Status = compiler::detail::TensorSubsetMaterializationStatus;
+  switch (status) {
+  case Status::Exact:
+    return TemporalTilingFailureKind::None;
+  case Status::Unsupported:
+    return TemporalTilingFailureKind::Unsupported;
+  case Status::ResourceExhausted:
+    return TemporalTilingFailureKind::ResourceExhausted;
+  case Status::BrokenContract:
+    return TemporalTilingFailureKind::BrokenContract;
+  case Status::CompilerFailure:
+    return TemporalTilingFailureKind::CompilerFailure;
   }
-  if (loopSplits.empty())
-    return mlir::success();
-  // Bound cloning work from the actual current body and the union of all
-  // selected partitions. This is a rewrite budget, never SPM admission.
-  uint64_t work = 0;
-  for (auto &entry : loopSplits) {
-    auto &splits = entry.second;
-    llvm::sort(splits);
-    splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
-  }
-  bool exhausted = false;
-  region.walk([&](mlir::Operation *operation) {
-    uint64_t copies = 1;
-    for (auto *parent = operation->getParentOp(); parent && parent != region;
-         parent = parent->getParentOp()) {
-      auto found = loopSplits.find(parent);
-      if (found == loopSplits.end())
-        continue;
-      uint64_t intervals = found->second.size() + 1;
-      if (copies > limits.maxConstraintWork / intervals) {
-        exhausted = true;
-        return;
-      }
-      copies *= intervals;
-    }
-    if (copies == 1)
-      return;
-    if (copies > limits.maxConstraintWork - work) {
-      exhausted = true;
-      return;
-    }
-    work += copies;
-  });
-  if (exhausted) {
-    if (failure)
-      *failure = {
-          TemporalTilingFailureKind::ResourceExhausted,
-          "selected assembly partitions exceed the rewrite work budget"};
-    return mlir::failure();
-  }
-  // Split nested loops first so a subsequent outer-loop clone contains all
-  // already-specialized inner reads. Never replay handles into cloned IR.
-  llvm::SmallVector<mlir::scf::ForOp, 8> loops;
-  region.walk<mlir::WalkOrder::PostOrder>([&](mlir::scf::ForOp loop) {
-    if (loopSplits.contains(loop))
-      loops.push_back(loop);
-  });
-  for (auto loop : loops) {
-    auto &splits = loopSplits[loop];
-    llvm::sort(splits);
-    splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
-    auto current = loop;
-    for (int64_t split : splits) {
-      mlir::IRMapping mapping;
-      auto suffix = splitForLoopAt(rewriter, current, split, mapping);
-      if (mlir::failed(suffix))
-        return mlir::failure();
-      if (selectedReads) {
-        llvm::SmallVector<mlir::tensor::ExtractSliceOp> clonedReads;
-        for (auto read : *selectedReads)
-          if (auto *mapped = mapping.lookupOrNull(read.getOperation()))
-            clonedReads.push_back(
-                mlir::cast<mlir::tensor::ExtractSliceOp>(mapped));
-        selectedReads->append(clonedReads);
-      }
-      current = *suffix;
-      ++statistics.loops;
-      ++statistics.specializedConcatBoundaries;
-    }
-  }
-  return mlir::success();
+  llvm_unreachable("unknown tensor subset materialization status");
 }
 
 struct AssemblySliceReuse {
@@ -989,7 +891,8 @@ queryUnsharedAssemblyReads(TileRegionOp region,
         supported = false;
     }
     reads.push_back(std::move(*reuse));
-    auto query = compiler::detail::queryTensorAssemblySlice(slice);
+    analysis::IndexRelationWork work(analysis::IndexRelationLimits{});
+    auto query = compiler::detail::queryTensorSubsetSlice(slice, work);
     if (!query.isExact()) {
       auto kind = assemblyOutcome(query.status);
       if (!queryFailure ||
@@ -1010,11 +913,11 @@ queryUnsharedAssemblyReads(TileRegionOp region,
 }
 
 mlir::FailureOr<llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4>>
-materializeAssemblySlices(
-    mlir::IRRewriter &rewriter, TileRegionOp region,
-    llvm::ArrayRef<AssemblyReadRequest> requests,
-    TemporalTilingStatistics &statistics,
-    mlir::tensor::ExtractSliceOp selectedRead = {}) {
+materializeAssemblySlices(mlir::IRRewriter &rewriter, TileRegionOp region,
+                          llvm::ArrayRef<AssemblyReadRequest> requests,
+                          TemporalTilingStatistics &statistics,
+                          TemporalTilingFailure *failure,
+                          mlir::tensor::ExtractSliceOp selectedRead = {}) {
   llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> sourceReads;
   for (const auto &request : requests) {
     llvm::SmallVector<mlir::tensor::ExtractSliceOp, 4> slices;
@@ -1023,38 +926,46 @@ materializeAssemblySlices(
           (!selectedRead || selectedRead == slice))
         slices.push_back(slice);
     });
-    if (slices.empty())
+    if (slices.empty()) {
+      if (failure)
+        *failure = {TemporalTilingFailureKind::BrokenContract,
+                    "selected assembly has no current reads"};
       return mlir::failure();
+    }
     for (auto slice : slices) {
-      auto query = compiler::detail::queryTensorAssemblySlice(slice);
       auto reuse = queryAssemblySliceReuse(slice, /*allowRepeatedReads=*/true);
-      if (!query.isExact() || query.cases.size() != 1 || !reuse)
+      auto generated = compiler::detail::materializeTensorSubsetRead(
+          rewriter, slice, analysis::IndexRelationLimits{},
+          reuse ? reuse->insertionPoint : slice.getOperation());
+      if (generated.status !=
+          compiler::detail::TensorSubsetMaterializationStatus::Exact) {
+        if (failure)
+          *failure = {subsetFailureKind(generated.status), generated.detail};
         return mlir::failure();
-      rewriter.setInsertionPoint(reuse->insertionPoint);
-      llvm::SmallVector<int64_t, 4> sizes;
-      for (auto size : slice.getMixedSizes())
-        sizes.push_back(*resolveStaticIndex(size));
-      auto generated = compiler::detail::materializeTensorAssemblyRead(
-          rewriter, slice.getLoc(), slice.getType(), sizes, query);
-      if (mlir::failed(generated))
-        return mlir::failure();
-      statistics.assembledSegments += generated->sourceReads.size();
+      }
+      statistics.subsetIndexWork += generated.work;
+      statistics.subsetBlockTemplates += generated.blockTemplates;
+      statistics.assembledSegments +=
+          generated.materialized->sourceReads.size();
       ++statistics.tileLocalAssemblies;
-      sourceReads.append(generated->sourceReads);
-      rewriter.replaceOp(slice, generated->value);
+      sourceReads.append(generated.materialized->sourceReads);
+      if (generated.materialized->value != slice.getResult())
+        rewriter.replaceOp(slice, generated.materialized->value);
     }
   }
   return sourceReads;
 }
 
-mlir::LogicalResult fuseAssemblySources(
-    mlir::IRRewriter &rewriter, TileRegionOp region,
-    llvm::ArrayRef<AssemblyReadRequest> requests,
-    llvm::ArrayRef<AssemblyProducerFusion> selectedProducers,
-    TemporalTilingStatistics &statistics, ProducerTiling &producerTiling) {
+mlir::LogicalResult
+fuseAssemblySources(mlir::IRRewriter &rewriter, TileRegionOp region,
+                    llvm::ArrayRef<AssemblyReadRequest> requests,
+                    llvm::ArrayRef<AssemblyProducerFusion> selectedProducers,
+                    TemporalTilingStatistics &statistics,
+                    ProducerTiling &producerTiling,
+                    TemporalTilingFailure *failure) {
   for (const auto &request : requests) {
-    auto generated =
-        materializeAssemblySlices(rewriter, region, {request}, statistics);
+    auto generated = materializeAssemblySlices(rewriter, region, {request},
+                                               statistics, failure);
     if (mlir::failed(generated))
       return mlir::failure();
     llvm::DenseSet<mlir::Operation *> fusedProducerOwners;
@@ -1725,16 +1636,14 @@ void localizeAssemblyViewSlices(
   }
 }
 
-mlir::LogicalResult
-localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
-                          TemporalTilingStatistics &statistics,
-                          ProducerTiling &producerTiling,
-                          TemporalTilingFailure *failure) {
+mlir::LogicalResult localizeCurrentAssemblies(
+    mlir::IRRewriter &rewriter, TileRegionOp region,
+    TemporalTilingStatistics &statistics, ProducerTiling &producerTiling,
+    const LiveFusionSources &liveSources, TemporalTilingFailure *failure) {
   // Query actual subsets after all traversals, including fused reductions.
-  // Rebuild after each rewrite: loop specialization can replace nested IR.
+  // Rebuild after each rewrite from the current structural SSA.
   while (true) {
     std::optional<AssemblyReadRequest> request;
-    llvm::SmallVector<AssemblyProducerFusion, 4> selectedProducers;
     bool broken = false;
     region.walk([&](mlir::SubsetInsertionOpInterface assembly) {
       for (auto &use : assembly.getUpdatedDestination().getUses()) {
@@ -1765,7 +1674,6 @@ localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
         }
         if (opportunity.kind != TensorAssemblyOpportunityKind::Available)
           continue;
-        collectAssemblyProducerFusions(query, selectedProducers);
         request = std::move(candidate);
         return mlir::WalkResult::interrupt();
       }
@@ -1776,46 +1684,13 @@ localizeCurrentAssemblies(mlir::IRRewriter &rewriter, TileRegionOp region,
     if (!request)
       break;
     localizeAssemblyViewSlices(rewriter, region, {*request});
-    if (mlir::failed(specializeConcatLoopBoundaries(
-            rewriter, region, {*request}, statistics, nullptr, failure))) {
-      if (failure && failure->kind != TemporalTilingFailureKind::None)
-        return mlir::failure();
-      return region.emitOpError("assembly boundary specialization failed");
-    }
     if (mlir::failed(fuseAssemblySources(rewriter, region, {*request},
-                                         selectedProducers, statistics,
-                                         producerTiling)))
-      return region.emitOpError("assembly slice fusion failed");
+                                         liveSources.assemblyFusions,
+                                         statistics, producerTiling, failure)))
+      return mlir::failure();
   }
   return mlir::success();
 }
-
-// Delegate the pinned canonicalizations, keeping coordinate-bearing singleton
-// loops intact while they still delimit explicit Tensor read selections.
-struct PreserveIterationScope : mlir::OpRewritePattern<mlir::scf::ForOp> {
-  explicit PreserveIterationScope(std::unique_ptr<mlir::RewritePattern> pattern)
-      : OpRewritePattern(pattern->getContext(), pattern->getBenefit()),
-        pattern(std::move(pattern)) {
-    setHasBoundedRewriteRecursion(this->pattern->hasBoundedRewriteRecursion());
-  }
-  mlir::LogicalResult
-  matchAndRewrite(mlir::scf::ForOp loop,
-                  mlir::PatternRewriter &rewriter) const override {
-    if (getIterationCoordinates(loop)) {
-      auto lower = mlir::getConstantIntValue(loop.getLowerBound());
-      auto upper = mlir::getConstantIntValue(loop.getUpperBound());
-      auto step = mlir::getConstantIntValue(loop.getStep());
-      int64_t extent = 0;
-      if (lower && upper && step && *step > 0 &&
-          !llvm::SubOverflow(*upper, *lower, extent) && extent > 0 &&
-          extent <= *step)
-        return rewriter.notifyMatchFailure(loop,
-                                           "Tensor iteration scope is live");
-    }
-    return pattern->matchAndRewrite(loop, rewriter);
-  }
-  std::unique_ptr<mlir::RewritePattern> pattern;
-};
 
 mlir::LogicalResult
 canonicalizeTiledRegion(TileRegionOp region,
@@ -1838,12 +1713,7 @@ canonicalizeTiledRegion(TileRegionOp region,
                                                 /*foldSingleUseOnly=*/false);
   if (simplifyPackAndUnpack)
     mlir::tensor::populateSimplifyPackAndUnpackPatterns(patterns);
-  for (auto &pattern : patterns.getNativePatterns())
-    if (pattern->getRootKind() ==
-        mlir::OperationName(mlir::scf::ForOp::getOperationName(),
-                            region.getContext()))
-      pattern = mlir::RewritePattern::create<PreserveIterationScope>(
-          std::move(pattern));
+  compiler::detail::preserveTensorIterationScopes(patterns);
   mlir::GreedyRewriteConfig config;
   config.useTopDownTraversal = true;
   config.maxIterations = 10;
@@ -2846,7 +2716,6 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
                : nullptr});
     }
     llvm::SmallVector<AssemblyReadRequest, 2> assemblyRequests;
-    llvm::SmallVector<AssemblyProducerFusion, 4> assemblyFusions;
     for (mlir::OpOperand &operand : scope.operation->getOpOperands()) {
       compiler::detail::TemporalConcatQueryResult concat =
           compiler::detail::queryTemporalConcatAssembly(operand);
@@ -2859,7 +2728,7 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
       // Independent traversal keeps computation at its selected scopes, but
       // its actual operand demand still localizes pure subset assembly.
       if (choice.kind == compiler::detail::TemporalTraversalKind::Joint)
-        collectAssemblyProducerFusions(concat, assemblyFusions);
+        collectAssemblyProducerFusions(concat, liveSources.assemblyFusions);
       assemblyRequests.push_back(getAssemblyReadRequest(concat));
     }
     mlir::scf::SCFTilingOptions tilingOptions;
@@ -2936,26 +2805,20 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
         selectedAssemblies.push_back(request);
     }
     assemblyRequests = std::move(selectedAssemblies);
-    if (mlir::failed(
-            specializeConcatLoopBoundaries(rewriter, region, assemblyRequests,
-                                           statistics, nullptr, failure))) {
-      if (failure && failure->kind != TemporalTilingFailureKind::None)
-        return mlir::failure();
-      return fail<TemporalTilingStatistics>(
-          failure, TemporalTilingFailureKind::CompilerFailure,
-          "static concat boundary could not specialize its canonical loop");
-    }
     if (mlir::failed(fuseViewProducerSlices(
             rewriter, region, viewFusionRequests, statistics, producerTiling)))
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::CompilerFailure,
           "exact view-derived producer could not be tiled into its consumer");
-    if (mlir::failed(fuseAssemblySources(rewriter, region, assemblyRequests,
-                                         assemblyFusions, statistics,
-                                         producerTiling)))
+    if (mlir::failed(fuseAssemblySources(
+            rewriter, region, assemblyRequests, liveSources.assemblyFusions,
+            statistics, producerTiling, failure))) {
+      if (failure && failure->kind != TemporalTilingFailureKind::None)
+        return mlir::failure();
       return fail<TemporalTilingStatistics>(
-          failure, TemporalTilingFailureKind::CompilerFailure,
-          "exact insert assembly could not form one tile-local value");
+          failure, TemporalTilingFailureKind::Unsupported,
+          "selected assembly fragments do not satisfy producer fusion");
+    }
   }
 
   if (choice.kind == compiler::detail::TemporalTraversalKind::Joint &&
@@ -3123,7 +2986,8 @@ static mlir::FailureOr<TemporalTilingStatistics> applyRegionTemporalTiling(
         "temporal tiling was invalid before final common-subexpression "
         "elimination");
   if (mlir::failed(localizeCurrentAssemblies(rewriter, region, statistics,
-                                             producerTiling, failure))) {
+                                             producerTiling, liveSources,
+                                             failure))) {
     if (failure && failure->kind != TemporalTilingFailureKind::None)
       return mlir::failure();
     return fail<TemporalTilingStatistics>(
@@ -3194,7 +3058,8 @@ applyTemporalTiling(llvm::ArrayRef<TemporalTilingRequest> requests,
     for (auto field : {&TemporalTilingStatistics::tiledTraversals,
                        &TemporalTilingStatistics::loops,
                        &TemporalTilingStatistics::specializedTails,
-                       &TemporalTilingStatistics::specializedConcatBoundaries,
+                       &TemporalTilingStatistics::subsetIndexWork,
+                       &TemporalTilingStatistics::subsetBlockTemplates,
                        &TemporalTilingStatistics::fusedProducers,
                        &TemporalTilingStatistics::viewTransparentProducers,
                        &TemporalTilingStatistics::tileLocalAssemblies,
@@ -3220,12 +3085,12 @@ queryLocalTensorAssemblyRead(mlir::tensor::ExtractSliceOp read,
       mlir::failed(mlir::verify(read)))
     return {TensorAssemblyOpportunityKind::BrokenContract,
             "local assembly query requires a verified current Region read"};
-  auto query = compiler::detail::queryTensorAssemblySlice(read, limits);
+  analysis::IndexRelationWork work(limits);
+  auto query = compiler::detail::queryTensorSubsetSlice(read, work);
   if (!query.isExact())
     return {assemblyOutcome(query.status), std::move(query.detail)};
-  if (!queryAssemblySliceReuse(read, /*allowRepeatedReads=*/true))
-    return {TensorAssemblyOpportunityKind::Unsupported,
-            "assembly read has no supported current placement"};
+  if (!query.demand->hasDestinationUpdates)
+    return {TensorAssemblyOpportunityKind::NotApplicable, {}};
   return {TensorAssemblyOpportunityKind::Available, {}};
 }
 
@@ -3245,7 +3110,6 @@ mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
         failure, TemporalTilingFailureKind::BrokenContract,
         "selected assembly reads require verified IR and live relations");
   llvm::SmallVector<mlir::tensor::ExtractSliceOp> selected;
-  llvm::SmallVector<AssemblyReadRequest, 4> requests;
   for (auto read : reads) {
     if (!read || read->getParentOfType<TileRegionOp>() != region ||
         llvm::is_contained(selected, read))
@@ -3257,24 +3121,13 @@ mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
       return fail<TemporalTilingStatistics>(
           failure, assemblyFailureKind(outcome.kind), outcome.detail);
     selected.push_back(read);
-    if (llvm::none_of(requests, [&](const auto &request) {
-          return request.assembledValue == read.getSource();
-        }))
-      requests.push_back({read.getSource()});
   }
   TemporalTilingStatistics total;
   compiler::detail::StructuredBufferReplacementListener listener(relations);
   mlir::IRRewriter rewriter(region.getContext(), &listener);
-  if (mlir::failed(specializeConcatLoopBoundaries(
-          rewriter, region, requests, total, &selected, failure, limits))) {
-    if (failure && failure->kind != TemporalTilingFailureKind::None)
-      return mlir::failure();
-    return fail<TemporalTilingStatistics>(
-        failure, TemporalTilingFailureKind::CompilerFailure,
-        "selected assembly boundary partition failed after preflight");
-  }
-  // Splitting clones actual reads with IRMapping. Query those live reads anew;
-  // never recover a clone by its walk position, source shape or symbol name.
+  // Query the selected live reads again after each preceding rewrite. Source
+  // exposure is followed through SSA replacement, without cloning compute
+  // loops.
   for (auto read : selected) {
     auto current = queryLocalTensorAssemblyRead(read, limits);
     // A selected ancestor view may already have exposed the original tensor
@@ -3285,11 +3138,19 @@ mlir::FailureOr<TemporalTilingStatistics> materializeLocalTensorAssemblyReads(
       return fail<TemporalTilingStatistics>(
           failure, TemporalTilingFailureKind::CompilerFailure,
           "selected assembly read lost its proved representation");
-    if (mlir::failed(materializeAssemblySlices(
-            rewriter, region, {{read.getSource()}}, total, read)))
-      return fail<TemporalTilingStatistics>(
-          failure, TemporalTilingFailureKind::CompilerFailure,
-          "selected assembly read failed after preflight");
+    auto generated =
+        compiler::detail::materializeTensorSubsetRead(rewriter, read, limits);
+    using Status = compiler::detail::TensorSubsetMaterializationStatus;
+    if (generated.status != Status::Exact) {
+      auto kind = subsetFailureKind(generated.status);
+      return fail<TemporalTilingStatistics>(failure, kind, generated.detail);
+    }
+    total.subsetIndexWork += generated.work;
+    total.subsetBlockTemplates += generated.blockTemplates;
+    total.assembledSegments += generated.materialized->sourceReads.size();
+    ++total.tileLocalAssemblies;
+    if (generated.materialized->value != read.getResult())
+      rewriter.replaceOp(read, generated.materialized->value);
   }
   if (mlir::failed(canonicalizeTiledRegion(region, &listener)) ||
       !listener.finalizeAfterRewrite() || mlir::failed(mlir::verify(module)) ||

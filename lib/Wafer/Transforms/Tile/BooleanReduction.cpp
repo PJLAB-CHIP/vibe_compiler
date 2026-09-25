@@ -96,7 +96,8 @@ mlir::Value encodePredicate(mlir::Value predicate, mlir::IRRewriter &rewriter) {
 
 mlir::LogicalResult
 lowerBooleanReductions(mlir::ModuleOp module,
-                       StructuredMaterializationRelations &relations) {
+                       StructuredMaterializationRelations &relations,
+                       mlir::RewriterBase::Listener *externalListener) {
   llvm::SmallVector<std::pair<mlir::linalg::GenericOp, BooleanCombiner>>
       matched;
   module.walk([&](mlir::linalg::GenericOp op) {
@@ -105,7 +106,7 @@ lowerBooleanReductions(mlir::ModuleOp module,
   });
   if (matched.empty())
     return mlir::success();
-  StructuredBufferReplacementListener listener(relations);
+  StructuredBufferReplacementListener listener(relations, externalListener);
   mlir::IRRewriter rewriter(module.getContext(), &listener);
   for (auto [op, kind] : matched) {
     rewriter.setInsertionPoint(op);
