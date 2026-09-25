@@ -1,11 +1,15 @@
 # Physical Dataflow Current-IR实施计划
 
+> 归档说明：Q52前置和Q53主机资格记录；独立完整主机矩阵重签已取消。
+> 本文保留当时的设计、顺序和证据；正文中的“当前”“下一步”及历史授权不构成继续执行的依据。
+> 状态与重新启动条件只看[progress](../progress.md)，稳定合同只看编号设计。
+
 本计划原承接`production-host-readiness`的现版本完整主机矩阵，2026-09-25用户已取消该独立重签任务。
 下文保留设计及历史证据，不再作为本轮待执行计划；状态以[progress](../progress.md)为准。
 Tensor整改随后已按用户要求撤回，未完成工作保存在独立 WIP 分支；本次只验证回退，不接续完整主机矩阵。
 `mesh-communication-materialization`已退出独立待开发队列：已有实现与历史验收保留，
 不再次安排笼统的“通信边界复核”。
-提交、证据及归属见[通信任务调度收拢](../archive/mesh-communication-task-reconciliation.md)。
+提交、证据及归属见[通信任务调度收拢](mesh-communication-task-reconciliation.md)。
 
 ## 2026-09 架构收敛合同与历史验证
 

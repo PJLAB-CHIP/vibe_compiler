@@ -88,7 +88,7 @@ build/bin/wafer-compile \
 使用 `--optimization-policy none` 选择 deterministic baseline。`search` 可以用 `--search-width` 和 `--search-trials` 限制搜索工作量；
 默认 `width=8` 限制同时保留的可扩展分支，`trials=42` 在默认 `--search-mode=standard` 下限制实际尝试次数（包含失败）。
 `--search-mode=deep` 按首次启动的方案收取 trial，方案内的 tiling 求值另计实际工作量；同样的 trial 数会花费更多编译时间。
-完整合同见[搜索设计](tasks/06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)。有界搜索不承诺全局最优。
+完整合同见[搜索设计](tasks/06-physical-dataflow/search.md#75-主搜索实现分支与-deep-预算)。有界搜索不承诺全局最优。
 
 ## 验证和运行 package
 
@@ -166,11 +166,13 @@ IR 变换测试使用接近生产的 static rank，并覆盖整除和 tail 维�
 - [`AGENTS.md`](AGENTS.md)：开发流程和 compiler 工程规则；
 - [`tasks/progress.md`](tasks/progress.md)：当前任务队列和依赖关系；
 - [`tasks/README.md`](tasks/README.md)：编号设计文档和 archive 索引；
+- [`docs/README.md`](docs/README.md)：硬件事实、诊断方法、实验与原始证据索引；
 - [`tasks/01-architecture.md`](tasks/01-architecture.md)：pipeline 和 artifact ownership；
 - [`tasks/06-physical-dataflow-synthesis.md`](tasks/06-physical-dataflow-synthesis.md)：physical-dataflow 合同；
 - [`tasks/16-verification-contract.md`](tasks/16-verification-contract.md)：验证层级和资格门禁；
 - [`tasks/18-source-organization.md`](tasks/18-source-organization.md) 和 [`tasks/19-mlir-engineering.md`](tasks/19-mlir-engineering.md)：源码和 MLIR 组织；
-- [`memory/general_dev.md`](memory/general_dev.md)：构建、调试和验证方法。
+- [`memory/general_dev.md`](memory/general_dev.md)：构建、调试和验证方法；
+- [`memory/bugs.md`](memory/bugs.md)：按机制检索的根因与防复发经验。
 
 ## 相关项目
 

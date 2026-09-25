@@ -37,235 +37,9 @@ Pipeline position:
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
-### Kernel 本体计时
-
-目标LLVM的显式 `timing` capture与Count/Trace共用entry参数和首尾插入位置，但不收集site或改写命令/等待。
-Device link为该capture选择只含首尾记录的CRT实现，使用厂商已导出的 `csi_tick_get_us`；
-输出64字节ProfileRecord由15号唯一decoder消费，计时边界及覆盖以15号为准。
-Ordinary不增加record参数或hook，原Count/Trace路径保持。
-
-### 同值填充的 CT 实现
-
-输入为 verified `wafer.instr.fill` 的实际 destination、scalar storage bits、fill domain 与 worker；
-输出保持唯一 `wafer_tx81_memset` ABI，由 CRT 固定发射同一 worker 的整块 `XorVV(dst,dst,dst,N)`
-和整块 `AddVS(dst,bits,dst,N)`。直接消费者是 SDK CT issuer、profile 与设备；不调用厂商 `Memset`。
-这里的两条命令是 fill 的固定实现，不是逐元素循环，不从 destination 未定义内容读取语义值，也不增加 wait。
-两条命令均保留 destination 的数据格式：F16、BF16、F32 和整数分别使用自身格式，不能按 storage width
-把浮点改成整数运算。`bits` 只是 SDK `uint32_t` 标量字段中的该 dtype 编码，不表示数值转换成整数。
-例如 `1.0` 在 F16、BF16、F32 下分别传 `0x3c00`、`0x3f80`、`0x3f800000`，同时保留对应 format。
-packed BOOL 按既有物理存储合同转换为完整 owned byte 的 I8 0/255 填充。
-浮点填充沿目标格式的厂商 AddVS 数值语义执行；不额外承诺任意 NaN payload 或有符号零的逐位复制，
-也不为此改换 dtype、增加特殊值分支或回退到 TDMA。
-Instr/TargetCall 的 engine、effect、issue count 和 profile 均归 CT；一个 fill 对应两次 CT issue。
-成本按实际 destination dtype 计入对应 CT 工作量；真正的整数 CT 保留未校准边界，不能把浮点 fill 计入整数类。
-
-普通 broadcast、copy、transpose 和非同值规则数据继续使用原有已证明的 movement；
-只有 current IR 能证明 scalar fill 支配使用、没有其它写入或 alias 逃逸时，才直接物化目标 fill。
-规则 mask 的各个同值区域可分别填充，非同值规律本身不等价于 scalar fill。
-不改厂商全局析构、timeout、reset、同步强度或硬件寄存器协议；不把该替换当作 TDMA 根因已经确定。
-
-语义区分沿用MLIR [Linalg fill/broadcast](https://mlir.llvm.org/docs/Dialects/Linalg/)：fill的标量决定整个写入域，
-broadcast保留输入数据及维度映射。这里没有新的广播算法；实现只在私有allocation的实际use-def可证明同值时消除搬运。
-所有匹配先于mutation，修改经[PatternRewriter](https://mlir.llvm.org/docs/PatternRewriter/)完成；API以pinned MLIR
-`PatternMatch.h`和本仓既有conversion使用方式核实。
-
-| 覆盖 | exact 输出 / failure 边界 | 直接下游 |
-| --- | --- | --- |
-| rank3、1024/1025/1031 与 65,536 元素整块；F16/BF16/F32、8/16/32-bit integer、BOOL | 每个连续 fill 两次 CT issue，原 dtype、scalar 编码、元素数和 worker 精确；无 TDMA Memset | production CRT 主机拦截、device 交叉编译与实际 SDK packet 检查 |
-| 合法有限值、attention 的 `-inf`、整数边界、动态 scalar | 按 dtype 核对输入与 reference；guard 与空/非法参数边界保持 | TargetModel 与 CRT 测试；单条浮点 Add 已有资格不代签 fill 组合的实卡资格 |
-| 私有 scalar fill 经 mapped select 铺满大块；普通输入 broadcast、其它写入/逃逸 | 前者生成 fill，后者保留原有 movement；不能按 mask 名称判断 | actual Instr、completion/SPM、LLVM/package/no-card |
-| strided logical view 与 physical domain | 保留连续 suffix、实际 count、holes 和 owned padding 合同 | 原 strided lowering 回归；CT 非对齐/tail 的真实写入范围须单独实卡确认 |
-
-完成条件为上述主机与 fresh source→package/no-card、canonical 构建及对应新板端资格。
-SDK end/count 字段正确不证明 CT 在任意非对齐 view 上不扩大写入；该硬件风险与 TDMA 根因保持显式未完成。
-
-### Candidate局部常量绑定
-
-输入为actual分块/展开后产生、bufferization已物化的只读DDR `memref.global`及其真实`get_global`使用。
-Instr executable形成时沿用`ProgramDataHandoff`和`ProgramResourceBinding`，把live literal绑定为entry constant参数；
-同一内容只建立一个owned source/range，各Tile显式增加相同常量集合，未使用的参数由既有ABI dead-constant规则删除。
-这里不合成未来buffer或movement：已有DDR读取、SPM allocation、layout与completion保持原IR事实，
-只替换只读global的外部数据绑定。Constant的原dtype/bits、shape和content identity必须保持，重复内容去重；
-非literal、可写或helper中无法闭合的global在绑定边界拒绝，不退回CPU映射写SPM。
-直接消费者为原target materialization/package/no-card路径。完成覆盖包含分块后局部常量、共享/不同Tile使用、
-主块/tail、完整内容逐位、非法global及fresh source到package的numeric witness；主机通过不代签板端。
-
-### Relation结果表示
-
-输入为verified Instr relation的实际destination dtype；输出为统一`wafer_tx81_elementwise_{eq,ne,ge,gt,le,lt}`调用。
-在`rhs_unit_elements`、`rhs_is_scalar`之后、worker之前显式携带`i32 numeric_result`：0选择厂商packed BOOL wrapper，
-1选择同输入format的数值0/1 wrapper。VV/VS/VuV沿原RHS合同选择，不引入第二套symbol或兼容reader。
-TargetCall以typed结果种类保存该字段；decoder拒绝其它编码。CRT、模型和span/effect检查使用同一结果format，
-数值结果不能按bitpacked字节数规划或读取；这里不扩大原VS/VuV或整数numeric-model tuple的准入范围。
-线性CT的`elementCount`已经是lowering确定的物理遍历长度；模型按此长度读写，不能再次按Cx layout补齐。
-验收覆盖全部六种比较、F16/BF16/F32、VV/VS/VuV、packed和值输出、1024/1025/1031及特殊值机制，
-同时核对最终SDK wrapper/packet、模型0/1位型、typed拒绝和原BOOL consumer；设备资格仍按16号单独签发。
-
-### SDK函数表的模块生命周期
-
-输入为verified TargetCall及已编译的program/CRT object；device link保留厂商`module_init`、`module_cleanup`，
-输出同时导出program公共定义及这两个SDK生命周期符号的ELF。直接消费者是当前Kcore module loader。
-loader在模块加载后、entry执行前调用SDK初始化，在模块销毁时调用SDK清理；CRT通过`g_intrinsic()`借用
-对应family的函数表。每次调用仍新建并清零自己的instruction packet，setter、dtype、worker及issue顺序保持。
-函数表仅保存SDK函数指针；不保存跨指令packet、地址、completion或编译决策。不能逐指令释放借来的表，
-也不增加Wafer缓存、lazy init、entry尾部清理或join时清理。正常和失败退出继续交由厂商模块/进程生命周期。
-
-根因是原CRT对每条调用执行`TsmNew*`/`TsmDelete*`；当前SDK构造器实际调用`rt_malloc`并填写函数表，
-析构器实际调用`rt_free`。复用厂商模块表消除这项重复工作；具体收益必须由无插桩设备计时确认。
-当前固件的hook调用及SDK初始化/释放证据见
-[硬件事实](../docs/wafer-hardware-instruction-set-and-programming-model.md#sdk指令函数表生命周期)。
-
-链接导出列表由actual program/extra object公共定义生成，额外保留两个固定SDK hook；其余依赖符号局部化。
-输入不得重定义SDK hook。最终ELF必须实际定义且动态导出两个hook，并通过既有全部undefined-symbol检查；
-任一失败均不发布部分产物。不得仅加`--export-dynamic-symbol`却保留会隐藏SDK hook的`--exclude-libs,ALL`。
-不改变TargetCall ABI、runtime loader协议、Host析构或硬件同步，也不把SDK host模拟器声明当作可执行实现。
-
-| 覆盖 | exact输出 / failure边界 | 直接下游 |
-| --- | --- | --- |
-| 所有CRT instruction family；原DMA/GEMM/fill/relation矩阵 | packet参数保持，每条调用借用厂商函数表，CRT object无`TsmNew*`/`TsmDelete*`导入 | SDK拦截、RISC-V编译、生产required-symbol检查 |
-| 普通、Count、Trace模块，program与extra object导出 | 两个SDK hook实际动态导出；entry保持；依赖内部函数不导出 | 真实device link/readback、fresh source/package/no-card |
-| hook冲突、缺失、非法undefined、编译或链接失败 | 明确失败，原输出和中间产物原子性保持 | device-link拒绝及publication测试 |
-| 当前BF16真实规模attention | 全量数值、guard、16 Tile completion、正常厂商清理及普通事件计时 | 新包实卡；主机hook检查不代签设备资格 |
-
-### VuVLoop目标调用接入
-
-输入为11号已验证的分组elementwise、actual SPM binding和worker；输出为同一closed TargetCall registry中的typed arithmetic
-调用及SDK Loop packet，直接消费者为CRT、required-symbol/device link、TargetCall decoder及17号模型。
-该形式使用现有五个算术symbol；不建立V2 wrapper或兼容reader，不让runtime补选广播方式。
-算术ABI参数顺序为`lhs, rhs, dst, full_elem_count, format, rhs_unit_elements, rhs_is_scalar, rhs_group_elements, worker`。
-group为0时沿普通路径；正数时以E=group、U=unit、F=full_elem_count、V=(F/E)×U调用当前SDK Loop setter。
-V与actual RHS view的相等关系在Instr verifier闭合；运行时不另行推断shape或layout。
-
-10号的E/U/F/V按元素数传递，format来自实际operand/destination；宽化乘积、count narrowing与SPM byte range先在target gate闭合。
-SDK wrapper拥有当前revision的end字段编码，不能把历史源码的exclusive end手写到当前packet，也不把count改成bytes或count-1。
-CRT选择已确认的Add/Sub/Mul/Max/Min Loop entry并保持原舍入，浮点输入不得改用同宽整数format。
-Division继续遵守11号Recip加Mul合同；普通VS/VuV及relation/logic接口不因算术Loop接入改变数值语义。
-
-model command与decoder必须保存全部必要分组参数，按10号地址关系计算并只读取RHS实际full范围；
-SystemC/numeric adapter不得从symbol、layout名字或attention shape补回遗漏字段。整组、tail、原地更新和guard span用同一实际range验证。
-TargetCall descriptor、C声明/定义、LLVM参数顺序、模型解码和required-symbol检查同步更新，通过本轮no-card后才进入板端验证。
-该指令使用已有CT issue order/completion合同，不附加逐组join。覆盖与设备资格由
-[统一计划](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有，SDK字段宽度不代签硬件计数上限。
-
-### GEMM混合format调用
-
-输入是verified Tile/Instr上的低精度lhs/rhs、可选F32 psum及同dtype或F32 destination；输出为同一`wafer_tx81_gemm`/
-`wafer_tx81_gemm_oriented`调用的独立input/output/psum format参数，直接消费者为CRT wrapper与同一target decoder/model。
-`AddInput`、`AddOutput`和`SetPsum`各取对应format；physical descriptor、byte range、owner与effect先在Instr闭合。
-不保留旧签名reader/wrapper。覆盖F16/BF16、NN/NT/TN/TT、batch、M/N/K tail及F32输出的真实byte布局；
-F32乘法输入仍拒绝。缺少psum operand时传零地址与SDK `Fmt_UNUSED`；存在时传实际F32 operand地址。
-psum只读、destination独占写入，两者physical storage必须不重叠；最终target stage验证actual SPM范围，numeric model执行同一限制。
-该检查消费实际SSA上的view、select和结构化控制流：收集所有可达的已规划物理范围，检查每一对psum/destination范围。
-循环同时检查初值与backedge，不能只追初值；相同SSA的循环边只在本次查询内去重。动态选择地址本身不是unsupported，
-只要所有可能范围均已证明不相交即可使用原有动态地址lowering。无法确定范围或可能相交仍typed拒绝，不据此禁用K分块。
-覆盖矩阵补充rank3、K=1024/1025/1031、F16/BF16、F32 partial及最终窄输出，检查select/loop的实际LLVM地址参数；
-负例覆盖一个分支相交、循环backedge相交及未知来源。这里不推断不同predicate之间的相关性。
-同址复用及bias/activation不隐式打开。本轮有限三段K实卡确认两种dtype的最终结果和两个partial回读/guard；oneDNN未取得psum资格，
-该形式由formal backend执行，不能忽略第三个输入沿用二输入资格。
-
-#### GEMM最终寄存器范围
-
-输入为上述verified GEMM CRT调用；本层在既有SDK setter填充`TsmNeInstr`后，独立完成GEMM的最终NE寄存器发射。
-输出为所选NCC worker窗口内的地址、shape、format、inclusive end与最后一次control写入；直接消费者是NE与NCC地址依赖检测。
-普通、Count与Trace执行同一个issuer，profile只包围发射，不重新解释packet。Conv等其它指令仍由各自既有issuer负责。
-
-每个operand的范围取其实际存储矩阵的行数、最后一维Cx对齐、该operand的element bytes及逐batch 256B padding。
-lhs/rhs的存储形状由现有orientation决定；RHS hardware bit先按既有反向编码解释。output与psum分别用各自format计算，
-不得沿用input element bytes；disabled psum的end为零。每条GEMM重新写全部NE参数及unused字段，control最后写入，
-不调用会重算这些end的SDK GEMM executor。geometry与地址合法性继续由current Instr/target verifier拥有。
-不改变公开ABI、算术dtype、分块、placement、completion或同步数量，也不扩展GEMM可接受的format与optional字段。
-
-| 覆盖 | exact输出 / failure边界 | 直接下游与完成条件 |
-| --- | --- | --- |
-| rank3 batch2、K1024/1025/1031、M/N tail；F16/BF16、NN/NT/TN/TT、同dtype/F32输出、有/无F32 psum | 捕获最终MMIO，逐字段核对四个地址范围、逐batch padding、shape、format、orientation、worker0/1/2与control-last；unused字段清零 | 两个public GEMM CRT入口执行同一issuer；现有非法dtype/alias/范围仍由target负例拒绝 |
-| M16/K384/N43的小型故障字段复现 | F32 output/psum范围为4096B，F16/BF16 output为2048B；这是寄存器缺陷的有界定位，真实规模覆盖见上一行 | 主机执行production issuer，不只检查setter参数或打印文本 |
-| 普通、Count、Trace及记录满后的执行 | 所选issuer恰好执行一次、参数及返回值保留；记录策略不改发射路径 | profiler组件与设备交叉编译/link；fresh source→package/no-card |
-| LLaMA block两种dtype与大GEMM保护 | 新CRT构包后核对实际ELF发射字段；完整数值及匹配性能分别验收 | 主机验证不代签板端；此次TDMA超时是否随修复消失由后续实卡判定 |
-
-本节完成条件为主机字段矩阵、profile、target/link及canonical完整增量构建闭合，再取得对应实卡资格；
-确认SDK范围计算缺陷不等于确认其为当前整包TDMA超时的直接根因。
-
-### Tensor subview的相对地址
-
-输入为verified Instr中的 `memref.subview` 与已经转换的source首元素地址；输出为i64字节地址，直接消费者是
-TargetCall。Tensor布局的通用规则是 `sourceAddress + Σ(offset[i] × sourceStride[i] × elementBytes)`，
-offset来自该op的mixed offsets，stride来自直接source type。Source自身的动态offset已包含在SSA地址中，不能再次相加，
-也不能因静态child继承了动态type offset而要求两个绝对offset相减。
-该规则适用于静态或有界动态offset、rank reduction及嵌套view；非Tensor物理布局仍使用其既有物理地址合同。
-不推测动态stride/shape、bitpacked或越界地址，不改变spatial/temporal选择、allocation和completion。
-MLIR的[subview定义](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)与pinned
-`SubViewOp::inferResultType`均以直接source的offset/strides组合；本层只发射相同关系的字节算术。
-
-| 覆盖 | exact结果 / typed failure | 直接下游 |
-| --- | --- | --- |
-| rank3、1024/1025行、多batch及64行block，动态parent后静态child与非零列offset | LLVM只加入一次parent动态地址和child相对位移；main/tail的RDMA参数精确 | LLVM translation及batch共享RHS真实source→16-Tile package/no-card |
-| 动态child、rank reduction、SPM/DDR | 继续使用同一stride字节化和有界offset证明；不重新分配或复制view | 现有dynamic subview及shape-view lowering矩阵 |
-| 未知offset/动态stride/size、越界、CX/NCx动态view | 原typed拒绝仍成立；继承动态地址的静态child也检查直接source范围；地址发射与bounds verification共用同一动态地址判定 | 新增静态child越界反例、现有负例与target verifier |
-
-### 运行时整数索引的范围证明
-
-输入是current Instr中实际SSA整数运算、`arith.index_cast/index_castui`和Tensor subview；
-只读范围分析输出有符号闭区间或typed failure，直接供同一DDR地址检查、Direct-DTE范围检查和Target LLVM地址检查消费。
-none/search及named target pipeline调用同一实现；没有新op、pass、ABI或搜索选择。
-
-固定宽度整数使用pinned MLIR `InferIntRangeInterface`与`ConstantIntRanges`，按实际位宽同时传播signed/unsigned范围；
-`trunci`、扩展、位运算及整数回绕不能当无限精度整数算术。未知输入、内存读取及没有接口的op结果使用其类型的完整值域，
-只有后续实际clamp等运算已证明地址非负且整个view位于source内时才通过。只遍历所查询值的无region整数SSA依赖，
-迭代postorder并在一次查询中复用共享值；不启动整函数dataflow，不沿未知控制流推测值，不把index循环表达式改成位宽回绕规则。
-既有constant-bounded循环、checked index算术和ValueBounds路径保持原合同。
-跨整数/index转换使用接口的实际signed/unsigned和截断规则；结果不能表示为int64、可能负值、或view上界越界继续拒绝。
-Enclosing branch的unsigned比较仅在operand区间与常量均已非负时按有符号闭区间收紧；不能用`ugt(x, 0)`排除负数位型。
-
-这一规则借鉴MLIR的[整数范围分析](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Analysis/DataFlow/IntegerRangeAnalysis.cpp)，
-采用同一接口的局部依赖查询；比为每种clamp另写识别分支更能保持[整数cast语义](https://mlir.llvm.org/docs/Dialects/ArithOps/#arithindex_cast-arithindexcastop)。
-范围仅是地址安全证明，不是精确元素需求、allocation或SPM合法性证明；不据此宣称动态gather、scalar load、完整LM或板端已闭合。
-
-| 覆盖 | exact结果 / typed failure | 直接下游 |
-| --- | --- | --- |
-| rank3整数load、1024/1025/1031行；同规模F16/BF16目标view中的loop→i32/i64→index夹界 | load内容保持未知、只证明clamp区间；目标stride字节化一次，LLVM保留实际cast/clamp依赖 | 范围查询；沿已有DDR-only函数ABI的fresh Instr→Target LLVM→LLVM translation，不冒充scalar load已lower |
-| signed/unsigned cast、截断、扩展、整数回绕、共享深SSA DAG | 位型有界oracle检查区间包含全部实际值；不递归展开共享路径 | 同一范围查询及地址检查 |
-| 未夹界、负值、截断后符号变化、source范围越界 | 精确failure类别，target preflight失败保持原IR | 既有DDR/DTE/target负例 |
-| 原循环index算术与固定FP16 LLaMA | 既有范围/overflow失败不变；相关组件及默认search完整no-card回归 | actual package及最终IR身份对照；设备资格待实卡 |
-
-完成条件为上述主机矩阵实际执行、canonical完整增量构建及no-op通过；本节不改变板端完成门禁。
-
-### 映射内存的标量存取
-
-输入为completion及memory-planned Instr中的标准`memref.load/store`，memref具有已确定的空间、Tensor layout、
-static shape/stride和i32/i64/f32元素。索引及其clamp/cast保持原SSA。转换在首次mutation前验证每轴范围、字节地址和位宽，
-输出原生LLVM整数load/store，F32仅通过bitcast保留位模式；不新增逐元素Wafer CRT读写包装。SPM使用已有`get_spm_memory_mapping`，
-DDR读取使用已有`get_ddr_memory_mapping_with_size`，参数范围必须能由正int32字节数表达。
-
-原始只读输入的`ProgramArgumentAttr`在ABI准备后继续保留到标量地址lowering消费，随后从最终LLVM删除。
-该事实允许同一输入在entry取得一次覆盖输入的DDR mapping，后续通过实际SSA地址差和element index访问；
-没有此事实的地址不提升到entry。DDR mapping执行range invalidate和ordering，不完成尚未结束的NCC写入。
-设备内生成的DDR数据仍须先经过matching completion及其实际publication/acquire，不能按输入形状猜测只读性。
-SPM不执行dcache维护。现阶段DDR scalar store没有publication合同，明确拒绝；其它非Tensor layout、非i32/i64/f32、
-无界或越界坐标同样保持typed拒绝。
-
-直接消费者为既有SDK映射ABI、原生LLVM代码生成及17号主机内存执行；named pipeline和生产driver共用同一转换。
-覆盖矩阵：rank3、1024/1025/1031、i32/i64/f32、静态/循环/夹界及tail，精确load/store地址和位型；DDR原始输入mapping动态
-次数为一次，重复输入更换内容仍正确；越界/错误空间/位宽负例；实际索引驱动gather的target、host和fresh no-card。
-设备资格和发令开销单独验收，不以减少静态call数量宣称性能改善。
-
-### DMA逻辑格式与寄存器格式
-
-输入为verified RDMA/WDMA TargetCall的逻辑format、byte count及三层byte stride/iteration；CRT负责将其转换为
-SDK packet，直接消费者是`TsmRdma/TsmWdma`。SDK的`Data_Format`枚举不等于DMA寄存器支持集合：
-`get_dma_reg_dtype`只原样保留0到7，较大值变为INT8。因此U8/U16/U32/I64/U64的原样搬运统一使用INT8 packet，
-inner count与每层stride均按同一packet format从字节换算；不能保留逻辑元素数却更换寄存器格式。
-其它格式沿既有路径，BOOL仍按bitpacked换算。Tensor dtype、布局、数值位模式、地址、completion及TargetCall ABI均不改变。
-
-本边界不承担数值转换或新增DMA算法。完成条件为两种DMA方向的所有逻辑格式、连续/三层stride、
-1024/1025/1031长度保持exact byte geometry，原浮点/BOOL合同不变；实际embedding经完整产品路径上板
-逐元素相等，再回到完整LM验证全部logits。板端记录与主机descriptor检查分别登记，不以枚举存在证明硬件支持。
 
 ## 2. 稳定对象与身份
 
-CT reduce只接收11号verified rank4 NHWC/NCx输入和保留归约轴的rank4输出，CRT shape直接取实际输入memref的四个维度。
-Target lowering不左补rank、不重解释Cx/NCx outer slice。原逻辑rank不足4的输入由Tile→Instr先完成物理等价view或exact搬运；
-归约轴与actual allocation必须已在该层闭合。覆盖rank3首维>1、64/65尾宽和跨C-block的输入，检查actual offset与最终CRT参数；
-rank不足4的Instr负例在verifier拒绝，不能等到设备数值失败。
 
 ### 2.1 DeviceExecutable 的 Tile entry
 
@@ -285,6 +59,33 @@ materializer、JIT bridge、runtime 或 diagnostic 都必须转发 typed fields�
 没有单Tile production output，也没有把`num_partitions`当作Tile count的入口；`num_partitions`仍属于
 GSPMD的card-level domain。`DeviceExecutable`是唯一device-level accepted executable boundary，不能再由单Tile聚合或
 post-selection wrapper定义第二层长期output。
+
+### 按实际参与者生成共享 DDR 参数
+
+本项归入 board-testing。输入为 current Tile peer SSA、已确定 source/destination entry 的共享 payload 与 final Instr 的实际
+writer/readers；生成器只向参与该资源的 entry 添加 DDRBinding，completion 只向同一实际 writer/readers 添加 ready 参数。
+每个共享 ResourceId 保持全卡唯一；参数 ordinal 只属于当前 entry，不能用跨 Tile 的同一 ordinal 恢复资源身份。
+输出为 verifier-valid Tile/Instr entry 和各自 dense TileEntryArgument；直接消费者为同一 target aggregate、package 与 runtime。
+入口为现有 none/search。非目标：不合并不同 buffer、不改变 DMA、publication cut、同步强度、SPM、数值或搜索候选排序规则。
+
+跨 Tile 校验按 ResourceId 检查共同资源的类型、大小、对齐、初始化要求；普通 program 参数继续保持既有共同语义合同。
+共享参数可在不同 Tile 缺省，后续 workspace/status/profile 的 ordinal 随当前 entry 的实际参数数量确定。
+TileMajorPointerTable 按 launch_slot 顺序串接不同长度的行，offset 是前面实际行长度的前缀和；TileRowPointerTable
+仍携带16个行地址，wrapper invalidate 字节数来自该 Tile 的实际行长度。硬件 packet 上限按实际总长度检查。
+
+方法比较：LLVM [deadargelim](https://www.llvm.org/docs/Passes.html#deadargelim-dead-argument-elimination)
+删除 internal function 的无用参数；本仓的 package ABI 在 LLVM 之前已有 typed owner，不能仅在 LLVM 后清理而留下
+manifest/ordinal 不一致。本项直接修正已知参与者的生成边界，避免先产生空槽。具体 function argument 批量插入规则按 pinned
+FunctionInterfaces.cpp 核对，不引入另一个清理 pass 或 shadow resource 表。
+
+完成条件与覆盖矩阵：
+
+| 输入 | 结构与负例 | exact 输出及下游见证 |
+| --- | --- | --- |
+| rank3、1024/1025/1031、4/16 Tile sparse fanout、多资源 | writer、多 reader、无关 Tile；缺失/重复/额外 ready binding | 仅参与 entry 有 data/ready；publication/acquire 数与位置不变；fresh verifier/SPM |
+| 各 Tile 不同长度的参数行 | TileMajor/TileRow、物理 Tile 与 launch_slot 置换、共同资源描述冲突 | actual LLVM row offset、invalidate 长度、函数体使用正确槽；普通参数不一致仍拒绝 |
+| 多于4096个共享资源、稀疏引用 | canonical roundtrip、record/byte 上限、不同资源引用顺序 | manifest 仅有实际参数；runtime 每 ResourceId 分配一次、逐 Tile 地址精确 |
+| 当前 LLaMA none/search、通信 tail | fresh source→package/no-card | 共享参数无 access=none；记录数、payload/通知资源数和编译耗时；板测资格单独记录 |
 
 ### 2.2 Program data 与 TargetTensor
 
@@ -352,6 +153,37 @@ ABI preparation不得改变 selected mapping、temporal tile、fusion、movement
 Late failure终止当前actual gate并保留准确owner diagnostic；它表示upstream IR/target合同缺口或真实unsupported，
 不返回layout/route/retile repair recipe，`none`与`search`也都不能调用另一policy兜底。
 
+### Tensor subview的相对地址
+
+输入为verified Instr中的 `memref.subview` 与已经转换的source首元素地址；输出为i64字节地址，直接消费者是
+TargetCall。Tensor布局的通用规则是 `sourceAddress + Σ(offset[i] × sourceStride[i] × elementBytes)`，
+offset来自该op的mixed offsets，stride来自直接source type。Source自身的动态offset已包含在SSA地址中，不能再次相加，
+也不能因静态child继承了动态type offset而要求两个绝对offset相减。
+该规则适用于静态或有界动态offset、rank reduction及嵌套view；非Tensor物理布局仍使用其既有物理地址合同。
+不推测动态stride/shape、bitpacked或越界地址，不改变spatial/temporal选择、allocation和completion。
+MLIR的[subview定义](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)与pinned
+`SubViewOp::inferResultType`均以直接source的offset/strides组合；本层只发射相同关系的字节算术。
+
+| 覆盖 | exact结果 / typed failure | 直接下游 |
+| --- | --- | --- |
+| rank3、1024/1025行、多batch及64行block，动态parent后静态child与非零列offset | LLVM只加入一次parent动态地址和child相对位移；main/tail的RDMA参数精确 | LLVM translation及batch共享RHS真实source→16-Tile package/no-card |
+| 动态child、rank reduction、SPM/DDR | 继续使用同一stride字节化和有界offset证明；不重新分配或复制view | 现有dynamic subview及shape-view lowering矩阵 |
+| 未知offset/动态stride/size、越界、CX/NCx动态view | 原typed拒绝仍成立；继承动态地址的静态child也检查直接source范围；地址发射与bounds verification共用同一动态地址判定 | 新增静态child越界反例、现有负例与target verifier |
+
+### SPM物理区间的标准view
+
+TileToInstr已证明的分组主块/尾组通过同一SPM内的`memref.memory_space_cast`及紧随的
+`memref.reinterpret_cast`表达。前者保持地址、shape、dtype与MLIR stride布局，仅切换Wafer encoding标记；
+后者显式给出物理区间，alias/lifetime/SPM仍跟随原allocation。Target lowering对同一SPM域的cast转交原地址，
+不发搬运；SPM与DDR之间的cast不支持，不能绕过实际DMA。逻辑布局转换仍由其exact relation及movement拥有。
+该路径与其它标准view一起进入同一production/named conversion；完整组、尾组、gap、dtype和实际地址边界由10号矩阵验证。
+
+### 标准reshape的地址保持
+
+标准memref collapse/expand在blocked layout上也必须消费同一physical reshape证明：空间、元素类型和layout一致，且完整physical element mapping
+与footprint相等时，target只转发实际source地址；证明失败时typed拒绝。Tensor布局保留原offset delta处理，不用逻辑元素数相等替代blocked物理等价。
+覆盖NCx单位轴的1024/1025/1031、block尾宽、不同channel分解反例及实际attention consumer。
+
 ### 3.2 Accepted immutable data preparation
 
 accepted immutable data preparation只消费上一节闭合的ProgramDataRange与TargetTensor。每个TargetTensor只建立一个
@@ -370,41 +202,29 @@ exact byte count和可流式写入的转换动作。Package owner为这些Target
 target model与profile writing必须复用同一physical descriptor、codec和materialization实现，不得重新打开source path、按Tile重复转换，
 也不得通过model-only arithmetic dispatcher重建另一条静态数据转换路径。
 
+### Candidate局部常量绑定
+
+输入为actual分块/展开后产生、bufferization已物化的只读DDR `memref.global`及其真实`get_global`使用。
+Instr executable形成时沿用`ProgramDataHandoff`和`ProgramResourceBinding`，把live literal绑定为entry constant参数；
+同一内容只建立一个owned source/range，各Tile显式增加相同常量集合，未使用的参数由既有ABI dead-constant规则删除。
+这里不合成未来buffer或movement：已有DDR读取、SPM allocation、layout与completion保持原IR事实，
+只替换只读global的外部数据绑定。Constant的原dtype/bits、shape和content identity必须保持，重复内容去重；
+非literal、可写或helper中无法闭合的global在绑定边界拒绝，不退回CPU映射写SPM。
+直接消费者为原target materialization/package/no-card路径。完成覆盖包含分块后局部常量、共享/不同Tile使用、
+主块/tail、完整内容逐位、非法global及fresh source到package的numeric witness；主机通过不代签板端。
+
+### 编译期 tensor literal 的数据归属
+
+TensorProgram 中仍存活的非splat tensor literal 在进入物理搜索前，由compiler driver与当前函数ABI一起物化为既有
+Constant/ProgramDataRange；用户输入输出端口不变。每份实际literal内容先写入transaction-owned数据，再创建其只读参数，
+相同attribute可共用一个绑定。下游使用同一TargetTensor/ExecutablePackage数据路径，不把Kcore模块的虚拟rodata地址当DDR物理地址。
+Source NPY Bool采用canonical 0/1字节；ProgramTensor和ProgramDataRange按一字节计算，Package与SystemC通过同一program-element
+解码得到Bool逻辑值，再由现有physical codec打包为target bitpacked BOOL。非canonical字节拒绝；用户边界、内部数据与target packing不混用。
+
 ### 3.3 Instr 到 TargetCall
 
-Target lowering把 typed Instr 转成 current closed `TargetCallDescriptor` registry中的调用。consumer只能通过
-`TargetCallSemantic`、descriptor和typed decoder恢复 transaction；不得解析 symbol spelling。
+Registry、decoder、各指令族的ABI、exact输出与拒绝矩阵见[TargetCall与目标指令发射](14-target-code-generation/target-calls.md)。
 
-Direct-DTE begin/send/issue/receive/wait/finish、NCC join以及各 compute/movement family都遵守同一规则：
-
-- descriptor决定参数位置、宽度、result type和issue domain；
-- decode context只提供合法 target-domain facts；
-- worker/completion behavior来自 typed registry或 current Instr，不由函数名推断；
-- unsupported dtype、layout、geometry或字段范围在 conversion/validation失败，不生成 fallback call。
-
-TargetCall/CRT 是 current target ABI，不是 search IR，也不能把 target transaction倒灌到 structured层。
-
-Ordinary Conv保留独立input/weight dtype与destination dtype：两输入相同，允许FP16/BF16输入向F32 accumulator/output
-扩宽；同dtype形式保留。TargetCall尾部显式传`input_format, output_format, worker`，CRT的AddInput/AddWeight与AddOutput分别
-消费对应format，decoder和model command也保留两字段；不通过symbol或shape恢复dtype。实卡资格以已列mixed-format见证为限。
-
-Relation TargetCall的format表示浮点输入dtype，结果由typed Instr固定为packed i1；CRT必须选择SDK `Bool*VV`，
-不能根据输入是否为Fmt_BOOL选择value/BOOL输出。
-
-Native Reduce的CRT只接收input shape和axis，不接收destination shape。Target lowering验证11号保留维度的destination合同，
-target model及formal operation也按input中归约轴extent=1推导physical结果；逻辑降rank由上游显式movement完成。
-Model不能从logical element count重建紧凑结果，或与compiler共同假定删除轴不改变Cx/NCx stride。
-
-`wafer.instr.dte_broadcast/scatter`各表示一次已经物化的raw multi-destination sender issue。TargetCall不把它拆回多个
-`direct_dte_send_prepare`：使用一个multi-send prepare、按IR顺序逐项配置destination，再由现有send issue/wait/release完成同一sender
-event。prepare保存kind、source、每destination bytes、local Tile和destination count；每个destination配置保存remote Tile、accepted
-remote SPM address和receiver FSM。CRT必须先等待all-and-only destination ready，再配置一个DTE node的全部destination register slots；
-任一字段失败使整个sender event进入transport error，不能发布部分destination。
-
-TargetCall descriptor继续是参数位置和宽度的唯一事实源。multi-send destination count只接受`2/4/8/15`，每destination bytes只接受
-`256`；scatter source span必须checked等于`count * 256`，broadcast source span为`256`。CRT按已确认合同写
-`dest_num = count - 1`、broadcast mode或scatter mode+`sg_flag`；其它mode、stride、iteration和raw destination slot不由本次开放。
-SystemC/TargetCall decoder消费相同prepare/configure/issue序列并执行broadcast copy或ordered equal-segment scatter，不从symbol名恢复kind。
 
 ### 3.4 Structure 与 completion
 
@@ -475,91 +295,40 @@ Loader ABI的undefined allowlist必须来自对应固件的实际导出表；SDK
 覆盖由真实device-link的三符号拒绝/原子性负例和两个已导出日志入口的链接正例闭合；
 上板诊断另将最终ELF全部undefined符号逐项对照同身份已安装固件，不能只检查所改日志入口。
 
-## 5. Profile-only target writing
+### SDK函数表的模块生命周期
 
-profiling以同一次 accepted final output为事实源。instrumented capture module可以是额外内部writing，但：
+输入为verified TargetCall及已编译的program/CRT object；device link保留厂商`module_init`、`module_cleanup`，
+输出同时导出program公共定义及这两个SDK生命周期符号的ELF。直接消费者是当前Kcore module loader。
+loader在模块加载后、entry执行前调用SDK初始化，在模块销毁时调用SDK清理；CRT通过`g_intrinsic()`借用
+对应family的函数表。每次调用仍新建并清零自己的instruction packet，setter、dtype、worker及issue顺序保持。
+函数表仅保存SDK函数指针；不保存跨指令packet、地址、completion或编译决策。不能逐指令释放借来的表，
+也不增加Wafer缓存、lazy init、entry尾部清理或join时清理。正常和失败退出继续交由厂商模块/进程生命周期。
 
-- ordinary production package只编译一次；
-- site identity从 typed target-call ordinal、SSA identity和occurrence派生；
-- profile capture不得改变普通 package的mapping、entry arguments、module digest关系或 completion；
-- profile instrumentation仍使用显式物理三元组，并校验它与 production manifest逐 Tile一致；
-- profile不存在时普通执行不受影响，存在但stale/malformed时fail closed。
+根因是原CRT对每条调用执行`TsmNew*`/`TsmDelete*`；当前SDK构造器实际调用`rt_malloc`并填写函数表，
+析构器实际调用`rt_free`。复用厂商模块表消除这项重复工作；具体收益必须由无插桩设备计时确认。
+当前固件的hook调用及SDK初始化/释放证据见
+[硬件事实](../docs/wafer-hardware-instruction-set-and-programming-model.md#sdk指令函数表生命周期)。
 
-## 6. Verification
+链接导出列表由actual program/extra object公共定义生成，额外保留两个固定SDK hook；其余依赖符号局部化。
+输入不得重定义SDK hook。最终ELF必须实际定义且动态导出两个hook，并通过既有全部undefined-symbol检查；
+任一失败均不发布部分产物。不得仅加`--export-dynamic-symbol`却保留会隐藏SDK hook的`--exclude-libs,ALL`。
+不改变TargetCall ABI、runtime loader协议、Host析构或硬件同步，也不把SDK host模拟器声明当作可执行实现。
 
-Host gates至少覆盖：
-
-- typed target LLVM metadata roundtrip与未知/缺失字段拒绝；
-- non-identity `tile_id`/`launch_slot` mapping，包含 aggregate与非aggregate writing；
-- all-and-only 16 Tile interfaces、duplicate/unavailable Tile、duplicate/missing launch slot负例；
-- Tile entry argument kind/layout/size/alignment/signature与current kernel pointer-row绑定双射；
-- ProgramTensor、ProgramDataRange、TargetTensor与16 Tile arguments的all-and-only join；同一range的多representation、
-  TargetTensor共享和不兼容argument引用负例；
-- 每个package-owned TargetTensor一次bounded materialization，profile/model consumer不得触发per-Tile或
-  per-capture重复转换；
-- unsupported target call、geometry、dtype、overflow、undefined symbol与digest mismatch负例；
-- native DTE broadcast/scatter的prepare→all destination configure→single issue→wait、`2/4/8/15 × 256B`字段窄化、
-  duplicate/unavailable destination、partial configure、wrong mode/count/span及TargetCall decoder/SystemC exact mapping；
-- transaction staging的原子失败；
-- 同一组owner-backed target LLVM modules被`ExecutablePackage` assembly、TargetCall frontend和SystemC直接消费，
-  无第二次lowering。
-
-Production host qualification还必须由current source重新生成generic DAG、HF prefill/decode与Llama package，fresh no-card后达到
-`board-ready`；真实设备上 Llama 和一个 prefill/decode代表做同源 matched A/B、exact output/guard并获得可重复改善后
-才能标 `done`。历史 target/module通过记录不能代签这一门禁。
-
-### 按实际参与者生成共享 DDR 参数
-
-本项归入 board-testing。输入为 current Tile peer SSA、已确定 source/destination entry 的共享 payload 与 final Instr 的实际
-writer/readers；生成器只向参与该资源的 entry 添加 DDRBinding，completion 只向同一实际 writer/readers 添加 ready 参数。
-每个共享 ResourceId 保持全卡唯一；参数 ordinal 只属于当前 entry，不能用跨 Tile 的同一 ordinal 恢复资源身份。
-输出为 verifier-valid Tile/Instr entry 和各自 dense TileEntryArgument；直接消费者为同一 target aggregate、package 与 runtime。
-入口为现有 none/search。非目标：不合并不同 buffer、不改变 DMA、publication cut、同步强度、SPM、数值或搜索候选排序规则。
-
-跨 Tile 校验按 ResourceId 检查共同资源的类型、大小、对齐、初始化要求；普通 program 参数继续保持既有共同语义合同。
-共享参数可在不同 Tile 缺省，后续 workspace/status/profile 的 ordinal 随当前 entry 的实际参数数量确定。
-TileMajorPointerTable 按 launch_slot 顺序串接不同长度的行，offset 是前面实际行长度的前缀和；TileRowPointerTable
-仍携带16个行地址，wrapper invalidate 字节数来自该 Tile 的实际行长度。硬件 packet 上限按实际总长度检查。
-
-方法比较：LLVM [deadargelim](https://www.llvm.org/docs/Passes.html#deadargelim-dead-argument-elimination)
-删除 internal function 的无用参数；本仓的 package ABI 在 LLVM 之前已有 typed owner，不能仅在 LLVM 后清理而留下
-manifest/ordinal 不一致。本项直接修正已知参与者的生成边界，避免先产生空槽。具体 function argument 批量插入规则按 pinned
-FunctionInterfaces.cpp 核对，不引入另一个清理 pass 或 shadow resource 表。
-
-完成条件与覆盖矩阵：
-
-| 输入 | 结构与负例 | exact 输出及下游见证 |
+| 覆盖 | exact输出 / failure边界 | 直接下游 |
 | --- | --- | --- |
-| rank3、1024/1025/1031、4/16 Tile sparse fanout、多资源 | writer、多 reader、无关 Tile；缺失/重复/额外 ready binding | 仅参与 entry 有 data/ready；publication/acquire 数与位置不变；fresh verifier/SPM |
-| 各 Tile 不同长度的参数行 | TileMajor/TileRow、物理 Tile 与 launch_slot 置换、共同资源描述冲突 | actual LLVM row offset、invalidate 长度、函数体使用正确槽；普通参数不一致仍拒绝 |
-| 多于4096个共享资源、稀疏引用 | canonical roundtrip、record/byte 上限、不同资源引用顺序 | manifest 仅有实际参数；runtime 每 ResourceId 分配一次、逐 Tile 地址精确 |
-| 当前 LLaMA none/search、通信 tail | fresh source→package/no-card | 共享参数无 access=none；记录数、payload/通知资源数和编译耗时；板测资格单独记录 |
+| 所有CRT instruction family；原DMA/GEMM/fill/relation矩阵 | packet参数保持，每条调用借用厂商函数表，CRT object无`TsmNew*`/`TsmDelete*`导入 | SDK拦截、RISC-V编译、生产required-symbol检查 |
+| 普通、Count、Trace模块，program与extra object导出 | 两个SDK hook实际动态导出；entry保持；依赖内部函数不导出 | 真实device link/readback、fresh source/package/no-card |
+| hook冲突、缺失、非法undefined、编译或链接失败 | 明确失败，原输出和中间产物原子性保持 | device-link拒绝及publication测试 |
+| 当前BF16真实规模attention | 全量数值、guard、16 Tile completion、正常厂商清理及普通事件计时 | 新包实卡；主机hook检查不代签设备资格 |
 
+### 独立目标对象编译
 
-## RISC-V CPU代码生成优化
-
-输入为已完成Instr/TargetCall验证的target LLVM IR、当前CPU选择和唯一CRT source；输出仍为同一device-link事务的
-kernel对象、厂商CRT对象及最终ELF，直接消费者为原ExecutablePackage/no-card/runtime。用户入口和ABI不变。
-本层只优化CPU控制程序；硬件指令、布局、dtype、同步和SDK生命周期保持。不开fast-math，不发明packet缓存或MMIO协议。
-
-方法比较采用[LLVM跨模块优化](https://llvm.org/docs/LinkTimeOptimization.html)、目标CPU标量features、代码体积优化和
-已知engine的SDK分派消除。跨模块常量传播能减少封装调用，但内联后代码体积、寄存器压力和目标CPU指令选择也会改变。
-当前这四组实卡均没有确认净收益，实验修改已全部撤回，kernel/CRT编译和SDK调用保持原实现。
-具体配置、失败取舍与证据在板端性能记录，不将已撤回的typed issuer当作current ABI。
-
-性能判断以普通无插桩device elapsed为准，不能用调用数、代码大小或trace开销替代总耗时。
-`TsmExecute`读类型分派是已知重复工作，但减少该工作尚不等于缩短关键路径。
-当前SDK的`__execute_td`在返回前清零整个packet，简单保留可变packet不能复用配置；
-任何后续循环不变准备外提，必须先证明实际builder/issuer字段读写和重入边界，再确定唯一IR owner及下游ABI，不能先引入缓存。
-
-| 覆盖 | exact输出或拒绝 | 直接下游witness |
-| --- | --- | --- |
-| 跨模块常量传播、原CRT编译、CPU features和优化级别 | 同一Instr/target LLVM输入、唯一符号定义、编译/link错误不发布 | 真实device-link及原子失败oracle |
-| 已知engine分派实验：五个engine、三个worker、普通/显式profile | 原SDK相应issuer、worker、packet mutation及返回值提升一致 | 有界host ABI oracle、真实ELF；未采用实验的测试不保留为生产fixture |
-| BF16 rank3+ 2048主块与1031尾块、多Tile/多block | 完整output、guard及退出健康；主块不获益的实验无需继续尾块板测 | fresh source→package/no-card；主块三次普通实卡；采用后的最终版本须再闭合尾块实卡 |
-
-候选评估完成须记录主机门禁、fresh no-card、普通实卡和取舍；采用新实现另须canonical/no-op及最终尾块资格。
-退化或未确认收益的候选不进入生产。本项不修改search CPU先验，不宣称已测得纯CPU时间或达到硬件极限。
+输入为已经生成的target LLVM IR、现行CRT source和确定的device-link命令；输出仍为同一staging事务中的input object、CRT object及最终模块。
+LLVM对象编译/归一化与CRT对象编译/归一化写入不同文件，最多用两个host worker并行；每一路内部保留原命令依赖。
+两路全部退出并按固定顺序报告结果后，才执行原link、undefined-symbol scan和原子发布。失败仍清理本次staging，不覆盖已有产物，
+也不在后台编译尚未退出时删除其工作目录。打印命令、ABI、归一化规则及package消费者保持原合同。
+完成条件为并发启动的有界oracle、两路失败/清理的确定性检查，以及原真实device-link成功/负例和fresh package/no-card通过。
+不引入多份target-module格式、不同link路径或真实设备并行执行。
 
 ### 固定指令参数准备
 
@@ -592,55 +361,44 @@ profile的site采集先于这一目标实现变换，普通与profile均执行�
 | 同步调用、无固定参数调用、注册签名错误 | 前两者不变；签名不符在修改前明确失败 | LLVM verifier、host捕获原callee与全部实参、device ELF及required-symbol闭合 |
 | 真实rank至少3的普通/Count/Trace产品、多Tile、多block与remainder | 同一转换，无新增issue或join；生成C编译失败不发布 | 真实source→package/no-card；BF16 2048及1031原reference、guard、正常退出和计时 |
 
-## 独立目标对象编译
+此前四组CPU代码生成实验未确认净收益并已撤回，见[实验记录](archive/target-cpu-codegen-experiments.md)。
 
-输入为已经生成的target LLVM IR、现行CRT source和确定的device-link命令；输出仍为同一staging事务中的input object、CRT object及最终模块。
-LLVM对象编译/归一化与CRT对象编译/归一化写入不同文件，最多用两个host worker并行；每一路内部保留原命令依赖。
-两路全部退出并按固定顺序报告结果后，才执行原link、undefined-symbol scan和原子发布。失败仍清理本次staging，不覆盖已有产物，
-也不在后台编译尚未退出时删除其工作目录。打印命令、ABI、归一化规则及package消费者保持原合同。
-完成条件为并发启动的有界oracle、两路失败/清理的确定性检查，以及原真实device-link成功/负例和fresh package/no-card通过。
-不引入多份target-module格式、不同link路径或真实设备并行执行。
+## 5. Profile-only target writing
 
-### 编译期 tensor literal 的数据归属
+profiling以同一次 accepted final output为事实源。instrumented capture module可以是额外内部writing，但：
 
-TensorProgram 中仍存活的非splat tensor literal 在进入物理搜索前，由compiler driver与当前函数ABI一起物化为既有
-Constant/ProgramDataRange；用户输入输出端口不变。每份实际literal内容先写入transaction-owned数据，再创建其只读参数，
-相同attribute可共用一个绑定。下游使用同一TargetTensor/ExecutablePackage数据路径，不把Kcore模块的虚拟rodata地址当DDR物理地址。
-Source NPY Bool采用canonical 0/1字节；ProgramTensor和ProgramDataRange按一字节计算，Package与SystemC通过同一program-element
-解码得到Bool逻辑值，再由现有physical codec打包为target bitpacked BOOL。非canonical字节拒绝；用户边界、内部数据与target packing不混用。
+- ordinary production package只编译一次；
+- site identity从 typed target-call ordinal、SSA identity和occurrence派生；
+- profile capture不得改变普通 package的mapping、entry arguments、module digest关系或 completion；
+- profile instrumentation仍使用显式物理三元组，并校验它与 production manifest逐 Tile一致；
+- profile不存在时普通执行不受影响，存在但stale/malformed时fail closed。
 
-### Fill 的实际 scalar operand
+### Kernel 本体计时
 
-memory-planned InstrFillOp 的value始终是typed SSA，可来自arith.constant，也可来自已完成的mapped load或算术。
-Target lowering保留这条def-use，将F16/BF16/F32位模式bitcast为同宽整数、再零扩展至既有Memset的uint32字段；整数同样按raw bits扩展。
-位宽大于32或没有既有字段编码的类型typed拒绝。所有dtype/shape/descriptor检查仍在发射前完成；不更改dtype，不把运行期参数折成常量。
-直接消费者仍是同一个CRT Memset ABI及SystemC TargetMemsetCommand。覆盖rank3 1024/1025/1031、F32参数load→fill→store、
-constant与dynamic值、raw bits及完整LM的缩放系数；映射及跨worker完成继续由原owner负责。
+目标LLVM的显式 `timing` capture与Count/Trace共用entry参数和首尾插入位置，但不收集site或改写命令/等待。
+Device link为该capture选择只含首尾记录的CRT实现，使用厂商已导出的 `csi_tick_get_us`；
+输出64字节ProfileRecord由15号唯一decoder消费，计时边界及覆盖以15号为准。
+Ordinary不增加record参数或hook，原Count/Trace路径保持。
 
-标准memref collapse/expand在blocked layout上也必须消费同一physical reshape证明：空间、元素类型和layout一致，且完整physical element mapping
-与footprint相等时，target只转发实际source地址；证明失败时typed拒绝。Tensor布局保留原offset delta处理，不用逻辑元素数相等替代blocked物理等价。
-覆盖NCx单位轴的1024/1025/1031、block尾宽、不同channel分解反例及实际attention consumer。
+## 6. Verification
 
-### VS immediate与Tile局部常量
+Host gates至少覆盖：
 
-Instr浮点binary RHS标量按原dtype bitcast，零扩展到TargetCall的rhs i64字段；新增`rhs_is_scalar`
-i32取0/1，并与`rhs_unit_elements`互斥。CRT直接发射VS；decoder/numeric model只对vector读取SPM。
-闭合的native model control接受i≤64的signed/unsigned整数转F32以及F32/i32 bitcast，供运行时相对阈值使用，
-08号register-only CPU候选对应的F32 add/sub/mul/div由17号同一host frontend执行；其它浮点运算或地址访问不因此开放。
-常量值保留包括负无穷在内的原始bits。
+- typed target LLVM metadata roundtrip与未知/缺失字段拒绝；
+- non-identity `tile_id`/`launch_slot` mapping，包含 aggregate与非aggregate writing；
+- all-and-only 16 Tile interfaces、duplicate/unavailable Tile、duplicate/missing launch slot负例；
+- Tile entry argument kind/layout/size/alignment/signature与current kernel pointer-row绑定双射；
+- ProgramTensor、ProgramDataRange、TargetTensor与16 Tile arguments的all-and-only join；同一range的多representation、
+  TargetTensor共享和不兼容argument引用负例；
+- 每个package-owned TargetTensor一次bounded materialization，profile/model consumer不得触发per-Tile或
+  per-capture重复转换；
+- unsupported target call、geometry、dtype、overflow、undefined symbol与digest mismatch负例；
+- native DTE broadcast/scatter的prepare→all destination configure→single issue→wait、`2/4/8/15 × 256B`字段窄化、
+  duplicate/unavailable destination、partial configure、wrong mode/count/span及TargetCall decoder/SystemC exact mapping；
+- transaction staging的原子失败；
+- 同一组owner-backed target LLVM modules被`ExecutablePackage` assembly、TargetCall frontend和SystemC直接消费，
+  无第二次lowering。
 
-实际候选中新建的tensor literal使用本节既有ProgramData绑定。在Target ABI删除未使用常量后，
-各Tile的只读TargetTensor列表允许不同；`resourceIndex`仍按该entry自己的ProgramResourceBinding解析，
-不再按其它Tile相同ordinal解释。每entry拒绝可写/zero-initialize或无materialization的TargetTensor；
-同一program binding的不同显式physical representation可以各有一个slot，不按source index误判重复。
-用户input/output等common端口的相互一致性、card-shared资源按ID一致性、manifest/payload的逐项验证保持原合同。
-TileMajor/TileRow均沿已有variable-row地址计算与argument-row acquire，没有新ABI或运行时格式。
-覆盖1024/1025/1031主块/tail的不同常量集合、两种行ABI、非法常量绑定及fresh source→package/model/no-card。
-
-### SPM物理区间的标准view
-
-TileToInstr已证明的分组主块/尾组通过同一SPM内的`memref.memory_space_cast`及紧随的
-`memref.reinterpret_cast`表达。前者保持地址、shape、dtype与MLIR stride布局，仅切换Wafer encoding标记；
-后者显式给出物理区间，alias/lifetime/SPM仍跟随原allocation。Target lowering对同一SPM域的cast转交原地址，
-不发搬运；SPM与DDR之间的cast不支持，不能绕过实际DMA。逻辑布局转换仍由其exact relation及movement拥有。
-该路径与其它标准view一起进入同一production/named conversion；完整组、尾组、gap、dtype和实际地址边界由10号矩阵验证。
+Production host qualification还必须由current source重新生成generic DAG、HF prefill/decode与Llama package，fresh no-card后达到
+`board-ready`；真实设备上 Llama 和一个 prefill/decode代表做同源 matched A/B、exact output/guard并获得可重复改善后
+才能标 `done`。历史 target/module通过记录不能代签这一门禁。

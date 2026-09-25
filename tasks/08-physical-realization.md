@@ -146,13 +146,15 @@ post-attention bounded logical normalization
   -> physical TileRegion
 ```
 
-进入本stage前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
+下述Tensor子集物化整改已撤回，保留为重新启动时的边界合同；当前实现状态与长LM限制见[progress](progress.md)，
+不能把本段作为已有支持或继续施工的依据。
+该合同要求：进入本stage前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
 Spatial/Temporal共享纯索引与片段生成；计算融合由Temporal拥有，layout只消费其实际结果。
 “保留共享”与“按窗口局部物化”是两个明确的Tensor实现，不能由bufferization/allocator临时互换，
 也不能因局部IR物化失败而在这里重建完整输入。真实full-use保留完整值，不能仅凭allocation大就删去。
 `prepareCurrentLayoutInput`中的已有Tensor preparation若暴露新的需求，调用同一子集helper闭合后再建立layout query；
 相关IR mutation后重建analysis，不让早期查询成为当前buffer的事实来源。具体算法与覆盖由
-[06号合同](06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)拥有。
+[06号合同](06-physical-dataflow/structural-choice.md#已选tile的tensor子集物化与共享选择)拥有。
 物理搬运位置仍由`PhysicalMovementPlacement`按实际alias/effect证明；BoundaryMovement后的AccessReuse维持原输入合同。
 本项不扩展任意中间存储缓存，不新增layout解、SPM准入或同步算法。
 

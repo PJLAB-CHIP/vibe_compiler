@@ -2,7 +2,7 @@
 
 本计划归`board-testing`，状态和直接前置只由[progress](../progress.md)拥有。
 职责分拆、通用循环流水和指定BF16产品验收已完成，本文保存当时的实施合同与验收证据。
-整体板测任务及后续性能优化仍由[性能计划](../archive/board-workload-matrix.md#已有改动的收尾与接续)接续；
+整体板测任务及后续性能优化仍由[性能计划](board-workload-matrix.md#已有改动的收尾与接续)接续；
 本记录不代表全部attention优化完成，也不把流水可用等同于性能改善。
 稳定语义由[10号第9节](../10-compute-movement.md#9-循环流水与存储优化的职责边界)拥有，源码组织遵循18号，
 作用域及变换规则遵循19号，完成与内存分别遵循11/09号；本计划不建立第二套IR或同步协议。
@@ -240,7 +240,7 @@ Analysis、Transforms、Driver及24组SystemC共27项CTest全部通过；补充�
 不能将RDMA活动量直接当可节省总时间。早期FirstUse候选6.114ms包含准备复用差异，不作为纯流水性能对照。
 本步实现与指定产品板端验收已完成；后续用户新增的循环累加器布局修复属于08号独立边界。
 证据见[流水验收](../../docs/data/board-performance/attention-loop-pipelining-20260922.json)及
-[性能分析](../../docs/board-performance-results.md#2026-09-22通用循环流水与kv重叠验收)。
+[性能分析](../../docs/board-performance/2026-09-22.md#2026-09-22通用循环流水与kv重叠验收)。
 
 组合候选的起点问题已由本轮诊断确认：已接受的串行参数派生流水后，等待分支的发现列表被后来的同优先级参数
 反复前插；后者容量失败也不会恢复原起点。修复限定为保留actual已接受来源的最低成本起点，不改width/trials、

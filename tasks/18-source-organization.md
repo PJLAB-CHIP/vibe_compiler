@@ -15,13 +15,16 @@ current文档，不保留路径转发header、target alias或兼容wrapper。
 Pipeline position:
 - Upstream IR / input:
   verifier-valid StableHLO/Linalg、TileModule/TileRegion、Instr、DeviceExecutable、target LLVM module、
-  ExecutablePackage，以及当前源码树、CMake target和registered tests。
+  ExecutablePackage，以及当前源码树、CMake target、registered tests和仓内文档。
 - Current stage responsibility:
-  按真实compiler职责和current IR边界组织public API、internal helper、translation unit、library依赖与测试。
+  按真实compiler职责和current IR边界组织public API、internal helper、translation unit、library依赖与测试；
+  文档按状态、稳定合同、证据和方法组织，保持单一owner和可追溯引用。
 - Output IR / files:
-  IR和产品输出语义不变；产出include/lib镜像、单向依赖、exact source registration和测试镜像均可检查的源码树。
+  IR和产品输出语义不变；产出include/lib镜像、单向依赖、exact source registration和测试镜像均可检查的源码树，
+  以及职责明确、有效合同完整、引用可达的文档。
 - Downstream consumer:
-  named pipelines、wafer-compile、wafer-opt、wafer-run、Simulator backends、package/runtime和host/board tests。
+  named pipelines、wafer-compile、wafer-opt、wafer-run、Simulator backends、package/runtime和host/board tests；
+  文档由开发者、审查者和后续任务直接消费。
 - User-level driver / named pipeline:
   不增加CLI、pass、pipeline或optimization mode；production driver与named pipeline继续调用同一实现。
 - Explicit non-goals:
@@ -30,7 +33,7 @@ Pipeline position:
 - Completion criteria:
   本文目录与filesystem、public include、CMake source/target、registered test和current文档一致；空目录、未注册测试、
   source-tree generated artifacts和产品库中的test hook为零；canonical build、registered CTest/lit、component link smoke、
-  组织检查与受影响source-to-downstream witness通过。
+  组织检查与受影响source-to-downstream witness通过。纯文档整理按第8节核对合同、引用和状态，不运行无关编译。
 ```
 
 ## 2. 分类规则
@@ -320,3 +323,28 @@ CMake为稳定component建立真实library target并显式列出source、generat
 - 所有registered tests实际执行，无新增unsupported、skip或未注册case；Board helper不使用`*_test.py`；
 - canonical build第二次运行为Ninja no-op；
 - `git diff --check`、source/IR organization、dependency layering及完整diff复审通过。
+
+## 8. 文档组织与维护
+
+文档职责遵守[AGENTS](../AGENTS.md#事实来源与文档边界)。编号设计保留输入、职责、输出、直接消费者、非目标和完成条件；
+篇幅较长时可把完整专题放入同编号目录，由编号文档直接索引。这些章节属于同一个设计owner，不建立第二套合同。
+总文档说明边界，专题保存算法、失败语义和覆盖矩阵，实施计划只补施工顺序及本轮验收。
+
+整理时按段落判断去向：
+
+- 当前状态留在progress对应行；已结束批次的接续记录移入archive，取消不改写为完成。
+- 仍有效的算法、参数域、typed failure和覆盖要求保留在编号设计或其专题；不得只剩archive中的摘要或链接。
+- 完成或取消的计划退出plans；later候选保留完整合同，前置取消时明确需要重新授权和验收，不自动恢复旧任务。
+- 测量记录按实验日期和产物身份保存，索引链接原始证据；使用说明、硬件事实和复盘分别组织。
+- memory保存可复用方法和根因，按主题检索；通用流程引用AGENTS，历史现场不继续约束当前构建。
+- 移动内容同步更新实际链接。归档中的历史symbol、命令和版本保持原意，不机械改成现行实现。
+
+文档修改的覆盖检查如下；不以减少行数替代内容核对。
+
+| 输入类别 | 必须保留或修正的内容 | 直接消费者检查 |
+| --- | --- | --- |
+| 状态、计划和导航 | doing/done/cancelled/later及启动条件一致 | 从progress到唯一有效计划；无旧授权继续生效 |
+| 稳定设计及专题 | pipeline、算法、typed failure、精确输出、覆盖和下游witness | 不读archive仍能取得完整现行合同 |
+| 测量、硬件证据 | 原始参数、版本、结果与外推边界 | supported/board-observed/unknown/excluded不因整理升级 |
+| 方法、根因和历史 | 有效方法有唯一落点；旧规则退出当前入口 | 按主题可定位，历史身份仍可追溯 |
+| 路径、章节和引用 | 本地目标与锚点可解析，移动前后内容可对照 | 20份编号设计和所有受影响链接可达；完整diff及文本检查通过 |

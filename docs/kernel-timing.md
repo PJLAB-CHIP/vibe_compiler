@@ -55,7 +55,7 @@ board_timing: kind=tx-stream-events device_elapsed_ns=...
 对应厂商kcore为2.493/2.476/2.491ms。这里只用于说明计时范围差异，不作为新计时实现的验收。
 本轮实现的两项BF16 NCx实卡各三次通过完整数值、guard及正常清理；最长Tile本体中位数为
 GEMM M=N4096/K1024的1.801ms、2048/28-head causal attention的2.461ms。
-同次外层event分别为3.158/3.579ms，明细见[性能记录](board-performance-results.md#2026-09-23kernel-本体轻量计时)。
+同次外层event分别为3.158/3.579ms，明细见[性能记录](board-performance/2026-09-23.md#2026-09-23kernel-本体轻量计时)。
 
 `unknown`：各Tile时钟的共同原点与启动错位没有在当前实现中校准。因此输出最长Tile本地duration，
 不计算 `max(end)-min(begin)` 作为全卡跨度；event与entry差值不全部归为launch。

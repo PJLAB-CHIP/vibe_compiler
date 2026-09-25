@@ -42,8 +42,9 @@ Relative to the pinned commit, Wafer:
   preorder heuristics, and round-robin attempts; exhausting this budget returns
   `SolveStatus::kResourceExhausted`, separately from a complete infeasibility
   proof;
-- keeps the library default budget unlimited. Wafer's compiler adapter owns any
-  deliberately generous production budget and fallback policy.
+- keeps the library default budget unlimited. Wafer's compiler adapter owns the
+  production node budget and preserves typed resource exhaustion separately from
+  proven infeasibility; it does not fall back to another allocator.
 
 The public header in this directory is an internal third-party API. The CMake
 target is not installed or exported, uses hidden visibility, and must be linked
@@ -51,4 +52,4 @@ privately by Wafer implementation targets.
 
 `PROVENANCE.json` records the exact upstream tree/file hashes, their mapping to
 the retained port, and canonical digests for the curated algorithm and complete
-distribution file sets. `tools/check_deps.py` validates that manifest offline.
+distribution file sets. `utils/checks/check_deps.py` validates that manifest offline.

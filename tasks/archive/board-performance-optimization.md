@@ -1,5 +1,9 @@
 # 模型板端性能优化
 
+> 归档说明：模型性能优化的历史检查点；三轮调优已取消，未完成门槛不改记为通过。
+> 本文保留当时的设计、顺序和证据；正文中的“当前”“下一步”及历史授权不构成继续执行的依据。
+> 状态与重新启动条件只看[progress](../progress.md)，稳定合同只看编号设计。
+
 本计划属于同一个 `board-testing` work item。既有正确性及单次计时证据保留在
 `tasks/archive/board-correctness-qualification.md`。目标是以实际 profile
 定位已有模型、算子及扩展网络的瓶颈，修复共用生成逻辑，并完成匹配的数值和性能复验。
@@ -8,7 +12,7 @@
 其中保存配置、根因、实际修改、前后样本、PyTorch、artifact身份和归因限制；本计划只拥有当前实施检查点。
 
 用户指定的ResNet、ViT block、带embedding/LM head的单层LLaMA2、4096³ GEMM及选定补充case，
-统一按[扩展板测矩阵与三轮性能调优](../archive/board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
+统一按[扩展板测矩阵与三轮性能调优](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
 本轮范围为扩展矩阵中2026-09-17登记的53项，ResNet只验原生224，YOLO及新增GQA/长cache不在本轮范围。
 它们仍属于本work item，不另建网络或通信板测任务。下列较早检查点保留各自版本的证据，最新结果以扩展矩阵和性能记录为准。
 后续GQA的多轴contraction、状态协调及metadata view局部加载已通用修复，1024/1025在原默认预算下完成package/no-card；
@@ -56,7 +60,7 @@ source与初始快版本一致，前序修改相对初始快包的设备回归�
 最新组合版本首次BF16 completion超时；用户重启后完整FP16/BF16及两者连续执行均通过，第一项重测已完成。
 原超时未复现、根因未知，不将设备恢复描述为代码修复。第二项数值错误已定位到broadcast丢失非单位轴交换；
 通用修复及冻结未融合图的FP16/BF16完整实卡数值通过，block两种dtype及三组大GEMM保护通过，当前进入第三项。
-本轮唯一执行顺序及门槛由[扩展矩阵](../archive/board-workload-matrix.md)拥有：最新代码完整LM重测→未融合图数值根因→
+本轮唯一执行顺序及门槛由[扩展矩阵](board-workload-matrix.md)拥有：最新代码完整LM重测→未融合图数值根因→
 decode性能恢复→剩余五配置闭合→逐case性能优化。用户要求按1—5项严格顺序持续推进，完成一项即进入下一项。
 三轮仍分别检查复用/DDR、流水/等待、搜索选择/剩余热点；实际修改顺序由profile决定，不为凑轮次改代码。
 先区分历史runtime变化与生成代码变化，再拆完整LM的embedding、decoder、LM head实际耗时。
@@ -112,7 +116,7 @@ fresh source、输入与reference也精确一致；本轮共一次实际设备la
 下方2026-09-12方案及更早表格保留各自版本的实现和验证记录，不再单独决定施工顺序，也不代签本轮验收。
 
 已完成的循环子集状态、嵌套提升和必执行路径分析保留原资格；本轮GEMM数值通过不代表LLaMA/conv或设备性能已闭合。
-当前主要证据集中在[循环状态与模型复验记录](../../docs/board-performance-results.md#2026-09-13循环子集状态修复)
+当前主要证据集中在[循环状态与模型复验记录](../../docs/board-performance/2026-09-13.md#2026-09-13循环子集状态修复)
 及[分版本数据](../../docs/data/board-performance/loop-subset-state-20260913.json)。主机超时与真实设备completion超时分别处置。
 
 | 步骤 | 工作边界与关联设计 | 直接前置 | 退出条件 |
@@ -281,7 +285,7 @@ Region修复后完整Driver再次103项通过；最终两项Python CTest、源�
   后续全部板端批次停止，不retry/reset。没有数值或Count/Trace结果，不能按静态指令减少声称加速。
   当前Instr没有Direct DTE，SPM范围在已有可用区间，字段未发现越界；这些排查未定位停在哪条指令，不能据此宣称硬件故障或修复。
 
-详细audit、版本与未完成项统一见[性能记录](../../docs/board-performance-results.md#2026-09-12整数预算复验与未闭合边界)。
+详细audit、版本与未完成项统一见[性能记录](../../docs/board-performance/2026-09-12.md#2026-09-12整数预算复验与未闭合边界)。
 2026-09-13用户指定单独复查Add：fresh package/no-card通过，16 Tile FP16 Add同样发生60秒真实completion超时，
 没有输出回读；boot/runtime身份未变。一次尝试后已停止，未retry/reset；随后重启后的恢复结果见下一段。
 
@@ -301,7 +305,7 @@ Region修复后完整Driver再次103项通过；最终两项Python CTest、源�
 含source/reference准备的runner wall113.09秒、max RSS468164 KiB，548个子集提升。随后单次实卡525825个FP16输出通过原PyTorch容差，
 device elapsed0.973 ms。未做性能A/B，不将机制时间或此单次耗时解释为整模型加速。
 LLaMA width8/trials14本轮仍为0 accepted、13 capacity、1 unsupported，992个循环检查中0个子集提升；
-runner wall367.75秒。它的搜索可行性和搬运性能是独立未完成边界。完整证据见[本轮记录](../../docs/board-performance-results.md#2026-09-13循环子集状态修复)。
+runner wall367.75秒。它的搜索可行性和搬运性能是独立未完成边界。完整证据见[本轮记录](../../docs/board-performance/2026-09-13.md#2026-09-13循环子集状态修复)。
 
 | 输入等价类 | 结构与长度 | exact输出/保留 | 下游witness |
 | --- | --- | --- | --- |
@@ -362,7 +366,7 @@ layout/bufferization单次最长474秒，搬运清理累计约766秒CPU、tryEli
 
 ### 证据决定优先级
 
-完整身份、动态指令及归因限制见[性能记录](../../docs/board-performance-results.md#2026-09-12既有-profile-与最终-instr-的根因复核)
+完整身份、动态指令及归因限制见[性能记录](../../docs/board-performance/2026-09-12.md#2026-09-12既有-profile-与最终-instr-的根因复核)
 和[逐 Tile 数据](../../docs/data/board-performance/profile-root-causes-20260912.json)。整模型样本均早于 native psum 修复，
 只能作为问题定位证据，不能代签当前编译器的性能。
 

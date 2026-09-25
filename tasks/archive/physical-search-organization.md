@@ -1,7 +1,11 @@
 # 物理搜索效率与 standard/deep 组织实施方案
 
-本方案归入现有 `board-testing` work item，稳定边界由[06号设计](../06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)拥有，
-任务状态只看[progress](../progress.md)，产品与性能保护沿用[统一板测矩阵](../archive/board-workload-matrix.md#搜索组织修改的性能验收)。
+> 归档说明：搜索组织实现及验收记录；独立搜索收益与deep性能验收已取消，既有失败和缺测保持。
+> 本文保留当时的设计、顺序和证据；正文中的“当前”“下一步”及历史授权不构成继续执行的依据。
+> 状态与重新启动条件只看[progress](../progress.md)，稳定合同只看编号设计。
+
+本方案归入现有 `board-testing` work item，稳定边界由[06号设计](../06-physical-dataflow/search.md#75-主搜索实现分支与-deep-预算)拥有，
+任务状态只看[progress](../progress.md)，产品与性能保护沿用[统一板测矩阵](board-workload-matrix.md#搜索组织修改的性能验收)。
 本方案覆盖整个search，共用standard/deep实现；用户已授权按下述顺序实施到验收完成。
 已实施版本的证据保留在文末，与新合同验收分开；本次迁移进度只看progress。
 
@@ -362,7 +366,7 @@ unsupported分类、每stage执行次数/耗时、PBQP solves、prefix命中/淘
 不能只用取消的大任务、吞吐平均值或减少trials来宣称成功。若局部优化增加其它阶段开销，必须计入总成本。
 不预先承诺未经测量的加速倍数；host效率通过也不代签设备性能。
 
-设备验收沿用[统一规则](../archive/board-workload-matrix.md#搜索组织修改的性能验收)：
+设备验收沿用[统一规则](board-workload-matrix.md#搜索组织修改的性能验收)：
 standard固定原8/42，deep正式对照8/42并保留预算曲线；同时给出同actual-work或同wall的参照。
 原最好可复现性能目标不重置，缺测/波动/退化保持未完成，deep无核心实卡收益不能完成整个work item。
 
@@ -394,13 +398,13 @@ domain oracle另发现既有coupled-state helper无条件重置全部scope的loo
 Deep其余十项、核心及全矩阵验收继续。首可行/赢家出现时间观测已接入，新增观测及保留的容量邻域上界经
 63项Driver定向回归、正式CLI及source→package/no-card通过；canonical完整增量构建及第二次Ninja no-op通过。
 实现提交为`f087c52e`。三项Division完成27次交替实卡，完整数值/guard及运行窗口检查通过，性能结论仍待定；
-逐次数据见[本轮板测记录](../../docs/board-performance-results.md#2026-09-18多尺度搜索与实际ir前缀复用的首批验收)。
+逐次数据见[本轮板测记录](../../docs/board-performance/2026-09-18.md#2026-09-18多尺度搜索与实际ir前缀复用的首批验收)。
 该提交重新导出的核心大GEMM三配置standard已构包/no-card，完整source及package与健康版本一致；
 LLaMA两dtype的standard随后完成构包/no-card；ViT两shape、核心deep及原13项剩余deep的进程已中断，未完成项待续跑。
 核心编译与原13项剩余deep当时有负载重叠，wall比较须单独匹配复验。
 用户随后指定先测原13项standard：2026-09-19重启后，每项重新生成输入/reference并通过no-card，
 使用上述多尺度实现冻结版本的8/42包，各一次输出长度、完整实卡数值和运行窗口检查全部通过。
-逐项耗时及身份见[单次实卡记录](../../docs/board-performance-results.md#2026-09-1913项standard单次实卡验收)；
+逐项耗时及身份见[单次实卡记录](../../docs/board-performance/2026-09-19.md#2026-09-1913项standard单次实卡验收)；
 尚未完成最终compiler重编13项及匹配重复性能比较，不能代签全矩阵或deep收益。
 
 用户进一步要求验证其余standard及优化收益。本轮范围为搜索验收清单的全部51个shape/dtype配置，
@@ -418,14 +422,14 @@ prefill S1025/1031本批设备中位降低15.05%/14.59%；LocalConv S1025与FP16
 Division区间重叠，LocalConv增加52.34%且峰值RSS增加，不能签发全面效率改善。
 普通runner本轮只验证完整输出及生命周期，未做独立red-zone guard；不将该缺口记为通过。
 下一步先在通用搜索/物化owner定位两项设备退化和LocalConv编译开销，修复后重测对应配对及核心保护。
-完整scope、全部样本及限制见[本轮结果](../../docs/board-performance-results.md#2026-09-19最终实现的完整standard验证及优化收益)。
+完整scope、全部样本及限制见[本轮结果](../../docs/board-performance/2026-09-19.md#2026-09-19最终实现的完整standard验证及优化收益)。
 
 ### Prefill落选DTE方案的实卡对照
 
 已增加仅供`wafer-compile-test`使用的`--test-search-candidate`入口。调用者选择本次求值序号；
 driver在actual结果边界移交同一owner，随后沿正式target/package路径构包，不重建候选，也不修改评分。
 FP16 S1024普通winner与DTE候选各交替三次实卡，完整数值和运行窗口检查通过；DTE中位耗时更高。
-样本、IR工作量及不同分块的比较限制见[专项记录](../../docs/board-performance-results.md#2026-09-19prefill落选dte候选实卡对照)。
+样本、IR工作量及不同分块的比较限制见[专项记录](../../docs/board-performance/2026-09-19.md#2026-09-19prefill落选dte候选实卡对照)。
 
 | 覆盖边界 | 本轮证据 |
 | --- | --- |

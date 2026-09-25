@@ -1,0 +1,325 @@
+# 板测历史接续记录
+
+本文从progress移出，保留2026-09各轮授权、停止、检查点及当时的执行顺序。
+这些顺序已由后续取消和撤回决定终止，不是当前授权；当前状态见[progress](../progress.md)。
+
+### 历史接续记录
+
+以下记录保留当时授权与验收边界；其中的先后安排已由顶部撤回决定终止。
+
+2026-09-23用户要求将BF16 NCx GEMM M=N4096/K1024与2048、28-head attention纳入正式case集合，
+并让后续全部PyTorch板测case的耗时同时记录kernel本体与外层event，仍归 `board-testing`。
+已按15号统一runner合同完成：两个NCx名称直接注册，普通case布局仍默认Tensor；板测默认一次轻量capture并列
+外层event与16 Tile本体，缺失/矛盾记录使case失败，显式普通包对照保持。PyTorch完整caller单测、
+默认Tensor GEMM的fresh source→计时包→no-card、两个NCx名称的source相等核对/no-card及各一次实卡均通过，
+数值、guard、清理正常；细节见
+[本轮证据](../../docs/board-performance/2026-09-23.md#2026-09-23ncx-case-注册与统一计时)。历史普通包结果不补造本体时间，
+四项后续性能保护仍使用显式普通包对照并另留kernel timing。整体`board-testing`继续doing；
+覆盖矩阵见15号“PyTorch 板测 case 的计时与布局绑定”。
+
+2026-09-23用户授权的kernel本体轻量计时已完成，归 `board-testing`，不代签整体板测。
+15号 `timing` capture、首尾微秒record及单次runtime执行已接通，默认关闭；
+主机、fresh no-card和原BF16 NCx GEMM、2048 attention各三次实卡通过，canonical完整增量及Ninja no-op通过。
+生产completion、算术与搜索策略保持；最长Tile main-entry与外层event分列，独立transport prepare不计入本体。
+覆盖矩阵见15号“Kernel 本体轻量计时”，完成证据与使用说明见[本轮记录](../../docs/board-performance/2026-09-23.md#2026-09-23kernel-本体轻量计时)。
+
+2026-09-23用户授权的直接 NCx I/O 性能整改已完成，仍归 `board-testing`，不代签整体板测完成。
+输入复用的布局覆盖、私有 DMA/layout 合成及共享转换合并后的同一优化均已接通；
+fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
+原算术、搜索预算、数值门槛保持，默认 Tensor 两项 fresh Instr/目标LLVM与原记录逐byte一致；
+完成合同与覆盖见08号及板测计划顶部，性能与限制见[整改记录](../../docs/board-performance/2026-09-23.md#2026-09-23ncx-输入复用与直接-dma-整改)。
+本轮指定修复已闭合；Tensor子集物化整改按顶部当前调度推进。
+
+2026-09-23用户追加直接 NCx DDR 输入/输出测量：M=N4096/K1024 BF16 GEMM 与 2048、28-head BF16 causal attention。
+仍归 `board-testing`；08 号外部物理布局和 15 号 caller 编解码已接通，两项 fresh 构包/no-card及各三次实卡通过。
+此前 source reshape/permute 包装未完成构包，已停止，未执行设备测试；不作为直接 NCx 实现或性能结果。
+默认 Tensor 路径及既有数值策略保持。前轮指定 NCx I/O 数值、guard和清理已签发，但中位数均慢于已有 Tensor 记录；
+该检查点只完成能力与测量，随后性能整改已按上方接续闭合。前轮测量详情见
+[NCx实测](../../docs/board-performance/2026-09-23.md#2026-09-23直接-ncx-ddr-输入输出测量)。
+
+2026-09-23用户追加M=N4096、K1024 GEMM性能测量：BF16、batch1、standard 8/42的fresh产品及guard no-card通过；
+三次普通实卡3.489/3.583/3.495ms，中位数3.495ms，完整相似度、guard及厂商清理健康，
+见[记录](../../docs/board-performance/2026-09-23.md#2026-09-23mn4096k1024-gemm测量)。本次指定测量已完成，未扩大优化范围。
+容量调查临时打印已撤除并恢复正式构建；Tensor整改及四项保护的后续状态按顶部检查点和实施计划执行。
+
+2026-09-23原始要求：细化并落地“已选tile的Tensor子集物化”方案，同时硬性保护三项大GEMM与2048 BF16 attention性能。
+06/08/18号边界与[实施计划](tensor-subset-materialization-reverted.md)已同步；纯来源/覆盖分析已拆分，
+静态Spatial窗口已用实际来源物化；Temporal有界线性循环的多轴完整assembly窗口及共用静态片段组装已接通，
+动态partial insert与共享选择、fresh产品及实卡尚未完成。
+当时顺序为职责分离→共同需求/物化→显式共享选择→主机与no-card→四项性能保护→两项完整长LM资格；已由顶部重排替代，仍归`board-testing`，
+不新增队列项，不把扩展AccessReuse中间存储资格列为前置，不重开attention专项优化。
+任一保护项回退或不可比，整改不得签完成；固定case、seed、预算、guard、健康样本和比较门槛见实施计划第7节。
+
+2026-09-23用户授权接续完整单层LLaMA2 LM的S1024/1025 FP16两项实卡，仍归`board-testing`。
+先以当前正式入口重新生成source、合法i64 IDs、完整logits reference及package，通过本轮guard no-card，
+再逐case单次实卡核对全部输出、guard、正常清理和普通耗时；当前处于主机准备，未签board-ready。
+模型接续范围仅这两项；新增通用整改及四项性能保护按上方最新要求，deep搜索、LocalConv性能整改、三轮调优和已收束的attention优化保持后置。
+具体覆盖和证据见[长序列LM接续](board-workload-matrix.md#完整单层lm长序列实卡接续2026-09-23)。
+
+2026-09-22用户授权接续剩余实卡case。仍归`board-testing`，先重签LLaMA block两种dtype及三项大GEMM，
+再完成ViT、GQA、普通/长cache两步decode、mask和其它受通用修改影响的既定配置。
+仅使用当前构建的新source/reference/package；已验收且实现未变的2048 BF16主块与1031 BF16尾块保留有效记录。
+本轮不重启独立长序列LM、deep搜索或已收束的attention优化；具体清单及结果见现有板测计划。
+本轮发现并修复Q2 decode打包回归：Package writer错误要求各Tile的不可变binding集合完全相同；
+已按15号只对外部端口检查全卡一致性，保留原typed不可变数据join。双dtype fresh构包/no-card及各三次实卡通过，
+直接主机门禁、canonical/no-op通过，见[证据](../../docs/data/board-performance/package-entry-local-bindings-20260922.json)。
+后续发现既有混合卷积、完整LM及sigmoid的回归：目标转交到subview后，mapped operand临时分配错误继承view布局。
+共同根因已复现并按10号修复，七项原配置的fresh构包/no-card及各三次实卡通过；同时补齐16号model调用者的显式numeric policy及预算。
+历史通过记录与引入路径见板测计划，不将这些回归解释为新增case或硬件限制。
+本轮75项既定配置、79个step配置、237次普通实卡均通过原完整数值、guard及正常清理，未出现timeout/fatal；
+六项probability-rounding及四项sliding-window主机model完整输出通过。
+各批次保留实际source/package/compiler身份，不声称全部由最后一次编译器重跑；
+[验收证据](../../docs/data/board-performance/board-regression-20260922.json)记录完整矩阵。
+用户随后要求优先检查4096³ GEMM：历史6.824/6.853ms与本轮带guard的7.414/7.271ms不能直接按同条件比较；
+关闭guard的FP16/BF16中位数仍为7.065/7.042ms；随后BF16交替对照生产版7.024ms、关闭固定参数特化7.117ms，
+该项CPU优化未造成可观察回退。guard对应主要活动增量在RDMA，剩余历史性能差距未锁定；
+2026-09-23用户认为约0.2ms量级差距可接受，要求收住本次调查，不再以恢复历史耗时阻塞本轮配置验收。
+详情见[复核记录](../../docs/board-performance/2026-09-22.md#2026-09-22全矩阵数值回归与4096-gemm性能复核)；
+保留原测量与根因未知，不改写为已恢复历史性能，不改变后置的完整LM S1024/1025、deep搜索和三轮调优边界。
+
+最新接续：用户要求优先完成已有部分实现，再开展尚未实现的优化，继续归board-testing。
+尾块、输出融合、累加器方向、causal分段、职责分拆、残余状态发布、通用流水及循环累加器布局均已完成各自验收。
+用户随后授权优先优化RISC-V CPU指令准备/发射开销；四个早期候选无收益并撤回，cache配置调查收束；
+固定参数准备已取得主块/尾块健康实卡与总耗时收益，按14号合同采用，SDK内部packet编码与清零仍保留。
+用户已确认本轮attention优化收束，现有实现和验收保留；其它维度切分与mask负载均衡暂缓，不自动开启新优化。
+本轮经过与最终取舍见[attention优化复盘](../../docs/attention-optimization-retrospective.md)。
+下表保留本轮执行顺序与验收结论，取代下文历史检查点中的先后安排；具体步骤与证据见
+[性能计划](board-workload-matrix.md#已有改动的收尾与接续)及[流水验收记录](tile-loop-pipelining.md#通用流水验收2026-09-22)。
+
+| 顺序 | 工作与当前状态 | 接续条件 |
+| --- | --- | --- |
+| 1 | VuVLoop尾块、输出恢复搬运融合：已完成，含真实尾块实卡与独立profile | 证据归档于性能计划；后续沿用当前实现 |
+| 2 | 累加器方向：已完成当前版本对照与取舍，采用KQ score及常规累加器；仅允许不改变元素次序的自动state重排 | 主机、fresh no-card及实卡证据已归档；继续causal分段 |
+| 3 | causal全可见前缀/边界拆分：已完成，含动态起点、完成证明和Q准备复用；主块/尾块实卡健康 | 证据已归档；串行性能持平，作为通用流水输入 |
+| 4 | ExecutionStructure职责分拆：已完成，五个职责文件/API及测试迁移；代表Tile/Instr/LLVM逐字节不变 | 主机、fresh no-card、头文件与canonical/no-op证据已归档；接残余存储优化 |
+| 5 | 剩余状态发布复制：已完成，通用layout/snapshot/逐元素发布消除；必要m旧值与GEMM psum/result保持独立 | 主机、fresh no-card及主块/1031尾块实卡通过；证据在性能计划，作为串行/流水共同输入 |
+| 6 | 通用流水与K/V重叠：已完成主机、fresh no-card、主块/尾块实卡及独立profile；合法流水没有已确认净收益，正式winner仍串行 | 证据已归档；接08号循环布局修复 |
+| 7 | 循环累加器布局：已完成通用成本/fill/初始化修复、完整主机回归、fresh no-card、主块/尾块实卡及独立profile | 循环内无Tensor↔NCx往返，数值/guard健康并取得总耗时收益；必要psum/result复制保留，证据见性能计划 |
+| 8 | RISC-V CPU指令准备：通用固定参数准备已完成主机、fresh主块/尾块no-card与普通实卡，取得总耗时收益并采用 | 证据见性能计划；SDK内部编码与清零仍保留，尚未评估进一步字段合并 |
+
+已通过验收的Explp、GEMM复制链、等字节序行copy和初始化读取转交沿用已有实现及证据，不重新排成待实现项。
+第7步已按08号统一布局选择闭合，A在内层保持NCx、仅外部写回时恢复普通布局。第8步固定参数准备已验收；更深的SDK构造优化尚未评估。当前整体board-testing仍为doing；剩余热点与已验收性能边界见性能计划，不声明已达硬件极限。head/tile搜索仍后置。稳定流水合同见10号第9节，源码owner见18号。
+
+本轮已收束的目标为BF16 causal attention，Q/K/V为`[1,28,2048,128]`，
+尽可能消除已确认的性能浪费，3ms作为参考、不再是硬性阈值；FP16板测暂不执行。
+正式计时关闭Host采集与设备插桩，最终版本须有重复健康样本和剩余瓶颈说明。
+涉及通用pass必须先定位可复现根因，按通用IR语义和明确合法条件修复并覆盖同机制其它输入，禁止单case特判。
+本目标归board-testing，指定范围的数值、guard、正常清理及性能优化验收已闭合；不代签更广板测矩阵，见
+[BF16 2048性能目标与通用修复合同](board-workload-matrix.md#bf16-2048性能目标与通用修复合同)。
+最新授权为所有生产exp统一使用Explp，覆盖score、行状态、merge与普通逐元素指数，dtype及原验收容差保持；
+统一TileToInstr映射、host近似reference及直接回归已通过；用户确认重启后，新目标包的实卡数值、guard、完成和正常退出通过。
+完整GEMM复制链的目标转交已通过完整主机回归、fresh no-card、三次普通实卡及独立profile；
+性能计划原第3项中的连续等字节序行copy消除也已通过主机、fresh no-card及三次普通实卡；
+行state初始化读取转交已完成fresh no-card及三次实卡，数值健康但总耗时无可确认改善；完整主机回归及canonical构建已通过。
+分组tail及输出融合本轮验收已完成；剩余方向、causal、行state发布与K/V重叠按本节顶部顺序接续。
+此前纯GEMM的Driver搜索计数断言已定位为派生reuse分支漏计；统一创建处计数修正后原输入回归通过，搜索选择和预算不变。
+各优化点的根因、实施边界及覆盖见
+[后续性能优化实施方案](board-workload-matrix.md#后续性能优化实施方案)。
+当前会话已恢复并取得Explp版本健康实卡结果；原生转置族禁用约束保持。具体数字与验证边界见同一计划顶部。
+新BF16 2048生产包已完成fresh no-card和三次无插桩实卡基线，数值/guard/正常退出通过，性能尚未达标。
+11号GS重复读取优化已通过主机回归及同版本三次BF16实卡，性能明显改善但仍未达标；
+随后补齐跨metadata reshape的GEMM写回消除，BF16三次实卡健康，仍未达到3ms；
+随后消除被完整覆盖的私有初始化/布局复制，三次BF16实卡健康，性能仍未达标；
+当前完整profile已将调查重点收敛到GS广播/布局搬运与CT计算链；同时发现profile请求漏传guard开关，
+请求转交已修复并通过本轮带guard的profile。仍为board-testing doing，热点证据及资格边界见同一计划顶部。
+
+最新接续：用户已确认将KQ展开、VuVLoop与score布局优化方案落入文档。
+首轮prefill采用转置score、常规accumulator，Q=1保留QK；累加器整体转置先核算最终输出搬运。
+通用指令合同、实现边界、顺序及覆盖已记录于
+[实施方案](board-workload-matrix.md#attention展开方向与vuvloop实施方案)和对应编号设计。
+用户已授权按方案实现并上板验证；完整组VuVLoop、KQ展开及profile策略转交已接入。
+同时修复payload轴顺序及Tensor→blocked搬运的source stride缺陷；新版本BF16完整数值、guard、completion和厂商退出通过。
+本轮profile已取得；重复布局求解、厂商SDK函数表生命周期及局部完整复制的通用修复已通过新包实卡。
+累加器整链转置通过完整数值，但输出小颗粒GS导致性能回退，尚无净收益；分组tail及性能验收未闭合。
+随后独立原生`Nchw2nhwc`资格出现新的Tile-0 TDMA timeout，设备批次已停，未retry/reset；
+生产路径未接入该原生入口。用户随后明确该指令及其它原生transpose指令不可用，
+本轮统一排除原生搬运转置路线，包含`Transpose`、`Nchw2nhwc`、`Nhwc2nchw`；
+两组待测专项已取消，恢复设备后也不得执行或换原生入口继续试。接续沿现有可用GS/CT路径处理输出搬运和分组tail；
+任务保持`doing`，详见同一计划与性能证据。
+
+2026-09-21最新接续：Host寄存器诊断已迁入`wafer-board-diagnose`，普通入口默认关闭，显式开关才采集；
+当前4K 28-head attention在关闭采集/设备插桩条件下完成FP16/BF16各三次实卡，完整数值、guard及运行日志通过。
+中位数仍约79ms，高频采集不能解释主要耗时；整体性能工作和未验收矩阵仍未完成，board-testing保持doing。
+具体样本、工具覆盖与资格边界见[计划顶部](board-workload-matrix.md#host诊断工具入仓与无采集计时)。
+
+所有板测统一由`board-testing`这一个总任务管理，包含Add/DTE、通信、GEMM、组合计算、模型和性能。
+具体case与验收顺序记录在同一份板测计划中，逐次已测性能与根因追加到
+[`docs/board-performance-results.md`](../../docs/board-performance-results.md)；不再按算子、正确性或性能拆work item。编译器实现任务保留自身范围。
+
+当前接续（2026-09-21）：用户再次确认重启后，GS通用分段修复已完成紧密发射、直接consumer及原attention双dtype实卡验收。
+所有GS入口使用11号7.3节的同一Instr连续合并/有序分段实现；原长小颗粒GS的timeout根因、修复及本轮覆盖已闭合。
+consumer采集器曾将CT下溢/舍入状态误判为设备故障；厂商位定义、完整exact输出和无fatal证据复核后单列状态，
+没有清异常、改mask、改timeout或重跑专项。原FP16/BF16 attention随后均通过全量数值、guard、completion和厂商正常退出。
+LSU_TIMEOUT低16位的门限因果结论保持，不将它当iteration合法性上限；排查经历见[复盘文档](../../docs/tx81-tdma-timeout-investigation-retrospective.md)。
+本轮没有设备fatal或timeout；接续回到同一板测矩阵的未验收配置及性能工作，不自动重复已通过case。
+早期F32 fill独立状态、任意GS布局的通用计时保证和其它历史卡死不由本轮外推解释；整项仍为`doing`。
+具体覆盖和证据以[计划顶部](board-workload-matrix.md#gs修复实卡验收2026-09-21)为准；下列较早检查点的临时顺序已被取代。
+
+2026-09-20用户修正板测方式：禁止为性能比较重新运行历史包，直接使用已有健康耗时记录并注明版本、配置及环境差异。
+设备恢复核实后的接续先覆盖当前版本尚未验收的case，不再交错旧包或启动原配对队列；必要重复计时只运行当前版本。
+用户提出连续运行后偶发异常的可能性，作为待查假设保留；当前仅能确认前18次健康、第19次报告TDMA异常，不能据此归因旧包。
+本轮设备异常后的停止状态保持；本次修正不启动设备、不自动retry/reset。
+随后按用户要求将CLI成功和所有可返回的失败路径统一交回厂商进程退出清理，移除`_Exit`跳过析构；
+已完成主机构建、runtime回归及进程退出回调验证，未启动设备，TDMA根因和实卡退出行为仍待验证。
+本项仍归`board-testing`，证据与验证边界见同一实施计划。
+用户随后确认再次重启并授权完成剩余板测；本轮先核实新boot与占用，按当前版本未验收配置接续，
+完成数值/guard资格后再补当前包必要计时。普通division输入同时收敛为合法有限域，历史包禁止重跑的约束继续有效。
+本轮厂商正常退出版本新增FP16普通Q1两步及小prefill双dtype健康资格；随后当前BF16 4K 28-head prefill发生TDMA。
+用户明确要求继续后，同workload的FP16仍失败，之后出现AP清理超时。用户最新要求转为定位最初的LSU TDMA，
+已停止设备执行并保存现场；当前进行安装包、实际固件/driver/runtime和历史故障的离线审计。
+已还原实际AP fatal bit 12→TDMA handler→EID上报路径，确认发行handler没有故障packet/PC快照；
+尚未取得故障命令，根因和修复未闭合。下一次设备执行须先准备能缩小问题的采集，不能直接重开矩阵。
+用户随后再次授权重启后尽快做单case观测。只读PMU采集器的16 Tile离线映射/数据/拒绝路径验证及
+所选当前BF16 4K 28-head prefill的fresh no-card已完成。新boot确认后真实只读访问通过；首个计算即再次报告TDMA，批次停止。
+取得64帧16 Tile寄存器：raw从0变为0x4000、命令字段留存，TDMA计数随后继续增长；正常回读/guard和厂商退出完成。
+此结果说明本次复现不需要先连续跑多个case，但采样影响未隔离，raw编码和故障packet/PC仍未知。
+当前转入离线字段/指令关联，不启动第二个case；70项未签资格及根因修复状态不变，见[实测记录](../../docs/data/board-performance/tdma-pmu-observation-20260920.json)。
+已将16 Tile实际ELF控制流的110,272次TDMA调用数与PMU对齐，87种SDK descriptor范围/字段检查通过；
+last-command与destination出现一致相关性，但未恢复唯一故障指令。用户随后要求改好采集再重启：
+直接观察stream TDMA fatal、worker0 count和last-command的C连续采集器及单次入口已准备完成，
+离线触发/记录/拒绝路径、fresh no-card和canonical构建通过，摘要已冻结。当前故障boot未新增设备访问或launch。
+用户已确认重启，新boot真实基线通过后仅执行当前BF16 4K 28-head prefill一次；直接fatal前后记录已取得。
+首次告警附近的last-command使首轮mask标量广播成为优先候选，字段更新语义未闭合，尚不能签唯一故障指令。
+本轮completion及后续厂商清理也超时，设备批次已停；现场已保存，转入离线关联，当前无需再重启。
+证据见[快速观测实测记录](../../docs/data/board-performance/tdma-fast-observation-20260920.json)；根因与修复仍未完成。
+用户随后要求将生产填充统一改为整块 `XorVV + AddVS`，去掉 mask 同值铺块的 GatherScatter；
+普通 broadcast 与其它高效 movement 保留。实现、SDK字段检查及当前BF16原始source/package/no-card已完成；
+该检查点故障 boot 未新增设备执行；当时的整数替换已在后续删除，当前按实际dtype执行。
+非对齐/tail 写入范围及 TDMA 根因仍须相应实卡证据。
+
+用户要求暂缓空间切分/搜索预算问题，先收敛当前版本的attention与mask方案。
+已整理[05号改进合同](../05-local-compute-normalization.md#46-当前版本的mask改进合同)及
+[本轮实施顺序与覆盖矩阵](board-workload-matrix.md#当前版本attention与mask改进方案)：
+用户最新选择已收敛为causal局部`0/-inf`模板＋整块AddVV；先实现模板与Add，再做同调用复用/DPS和可见域循环，
+随后优化其余bool/select的数值比较。普通覆盖语义保留；不新增有限性扫描或特殊值运行时分支。
+动态长度入口、paged KV和跨调用缓存延后；空间切分与搜索预算继续暂缓。
+方案已明确模板尺寸随实际tiling及tail确定，资源量和准备次数按实际布局与复用域描述，移除固定尺寸的正文示例。
+方案现已进入实现；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
+用户随后要求记录其它计算中的多余开销：softmax逐score负无穷判断、最终零行结果的整块覆盖、广播分母后重复求倒数。
+三项已归入同一`board-testing`的[整改记录](board-workload-matrix.md#attention其余计算的整改记录)和
+[05号4.7合同](../05-local-compute-normalization.md#47-attention行级计算整改合同)，主机改动及本轮产品矩阵已通过，设备矩阵仍待验收；
+接在causal主路径及其余predicate整改之后、完整主机/板端验收之前，不作为causal加法的前置。
+用户已授权按该计划推进到验收完成；2026-09-21已完成causal bias/Add、实际准备复用、KV可见域循环、数值compare及行级计算。
+constant global、late Instr placement及原DPS链的缺口已修复；4K、28-head FP16/BF16生产winner均为
+每Tile/invocation一次模板读取、每query块一次Q转换、boundary score原地Add及每Tile一个terminal join。
+本轮490项Transforms、151项Driver、72项lit通过；canonical完整增量及随后Ninja no-op通过。
+36组attention/共享产品配置及额外两组4K产品完成fresh source/reference、payload、package/no-card；
+其中9组、10次invocation完成TargetModel完整数值检查，KV历史prefix exact，原容差保持。
+证据与原失败/修复边界见[主机验收记录](../../docs/data/board-performance/attention-additive-host-validation-20260921.json)及同一计划。
+随后用户确认重启并要求接续，当前BF16 4K 28-head prefill单次执行再次出现TDMA，批次停止；
+runner返回0及guard通过不能抵消设备告警，本次输出全零，仅归档失败，不由故障后输出另起算术归因。
+本包740个静态GS site及91种动态descriptor的范围、字节单位、循环覆盖和SDK字段核对通过，
+仍未取得唯一故障指令；行最大值广播只是候选，不能按PMU count减4直接认定它。
+用户要求先把原程序的定位采集改好再重启，原target LLVM/CRT的诊断副本、SDK发射前后记录、
+首次异常冻结、DDR/Kcore解码和新boot单次入口现已完成主机准备。
+16 Tile的159,530次原CRT调用顺序及参数对照、采集故障注入、新输入/reference和strict no-card通过；
+入口实际拒绝当前故障boot，准备期间没有设备访问或新增launch。下一步仅采集原attention单次复现，
+不先跑候选隔离包、不重开矩阵。插桩可能改变时序，SDK进入/返回不等于硬件完成，尚不能承诺一次取得唯一fault PC。
+实卡、设备性能和TDMA根因仍未完成；诊断准备不签整项done或产品board-ready，见
+[本次故障及采集准备证据](../../docs/data/board-performance/tdma-original-trace-preparation-20260921.json)。
+
+2026-09-21 后续实测：首次诊断因loader allowlist误收未导出的日志符号而未加载，已修正allowlist与实际链接检查。
+再次重启后，fresh FP16 Add全输出exact、guard和厂商清理通过；随后原attention诊断成功加载并取得DDR记录，但仍报TDMA。
+16 Tile首次非零fill的F32调用被CRT改为INT32 AddVS，发射前后CSR从0变为`0x800`，当时TDMA fatal仍为0；
+该窗口与后续TDMA的因果关系未闭合。采集器过早冻结的缺口已修正为分别保留首次CT状态与后续TDMA窗口。
+本轮已删除CRT的同宽整数替换，XorVV/AddVS保留实际dtype，成本分类和已有测试同步；该整数规则是实现自行增加，并无厂商要求。
+该修正检查点尚未实卡验收，证据见[格式修正记录](../../docs/data/board-performance/fill-dtype-correction-20260921.json)。
+随后正确F32的原路径仍复现首次CT状态与TDMA，已捕获实际四命令窗口；独立fill数值资格、唯一TDMA故障指令及
+两者因果仍未闭合。当前离线准备及次日接续以同一计划顶部和
+[本轮诊断证据](../../docs/data/board-performance/tdma-causal-matrix-20260921.json)为准。
+
+当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
+[统一实施与实卡矩阵](board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
+顺序为composite接入→宽状态/causal局部展开→GEMM/layout/movement修正→原PyTorch/HF module新reference→完整实卡与性能保护。
+新增Q/K/V均为`[1,28,4096,128]`的causal prefill，FP16/BF16分别验收；全部列出可执行正例都须上板。
+独立attention新reference在实现更新后才启用，旧实现通过它不是前置；整网reference和既定门限保持。
+用户已授权按方案推进实现及完整验收；composite/SPMD、宽状态、causal局部展开、batched方向及native广播已接入。
+本轮22项none配置和原32-head 4K standard配置已完成fresh no-card与首轮完整实卡数值；
+随后GQA两种长度/两种dtype、长cache两步/两种dtype、LLaMA block两种dtype、三项大GEMM及ViT1024完成首轮完整实卡；
+ViT1025本轮launch窗口出现`NPU LSU TDMA Timeout`，批次已停止，未retry/reset，不签该项通过。
+主机已闭合滑窗packed BOOL读取、完整TargetModel数值、guard规划与故障注入，完整lit及component回归通过。
+attention性能目标仍未达到；匹配重复计时、实卡guard及最终同版本全矩阵未完成，设备异常处理后才能继续实卡。
+用户已确认上述ViT1025异常后人工重启完成，并授权按接续计划推进完整验收；
+先完成本轮全部编译和no-card，再核实设备身份、占用和恢复状态并执行实卡验证。scalar VS、规则mask常量模板、
+私有DPS复用、GQA单位前缀native归约及DDR通知的精确NCC依赖已实现；此前扩大验证已按用户要求停止、记录保留。
+用户现已授权修复layout三项问题：预算中断丢失较优解、缺少完整factor依据的剪枝，以及下游隐藏中间布局选择；
+按08号合同先修求解结果保留，再恢复完整合法域，最后提前物化逐元素中间SSA；已随后续退化修复提交为`0e231204`。
+该检查点的prefill静态GS由976增至1084；已定位layout名称比较触发的多余搬运，以及逐元素分解阻断select原地复用两处问题。
+两处修正及其直接target、私有publication正反例已通过本轮主机验证；扩大回归发现的跨dtype factor与完整blocked BOOL copy缺口也已修复。
+修复后168项相关transform、37项conversion及lit通过，canonical完整增量构建后第二次Ninja no-op；原失败与复测记录保留。
+Query内物理遍历证明复用已完成定向回归；原8/42配置的prefill、Q1两步及Q2均已fresh构包/no-card通过，
+Q2还通过完整TargetModel输出。相同逐Tile GEMM/循环结构下，本轮无未解释的搬运增长，layout修复主机边界已闭合；
+板端actual KV接续与attention性能尚未重签，后续源码修改须重签其影响范围。
+随后处理prefill/decode展开、mask、CPU与同步成本；之后先完成本轮attention矩阵及受影响保护用例的
+全部编译、构包和fresh no-card，再核实设备恢复并逐例实卡验证。具体第5、6步见
+[当前实施计划](board-workload-matrix.md#交接与接续计划)；此前停止的其它搜索/验证批次不随此授权重启。
+不再通过CPU逐元素生成规则mask；decode已在SPM中的私有rank-0广播源按现有证明直接用于VuV，避免SPM mapping读取。
+这不表示scalar数学统一由CT执行。后续已补current Instr的CPU scalar计费和独立register-only F32算术候选，
+两种执行方案沿同一actual leaf比较；定向layout/cost/search、正式target LLVM及完整Driver回归已通过。
+TargetModel同步接入四种F32算术，精确位型、拒绝边界及完整Simulator/SystemC/lit回归通过。
+三个定向产品已fresh no-card通过，Q2完整TargetModel通过；完整source/package与已提交layout版本逐字节相同。
+CPU先验仍未校准，prefill的条件内动态工作量仍可为unknown，不能把其counter占位零当作无CPU开销。
+最终代码`3a1dbc5a`的82项主机配置已全部完成fresh source/package/no-card；对应76项实卡配置，
+另已准备72项可重新执行的历史对照。两项ViT对照保留相同原模型边界和参数，但导出bytecode不同，分别记录该限制。
+重启后的runtime API1400、PCI设备、16 Tile映射及当前boot日志已核实；全系统占用仅有已核对身份的日志服务。
+本轮Q2两种dtype已完成完整数值、guard及三次匹配计时；对照为旧none方案，不能据此签同预算search收益。
+新版BF16普通Q1两步的完整输出、actual KV接续、旧prefix exact及guard通过，尚只有一次资格样本。
+随后旧standard对照包首步在北京时间2026-09-19 22:46:48报告Tile-2 `NPU LSU TDMA Timeout`（XID12）；
+已立即停止整批，无retry/reset。根因仍unknown，尚余73项配置未启动，新版Q1重复计时及全矩阵性能保护未完成。
+主机验证结果及版本边界见同一实施计划。
+
+用户本轮要求先整理搜索组织调整方案，并增加按方案计费的 deep search 设计；已写入
+[06号搜索合同](../06-physical-dataflow/search.md#75-主搜索实现分支与-deep-预算)及
+[现有搜索组织计划](physical-search-organization.md)。已按用户纠正移除实现分支的基础可行前置条件。
+已补入核心及全部已通过case的逐项性能不下降、deep核心实卡收益门槛，详见
+[统一验收矩阵](board-workload-matrix.md#搜索组织修改的性能验收)。用户已授权按方案实施到验收闭合，
+当前已接入实现选择跨 retile 的绑定、独立分支状态、两种预算及正式入口，已修复 GEMM 驻留搜索和 LLaMA transport/collective 组合回归。
+LLaMA及大GEMM配对实卡的完整数值已通过；随后ViT1024 baseline输出通过，但该次运行后的内核检查发现TDMA异常，
+批次已停止，用户确认尚未恢复。此前将此异常关联到GEMM4097的记录已按原始日志更正，实际触发操作仍未知。
+用户随后指名单次Add检查：当前编译器fresh构包/no-card及FP16全部输出exact通过，运行窗口未发现新内核错误。
+当前不再仅以此前告警作为等待重启的前置；继续按具体case验证，TDMA根因仍未知。
+全矩阵暴露的共享初始化、降rank切片及矩形证明问题已完成主机修复；全矩阵构包部分完成，余下编译进程已中断、待续跑；
+本轮追加13项standard/deep配对板测，96次完整输出均通过且无新设备错误；按当前冻结版本，standard已有18/51项、deep已有13/51项实卡数值记录。
+deep本批仅8/2，小方案预算未证明性能收益，LocalReduce测得更慢；正式deep性能验收改用8/42，standard仍为8/42。
+扩大deep 8/42后，4/13项完成实卡；standard补编译已完成，冻结版本no-card为51/51。
+用户已要求停止在搜任务并收敛细调；9个旧搜索进程、板测等待及后续自动续跑队列均已停止，已有产物保留。
+已实现有界细调：每方案最多一轮、每轴左右最近对齐点，移除逐元素细调及反复重启；容量修正与两模式计费不变。
+本轮定向主机回归及正式source→package/no-card已通过；新版全矩阵和实卡性能保护尚未重签，详细验证见搜索组织计划。
+用户随后授权清理旧产物并用新版重新搜索比较；已清理已取消搜索的中间目录，保留完整对照包和日志。
+新版原13项standard构包/no-card全部通过，三项Division完成deep 8/42及配对实卡，搜索成本下降但未证明稳定设备收益。
+用户随后要求停止：其余10项搜索和后续板测队列均已停止，无在途设备执行。
+本轮按用户要求将整个search的效率方案落入06号及现有搜索组织计划：复用实际IR前缀、提前有证据的适用性检查、
+统一多尺度参数过程、独立actual容量修正、方案间轮转，明确standard/deep计费、owner失效及性能覆盖。
+方案同时明确deep交错与预算收尾不再保证跨预算完整trace前缀；保留同预算确定性和跨预算质量门槛，
+尚未证明的集合关系及需固定的尺度/方向细节列入实施前检查。用户已进一步授权按方案实施到验收完成；
+实际前缀复用、作用域适用性检查、统一多尺度提案和deep求值间轮转已实现并通过定向主机回归，当前重签产品及性能矩阵；
+原13项standard构包/no-card及完整包一致性通过；用户指定的单次实卡批次已完成，多尺度实现冻结版本的13项完整数值均通过，
+尚未签发性能结论。三项Division的deep及配对实卡数值通过，尚未证明设备收益。
+用户进一步指定补测完整standard并核对优化收益：最终实现已完成既定清单全部构包/no-card及逐项重复实卡数值验证。
+变化产物的匹配对照发现prefill尾块收益，同时确认LocalConv S1025与FP16 conv-mixed设备性能退化；
+主机配对显示部分编译提速，但LocalConv编译更慢。当前性能不下降与全面效率门槛未通过，先定位并修复这些回归；
+波动项及独立guard覆盖缺口保留未完成，具体样本与范围见同一计划。剩余deep编译已中断，本轮未启动，仍待后续验证。
+用户指定的prefill落选DTE方案已完成实际候选导出与匹配实卡对照，完整数值通过，但设备耗时高于普通winner；
+结果及分块差异见同一搜索组织计划，不据此修改搜索评分或签发DTE收益。
+全部既有通过case的两模式数值、逐项性能与deep收益门槛尚未闭合；
+仍归 `board-testing`，不新增队列项，也不代签下述模型、性能和板端未完成门槛。
+
+此前用户授权优先修正局部拼接引入的重复访问，恢复原有共享与性能；本轮已修复复用约束，LLaMA block两种dtype及
+三组大GEMM均完成三次完整实卡数值与性能保护。此前ViT S1024/1025默认8/42搜索各有4个actual SPM accepted，
+最终target拒绝导出图中的F32 attention GEMM输入；用户已授权并完成02号低精度attention导出，保留原reference和验收标准。
+两个完整ViT的XLA数值通过；进一步修复06号空间物化对真实多矩形view image的拒绝后，
+两个尺寸均完成默认8/42构包、fresh no-card及各三次完整实卡数值验收。
+五项LLaMA/GEMM重新构包并no-card通过，完整包与最新实卡恢复版本相同。
+第4项现剩完整LM S1024/1025与4K prefill，ViT性能记录作为后续优化的初始样本，尚未完成三轮调优。
+TDMA专项定位暂缓，已有异常结论不改写为已修复；具体步骤与验收仍在同一板测计划。
+原授权要求`board-testing`严格依次推进：完整单层LM重测→未融合图数值根因→decode性能恢复→
+剩余五配置闭合→逐case性能优化。第1项完整LM重测已完成：用户重启后，两种dtype完整输出及
+FP16→BF16连续执行均通过；此前超时未复现、根因未知，不声称已修复。第2项已定位并修复broadcast遗漏非单位轴置换，
+冻结未融合图经当前正式后端后FP16/BF16完整实卡数值通过，block两种dtype及三组大GEMM保护均已通过。
+当前第3项已修复decode非连续目标导致逐行DMA的通用根因，普通两步完整数值通过；耗时与旧快包仍有差距，健康性能资格待重签。
+此前第2步profile发生completion超时；固件记录定位到Trace未返回，旧快包窗口另有先行LSU TDMA fatal，因果未知。
+用户重启并授权直接复测后，带诊断日志及未加日志的原包两步均完成Primary/Count/Trace，全部输出及actual KV接续通过，旧超时未复现。
+按用户要求清理额外诊断代码、重复检查脚手架和汇总。旧快包普通执行再次报告Tile 1 LSU TDMA异常；随后fresh Add通过，
+单独抽出的原1 MiB GatherScatter也完整通过，尚未定位整包异常根因。用户要求暂缓该问题，当前转入第4项，先处理ViT S1024/1025编译失败；
+第3项剩余decode性能及TDMA定位保留未完成，第5项待第4项闭合后推进。上板前检查全系统占用、异常即停。所有修改须通用，
+LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门槛，具体矩阵见同一板测计划。

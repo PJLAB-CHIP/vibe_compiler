@@ -5,23 +5,16 @@
 
 ## 开始与收尾
 
-- 开工先运行`git status`，识别共享worktree中的已有改动；不回滚、不覆盖无关工作。
-- 依次读`AGENTS.md`、`tasks/progress.md`、当前编号设计和实施计划，再读定义、构造位置、直接consumer和测试。
-- 非小修先确认pipeline contract和本项覆盖矩阵；缺少输入、输出、consumer或完成门禁时先补设计。
-- 修改按一个IR或文件格式边界推进。Late stage暴露上游缺口时回到真实producer修复，不在consumer临时repair。
-- 收尾使用本轮生成的构建/测试结果，检查完整diff和工作树，只更新受影响文档并提交相关文件。
+开工、授权、变更边界和提交流程只维护在[AGENTS](../AGENTS.md)，当前任务从[progress](../tasks/progress.md)进入。
 
 设计事实的阅读入口：架构与pipeline看01；frontend/data看02；structured/physical transformation看05--10；
 Instr/memory/communication看11--13；target/package/model看14--17；源码与MLIR工程看18--20；硬件行为看`docs/`。
 
 ## Canonical build
 
-- 唯一主工程binary dir是`build/`，由checked-in preset `default`拥有。普通任务不创建按任务、日期或配置命名的
-  第二build。CMake输入、toolchain或managed dependency改变时重新configure同一目录。
-- 修改期间可先构建受影响target；形成完成结论或提交代码前，在同一build执行一次无target的完整增量构建。
-  Ninja只重建失效节点，不通过删除build掩盖dependency或registration问题。
-- Host build、unit、CTest、lit、catalog和no-card默认使用`nproc`并行；只有已证内存、锁或共享写目录限制时降并发。
-- Test的`UNSUPPORTED`、skip、未注册、XPASS、UNRESOLVED和TIMEOUT都不算通过。报告结果时同时确认关键case实际执行。
+构建只使用preset `default`的`build/`；配置时机、并行度和完成检查遵守[AGENTS](../AGENTS.md#canonical主机构建)。
+XPASS、UNRESOLVED和TIMEOUT同样不是通过。以下记录容易漏掉的依赖与工具细节。
+
 - Structured e-graph依赖用`utils/deps/bootstrap_deps.py --egraph-sources`同步pinned source和vendor record；CMake只运行
   `cargo build --locked --offline`。缺source、Cargo/rustc或版本不匹配应在configure/build边界失败，compiler invocation
   不启动外部optimizer进程。
@@ -49,10 +42,8 @@ ctest --preset default -j"$(nproc)"
 
 ## 测试输入与断言
 
-- IR变换正例使用rank至少3且主要迭代维不小于1024的static shape；partition、tiling或loop成对覆盖1024与
-  1025/1031，并实际经过multi-Tile、multi-block/wave、remainder和tail。
-- Tiny shape只用于有界oracle、最小verifier负例、scalar/zero-rank或单点故障定位，并注明原因；同一机制仍需真实规模case。
-- 每项矩阵写清输入等价类、结构分支、typed failure、exact输出和direct downstream witness。正例不能只断言pass成功。
+Shape、整除/tail、tiny oracle和逐项矩阵要求见[测试覆盖](../AGENTS.md#测试覆盖)。
+
 - 对coverage、owner、demand、merge、tail、copy、movement或completion的承诺使用精确计数/关系断言；不要把shape选取
   写入legality或策略。
 
@@ -61,15 +52,12 @@ ctest --preset default -j"$(nproc)"
 - MLIR行为先查官方文档，具体API以configured build实际使用的pinned include和TableGen路径为准。旁置源码树含有某header
   不能证明当前构建可用。
 - 修改已有对象前阅读definition、constructor、direct user、verifier、canonicalization和lowering；用`rg`沿完整调用链查找。
-- 新op/type/attr前检查standard dialect、trait、interface、canonicalization和conversion能否表达。新增pass依赖dialect时显式声明。
 - Crash/assert先用verifier-valid input复现并定位哪个pass首次产生invalid IR；不要在下游增加兜底verifier或名称恢复。
-- Rewrite在第一次mutation前完成所有可失败preflight；同一clone transaction使用`IRMapping`。分析结果在IR mutation后默认失效。
 
 ## Source、CMake与命名
 
-- Public header只暴露稳定typed API；query-local recipe、staging builder和failure bookkeeping留在`lib/`内部header。
-- CMake显式列source和library dependency。新增、删除或迁移能力时同步header/source/CMake/test，fresh configure检查漏列。
-- Test目录镜像被测component；fixture不是第二套schema、parser、ABI或产品pipeline。
+Source、header、CMake和测试owner见[18号设计](../tasks/18-source-organization.md)，MLIR组件边界见[19号设计](../tasks/19-mlir-engineering.md)。
+
 - 命名前先用一句话说明对象语义，再核对typed domain和真实对照。Namespace、parent op或强类型已消歧时不重复范围词。
 - 反引号路径、Markdown链接和current symbol改名后用`rg`检查残留；多义词逐项分类，不做无语义的全局替换。
 - Python子进程和测试使用`-B`或`PYTHONDONTWRITEBYTECODE=1`；源码树不得留下`__pycache__`、`.pyc`或`.pyo`。
@@ -77,9 +65,6 @@ ctest --preset default -j"$(nproc)"
 ## Current-IR变换定位
 
 - 先画出`input current IR -> typed choice -> actual transformation -> verifier -> fresh analysis -> consumer`。
-- Analysis只读current IR和显式target config。Choice只保存transformation参数；operation、SSA、buffer、alias、movement、
-  lifetime、event和order只有物化后才是事实。
-- Search candidate只复制最近的`IsolatedFromAbove` owner。失败/loser整体销毁；Accepted owner直接向下游移动，不能按plan重建。
 - Relation side state只属于当前IR epoch。Rewrite通过`IRMapping`、listener或显式old→new map更新；找不到replacement时
   fail closed，不能按类型、邻接位置、Location或名称猜测。
 - `none`和`search`调试时分别统计controller、candidate/attempt、atomic stage和actual leaf调用次数，确认二者互不调用或fallback。
@@ -136,8 +121,7 @@ ctest --preset default -j"$(nproc)"
 - Product source只使用02号定义的portable StableHLO artifact；text IR只属于明确的focused入口，不是第二reader。
 - Advisory verifier与compiler可复用ingestion实现，但compiler仍独立snapshot、拥有并验证输入，不能信任隐藏的“已验证”状态。
 - 比较none/search时两次fresh parse/import，各自拥有ProgramData、IR、output和package；source identity只证明输入一致。
-- 无卡阶段生成package、host expected和runner；真实设备只在明确任务中单进程逐case运行。Timeout或设备异常后停止批次，
-  不自动retry、reset或power cycle。
+- 设备运行与异常停止遵守[板端验证流程](../AGENTS.md#板端验证)；下列方法用于占用核对和故障证据定位。
 - 占用检查先对实际设备节点使用有全系统可见权限的`fuser -v`，再以`/proc/<pid>/fd`的字符设备号、exe、UID和cgroup核对持有者。
   不能只搜进程名或只看当前用户；不同容器仍可能持有同一设备。日志服务的设备FD不等于计算任务，但不能仅凭名称将其忽略。
   计算占用存在时等待并重查，权限或身份不明时保持unknown；每次launch前重新确认，检查结果不构成全系统排他租约。

@@ -2,6 +2,9 @@
 
 *从任务组织、架构重构，到自动 spatial/temporal mapping 与 LLaMA block 实卡优化*
 
+本文叙述截至2026-09-10、提交`d2438ce1`的项目经历；“现在”和后续安排按当时版本解释。
+当前范围与任务状态见[仓库入口](../../README.md)和[progress](../../tasks/progress.md)。
+
 ## 1. 开篇：我们一起做出了什么？
 
 给编译器一个高层张量程序，不替它写 kernel，不告诉它每个计算单元该做哪部分工作，也不手工安排数据搬运。它能不能自己把这些事情做完，在一种新的加速器上跑起一个完整的 LLaMA block？
@@ -71,7 +74,7 @@ Agent 的贡献远超补全函数：它阅读代码和资料，比较算法，�
 
 对逐元素运算，这往往就是对应的一块输入；对归约，还需要沿归约维完成累加；对卷积，需要考虑窗口；经过 reshape 后，同一份数据又可能换了一套坐标。我们要复用的是这些访问关系，而不是给每种算子另写一份切块流程。
 
-下面是根据[实际实施计划](../../tasks/plans/board-performance-optimization.md)整理的任务卡，不是对话逐字稿：
+下面是根据[实际实施计划](../../tasks/archive/board-performance-optimization.md)整理的任务卡，不是对话逐字稿：
 
 ```text
 目标
@@ -115,7 +118,7 @@ Agent 的贡献远超补全函数：它阅读代码和资料，比较算法，�
 | 一个网格中所有块的需求怎样查询？ | [`IndexRelation`](../../include/Wafer/Analysis/Linalg/IndexRelation.h) 的 `getRectangularTileImage` |
 | 谁使用查询结果选择融合？ | [`TemporalDomain.cpp`](../../lib/Wafer/Planning/PhysicalDataflow/TemporalDomain.cpp) |
 | 循环、局部计算和共享结果在哪里生成？ | [`TemporalTiling.cpp`](../../lib/Wafer/Transforms/Linalg/TemporalTiling.cpp) |
-| 这轮改动经过什么验证？ | [计划中的输入矩阵与本轮结果](../../tasks/plans/board-performance-optimization.md) |
+| 这轮改动经过什么验证？ | [计划中的输入矩阵与本轮结果](../../tasks/archive/board-performance-optimization.md) |
 
 在这次实现中，还出现了一个算法效率问题：如果逐个枚举所有 tile 来证明需求，输入越大，编译工作越多。最终查询对主块和尾块类型作参数化证明；相应测试把长度扩大到百万级，检查的类别仍维持在 2、4、8 这样的量级，而不是随 tile 数逐一展开。
 
@@ -373,6 +376,6 @@ Primary 用来比较设备时间，另行采集的 engine PMU 与本地 Trace �
 本文按项目推进者的第一人称整理，“我们”指人与编程 Agent 的协作。引用的问题来自开发对话，任务卡是依据实施记录的重述；过程材料包括代码、设计、Git 历史和实验记录。实现复盘截至 `d2438ce1`（2026-09-10），性能数字分别对应文中链接的实验产物。
 
 - [项目入口](../../README.md)、[架构设计](../../tasks/01-architecture.md)、[当前任务状态](../../tasks/progress.md)。
-- 主要重构线索：7 月的[事实重基线审计](../../tasks/archive/12-architecture-evidence-reset.md)；8 月的[图归一化](../../tasks/05-local-compute-normalization.md)与[physical-dataflow 设计](../../tasks/06-physical-dataflow-synthesis.md)；9 月的[temporal 实施与验证记录](../../tasks/plans/board-performance-optimization.md)。
+- 主要重构线索：7 月的[事实重基线审计](../../tasks/archive/12-architecture-evidence-reset.md)；8 月的[图归一化](../../tasks/05-local-compute-normalization.md)与[physical-dataflow 设计](../../tasks/06-physical-dataflow-synthesis.md)；9 月的[temporal 实施与验证记录](../../tasks/archive/board-performance-optimization.md)。
 - 相关提交：`dd738a9c`（架构审计）、`c6cc4d57`（current IR 原则）、`2aa64117`（e-graph 实现）、`41cbe267`（PBQP 唯一布局入口）、`cd6817e4`（合法布局解）、`92d0be9e`（模型流量与原生归约）、`ba976c5a` / `d2438ce1`（通用 temporal 与需求分析）。
 - [实卡正确性记录](../../tasks/archive/board-correctness-qualification.md)、[性能测量与根因](../board-performance-results.md)，以及其中链接的机器可读实验摘要。

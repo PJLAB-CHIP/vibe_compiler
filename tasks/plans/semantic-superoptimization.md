@@ -1,6 +1,6 @@
 # Semantic Superoptimization 实施计划
 
-状态：`later`（研究/可选方向，重新立项前必须重审）。动态状态与依赖只看`tasks/progress.md`。本任务不在当前Q52–Q53施工中实现，
+状态：`later`（研究/可选方向，重新立项前必须重审）。动态状态与依赖只看`tasks/progress.md`。本任务不进入当前执行队列，
 也不属于FA/FD核心闭合；只有明确的语义alternative消费者、收益假设和独立等价oracle时才重新核对本计划。Q50.S只拥有
 fixed FA/FD attention normalization，不提供通用semantic-alternative接口。Q48只有在Q53重新达到`board-ready`后，
 先更新自己的TensorProgram表示、proof与Q52 actual-IR consumer合同，才能生成其它semantic alternatives；不建立第二条优化管线
@@ -16,6 +16,8 @@ TensorProgram alternatives
   -> DeviceExecutable
   -> ExecutablePackage
 ```
+
+Q53独立完整主机矩阵已取消。下述Q53资格仍是启动门槛，须重新授权并验收，不能由其它板测结果代签。
 
 ## 1. Pipeline Contract
 

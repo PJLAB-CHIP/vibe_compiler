@@ -91,7 +91,7 @@
       "src/sweeper.h",
       "tests/minimalloc_test.cc"
     ],
-    "distribution_digest": "sha256:6433e2c2336295e2f8e41d28fabef3d82d82854bdbc74f8fcaaf87bfe5afbfaa"
+    "distribution_digest": "sha256:1101d7dfedacc5c704de23dcae03e4530da9dc35c5a0ebdab07cd25a4639fffb"
   },
   "semantic_deltas": [
     {

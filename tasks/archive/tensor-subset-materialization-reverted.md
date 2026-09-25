@@ -24,9 +24,9 @@
 
 | 入口 | 历史实卡结果 | 证据 |
 | --- | --- | --- |
-| NCx BF16 GEMM M=N4096/K1024、2048×28-head attention | 各三次全量数值、guard、正常清理通过；普通 event 中位数 3.203/3.544 ms | [NCx 输入复用与直接 DMA](../../docs/board-performance-results.md#2026-09-23ncx-输入复用与直接-dma-整改) |
-| 同两项的轻量计时 | 各三次实卡通过；最长 Tile 本体中位数 1.801/2.461 ms，同次 event 中位数 3.158/3.579 ms | [轻量计时](../../docs/board-performance-results.md#2026-09-23kernel-本体轻量计时) |
-| `665452c5` 注册入口 | 两项分别 source/no-card 及一次完整实卡通过，保留原已优化 compiler | [注册与统一计时](../../docs/board-performance-results.md#2026-09-23ncx-case-注册与统一计时) |
+| NCx BF16 GEMM M=N4096/K1024、2048×28-head attention | 各三次全量数值、guard、正常清理通过；普通 event 中位数 3.203/3.544 ms | [NCx 输入复用与直接 DMA](../../docs/board-performance/2026-09-23.md#2026-09-23ncx-输入复用与直接-dma-整改) |
+| 同两项的轻量计时 | 各三次实卡通过；最长 Tile 本体中位数 1.801/2.461 ms，同次 event 中位数 3.158/3.579 ms | [轻量计时](../../docs/board-performance/2026-09-23.md#2026-09-23kernel-本体轻量计时) |
+| `665452c5` 注册入口 | 两项分别 source/no-card 及一次完整实卡通过，保留原已优化 compiler | [注册与统一计时](../../docs/board-performance/2026-09-23.md#2026-09-23ncx-case-注册与统一计时) |
 | 原 Tensor 大 GEMM 与 attention | 既有全量数值及性能结果保留；NCx 修复后 Tensor Instr/目标 LLVM 与健康记录逐字节一致 | [NCx 输入复用证据](../../docs/data/board-performance/ncx-io-reuse-20260923.json) |
 
 最终尝试没有提高证明预算、删除失败断言或扩大接受条件。此前两项非整除 allocation 断言发生在
@@ -54,7 +54,7 @@
 不再构成施工授权。稳定合同以恢复后的编号设计为准，状态只看 [progress](../progress.md)。
 
 本计划归现有 `board-testing`，状态与执行顺序只看 [progress](../progress.md)。稳定合同由
-[06号](../06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)、
+[06号](../06-physical-dataflow/structural-choice.md#已选tile的tensor子集物化与共享选择)、
 [08号](../08-physical-realization.md)和
 [18号](../18-source-organization.md#42-analysisplanning与ir变换)共同约束。
 实现、no-card、板端数值和性能分别验收；设计或局部代码检查点不代表这些门槛已完成。

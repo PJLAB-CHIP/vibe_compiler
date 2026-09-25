@@ -67,9 +67,13 @@ F32使用 `Explp` 不代表把storage或compute改成BF16。当前安装包未�
 普通Exp与Explp的概率最大绝对差约 `1.06e-8`，不代替online recurrence或完整attention验证。
 
 证据分类：opcode/ABI与软件模型算法为已核对的接口/模型事实；历史已列normal/special tuple的板端资格仍按下表记录；
-本次统一替换后整包的数值及加速比尚待板端实测，属于unknown。不得把“高带宽”换算为固定加速倍数。
+统一替换后的BF16 attention `[1,28,2048,128]`整包已于2026-09-22完成数值、guard及设备健康检查，
+单次普通device elapsed为4.714 ms，属于该输入和产物的`board-observed`证据，见
+[原始记录](data/board-performance/attention-copy-chain-20260922.json)的`explp_baseline`。
+跨dtype/全定义域误差界及独立、稳定的Explp加速比仍为unknown；历史单样本不签发当前版本资格，
+也不得把“高带宽”换算为固定加速倍数。比较限制见[复盘](attention-optimization-retrospective.md#54-explp接入已有指令保留原数值验收)。
 Managed reference用相同F32乘法及host `exp2` 组织提供近似参考，保留与厂商primitive/设备逐bit可能不同的边界。
-生产选择由[11号指数合同](../tasks/11-instruction-ir.md#指数的生产指令选择)拥有。
+生产选择由[11号指数合同](../tasks/11-instruction-ir/operations.md#指数的生产指令选择)拥有。
 
 ## 证据解释
 

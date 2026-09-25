@@ -1,7 +1,10 @@
 # 搜索空间与下游实现审计
 
+本文是2026-09-12实验快照；“当前”“本轮”和后续方向均指该次审计，不代表现在的搜索实现或执行授权。
+现行算法见[06号设计](../tasks/06-physical-dataflow-synthesis.md)，任务状态见[progress](../tasks/progress.md)。
+
 本次审计沿用 `board-testing`，实施范围见
-[`board-performance-optimization.md`](../tasks/plans/board-performance-optimization.md)。
+[`board-performance-optimization.md`](../tasks/archive/board-performance-optimization.md)。
 目标是区分搜索语言、proposal 排序、预算分配、actual materialization、completion、数值实现与 cost 排序；
 不能将它们统一归因于“预算不够”或“没有选 DTE”。
 

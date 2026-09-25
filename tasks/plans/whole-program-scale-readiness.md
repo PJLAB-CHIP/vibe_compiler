@@ -5,6 +5,9 @@
 `tasks/archive/program-data-and-whole-program-scale.md`；稳定source、data、target和package合同由02、14--16号
 设计文档拥有。
 
+Q53独立完整主机矩阵已取消。下述Q53资格是本候选保留的启动门槛，不是当前已满足的前置；
+重新启动本候选前，须重新授权并验收该host/no-card资格，不由历史board-ready或其它板测结果代签。
+
 ## Pipeline Contract
 
 ```text

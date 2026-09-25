@@ -52,7 +52,7 @@ Dependency classes:
 | functional numeric model | SoftFloat/TestFloat, GNU m4, GMP, MPFR | `utils/deps/bootstrap_deps.py --numeric-model-deps` owns `third_party/numeric-model`; CMake consumes only its validated canonical record and imported targets |
 | target numeric backend | oneDNN | `utils/deps/bootstrap_deps.py --onednn-deps` owns `third_party/onednn`; `WaferOneDNNBackend` consumes only its validated canonical record and `WaferOneDNN::oneDNN` |
 | functional event model | Accellera SystemC | `utils/deps/bootstrap_deps.py --systemc-model-deps` owns `third_party/systemc-model`; CMake consumes only its validated canonical record and official `SystemC::systemc` |
-| future runtime / driver | HPGR SDK, KMD/UAPI headers, legacy Tsm/VS SDK | not vendored yet; CMake exposes explicit opt-in roots |
+| optional board runtime / driver | HPGR SDK, KMD/UAPI headers, legacy Tsm/VS SDK | external dependencies; CMake exposes explicit opt-in roots |
 | test tools | lit, FileCheck, GTest | Python venv / LLVM tools / `third_party/googletest` |
 
 OpenXLA/XLA and Shardy may apply their own `third_party/stablehlo/temporary.patch`

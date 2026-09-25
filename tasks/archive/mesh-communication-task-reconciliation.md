@@ -30,7 +30,7 @@
   [DistributedCollectiveMovement.cpp](../../lib/Wafer/Transforms/Tile/DistributedCollectiveMovement.cpp)，
   对应的通用算法、actual collective和主尾块测试已注册于
   [StructuredToTileTest.cpp](../../unittests/Transforms/Tile/StructuredToTileTest.cpp)。
-- 主机验收历史保留在[原实施计划](../plans/physical-dataflow-synthesis.md)。其中9月6日的board-ready
+- 主机验收历史保留在[原实施计划](physical-dataflow-host-readiness.md)。其中9月6日的board-ready
   只描述当时版本，不代签当前源码的完整产品矩阵。
 - 生产source-to-DTE及1024/1025/1031的实际通信数值、completion和清理证据见
   [板测归档](board-correctness-qualification.md)。AllReduce专项实际为direct贡献交换加Ring AllGather，
