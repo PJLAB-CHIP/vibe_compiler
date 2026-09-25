@@ -96,62 +96,11 @@ TensorViewIndexingResult deriveTensorViewIndexing(
     mlir::Value value,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
-/// A current bounded scf.for coordinate, optionally translated by one exact
-/// positive affine scale and static origin. The grid describes actual loop
-/// instances; it does not select placement, storage, or future iterations.
-struct TensorLoopGrid {
-  mlir::Value offset;
-  mlir::Value induction;
-  int64_t base = 0;
-  int64_t scale = 1;
-  int64_t lower = 0;
-  int64_t upper = 0;
-  int64_t step = 0;
-};
-
-struct TensorLoopGridResult {
-  TensorResultIndexingStatus status = TensorResultIndexingStatus::Unsupported;
-  std::optional<TensorLoopGrid> grid;
-  std::string detail;
-};
-
-TensorLoopGridResult
-queryTensorLoopGrid(mlir::OpFoldResult offset,
-                    const IndexRelationLimits &limits = IndexRelationLimits());
-std::optional<int64_t> getTensorLoopGridFloor(const TensorLoopGrid &grid,
-                                              int64_t coordinate);
-std::optional<int64_t> getTensorLoopGridCeil(const TensorLoopGrid &grid,
-                                             int64_t coordinate);
-std::optional<int64_t> getTensorLoopIndex(const TensorLoopGrid &grid,
-                                          int64_t coordinate);
-
 /// Prove both the exact dense source window and its local row-major order.
 /// Equal element counts alone do not authorize reshaping a selected tile.
 StaticRectangularIndexSetResult getTensorViewTileSource(
     const TensorViewIndexing &indexing, llvm::ArrayRef<int64_t> resultShape,
     const StaticRectangularIndexSet &requested,
-    const IndexRelationLimits &limits = IndexRelationLimits());
-
-struct TensorViewTilePiece {
-  StaticRectangularIndexSet result;
-  StaticRectangularIndexSet source;
-};
-
-struct TensorViewTilePieceResult {
-  IndexRelationStatus status = IndexRelationStatus::Unsupported;
-  /// Exact with no piece means the source domain does not meet this request.
-  std::optional<TensorViewTilePiece> piece;
-  std::string reason;
-
-  bool isExact() const { return status == IndexRelationStatus::Exact; }
-};
-
-/// Intersect one actual source rectangle with the selected view demand and
-/// prove the resulting pair of rectangles and their local element order.
-TensorViewTilePieceResult getTensorViewTilePiece(
-    const TensorViewIndexing &indexing, llvm::ArrayRef<int64_t> resultShape,
-    const StaticRectangularIndexSet &requested,
-    const StaticRectangularIndexSet &sourceWindow,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
 /// Map a finite result demand to one operand of an exact current support
@@ -160,104 +109,6 @@ TensorViewTilePieceResult getTensorViewTilePiece(
 StaticRectangularIndexSetPiecesResult getTensorOperandDemand(
     const TensorResultIndexing &indexing, const TensorOperandIndexing &operand,
     llvm::ArrayRef<StaticRectangularIndexSet> demand,
-    const IndexRelationLimits &limits = IndexRelationLimits());
-
-enum class TensorAssemblyStatus : uint8_t {
-  Exact,
-  NotAssembly,
-  Unsupported,
-  ResourceExhausted,
-  BrokenContract,
-};
-
-struct TensorAssemblySegment {
-  mlir::Value source;
-  mlir::OpOperand *sourceOperand = nullptr;
-  llvm::SmallVector<int64_t, 4> offsets;
-  llvm::SmallVector<int64_t, 4> sizes;
-};
-
-struct TensorAssemblyResult {
-  TensorAssemblyStatus status = TensorAssemblyStatus::NotAssembly;
-  llvm::SmallVector<TensorAssemblySegment, 4> segments;
-  std::string detail;
-
-  bool isExact() const {
-    return status == TensorAssemblyStatus::Exact && !segments.empty();
-  }
-};
-
-/// Prove that the current insert chain defines every element exactly once.
-/// Segments are returned newest insertion first, matching SSA traversal.
-/// This is a source/coverage query only: other uses of the chain and
-/// producer fusion eligibility are decisions for its immediate consumer.
-TensorAssemblyResult queryTensorAssembly(
-    mlir::Value value,
-    const IndexRelationLimits &limits = IndexRelationLimits());
-
-struct TensorAssemblyDemandPiece {
-  mlir::Value source;
-  mlir::OpOperand *sourceOperand = nullptr;
-  StaticRectangularIndexSet resultWindow;
-  StaticRectangularIndexSet sourceWindow;
-};
-
-struct TensorAssemblyDemandResult {
-  TensorAssemblyStatus status = TensorAssemblyStatus::NotAssembly;
-  llvm::SmallVector<TensorAssemblyDemandPiece, 4> pieces;
-  std::string detail;
-
-  bool isExact() const { return status == TensorAssemblyStatus::Exact; }
-};
-
-/// Resolve one static demand against current insert_slice SSA updates.
-/// The newest write wins; uncovered points read the actual old destination.
-/// A demanded tensor.empty point is unsupported because its value is undefined.
-/// Windows and borrowed handles are valid only in the current IR epoch.
-TensorAssemblyDemandResult queryTensorAssemblyDemand(
-    mlir::Value value, const StaticRectangularIndexSet &requested,
-    const IndexRelationLimits &limits = IndexRelationLimits());
-
-/// An actual loop's finite partition. Split points are induction coordinates,
-/// not tensor coordinates. The final bound need not be a reached iteration.
-struct TensorAssemblyReadLoop {
-  mlir::Value induction;
-  int64_t step = 0;
-  llvm::SmallVector<int64_t, 4> boundaries;
-};
-
-struct TensorAssemblyReadPiece {
-  mlir::Value source;
-  mlir::AffineMap sourceOffsets;
-  llvm::SmallVector<int64_t, 4> sourceSizes;
-  StaticRectangularIndexSet resultWindow;
-};
-
-struct TensorAssemblyReadCase {
-  llvm::SmallVector<int64_t, 4> lowerBounds;
-  llvm::SmallVector<int64_t, 4> upperBounds;
-  llvm::SmallVector<TensorAssemblyReadPiece, 4> pieces;
-};
-
-struct TensorAssemblyReadResult {
-  TensorAssemblyStatus status = TensorAssemblyStatus::NotAssembly;
-  llvm::SmallVector<TensorAssemblyReadLoop, 4> loops;
-  llvm::SmallVector<TensorAssemblyReadCase, 4> cases;
-  std::string detail;
-  /// Compact piece coordinates. A proved transparent reshape may make this
-  /// differ from the consumer shape while preserving row-major element order.
-  llvm::SmallVector<int64_t, 4> shape;
-
-  bool isExact() const { return status == TensorAssemblyStatus::Exact; }
-};
-
-/// Resolve the actual bounded read family, preserving holes between reads.
-/// Each case has static local pieces; sourceOffsets takes the live induction
-/// values in loops order. This is current-index analysis, not a future IR or
-/// storage plan. Mutation invalidates all returned handles and proofs.
-TensorAssemblyReadResult queryTensorAssemblyRead(
-    mlir::Value value, llvm::ArrayRef<mlir::OpFoldResult> offsets,
-    llvm::ArrayRef<int64_t> sizes,
     const IndexRelationLimits &limits = IndexRelationLimits());
 
 /// Current structured-compute access maps. These adapters expose dialect

@@ -38,10 +38,6 @@ TEST(PipelinesTest, TileLoweringBuilderUsesTheProductionNestedStructure) {
   mlir::PassManager production(&context);
   wafer::buildLowerTileRegionToInstrPipeline(production);
   const std::string pipeline = printPipeline(production);
-  EXPECT_NE(pipeline.find("wafer-convert-private-packed-updates-to-instr"),
-            std::string::npos);
-  EXPECT_LT(pipeline.find("wafer-convert-private-packed-updates-to-instr"),
-            pipeline.find("wafer-convert-tile-region-to-instr"));
   EXPECT_NE(pipeline.find("wafer-convert-tile-region-to-instr"),
             std::string::npos);
   EXPECT_NE(pipeline.find("wafer-convert-bufferization-copies-to-instr"),

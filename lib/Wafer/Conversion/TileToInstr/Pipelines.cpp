@@ -13,8 +13,6 @@
 namespace wafer {
 
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
-  pm.nest<mlir::func::FuncOp>().addPass(
-      createConvertPrivatePackedUpdatesToInstrPass());
   pm.nest<mlir::func::FuncOp>().nest<TileRegionOp>().addPass(
       createConvertTileRegionToInstrPass());
   pm.addPass(createConvertBufferizationCopiesToInstrPass());

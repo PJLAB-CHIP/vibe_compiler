@@ -7,7 +7,6 @@
 #include "Wafer/Transforms/Tile/StructuredMaterializationRelations.h"
 
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include <cstdint>
@@ -46,10 +45,9 @@ struct OnlineAttentionDecompositionStatistics {
 /// spatial state merge/finalize and endpoint relations are preserved. A
 /// post-mutation failure requires the caller to discard the candidate owner.
 mlir::FailureOr<OnlineAttentionDecompositionStatistics>
-decomposeOnlineAttention(mlir::ModuleOp module,
-                         StructuredMaterializationRelations &relations,
-                         OnlineAttentionDecompositionFailure *failure = nullptr,
-                         mlir::RewriterBase::Listener *listener = nullptr);
+decomposeOnlineAttention(
+    mlir::ModuleOp module, StructuredMaterializationRelations &relations,
+    OnlineAttentionDecompositionFailure *failure = nullptr);
 
 /// Checks the stable handoff condition required by layout/bufferization.
 mlir::LogicalResult

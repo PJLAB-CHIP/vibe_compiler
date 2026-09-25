@@ -139,43 +139,20 @@ post-attention bounded logical normalization
        attention -> online state contributions/merge
   -> current-op temporal tile-and-fuse, including online K2 stateful tiling
   -> online-attention decomposition and final current SSA/use graph
-  -> Tensor preparation that can introduce actual subsets
   -> selected Tensor subset materialization and shared-use closure
-  -> singleton normalization / boundary preparation / layout and bufferization
+  -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
   -> physical TileRegion
 ```
 
-进入layout query/bufferization前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
+进入本stage前，06号拥有的已选Tensor子集物化必须完成实际来源、局部destination和共享使用关系。
 Spatial/Temporal共享纯索引与片段生成；计算融合由Temporal拥有，layout只消费其实际结果。
 “保留共享”与“按窗口局部物化”是两个明确的Tensor实现，不能由bufferization/allocator临时互换，
 也不能因局部IR物化失败而在这里重建完整输入。真实full-use保留完整值，不能仅凭allocation大就删去。
-Tensor选择消费前保留的单次带坐标尾循环，在`prepareCurrentLayoutInput`通过标准SCF接口展开；
-该步骤只规范化已有控制流和SSA，不生成或补绑读取选择。展开后才检查边界发布和建立layout query。
-`prepareCurrentLayoutInput`中会生成新subset的Tensor preparation须分离为本层拥有的原子Tensor准备入口，
-由上层driver/named pipeline在最终读取组发现和选择前调用；再调用06号共同物化，最后处理单次循环规范化、
-边界发布及layout query。剩余layout preparation不得新造未闭合需求；不能从`WaferTileTransforms`回调
-`WaferLinalgTransforms`造成循环依赖，也不通过反复扫描补救调用顺序。named pipeline与none/search复用同一实现。
+`prepareCurrentLayoutInput`中的已有Tensor preparation若暴露新的需求，调用同一子集helper闭合后再建立layout query；
 相关IR mutation后重建analysis，不让早期查询成为当前buffer的事实来源。具体算法与覆盖由
 [06号合同](06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)拥有。
-
-局部物化可以产生保留原计算循环的嵌套copy循环与条件分支；每个块的shape静态，offset和来源guard可包含常数floor/mod。
-条件内先将实际source slice插入局部destination，再yield同一destination；layout不得要求不同source分支先合流为同一view几何。
-One-Shot从这份DPS/SCF SSA决定in-place/out-of-place，movement只消费已确定的alias与实际encoding。
-Tensor逻辑矩形与NCx物理连续性分别证明，沿用上文外部布局支持域；动态窄C tail仍是明确未实现的lowering能力，
-不能因为Tensor查询Exact就放过，也不能静默切回Tensor ABI。若原产品必需的形状落在此边界，须在本owner修复并补矩阵。
-
-每次mutation后，下游从实际IR重建guard、source root、offset/stride、读写范围、allocation owner、effect与lifetime；
-不接受上游临时证明或预计buffer清单代替current IR。首条纵向同时检查以下交付，作为迁移其它入口的前置：
-
-| 实际输入 | 本stage交付与直接消费者 |
-| --- | --- |
-| rank≥3、1024/1025/1031，周期/滑动窗口与条件source，Tensor布局 | layout/bufferization后写满局部destination；列出实际allocation、copy、alias与动态次数，movement→Instr无隐藏完整assembly或无依据的逐块分配 |
-| 支持的NCx行/批次平移、C block对齐窗口及不支持的动态窄C tail | 从actual root encoding重算地址；正例到Instr/target，负例typed拒绝，不按逻辑row-major恢复物理地址 |
-| 同worker连续copy、实际跨worker或release/reuse hazard | completion仅由actual effect/token/lifetime决定；无hazard的非终态join为0，有hazard精确消费对应完成域 |
-| guard含floor/mod、主/尾块、零次循环及未执行分支 | 实际source byte range到14号target/LLVM可验证；06号实际成本保留次数/上下界与估计质量，不枚举整个迭代域，不影响唯一SPM准入 |
-
 物理搬运位置仍由`PhysicalMovementPlacement`按实际alias/effect证明；BoundaryMovement后的AccessReuse维持原输入合同。
 本项不扩展任意中间存储缓存，不新增layout解、SPM准入或同步算法。
 
@@ -199,11 +176,6 @@ Observable output的完整SSA结果按完整destination绑定，不根据其prod
 多轴主/尾块可能形成多层subset update；只要不符合已有的单个静态publication piece证明，就保留完整结果及其更新链，
 交给DPS/bufferization分析实际alias与写入。不能要求最外层update的destination必须直接由某一种loop op产生。
 覆盖1024/1025/1031与第二轴非整除tile的组合，检查完整输出覆盖、局部拼接及实际Instr/SPM。
-
-已证明的静态publication piece允许按原`insert_slice`语义删除单位维；destination `memref.subview`
-使用实际piece shape，保留完整输出的offset和stride。BoundaryMovement将临时输出参数换成实际DDR
-allocation时保留同一个subview result type，不重新推导成未降rank的形状。覆盖1024/1025/1031、
-非零origin及单位维歧义，检查实际store两端shape、完整输出坐标和直接Instr/SPM。
 
 函数边界的memory space按当前FuncOp的symbol uses判定，每个函数的参数与结果共用同一个选择。该选择仅活于一次layout/bufferization调用；
 pinned One-Shot的FuncOp/CallOp转换保留函数身份和callee引用，改变的buffer类型不需要重新扫描symbol uses。跨候选或下一次调用重新判定。
@@ -486,22 +458,15 @@ collapse只合并同组内连续的维度；使用pinned `isGuaranteedCollapsibl
 | 原始GQA 1024/1025及固定FP16 LLaMA | 默认8/42真实source到package/no-card；剩余失败必须定位actual边界 | 正式driver；设备数值/profile仍另行验收 |
 
 Movement结束前，write-only SPM输出carrier可按实际写入流式存到一个或多个既有DDR出口。所有terminal store必须读同一allocation的完整值，
-位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy/load目的端和这些terminal读取。
+位于同一Region顶层且晚于全部写入；carrier只允许Subview与已证明identity forwarding的SCF alias，以及copy目的端和这些terminal读取。
 出口必须是当前私有DDR allocation，或具有Write权限的typed DDRBinding；允许从Region argument派生的单use Subview链，
 其offset/size/stride的SSA operands必须支配原carrier allocation，才可在该处克隆view并保持原窗口坐标。Region内不能存在其它出口alias use。每次原写入按原顺序
 向所有出口的对应Subview发射store，carrier及旧terminal store删除，defined数据、覆盖及出口集合保持。
-若原writer为DDR load，按其实际目的窗口生成同shape、dtype和物理layout的紧凑SPM allocation，在原位置读取同一source一次，
-再向全部DDR出口写入该块。目的窗口必须是静态形状且具有支持的物理编码；不推导新tile，不把DDR到DDR伪装成直接DMA。
-新allocation、load和store均在current IR中生成，owner随BoundaryMovement输出按现有SSA/effect关系重建，
-再交唯一Instr/completion/SPM路径。未知或与任一出口alias的source继续拒绝，不能为消除carrier改变读取快照。
 只转发该carrier的SCF iter argument/result同时删除，循环范围、其它state及原body保持；采用pinned SCF iter-arg folding的block转移方式，
-不把DDR地址伪装成跨迭代更新的state。外层carrier消除后重新从current IR收集新terminal，继续处理内层carrier；单个load直接写入自身allocation后store的结构已经是紧凑staging，保持不改写。
-每次成功删除一个已有carrier，新增的直接load staging不能再次匹配，因而收敛。
+不把DDR地址伪装成跨迭代更新的state。外层carrier消除后重新从current IR收集新terminal，继续处理内层carrier；每次成功严格删除一个allocation，因而收敛。
 这种变换只应用current buffers/effects，shared-DDR publication仍由下游fresh completion重建并验证；partial source窗口、读写状态、未知alias
 或中途可观察读取不通过该证明。覆盖单/多出口、私有/shared-DDR、嵌套循环、1024/1025/1031 main/tail、重叠写及拒绝例，
 并实际经过Instr/completion/SPM和source模型执行。
-混合copy/load另成对覆盖1024/1025/1031、主块/尾块、单/多出口及非零目的窗口；逐坐标核对每次source读取和最后写入顺序，
-证明整块SPM carrier消失而紧凑load只有一次，出口source alias和动态目的形状保持不改写。
 
 Value/use assignment采用current SSA buffer-equivalence group、consumer-use和op-tuple auxiliary factor；不使用structured-node ID或
 bufferization后的operation parity。Shared conversion通过每个dominance/effect cohort的三态activation factor只计一次，并由apply创建

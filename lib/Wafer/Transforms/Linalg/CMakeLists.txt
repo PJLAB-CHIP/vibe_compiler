@@ -16,7 +16,6 @@ add_mlir_library(WaferLinalgTransforms
   StructuredGraphEGraph.cpp
   StructuredTiling.cpp
   TemporalTiling.cpp
-  TensorAssemblyMaterialization.cpp
 
   DEPENDS
   WaferTransformPassesIncGen

@@ -12,7 +12,6 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -27,7 +26,6 @@ using namespace wafer;
 using namespace wafer::tile_region_to_instr;
 
 namespace wafer {
-#define GEN_PASS_DEF_CONVERTPRIVATEPACKEDUPDATESTOINSTRPASS
 #define GEN_PASS_DEF_CONVERTTILEREGIONTOINSTRPASS
 #define GEN_PASS_DEF_CONVERTBUFFERIZATIONCOPIESTOINSTRPASS
 #include "Wafer/Conversion/WaferConversionPasses.h.inc"
@@ -102,20 +100,6 @@ static void eraseDeadPrivateFills(mlir::Operation *root,
     rewriter.eraseOp(constant);
 }
 
-struct ConvertPrivatePackedUpdatesToInstrPass
-    : public wafer::impl::ConvertPrivatePackedUpdatesToInstrPassBase<
-          ConvertPrivatePackedUpdatesToInstrPass> {
-  using ConvertPrivatePackedUpdatesToInstrPassBase::
-      ConvertPrivatePackedUpdatesToInstrPassBase;
-
-  void runOnOperation() final {
-    TileRegionToInstrLoweringSession session(*getOperation().getContext());
-    if (mlir::failed(
-            convertPrivatePackedUpdatesToInstr(getOperation(), session)))
-      signalPassFailure();
-  }
-};
-
 struct ConvertTileRegionToInstrPass
     : public wafer::impl::ConvertTileRegionToInstrPassBase<
           ConvertTileRegionToInstrPass> {
@@ -160,7 +144,7 @@ struct ConvertBufferizationCopiesToInstrPass
 struct wafer::TileRegionToInstrLoweringSession::Impl {
   explicit Impl(mlir::MLIRContext &context,
                 TileRegionToInstrBufferRecorder *bufferRecorder)
-      : target(context), bufferRecorder(bufferRecorder) {
+      : target(context) {
     configureTileRegionToInstrTarget(target);
     mlir::RewritePatternSet lowering(&context);
     populateTileRegionToInstrPatterns(lowering, bufferRecorder,
@@ -171,7 +155,6 @@ struct wafer::TileRegionToInstrLoweringSession::Impl {
   MovementDescriptorCache descriptorCache;
   mlir::ConversionTarget target;
   mlir::FrozenRewritePatternSet loweringPatterns;
-  TileRegionToInstrBufferRecorder *bufferRecorder;
 };
 
 wafer::TileRegionToInstrLoweringSession::TileRegionToInstrLoweringSession(
@@ -248,18 +231,6 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
     if (mlir::isOpTriviallyDead(view))
       rewriter.eraseOp(view);
   return mlir::success();
-}
-
-mlir::LogicalResult wafer::convertPrivatePackedUpdatesToInstr(
-    mlir::func::FuncOp function, TileRegionToInstrLoweringSession &session,
-    mlir::RewriterBase::Listener *listener) {
-  if (!function || mlir::failed(mlir::verify(function)))
-    return mlir::failure();
-  if (mlir::failed(tile_region_to_instr::convertPrivatePackedUpdates(
-          function, session.impl->bufferRecorder, session.impl->descriptorCache,
-          listener)))
-    return mlir::failure();
-  return mlir::verify(function);
 }
 
 mlir::LogicalResult wafer::convertBufferizationCopiesToInstr(

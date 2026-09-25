@@ -6,7 +6,6 @@
 #include "StructuredBufferRelations.h"
 #include "Wafer/IR/WaferDialect.h"
 
-#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -97,7 +96,6 @@ collectOutputWrites(llvm::ArrayRef<StorageStoreOp> terminals) {
       result.allocation->getBlock() != terminal->getBlock())
     return std::nullopt;
   mlir::DominanceInfo dominance(region);
-  mlir::AliasAnalysis aliasAnalysis(region);
   for (auto store : terminals) {
     if (store->getParentOfType<TileRegionOp>() != region ||
         store->getBlock() != terminal->getBlock() ||
@@ -198,30 +196,10 @@ collectOutputWrites(llvm::ArrayRef<StorageStoreOp> terminals) {
           continue;
         }
       }
-      if (mlir::isa<MoveCopyIntoOp, mlir::memref::CopyOp, StorageLoadOp>(
-              user)) {
-        if (use.getOperandNumber() != 1)
+      if (mlir::isa<MoveCopyIntoOp, mlir::memref::CopyOp>(user)) {
+        if (use.getOperandNumber() != 1 ||
+            !isWaferSPMMemRefType(user->getOperand(0).getType()))
           return std::nullopt;
-        if (auto load = mlir::dyn_cast<StorageLoadOp>(user)) {
-          const auto &readRoots = roots.getStorageRoots(load.getSource());
-          if (readRoots.empty())
-            return std::nullopt;
-          for (auto store : terminals)
-            for (auto destinationRoot : roots.getStorageRoots(store.getDest()))
-              for (auto readRoot : readRoots)
-                if (!aliasAnalysis.alias(readRoot, destinationRoot).isNo())
-                  return std::nullopt;
-          auto destination =
-              mlir::cast<mlir::MemRefType>(load.getDest().getType());
-          auto compact = mlir::MemRefType::get(
-              destination.getShape(), destination.getElementType(),
-              mlir::MemRefLayoutAttrInterface{}, destination.getMemorySpace());
-          if (!destination.hasStaticShape() ||
-              !computeWaferPhysicalTensorInfo(compact))
-            return std::nullopt;
-        } else if (!isWaferSPMMemRefType(user->getOperand(0).getType())) {
-          return std::nullopt;
-        }
         mlir::Operation *beforeStore = user;
         while (beforeStore && beforeStore->getBlock() != terminal->getBlock())
           beforeStore = beforeStore->getParentOp();
@@ -236,12 +214,6 @@ collectOutputWrites(llvm::ArrayRef<StorageStoreOp> terminals) {
     }
   }
   if (result.writes.empty())
-    return std::nullopt;
-  // A direct load into its own allocation is already compact staging. It has
-  // no collected windows to stream, and rebuilding it would never converge.
-  if (result.writes.size() == 1 &&
-      mlir::isa<StorageLoadOp>(result.writes.front()) &&
-      result.writes.front()->getOperand(1) == result.allocation.getResult())
     return std::nullopt;
   return result;
 }
@@ -341,26 +313,16 @@ void applyOutputWrites(llvm::ArrayRef<StorageStoreOp> terminals,
         subview.getMixedStrides());
   };
   for (auto *operation : writes.writes) {
-    rewriter.setInsertionPoint(operation);
     mlir::Value source, destination;
     if (auto copy = mlir::dyn_cast<MoveCopyIntoOp>(operation)) {
       source = copy.getSource();
       destination = copy.getDest();
-    } else if (auto load = mlir::dyn_cast<StorageLoadOp>(operation)) {
-      destination = load.getDest();
-      auto type = mlir::cast<mlir::MemRefType>(destination.getType());
-      auto compact = mlir::MemRefType::get(
-          type.getShape(), type.getElementType(),
-          mlir::MemRefLayoutAttrInterface{}, type.getMemorySpace());
-      source = rewriter.create<mlir::memref::AllocOp>(load.getLoc(), compact);
-      // Preserve the read at its original point, once for all destinations.
-      // The new actual window is planned by the ordinary downstream SPM gate.
-      rewriter.create<StorageLoadOp>(load.getLoc(), load.getSource(), source);
     } else {
       auto memrefCopy = mlir::cast<mlir::memref::CopyOp>(operation);
       source = memrefCopy.getSource();
       destination = memrefCopy.getTarget();
     }
+    rewriter.setInsertionPoint(operation);
     for (auto outputDestination : destinations) {
       auto output = retarget(retarget, destination, outputDestination);
       rewriter.create<StorageStoreOp>(operation->getLoc(), source, output);
@@ -388,9 +350,8 @@ void applyOutputWrites(llvm::ArrayRef<StorageStoreOp> terminals,
 
 void materializeTiledOutputStores(mlir::ModuleOp module,
                                   BoundaryMovementStatistics &statistics) {
-  // Every round removes an existing carrier; new direct-load staging is
-  // already complete and cannot match. Newly exposed inner carriers require
-  // a fresh proof over the updated IR.
+  // Every successful round removes an actual allocation. New terminal stores
+  // can expose an inner carrier, so its proof must use the updated IR.
   while (true) {
     llvm::SmallVector<llvm::SmallVector<StorageStoreOp, 2>, 16> groups;
     llvm::DenseMap<mlir::Value, unsigned> byAllocation;

@@ -1,8 +1,61 @@
-# 已选 tile 的 Tensor 子集物化整改
+# Tensor 子集物化整改撤回记录
+
+## 撤回范围与原因（2026-09-25）
+
+用户要求：能够在有限范围内解决就解决，否则回退，保留 LM 原问题。
+本轮尝试提前合并等价线性约束、剪除明显矛盾分支；166 项 Analysis 通过，但
+1024、4 Tile、分特征的生产反例仍耗尽原证明预算，未到通信或 SPM 阶段。
+继续推进还涉及完整来源 DAG 的证明工作量、入口迁移和未完成的原产品验收，不能以这次局部修改交付。
+因此执行撤回；这是停止本轮整改，不是证明问题无法解决，也不是完成原设计。
+
+用户随后明确回退目标为 attention/GEMM 已上板、性能良好的版本，并要求把未完成改动保存在新分支。
+最终基线为 `665452c591a1a65ba3dce22f7b66a8b7d15e75b7`，即开始长 LM Tensor 整改之前的代码与注册入口：
+
+- 代码、CMake、测试和注册逐文件恢复该基线；后续从 `8b7b5278` 开始的 LM/Tensor 修改、
+  `44b8b865` 参数化证明、`33c324e5` 条件 shared DDR 支持及未提交迁移全部撤回。
+- 06/08/10/12/13/15/18 号同步恢复该版本合同；attention 优化、NCx 输入复用、直接 DMA、轻量计时和已注册板测入口保留。
+- 新分支 `wip/tensor-subset-materialization` 从原 `660b5373` 接续，保留此前全部提交；
+  `7d557e36` 保存未提交实现，`f1f87b3d` 保存最后的证明预算尝试及失败状态。
+  两次快照包含全部六个新增源码/测试文件；临时诊断也原样保留，不把 WIP 分支标为可交付。
+- 当前分支不切换到 WIP；恢复快照额外保留，Git 历史未重写，无关 submodule 修改及日志未改动。
+- 后续独立搜索性能/deep 验收、三轮调优及 Q53 完整主机矩阵取消的决定保持。
+
+基线对应的板测证据：
+
+| 入口 | 历史实卡结果 | 证据 |
+| --- | --- | --- |
+| NCx BF16 GEMM M=N4096/K1024、2048×28-head attention | 各三次全量数值、guard、正常清理通过；普通 event 中位数 3.203/3.544 ms | [NCx 输入复用与直接 DMA](../../docs/board-performance-results.md#2026-09-23ncx-输入复用与直接-dma-整改) |
+| 同两项的轻量计时 | 各三次实卡通过；最长 Tile 本体中位数 1.801/2.461 ms，同次 event 中位数 3.158/3.579 ms | [轻量计时](../../docs/board-performance-results.md#2026-09-23kernel-本体轻量计时) |
+| `665452c5` 注册入口 | 两项分别 source/no-card 及一次完整实卡通过，保留原已优化 compiler | [注册与统一计时](../../docs/board-performance-results.md#2026-09-23ncx-case-注册与统一计时) |
+| 原 Tensor 大 GEMM 与 attention | 既有全量数值及性能结果保留；NCx 修复后 Tensor Instr/目标 LLVM 与健康记录逐字节一致 | [NCx 输入复用证据](../../docs/data/board-performance/ncx-io-reuse-20260923.json) |
+
+最终尝试没有提高证明预算、删除失败断言或扩大接受条件。此前两项非整除 allocation 断言发生在
+存储优化之前，且两项均已产生 executable；该证据不能直接解释为最终 SPM 超容量，最终紧凑性未继续定性。
+
+完整长 LM 仍未通过，停止接续。撤回后的版本不继承后续 LM 改动产生的产品资格：
+撤回前 S1024 曾通过 reference/package/no-card、S1025 曾因 `site-map.json` 18,908,154 字节超过
+16,777,216 字节而打包失败，这些只属于 WIP 历史，不能当作恢复版本的新结果。
+本次没有重新构包或重新上板，不声称修复 LM 或产生新的性能测量。
+
+## 回退验证
+
+生产代码、runtime、工具、CMake 与注册已逐文件核对为 `665452c5`。唯一测试差异是给旧 no-card decode
+测试夹具补上 `no_kernel_timing=False`：首次 47 项 Python 检查暴露该漏参，修复后全套重跑通过，生产 runner 未改。
+
+本轮 canonical 完整增量通过，后续两次构建均为 Ninja no-op；源码/IR 组织检查及 `git diff --check` 通过。
+137 项 Analysis、133 项 Planning、34 项 CodeGen、45 项 Conversion、完整 Transforms（534.49 秒）、
+310 项 lit 和 8 项 none/search、typed failure、DDR/DTE Driver 专项实际通过，47 项 Python caller 重跑通过。
+首次 CTest 的 Python 失败保留在原日志，不把首次批次改记为全过。
+回退阶段没有新增实卡；用户随后授权全矩阵 timing 复验，属于恢复版本的新一轮板测，状态见 progress。
+
+## 原计划与当时证据
+
+下文保存撤回前的设计、检查点和未完成步骤，仅供追溯；其中的“当前”“下一步”和完成要求
+不再构成施工授权。稳定合同以恢复后的编号设计为准，状态只看 [progress](../progress.md)。
 
 本计划归现有 `board-testing`，状态与执行顺序只看 [progress](../progress.md)。稳定合同由
 [06号](../06-physical-dataflow-synthesis.md#已选tile的tensor子集物化与共享选择)、
-[08号](../08-physical-realization.md#21-两个有序transformation)和
+[08号](../08-physical-realization.md)和
 [18号](../18-source-organization.md#42-analysisplanning与ir变换)共同约束。
 实现、no-card、板端数值和性能分别验收；设计或局部代码检查点不代表这些门槛已完成。
 

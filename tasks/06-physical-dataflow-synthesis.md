@@ -472,7 +472,7 @@ movement消费对应actual relation并删除该argument，该attr不能越过phy
 先给出正确局部destination，再让bufferization决定alias/copy。对照pinned Tensor `foldExtractAfterInsertSlice`，该fold只消除
 紧邻且offset/size/stride相同的insert/extract，不能消除多片段拼接后的较大extract；因此在已选spatial demand的物化owner直接构造，
 不增加e-graph外的普通图等价探索，也不依赖canonicalizer消除完整allocation。
-后续Tensor子集查询的exact结论只证明片段值；生成器还须证明实际offset、静态块形状、元素顺序及有界控制流可表达。
+后续Tensor子集查询的exact结论只证明片段值；生成器还须证明实际offset、静态size及有限分段可表达。
 重叠window属于共享取舍，不能单凭重复读取拒绝局部实现；真正无法生成static pieces时，显式局部候选返回typed unsupported。
 保留共享是独立实现选择，不是局部生成失败后的静默修复；普通TilingInterface切分与该生成能力分别判断。
 同一次fragment assembly中，相邻片段若来自同一个actual SSA endpoint、相同source rectangle及相同destination rectangle，
@@ -561,7 +561,7 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 | temporal 128等主块、1/7等tail，多block与动态IV | 每次读取恰为所选窗口，合计完整覆盖、无重叠；不用逐iteration展开 | temporal actual SCF→bufferization/Instr/SPM |
 | spatial后继续temporal，多个来源/consumer及共享full-use | 独立owner不合并，局部窗口不串用，真实full-use保留 | stage交接和实际allocation检查 |
 | 多来源拼接→透明view→实际temporal subset，1024/1025/1031 | 多块与tail精确覆盖，局部assembly随需求收缩；与直接读取拼接走同一接口路径 | temporal→layout/bufferization→Instr/SPM；原ViT source及block/GEMM保护 |
-| 融合归约内rank-reduced读取，128主块、384归约块跨512拼接边界 | 实际归约覆盖不变，无未被观察的完整assembly；尾块形状静态，必要条件只控制局部搬运，不复制计算循环 | actual Instr/completion/SPM及计算动态次数 |
+| 融合归约内rank-reduced读取，128主块、384归约块跨512拼接边界 | 实际归约覆盖不变，无完整assembly，尾部静态、无条件拼接 | actual Instr/completion/SPM |
 | 同一拼接的source或consumer删除unit维度，rank3/4及1024/1025/1031 | subset坐标保留destination rank；source窗口按标准rank-reduction mask投影，局部结果恢复consumer rank；不扩大读取 | actual temporal→layout→Instr/SPM与decode正式source |
 | 1024/1025/1031拼接输入，需求相关/不变轴的两种循环顺序，Independent/Joint | 共享实现保持共同构造次数；局部实现只在明确选择后允许重复，计算producer不被复制；不变内层可共用已证明可用的SSA结果 | 两分支actual SCF动态拼接量及layout/Instr/SPM；大GEMM和2048 attention性能保护 |
 | 1024/1025/1031，最终或中间拼接值同时作为observable输出，Independent/Joint | 原观察者及值保持；共享实现不额外重建，局部实现只重接选中的读取并计入额外拼接 | 两个结构输出、两分支实际layout/Instr/SPM与成本 |
@@ -576,115 +576,42 @@ Bufferization只决定既有destination的alias/allocation，不负责重新发�
 
 #### 已选tile的Tensor子集物化与共享选择
 
-本节定义同一局部需求机制的算法和职责边界；代码迁移、实施步骤及完整覆盖矩阵见
-[实施计划](plans/tensor-subset-materialization.md)。实现状态只看progress，不以设计合同代签已有支持。
+本节保留原整改的职责合同；未完成的算法与迁移已撤回，历史覆盖及分支保存见
+[撤回记录](archive/tensor-subset-materialization-reverted.md)。实现状态只看progress，不以设计合同代签已有支持。
 
 - Upstream IR / input：当前TileRegion中的实际tensor subset、来源SSA、透明索引链、循环域与选定读取组；
   Spatial提供当前transaction的真实fragment endpoint，Temporal提供实际切分后需求。
 - Current stage responsibility：只读分析证明来源/覆盖/顺序，纯Tensor物化落实已选需求；Planning/driver显式选择
   保留共享或局部物化，Temporal的计算融合owner另行消费新暴露的source subset。
 - Output IR / files：现有Tensor/SCF SSA、局部destination与源/目标相对坐标；没有未来buffer、cache或指令清单。
-- Downstream consumer：已选择的计算融合和实际consumer，最终进入08号layout/bufferization、movement、
-  Instr/completion、唯一SPM规划、实际成本与14号target address/LLVM验证。
+- Downstream consumer：已选择的计算融合和实际consumer，最终进入08号layout/bufferization、movement及Instr/SPM。
 - User-level driver / named pipeline：现有none/search调用同一原子变换，none不创建搜索session；注册资格入口复用同一实现。
 - Explicit non-goals：不扩展AccessReuse，不搜索任意驻留范围/缓存层级，不改变计算循环顺序或算术，不参与SPM准入；
   不增加05号e-graph之外的普通图等价搜索，不将Spatial来源绑定与Temporal循环调度合成第二套总体planner。
-- Completion criteria：完整结构DAG上的多维/参数化需求、静态块证明、有界生成、共享与局部两分支及真实下游闭合；
-  下表及实施计划的完整LM、
+- Completion criteria：多维/参数化需求、共享与局部两分支及真实下游闭合；实现计划的完整LM、
   三项大GEMM及2048 BF16 attention逐项通过功能和性能门槛。输入复用或已验收attention性能回退不能签完成。
 
-**需求与来源证明。** 查询输入是当前实际读取、来源SSA、scope、循环IV/bounds/guards、静态局部shape及显式实现选择。
-用`(source SSA, G(p,u), F(p,u))`描述一条来源分支：`p`绑定当前参数SSA，`u`为consumer局部坐标，
-`G`约束有效点，`F`给出其源坐标。该记法是现有`IndexRelation`及标准MLIR表达式的只读派生查询，
-不是新索引语言、持久化计划或未来IR。参数绑定只在当前epoch内有效；现有无symbol入口可将参数作为附加domain坐标，
-不能把dim/symbol的语法位置当语义支持限制。保留当前有界整数语义，合成索引前证明无溢出及除法条件；
-不能把有符号截断除法直接解释成数学floor。
-
-从选定读取沿整个透明结构SSA DAG反向传播：view组合关系；对插入窗口`W`，source消费`D∩W`的逆向映射，
-旧destination消费`D\W`，**两条边都递归**。保留consumer到source的逐点对应，不只保存footprint。
-源坐标沿原insert的rank-reduction投影恢复；裁剪使某维变成unit时，不从局部shape重新猜删除轴。
-按当前SSA定义和last-writer形成互斥来源域，保持带holes的精确集合，不要求先展开为矩形笛卡尔积或DNF。
-只在实际需求碰到未定义内容时拒绝；不能读到`tensor.empty`后补零。
-
-工作表按`(当前SSA, 规范化需求, scope/动态快照上下文)`在一次调用内memoize。计算结果、合法外部endpoint及
-loop-carried值是实际叶子；不穿过回边，不隐式复制计算。支持语言内的结构节点必须继续处理，不能因查询失败就伪装成叶子。
-结构DAG递归与显式region边界保证终止，不靠全图扫描至不动点补齐新暴露的source。共享子图仍可因不同需求重复访问，
-因此整个请求共同累计DAG访问、约束/表达式工作、分支、块模板和生成IR预算；子查询不得重置额度。
-
-**静态块的构造性证明。** 支持static shape、有界参数域、加减/常量倍数及常量正除数的floor/mod；
-不把数据依赖gather、变量除数或一般多值计算关系纳入此次生成范围。关系Exact与可生成静态块是不同结论。
-对静态块`u=o+δ, 0≤δ_j<B_j`，从同一索引关系导出充分条件及`F(p,o+δ)=b(p,o)+Aδ`，其中`A`为常系数矩阵。
-构造按表达式递归；floor项先将系数作Euclidean分解：
-
-```text
-a_j = c*q_j + r_j, 0 <= r_j < c, c > 0
-floor(b/c) == floor((b + sum(r_j*(B_j-1)))/c)
-    => floor((b + sum(a_j*δ_j))/c) = floor(b/c) + sum(q_j*δ_j)
-```
-
-mod复用该quotient；嵌套除余逐层累积guard。上述条件只须充分，不要求接受所有可优化大块。
-guard还须证明整个块属于同一来源域、源坐标合法、索引算术有效。对块内仿射约束用常系数极值证明，
-布尔来源域按原结构组合充分条件；无法证明大块时细分，不能立即把整个请求报成Unsupported。
-不在热路径反复调用无工作上界的通用消元；非精确projection、包围盒或抽样均不能签exact。
-
-源矩形下界与extent由`l_i=sum(min(0,A_ij)*(B_j-1))`、`E_i=1+sum(abs(A_ij)*(B_j-1))`得到。
-源矩形基址为`b+l`。只有源矩形元素数等于块元素数，且`Aδ-l`在shape `E`中的row-major序号恒等于`δ`在shape `B`中的序号，
-才可切片后直接copy/reshape；这同时证明无holes、无重叠及顺序。单位轴按原关系处理。
-不能仅凭元素数相同批准reshape，也不能把Tensor逻辑顺序证明当成NCx物理连续证明。
-
-**有界块生成。** 已有静态、平移和连续大块路径作为同一证明的快路径保留。
-在原读取位置，先尝试有guard的整块来源分支；剩余分支按阻塞证明的非单位轴细分，优先保留可整体搬运的连续轴，
-并用稳定轴序打破平局。长度`n>1`分成两个`floor(n/2)`块，由一个`scf.for` body表达；奇数时再生成一个长度1尾块。
-递归只作用于更小的静态块shape，不分别为两个动态子块展开模板。来源变化只改变局部搬运控制流，
-不得为边界穿越实例、所有周期余数或多轴区间笛卡尔积克隆外层计算循环。
-
-对初始tile shape `T`，单条细分路径深度不超过`sum(ceil(log2(T_j)))`；多轴奇数尾块可能增加模板总数，仍须服从累计预算，
-不声称任意关系均为线性编译复杂度。单位块必须有可生成的来源/地址及完备分支；不能生成则typed失败，
-不留运行时未初始化分支。划分在consumer坐标中无重叠且恰好覆盖；零需求不生成读取。
-单一可表达来源直接切片/reshape；否则建立紧凑destination，以一条SSA更新链通过局部SCF循环和分支写满。
-条件分支在各自内部insert，再yield相同destination，避免先合流不同布局几何的source slice。
-输出只用现有Tensor/SCF/Arith/Affine，buffer及transfer形状静态、地址可动态；不要求新增动态size DMA或dialect。
-代码有界不等于动态搬运次数少：两者分别计量，静态大块快路径与原性能门槛必须保留。
+`TensorResultIndexing`/`IndexRelation`只保存当前关系。对窗口D和插入区域W，插入源消费D与W的交集经源映射后的集合，
+旧destination消费D去掉W后的集合；共同物化器按准确pieces形成局部值，保持last-writer及rank reduction。
+动态offset由当前有界循环和分支约束推导，不要求裸IV。分片边界、reshape周期和tail采用有界静态尺寸分段；
+不逐元素或逐迭代实例生成代码，不以bounding box替代带holes的集合。
+Opaque计算与loop-carried快照作为当前SSA边界；未选计算融合时只读取已有结果，不复制其算术。
 
 可以证明不重复构造的原确定性局部化继续适用。改变共享或动态拼接次数时，Planning为当前实际读取组提供
 “保留共享”和“局部物化”两种明确实现。真实full-use及其它中间值观察者保持；重叠读取不自动取消局部实现，
 但额外拼接必须实际物化并进入成本。位置由实际依赖/支配/控制流及该实现决定，不成为任意loop-placement搜索。
-默认在原读取位置物化。不变内层共享必须同时证明source支配、内容/快照不变及执行条件保持；
-索引不变不代表loop-carried内容不变，不能给零次循环或未执行分支额外读取。
-不变外层包围相关内层时不虚构跨迭代缓存。纯生成器只返回本次实际source subset，Temporal融合owner另行验证
-这些fragment的计算资格及动态次数；来源证明不授权切碎或复制未选择的算术。
-若新fragment不满足所选fusion合同，该组合typed拒绝，不在生成器中静默改变计算选择。
+不变内层可共享同一已证明可用的局部SSA；不变外层包围相关内层时不虚构跨迭代缓存。
 
 分支在实际Tensor checkpoint发现，克隆同一owner并用IRMapping对应；retile后重新查询，旧句柄和旁路inventory不跨stage。
 共享候选先失败容量不妨碍发现局部候选；局部生成失败也不在同一候选内静默恢复整块。
 新分支沿现有搜索预算计费，原共享合法候选保持可达；选择只描述当前读取与实现方式，不记录预估lifetime。
-每个实际分支都经过verify、fresh analysis、layout/Instr/completion、唯一SPM/cost及target gate；accepted IR不按计划重建。
+每个实际分支都经过verify、fresh analysis、layout/Instr/completion及唯一SPM/cost；accepted IR不按计划重建。
 收益排序不能把footprint估算转为容量准入。
 
 语义Exact、生成Unsupported、ResourceExhausted、BrokenContract和后续实际Capacity分开报告。
 查询/生成约束不允许被一个bool吞掉；候选已选局部实现但生成失败时保留typed原因，post-mutation失败销毁候选。
-最终共同入口在结构展开及会产生新subset的Tensor preparation完成后、layout query之前；
-期间需要继续计算融合时调用同一helper，不保留早/晚两套生成规则。
-由上层driver/named pipeline顺序调用08号的Tensor准备入口、06号共同查询/已选物化、08号边界与layout入口。
-当前混在layout preparation中的Tensor producer须前移到该准备边界；选择消费后再做单次循环规范化和边界发布。
-后续layout步骤不得重新产生未闭合需求；不能让`Transforms/Tile`反向调用`Transforms/Linalg`形成component循环，
-也不让bufferization或allocator补猜上游需求。
-
-首条实现纵向就必须到实际target address/LLVM和成本分析，不能仅凭Tensor或SPM通过继续大规模迁移。
-各下游从实际guard、地址SSA、encoding、effect和控制流重建所需范围与次数；不跨stage传递Tensor证明对象。
-新增floor/mod与局部条件copy须进入有界实际成本摘要，不能枚举所有外层迭代或周期才完成评分；
-可证明时exact，否则保留明确上下界/coarse/unknown，不能漏算copy、guard或循环次数。成本不参与SPM合法性。
-Bufferization后的实际allocation/copy、target byte range、现有Tensor/NCx能力限制和completion均逐项验证；
-不从局部Tensor destination推定单buffer，也不因新增块数插入逐块join。
-
-| 输入等价类 | 本项要求 | 直接下游witness |
-| --- | --- | --- |
-| rank≥3、1024/1025/1031，嵌套/展平insert DAG、partial覆盖与holes | source和destination均传播；相同语义不依赖嵌套深度或offset拼写；恰好一次覆盖、last-writer及顺序 | 独立有界oracle、Spatial/Temporal真实多Tile及主/尾块 |
-| 多轴耦合offset、常数floor/mod、负系数及非零origin | 块guard成立时证明正确；不成立时有界细分，单位块分支完备；溢出/不支持保留typed结果 | 生成SSA逐点解释、模板/动态copy计数、目标地址与LLVM |
-| 滑动跨界、周期reshape、偶数/奇数块、多层view | 不按跨界实例克隆计算body，不按周期余数展开；累计预算不被子调用重置 | 1024/1025/1031及扩大extent/周期的work、IR规模、wall/RSS对照 |
-| 共享/局部、重叠读取、full-use、快照和零次循环 | 原观察者与算术保持；只外提确实可用的值；selected fusion另证动态次数 | actual bufferization/alias、Instr/cost、SPM及completion |
-| Tensor/NCx、动态地址、主/尾块与条件copy | 物理布局按actual encoding重算；已知未支持布局typed拒绝；无无依据的逐块join | movement→Instr→target/LLVM→actual cost/SPM；真实源到package/no-card |
-| 原完整LM与四项保护 | 完整模型、8/42预算、数值及原性能门槛不降低 | fresh产品、no-card及本轮指定实卡；详见实施计划 |
+最终共同入口在结构展开完成、layout query之前；期间需要继续计算融合时调用同一helper，不保留早/晚两套生成规则。
+Layout preparation若再暴露实际需求，由相应Tensor producer通过同一helper闭合后交出IR；bufferization与allocator不补猜上游需求。
 
 物理搬运外提仍由`PhysicalMovementPlacement`按current SSA/alias/effect证明，AccessReuse仍消费BoundaryMovement后的实际load。
 二者都不承担Tensor assembly需求发现。本项不以扩大AccessReuse资格或重新实现驻留缓存作为正确性前置。
@@ -827,15 +754,14 @@ Boundary movement把SPM carrier的subview改接DDR输入或紧凑allocation时�
 API依据为[MemRef subview合同](https://mlir.llvm.org/docs/Dialects/MemRef/#memrefsubview-memrefsubviewop)，
 以pinned `SubViewOp::inferRankReducedResultType`及`IndependenceTransforms.cpp`调用方式确认。
 
-Boundary movement已经物化actual DDR destination与terminal `tile.store`后，可把只用于收集已完成tile的SPM输出carrier流式写回。
-输入为完整bufferized Tile region；从actual allocation、Subview和identity-forwarding SCF alias证明其全部写入与terminal读取，
-只接受copy目的端及可证明source与各出口不alias的load目的端，拒绝中途读取、算术更新、DTE使用、变化loop state和escape。
-出口及其单use view必须满足08号的实际DDR owner、权限、支配与alias条件；单/多出口均按原写入顺序接到精确目的窗口。
-copy直接成为同位置store；load保留原位置的一次读取，物化同shape/dtype/layout的实际紧凑SPM后发射各出口store。
-删除carrier、旧terminal及其identity-forwarding loop argument，不把DDR地址变成跨迭代state。
-已有的单load直接写入自身allocation再store结构不改写；新增staging也处于该固定点，重复处理内层carrier仍收敛。
-输出为actual紧凑allocation、load/store和DDR alias，owner按SSA/effect重建，直接下游为唯一Tile→Instr、completion、SPM/DDR规划及target验证。
-详细证明与覆盖以[08号流式输出合同](08-physical-realization.md)为准；不按shape或估算容量准入，不在allocator内spill或重选tile，不改变数值顺序。
+Boundary movement已经物化actual DDR destination与terminal `tile.store`后，对只用于收集已完成tile的SPM输出carrier做直接写回：
+从actual allocation及其subview、原样转发的`scf.for` iter_arg/result证明完整use closure；嵌套循环的result须沿实际init/yield递归证明为同一个buffer。除terminal store外，只允许tile copy写入，
+以及可证明source/destination为同一view的冗余copy；存在读取、算术更新、DTE使用、非原样loop yield、未知alias或其它escape时不改写。
+DDR destination必须是支配全部tile写入的Region参数，在当前Region中仅由该terminal store使用，且已有actual allocation；
+同一Region对该allocation存在其它alias使用时保留原IR。证明完成后，将原tile copy改为同位置的
+`tile.store`到对应DDR subview，loop只携带DDR destination，删除完整SPM carrier与最终整块store；不改tile compute、数值顺序或消息。
+该变换输入为完整bufferized Tile region，输出为显式per-tile store及DDR alias，直接下游为Tile→Instr、completion、SPM/DDR规划与target验证。
+它不按shape/估算容量触发，不在allocator中spill，不创建future buffer，也不改变带read/merge需求的SPM state。
 
 算法依据为[MLIR DPS与bufferization](https://mlir.llvm.org/docs/Bufferization/)的destination reuse/subset写入规则，
 以pinned Tensor `InsertSliceOpInterface::bufferize`的destination subview与copy语义确认；当前阶段DDR destination已经存在，故只改写
@@ -1731,19 +1657,6 @@ DP、memo、priority、dominance和LNS可以改变choice访问顺序和搜索工
 
 ### 7.4 Cost 与feedback
 
-#### 局部子集搬运的控制流摘要
-
-输入为actual Instr中的静态块copy、参数化地址、floor/mod guard及SCF控制流，输出为同一cohort下的
-动态work/bytes/issue与control工作摘要，交给既有CostModel和actual-result controller。
-按当前循环域和分支条件组合有界摘要；能证明次数时exact，不能时保留上下界、coarse/unknown及溢出状态。
-不为取得精确次数枚举整个外层迭代域、所有周期余数或LCM，也不以Tensor生成器的预计copy数替代实际IR。
-摘要工作量与已有解释器计费统一，缓存仅存当前epoch内只读事实；超预算沿原typed质量/失败规则退出。
-声明exact前须覆盖动态copy、分支guard、循环及地址算术的实际scope，零次循环与未知次数不同。
-已有只支持部分线性条件的摘要是可扩展入口，不能将未识别floor/mod当零成本或静默忽略分支。
-本项不改变cost cohort、容量准入、winner所有权或同步合同；首条子集纵向即检查此消费者。
-覆盖多轴耦合、滑动跨界、常数除余、奇数尾块、同work/异work分支及零次循环，普通正例rank≥3且含1024/1025/1031，
-用独立有界解释器核对exact/上下界，并对扩大extent和周期记录分析work；不能只检查有限估时返回成功。
-
 #### Current Instr中的CPU标量工作
 
 - Upstream IR / input：完成target、completion与actual memory验证的逐Tile Instr，以及其中实际存在的scalar Arith SSA和SCF。
@@ -1983,24 +1896,9 @@ Owner/query一起存亡；销毁缓存不能留下旧operation/value句柄。Cac
 不适用只拒绝该点，不静默回到I₀，不把一个T失败提升为整个方案失败。
 必要条件只提前到current IR能完整证明的位置；没有未来IR证据时继续保留unknown。
 
-Tensor assembly 的局部选择以共享值的父 SSA 锚点和实际读取组为单位：有 tiling 循环时，读取组由包围循环的
-iteration coordinates 确定，main/tail 的同坐标实例属于同组；无此坐标时使用父 IR 中明确的读取 SSA 锚点。
-同值被 CSE 合并时保留完整锚点集合，不任选一个来源。锚点只表达选择对应，不证明来源、覆盖或内存。
-对应从同次 clone 的 IRMapping 建立，rewrite listener 仅跟随真实 SSA replacement，erase 使对应失效；
-Region closure 的克隆也必须交出该次 IRMapping。无法建立对应的读取保持 typed unknown，不以形状或位置补绑。
-每次 retile 从仍存活的父 IR 重建对应，并重新查询全组实际读取；组缺失或任何成员不支持都拒绝该点。
-局部选择保存完整组集合，空集合表示共享；单组和组合各自进入既有分支调度。对应在 Tensor 选择消费后销毁，
-不进入 layout、bufferization、owner attribution 或 SPM。可选 layout 前缀按完整组集合匹配并有固定槽位上界。
-
 沿用iteration-coordinate annotation连接实际tiling循环与选择：query-local scope锚点来自存活父IR，
 iterator为接口坐标；共享循环记录实际实现的全部坐标。Annotation不含tile size、memory或completion事实，
 clone/bufferization保留，共同Instr入口移除。旧load/loop句柄不跨mutation，不按名称、顺序或首个可用对象恢复选择。
-
-尾块特化保留实际单次`scf.for`及其iteration coordinates，直到Tensor读取选择已经消费；
-只将已证明的单次IV和初始region参数替换为当前SSA。Tensor阶段的局部canonicalization不得提前展开此scope。
-Layout输入规范化再通过标准SCF接口展开单次循环；此时读取已实际局部化或明确保留共享。
-这保留真实控制流中的选择边界，不新增尾块身份、旁路读取inventory或缺失scope的推断。
-覆盖必须包含retile从整除外轴变为非整除外轴、内轴仍循环的情况，并证明新增尾块与主块绑定同一完整选择。
 
 **参数分组与多尺度过程。** 从actual partition、iterator角色、indexing/access映射及typed协调关系提出成组参数，
 只减少提案的独立自由度，不删除真实scope、不声明cost等价；shape相同本身不足以分组。

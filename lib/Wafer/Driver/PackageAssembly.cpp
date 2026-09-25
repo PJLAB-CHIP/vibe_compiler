@@ -50,7 +50,7 @@ writeJSONFile(llvm::StringRef path,
                             error.message());
     return mlir::failure();
   }
-  llvm::json::OStream json(output, /*IndentSize=*/0);
+  llvm::json::OStream json(output, /*IndentSize=*/2);
   write(json);
   output << "\n";
   output.close();
@@ -69,13 +69,7 @@ writeJSONFile(llvm::StringRef path,
   if ((*readback)->getBufferSize() >
       runtime::PackageParseLimits{}.maxProfileJSONBytes) {
     reject(diagnostics,
-           (llvm::Twine(
-                "profile instrumentation metadata exceeds JSON byte limit: ") +
-            llvm::sys::path::filename(path) + " (" +
-            llvm::Twine((*readback)->getBufferSize()) + " bytes, limit " +
-            llvm::Twine(runtime::PackageParseLimits{}.maxProfileJSONBytes) +
-            ")")
-               .str());
+           "profile instrumentation metadata exceeds JSON byte limit");
     return mlir::failure();
   }
   llvm::Expected<llvm::json::Value> parsed =

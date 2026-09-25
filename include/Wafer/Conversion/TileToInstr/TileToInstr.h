@@ -67,10 +67,6 @@ private:
   std::unique_ptr<Impl> impl;
 
   friend mlir::LogicalResult
-  convertPrivatePackedUpdatesToInstr(mlir::func::FuncOp,
-                                     TileRegionToInstrLoweringSession &,
-                                     mlir::RewriterBase::Listener *);
-  friend mlir::LogicalResult
   convertTileRegionToInstr(TileRegionOp, TileRegionToInstrLoweringSession &,
                            mlir::RewriterBase::Listener *);
   friend mlir::LogicalResult
@@ -78,13 +74,6 @@ private:
                                     TileRegionToInstrLoweringSession &,
                                     mlir::RewriterBase::Listener *);
 };
-
-/// Proves function-local alias/use closure and lowers private packed updates
-/// before per-region conversion. Unknown/external storage remains unchanged
-/// for the ordinary full conversion to accept or reject.
-mlir::LogicalResult convertPrivatePackedUpdatesToInstr(
-    mlir::func::FuncOp function, TileRegionToInstrLoweringSession &session,
-    mlir::RewriterBase::Listener *listener = nullptr);
 
 /// Lower exactly one isolated TileRegion body. This operation does not run
 /// function-wide required NCC join placement, bufferization, or memory

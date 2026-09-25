@@ -2,7 +2,7 @@
 
 本计划原承接`production-host-readiness`的现版本完整主机矩阵，2026-09-25用户已取消该独立重签任务。
 下文保留设计及历史证据，不再作为本轮待执行计划；状态以[progress](../progress.md)为准。
-Tensor整改直接受影响的主机/no-card验证仍由`board-testing`按本项覆盖执行，不因本次取消而省略。
+Tensor整改随后已按用户要求撤回，未完成工作保存在独立 WIP 分支；本次只验证回退，不接续完整主机矩阵。
 `mesh-communication-materialization`已退出独立待开发队列：已有实现与历史验收保留，
 不再次安排笼统的“通信边界复核”。
 提交、证据及归属见[通信任务调度收拢](../archive/mesh-communication-task-reconciliation.md)。

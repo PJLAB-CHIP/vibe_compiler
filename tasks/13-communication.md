@@ -248,38 +248,7 @@ Payload参数只生成在实际source/destination entry；ready参数及通知gl
 同一ResourceId跨参与者保持一致，参数ordinal在各entry内独立；无关Tile不添加access=none占位。
 完成verifier要求每个实际参与者恰有一个匹配ready binding，并拒绝无关Tile的额外binding；不会为通过全卡参数等长检查而伪造参与者。
 
-DMA位于静态非空循环时以整个循环作单次切点，通知不进入重复执行的loop。writer仍须无条件执行。
-reader允许静态索引控制的条件读取，但须从actual Instr的父scope及条件SSA证明：在该单次切点每次执行时，
-此resource至少有一次实际读取。证明只消费静态非空SCF循环、透明单次region及整数条件；未知执行次数的scope仍拒绝。
-不得从Tensor来源证明或binding access标签推断执行。
-需求按同一reader Region及resource合并：一个已证明必经的读取可以证明该resource需要获取，
-其它条件读取仍由同一acquire覆盖；不可达的tail读取不能否定已有见证。没有任何必经读取见证的组仍拒绝：
-无法证明的条件或循环携带状态为typed unsupported，证明工作或结构预算耗尽为indeterminate。
-
-条件读取的pipeline边界：输入是含actual WDMA/RDMA、view alias及SCF的完整TileModule集合；
-SharedDDR completion负责验证确定发布、不可覆盖和读取执行条件，输出原Instr及现有publish/acquire，
-直接交给联合顺序验证、NCC completion、lifetime/SPM及target。none/search继续调用同一实现。
-本项不增加IR/runtime/ABI协议，不支持条件writer、循环内重复通知或可覆盖的动态epoch，不拆分或重排计算循环。
-acquire仍在覆盖该reader Region全部实际读取的最晚既有单次切点之前；单次切点集合只含Region内operation和整个静态循环，
-不把循环内某次迭代当作新调度位置。RDMA保留原分支位置，通知数量不随迭代或copy数增加。
-提前到此切点后形成的真实依赖仍由原联合wait graph检查；不能用全局drain或新增等待掩盖环。
-
-执行证明采用有界构造见证：现有Instr范围分析仅提供每个静态IV的候选坐标，将所有候选同时绑定后，
-在不使用分支假设的独立求值中验证原路径的全部条件及循环步长。一个合法坐标证明确定的静态执行中存在该读取；
-区间非空、包围盒或抽样不能代替条件验证，未找到见证只表示unknown，预算耗尽单独返回。
-该方法不枚举迭代域、不引入通用条件调度。
-这沿用[LLVM MustExecute](https://llvm.org/doxygen/MustExecute_8cpp_source.html)先证明必经执行再移动effect的原则；
-LLVM的通用CFG支配证明不能直接覆盖这里的后续静态迭代，因此在现有SCF/范围分析中补受限构造证明，
-API及控制流语义以pinned SCF、RegionBranch接口和现有single-execution分析为准。
-
-| 条件读取覆盖 | 必须验证的结果 | 直接下游 |
-| --- | --- | --- |
-| 1024/1025/1031，4/16 Tile，多fragment、main/tail及嵌套索引分支 | 每个实际reader需要其resource；通知唯一、位于单次切点；原读取覆盖不变 | 生产Spatial/Temporal → Instr/completion → actual SPM |
-| 条件writer、无必经见证的未知条件/不可达读取、零次循环及步长排除的条件 | typed unsupported，不生成无依据的通知或部分通知IR | 同一materializer及fresh verifier |
-| 同resource的必经读取与不可达tail并存；条件证明超出结构预算 | 前者共享唯一acquire；后者typed indeterminate且首次mutation前失败 | 同一materializer及fresh verifier |
-| acquire缺失、重复、错位，DDR与DTE相反顺序 | 缺失/错位明确失败，实际依赖环继续拒绝 | 联合wait graph及NCC/lifetime |
-| 同一控制结构扩大extent | 证明工作不按迭代次数增长，失败不扩预算 | 有界执行证明及实际通知次数 |
-
+DMA位于静态非空循环时以整个循环作单次切点，通知不进入重复执行的loop。条件、未知次数或无法证明单次的边界保持typed unsupported。
 同一Region内连续exchange的DDR/Peer四种组合须经过actual Instr、两个完成域和SPM；真实issue/wait环仍被拒绝。
 联合顺序验证消费已经物化的publish/acquire、Direct-DTE issue/token wait和actual单次执行控制流；不先把整组
 DTE连通Region收缩成原子节点。程序顺序连接相邻实际阻塞点；receiver prepare先于matching send issue，

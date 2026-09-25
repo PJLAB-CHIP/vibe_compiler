@@ -118,12 +118,6 @@ marker。它不说明 future runtime allocation path，也不说明 host 是否�
 DDR `memref.alloc` 不需要额外 requirement attr 才能参与 planning。alignment 来自 target policy 和
 `memref.alloc` alignment；read/write intent 来自 RDMA/WDMA uses；size 来自 memref type 和 Wafer layout。
 
-动态subview的root-relative范围沿current SSA逐层重算。中间经过静态metadata的`memref.reinterpret_cast`
-时，按标准base-preserving语义以新offset替换旧offset，不能叠加两次；element type和memory space须不变，
-source旧offset及result新offset均须可静态证明。结果仍经原root byte范围、alignment、descriptor与capacity检查。
-10号packed窗口的零offset flatten是本规则的一个消费者；1024/1025/1031动态主块/tail的16 Tile完整数值模型，
-非零旧offset的替换及越界负例共同覆盖该边界。未知metadata和算术溢出保持明确拒绝。
-
 ### 3.2 Current Default Arena Boundary
 
 当前IR只有单个可推导的compiler-managed DDR offset domain，没有已实现的target-environment op、arena ID或

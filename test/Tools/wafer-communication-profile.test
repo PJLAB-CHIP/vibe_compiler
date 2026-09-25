@@ -8,7 +8,6 @@
 # RUN: %python %S/../Board/Support/wafer_board_communication_performance.py --transport peer --extent 1025 --work-dir %t.tail --wafer-compile %wafer_compile_test --wafer-run %wafer_obj_root/bin/wafer-run --no-card | FileCheck %s --check-prefix=TAIL
 # RUN: %wafer_compile_test --input-program-dir %t.peer/source --output-dir %t.ordinary --num-partitions=1 --optimization-policy=none --test-communication-candidate=peer
 # RUN: diff -r %t.ordinary %t.peer/delivery/package
-# RUN: %python -c 'import json, pathlib; root=pathlib.Path("%t.peer/delivery/package.profile"); files=[root / "site-map.json", root / "plan.json"]; data=[p.read_text() for p in files]; assert all(s.endswith("\n") and s.count("\n") == 1 for s in data); assert all(isinstance(json.loads(s), dict) for s in data)'
 # RUN: %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog --profile-trace-event-limit 1024 | FileCheck %s --check-prefix=PREFIX
 # RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --profile-trace-event-limit 0 2>&1 | FileCheck %s --check-prefix=ZERO-LIMIT
 # RUN: not %wafer_obj_root/bin/wafer-run --package-dir %t.peer/delivery/package --no-card --profile-trace-event-limit 209706 2>&1 | FileCheck %s --check-prefix=OVER-LIMIT

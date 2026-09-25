@@ -2736,9 +2736,8 @@ static mlir::LogicalResult apply(mlir::ModuleOp module,
           output->second = rewriter.create<mlir::memref::AllocOp>(
               oldRegion.getLoc(), outputType);
         auto outputSubview = rewriter.create<mlir::memref::SubViewOp>(
-            oldSubview.getLoc(), oldSubview.getType(), output->second,
-            oldSubview.getMixedOffsets(), oldSubview.getMixedSizes(),
-            oldSubview.getMixedStrides());
+            oldSubview.getLoc(), output->second, oldSubview.getMixedOffsets(),
+            oldSubview.getMixedSizes(), oldSubview.getMixedStrides());
         result.obsoleteOutputSubview = oldSubview;
         result.ddrDestination = outputSubview.getResult();
         outputArguments[function.getOperation()].push_back(

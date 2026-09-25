@@ -1,5 +1,9 @@
 # 板端性能优化记录
 
+2026-09-25按用户要求恢复至已板测的 `665452c5`，保留 attention/GEMM 优化、NCx 输入复用和统一计时。
+后续 LM/Tensor 工作保存于 `wip/tensor-subset-materialization`；9月24日的产品和性能保护记录属于已撤回实现的历史，
+不能移作恢复版本的新资格。本次没有新增实卡或性能测量，任务状态见 [progress](../tasks/progress.md)。
+
 本文保存可复用的性能测量与根因证据。任务状态、待办和实施顺序只在
 [`tasks/progress.md`](../tasks/progress.md)及其current plan中维护；本文不以局部收益代签模型或板测任务完成。
 后续每次优化追加独立记录，保留前后版本身份，不覆盖旧测量。

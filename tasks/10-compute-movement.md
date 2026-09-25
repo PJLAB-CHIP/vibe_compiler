@@ -127,8 +127,7 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 所有临时存储和completion由下游current IR决定，不预测SPM容量，也不添加新的Instr或ABI形式。
 归约前后的BOOL publication copy复用既有packed-byte证明：Tensor布局、连续且current SSA已证明byte-aligned的两端，
 目标必须整字节覆盖或拥有最后一个padding byte，才用单个按字节计数的SPM GatherScatter复制。
-不改变BOOL格式，不调用native BOOL Memset；整字节复制不能实现部分字节写入或非对齐切片。
-满足下文私有allocation证明的更新由显式保留邻接bit的路径实现，其它情况继续拒绝。
+不改变BOOL格式，不调用native BOOL Memset；部分字节写入及非对齐切片继续拒绝，不覆盖相邻谓词。
 同type、identity memref layout且两端均有current-IR Allocate effect的完整BOOL allocation还可直接复制全部physical bytes，
 包括Tensor/Cx/NCx及allocation自有的padding；不将此证明推广到view、部分destination或不同encoding的转换。
 完整连续BOOL allocation的fill显式采用physical footprint，按整字节I8路径包含它自己拥有的尾部unused bits；
@@ -177,49 +176,12 @@ Instr、DDR/SPM规划及SystemC exact后，原ViT完整package/no-card与实卡�
 标准view语义沿用[MLIR MemRef](https://mlir.llvm.org/docs/Dialects/MemRef/)，
 `reinterpret_cast`的offset相对underlying allocation，`subview`相对其source；实现以pinned源码核对。
 所有窗口、解包及紧凑临时buffer均实际物化并由原Tile movement owner登记，直接交唯一completion/SPM规划及target lowering。
-未知余数、动态stride及越界窗口仍拒绝；只读解包不承担部分字节写入，后者须满足下文私有更新合同。
-不从shape预测容量或自动重分块。
+未知余数、动态stride、越界窗口、共享末字节目的view或部分字节写入仍拒绝；不从shape预测容量或自动重分块。
 
 只读解包覆盖矩阵：rank3的1024/1025/1031行、字节内所有起点、连续/有holes的row、静态与SCF动态offset、
 主块/tail及原root末尾padding，逐bit核对采样坐标及邻接guard；未知动态余数和越界是拒绝负例。
 直接下游须通过Instr verifier、实际DDR/SPM规划、target调用和完整numeric model。
 1025×1031真实bool滑窗mask须经原SDPA→完整package/no-card→FP16/BF16全输出实卡，不以fixture替代。
-
-### 私有packed BOOL更新
-
-输入为current Tile store、SPM `tile.copy_into`或`memref.copy`：source是连续且已证明byte-aligned的SPM BOOL，
-destination是Tensor布局的静态正stride BOOL view，shape与source相同。该层负责在保持原packed布局的条件下
-精确更新这些逻辑bit；输出为原Instr搬运、Bit2Fp、GatherScatter和非零比较，以及具有原movement owner的实际scratch。
-直接下游为唯一completion、DDR/SPM规划和target lowering。私有性需要完整alias/use closure，
-因此该更新在function范围的conversion preparation中证明并实际物化，然后进入现有逐TileRegion full conversion；
-不得让TileRegion锚点的pass读取sibling或把闭包结论存成跨mutation的临时旁路事实。
-production driver与named Tile→Instr pipeline调用同一个preparation实现；它只处理已证明的私有非整字节更新，
-其余原operation仍由既有full conversion接收或明确拒绝。
-
-首次mutation前必须证明：目的view沿实际SSA回到本次Tile中的私有allocation；完整alias/use closure没有外部参数、
-return、未知调用、并行访问或pointer逃逸；动态起点有非负有界范围和固定模8余数；最小包围字节窗口完全处于原allocation。
-仅有shape或`alloc`拼写不够，region参数按真实operand关系转交，view按标准interface及实际offset/stride解释。
-不能证明私有性、窗口或目标descriptor时返回Unsupported，不补owner、不把失败当capacity。
-
-整字节路径仍优先。其它已证明的私有更新先读取目的包围字节，将其bit精确展开为FP16的0/1；
-source同样展开为0/1，通过实际destination stride和bit余数仅覆盖要求的坐标，再把完整包围窗口重新打包并写回。
-原窗口中的首尾相邻bits、行间holes和allocation尾部padding保持原位；不把它们当作已知零，不改变BOOL磁盘/ABI格式。
-FP16只表示精确布尔真值，不改任何原浮点operation、dtype、归约或mask语义。新增读写、alias和scratch必须全部进入actual IR；
-不在lowering插固定join/wait、retile或spill，实际容量只由随后SPM规划决定。
-
-算法对照[LLVM APInt的bit insertion](https://llvm.org/doxygen/APInt_8cpp_source.html)：整word直接复制，部分word保留未更新bits。
-pinned `APInt.cpp::insertBits`确认这一精确语义；目标端使用已有Bit2Fp/坐标搬运/比较实现，避免假设尚无证据的masked DMA。
-view与effect语义按[MLIR MemRef](https://mlir.llvm.org/docs/Dialects/MemRef/)及pinned接口核对。
-非目标为外部或跨Tile共享buffer的atomic bit更新、未知动态余数、任意位布局、存储格式替换或新ABI。
-
-完成矩阵：
-
-| 输入等价类 / 分支 | Exact要求及失败边界 | 直接下游 |
-| --- | --- | --- |
-| rank3/4、1024/1025/1031行、所有模8起点、静态/SCF动态main和tail | source每bit恰好一次，目的邻接bits/holes/padding逐bit不变；窗口不越界 | actual descriptor独立oracle、Instr verifier及target |
-| 私有DDR store / 私有SPM copy_into及memref.copy、region实参和嵌套view | 三个producer使用同一更新实现；实际alias/use closure、实际scratch owner与动态执行次数；新旧byte路径分别覆盖 | 唯一DDR/SPM规划、completion及完整numeric model |
-| 外部目的参数、未知/逃逸use、动态余数未知、越界或非injective目的 | mutation前typed拒绝，原IR完整，不误签容量 | verifier-valid负例及原整字节正例 |
-| 原完整LM S1025及四项性能保护 | source、数值语义、输出、搜索预算不变；完整日志保留其它独立失败 | fresh package/reference/guard no-card，再依当前板测顺序实卡 |
 
 ### 2-D Pooling
 

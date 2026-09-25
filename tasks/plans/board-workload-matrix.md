@@ -1,9 +1,37 @@
 # 扩展板测矩阵与三轮性能调优
 
-2026-09-25用户收窄范围：后续独立搜索性能回归、deep收益验收和三轮模型调优已取消。
-下文相关方案与历史结果保留审计，不再作为本轮执行要求；状态以[progress](../progress.md)为准。
-当前只接续Tensor子集整改及原产品交付验收：fresh产品/no-card、四项性能保护和两项完整LM S1024/1025实卡。
-整改直接受影响的功能回归与原性能保护门槛保持，不自动开展额外调优轮次。
+2026-09-25用户要求有限修复失败即回退。生产反例仍未打通，按用户随后明确要求恢复至
+attention/GEMM 已板测的 `665452c5`。后续 LM/Tensor 工作完整保存在
+`wip/tensor-subset-materialization`；完整长 LM 接续停止，既有已验收功能和实卡结果保持。
+后续独立搜索性能、deep 收益验收、三轮调优及完整主机矩阵重签继续取消。
+状态只看 [progress](../progress.md)，回退范围与验证见[撤回记录](../archive/tensor-subset-materialization-reverted.md)。
+除随后单独授权的本轮 timing 复验外，下文方案与历史结果仅供审计；未通过的数值、产品或性能门槛不改写为通过。
+
+## 恢复版本的全矩阵 kernel timing 复验（2026-09-25）
+
+用户在回退及 WIP 分支保存后，明确要求所有现有板测配置重跑一轮，每项补齐 kernel timing。
+此授权只开启本节，不重启下文已取消的优化、Tensor 整改或三轮调优；状态只看 progress。
+
+- 输入：恢复至 `665452c5` 的生产 compiler/runtime、当前注册 case factory、原 dtype/seed 与 standard width8/trials42。
+- 输出：本轮 fresh source、全部输出 reference/payload、普通及 timing companion package、每 step 的 no-card、
+  数值/guard audit、全部 16 Tile duration、最长 main-entry duration、同次 stream event 与设备窗口诊断。
+- 直接消费者：现有 `wafer-run --kernel-timing`、统一板测结果记录及 progress；不新增运行协议。
+- 执行：host 准备可并行，按已观察到约 15 GiB 的单进程峰值限制内存并保留主机余量；真实设备单进程、逐 case。
+  每 step 单次 launch，包含双步 decode 的两次依赖执行；每次 launch 前以系统级占用检查确认空闲。
+- 完成：指定矩阵逐项有本轮结果；无法构包的项记录编译失败，不伪造 timing。每个实际上板项须完整数值、guard、
+  timing、正常清理和设备健康全部通过。Timeout 或设备异常立即停止批次，不 retry/reset。
+- 非目标：不修长 LM 算法、不调整预算/容差、不重跑历史 package，不从一次带 timing 的 event 宣称普通包性能回归通过。
+
+| 覆盖集合 | 本轮要求 |
+| --- | --- |
+| 既有 75 项配置、79 个 step | 沿用 `board-regression-20260922.json` 的 case/dtype/seed 配置，仅配置与历史结果用于审计；source、input/reference、包和输出全部新生成 |
+| 后续 5 项已验收配置 | BF16 GEMM M=N4096/K1024 的 Tensor/NCx 两项、BF16 2048×28-head attention 的 Tensor/NCx 两项、BF16 attention tail1031；原 seed，均单次 timing 实卡 |
+| 两项完整长 LM S1024/1025 FP16 | 本轮重查正式编译；保持完整模型和输出，构包失败保留原原因，不继续扩大修复或计作已板测 |
+| 正例尺寸和格式 | 既有 1024/1025/1031、4096/4097、多 Tile、多 block 与 tail；FP16/BF16，三项 division 保留原 F32 数值/格式合同 |
+| 计时与生命周期 | 每 step 唯一 event、16 个 typed Tile duration 和正确最大值；完整 expected、guard 与正常厂商清理；默认关闭寄存器采集 |
+
+全部 80 项常规配置共 84 个 step；加两项已知失败的长 LM，共 82 个配置的准备台账。
+数值、编译失败、设备故障与时间分别记录，已有历史性能中位数不替代本轮单次结果。
 
 ## PyTorch case 集合与统一计时（2026-09-23）
 
@@ -121,7 +149,7 @@ caller 按 manifest 打包/解码。runtime 直接传输物理字节，不使用
 
 用户要求基于代码细化通用方案，并明确保护大GEMM及2048 attention性能。任务状态只看progress，
 稳定边界已进入06/08/18号，具体算法、迁移、覆盖及硬性门槛集中在
-[Tensor子集物化实施计划](tensor-subset-materialization.md)。当前已完成来源/覆盖职责拆分及静态Spatial窗口物化；
+[Tensor子集物化撤回记录](../archive/tensor-subset-materialization-reverted.md)。当前已完成来源/覆盖职责拆分及静态Spatial窗口物化；
 后续已补部分动态窗口、shared/local选择及产品能力，历史证据见该计划，不能代签通用算法完成。
 2026-09-24用户授权按算法复审重排：完整DAG/参数化需求→块证明与有界生成→包含target/LLVM及成本的首条纵向
 →生产入口迁移和旧路径清除→metadata/package与fresh产品→原板端验收。当前状态和直接前置只看progress。
@@ -149,8 +177,8 @@ timing companion，执行一次轻量capture并列记录最长Tile本体、16 Ti
 | S1025 FP16，非整除尾部 | 同一完整图及`[1,1025,32000]`全部logits；真实尾块的package/no-card、全量相似度与guard |
 | 两项共同生命周期 | 每次launch前系统占用检查；原cosine≥0.9999且relative L2≤0.01；正常completion/readback/厂商清理，执行窗口无fatal/timeout |
 
-接续须等待progress中通用子集整改及产品准备的直接前置；下面保留首次失败的定位证据，不从旧失败推定当前不可用。
-S1025 metadata/package缺口按15号修复，不能代签上游算法；最新产品结果看progress。
+本项已按顶部决定停止接续；下面保留首次失败的定位证据，不从旧失败推定当前不可用。
+S1025 metadata/package缺口保留未修复；最新产品边界看progress。
 异常停止批次，不自动retry/reset；实卡完成前不签本项通过。
 
 本轮默认8/42首次准备均失败：S1024为42次actual capacity拒绝；S1025为29次capacity、13次unsupported。

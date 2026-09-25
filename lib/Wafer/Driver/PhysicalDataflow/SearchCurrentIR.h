@@ -64,17 +64,6 @@ struct SearchCurrentIRStatistics {
   uint64_t accessReuseEligible = 0;
   uint64_t accessReuseBranchesDiscovered = 0;
   uint64_t accessReuseBranchesStarted = 0;
-  uint64_t assemblyBranchesDiscovered = 0;
-  uint64_t assemblyBranchesStarted = 0;
-  uint64_t assemblyCandidates = 0;
-  uint64_t assemblyMixedMaterializations = 0;
-  uint64_t assemblyAccepted = 0;
-  uint64_t assemblyMixedAccepted = 0;
-  uint64_t assemblyBindingRejected = 0;
-  uint64_t sharedAssemblyCapacityRejected = 0;
-  uint64_t localAssemblyCapacityRejected = 0;
-  uint64_t sharedAssemblyCapacityRefinements = 0;
-  uint64_t localAssemblyCapacityRefinements = 0;
   uint64_t accessReuseAccepted = 0;
   uint64_t residentReuseAccepted = 0;
   std::optional<uint64_t> minimumResidentDDRReadBytes;

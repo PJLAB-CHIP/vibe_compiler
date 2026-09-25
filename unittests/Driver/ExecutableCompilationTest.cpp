@@ -20,8 +20,6 @@
 #include "Wafer/Transforms/Instr/TileMemoryPlanning.h"
 #include "Wafer/Transforms/Tile/StructuredBufferRelations.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -38,9 +36,7 @@
 
 #include "TestSupport/CodeGen/ExecutableTestSupport.h"
 
-#include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -1293,223 +1289,6 @@ TEST(ExecutableCompilationPolicyTest,
   }
 }
 
-struct AssemblySearchConfiguration {
-  int64_t extent;
-  wafer::SearchMode mode;
-  uint64_t width, trials, cache;
-};
-
-void expectAssemblyGroupSearch(AssemblySearchConfiguration config,
-                               std::vector<std::string> &referenceTrace,
-                               std::vector<std::string> &referenceIR) {
-  using namespace wafer::compiler::detail;
-  const auto standard = wafer::SearchMode::Standard;
-  const int64_t extent = config.extent;
-  SCOPED_TRACE(extent);
-  SCOPED_TRACE(static_cast<unsigned>(config.mode));
-  SCOPED_TRACE(config.cache);
-  auto parsed = wafer::compiler::testing::parseMultiProducerJoinProgram(extent);
-  ASSERT_TRUE(parsed.module);
-  auto function = *parsed.module->getOps<mlir::func::FuncOp>().begin();
-  auto returned = mlir::cast<mlir::func::ReturnOp>(
-      function.getBody().front().getTerminator());
-  auto first = returned.getOperand(0).getDefiningOp<mlir::linalg::GenericOp>();
-  ASSERT_TRUE(first);
-  mlir::IRRewriter rewriter(parsed.context.get());
-  rewriter.setInsertionPoint(returned);
-  mlir::IRMapping mapping;
-  auto second =
-      mlir::cast<mlir::linalg::GenericOp>(rewriter.clone(*first, mapping));
-  auto payload =
-      mlir::cast<mlir::linalg::YieldOp>(second.getBody()->getTerminator());
-  auto sum = payload.getOperand(0).getDefiningOp<mlir::arith::AddFOp>();
-  ASSERT_TRUE(sum);
-  rewriter.setInsertionPoint(sum);
-  rewriter.replaceOpWithNewOp<mlir::arith::MulFOp>(sum, sum.getLhs(),
-                                                   sum.getRhs());
-  rewriter.setInsertionPoint(returned);
-  auto identity = rewriter.getMultiDimIdentityMap(3);
-  auto combined = rewriter.create<mlir::linalg::GenericOp>(
-      returned.getLoc(), first.getResultTypes(),
-      mlir::ValueRange{first.getResult(0), second.getResult(0)},
-      first.getDpsInits(),
-      llvm::ArrayRef<mlir::AffineMap>{identity, identity, identity},
-      llvm::ArrayRef<mlir::utils::IteratorType>{
-          mlir::utils::IteratorType::parallel,
-          mlir::utils::IteratorType::parallel,
-          mlir::utils::IteratorType::parallel},
-      [&](mlir::OpBuilder &builder, mlir::Location location,
-          mlir::ValueRange args) {
-        auto value =
-            builder.create<mlir::arith::AddFOp>(location, args[0], args[1]);
-        builder.create<mlir::linalg::YieldOp>(location, value.getResult());
-      });
-  rewriter.modifyOpInPlace(
-      returned, [&] { returned->setOperands(combined.getResults()); });
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*parsed.module)));
-  auto program =
-      wafer::compiler::testing::multiProducerJoinProgramMetadata(extent);
-  wafer::compiler::ProgramDataHandoff data;
-  std::string text;
-  llvm::raw_string_ostream diagnostics(text);
-  auto timing =
-      std::make_shared<wafer::support::CompileTimingSession>(diagnostics);
-  wafer::support::ScopedCompileTimingActivation activation(timing);
-  SearchCurrentIROptions options;
-  options.mode = config.mode;
-  options.limits = wafer::SearchLimits{config.width, config.trials};
-  options.prefixCacheEntries = config.cache;
-  options.downstream.tilePipelineParallelism = 1;
-  uint64_t capacityCallbacks = 0;
-  auto observeCapacity =
-      [&](wafer::CardId, wafer::TileId,
-          const wafer::SPMMemoryPlanningFailure &failure,
-          const wafer::StructuredMaterializationRelations &) {
-        EXPECT_EQ(failure.kind,
-                  wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
-        EXPECT_GT(failure.demandCount, 0u);
-        ++capacityCallbacks;
-      };
-  options.downstream.capacityObserver = observeCapacity;
-
-  SearchCurrentIRStatistics statistics;
-  auto result = compileSearchCurrentIR(
-      *parsed.module, program, wafer::compiler::testing::executionConfig(),
-      diagnostics, data, options, &statistics);
-  timing->finishAndPrintSummary();
-  ASSERT_TRUE(result.isAccepted()) << result.detail << text;
-  EXPECT_EQ(statistics.traversal.trialsUsed, config.trials);
-  EXPECT_LE(statistics.traversal.peakRetainedBranches, config.width);
-  EXPECT_LE(statistics.peakCachedPrefixes, config.cache);
-  EXPECT_GT(statistics.assemblyBranchesDiscovered, 1u);
-  EXPECT_GT(statistics.assemblyCandidates, 1u);
-  EXPECT_GT(statistics.assemblyAccepted, 0u);
-  EXPECT_EQ(statistics.controller.compilerBugs, 0u);
-  if (config.mode == standard) {
-    EXPECT_EQ(statistics.traversal.candidateActualizations, config.trials);
-    EXPECT_GT(statistics.assemblyBranchesStarted, 1u);
-    EXPECT_GT(statistics.assemblyMixedMaterializations, 0u);
-    EXPECT_GT(statistics.assemblyMixedAccepted, 0u);
-    // Both independent implementations consume their own actual capacity
-    // certificates and enter their own proposal repair process in this budget.
-    EXPECT_GT(statistics.sharedAssemblyCapacityRejected, 0u);
-    EXPECT_GT(statistics.localAssemblyCapacityRejected, 0u);
-    EXPECT_GT(statistics.sharedAssemblyCapacityRefinements, 0u);
-    EXPECT_GT(statistics.localAssemblyCapacityRefinements, 0u);
-    EXPECT_LE(statistics.sharedAssemblyCapacityRejected +
-                  statistics.localAssemblyCapacityRejected,
-              capacityCallbacks);
-    EXPECT_LE(statistics.sharedAssemblyCapacityRefinements,
-              statistics.sharedAssemblyCapacityRejected);
-    EXPECT_LE(statistics.localAssemblyCapacityRefinements,
-              statistics.localAssemblyCapacityRejected);
-
-    // Two visits to one implementation witness that its owner remained live
-    // in between (a retired owner cannot restart). No other implementation
-    // may consume two evaluations in that interval. This checks the actual
-    // traversal independently of the scheduler's queues and priorities.
-    struct Visit {
-      std::optional<uint64_t> implementation;
-      std::optional<uint64_t> structure;
-    };
-    std::map<uint64_t, Visit> visits;
-    llvm::SmallVector<llvm::StringRef> lines;
-    llvm::StringRef(text).split(lines, '\n');
-    for (auto line : lines) {
-      if (!line.consume_front("wafer-compile: compile-counter "
-                              "category=search-temporal name=choice-"))
-        continue;
-      auto [ordinalText, rest] = line.split('-');
-      auto [field, valueText] = rest.split(" value=");
-      if (field != "implementation" && field != "structural-stratum")
-        continue;
-      uint64_t ordinal, value;
-      ASSERT_FALSE(ordinalText.getAsInteger(10, ordinal));
-      ASSERT_FALSE(valueText.split(' ').first.getAsInteger(10, value));
-      auto &visit = visits[ordinal];
-      (field == "implementation" ? visit.implementation : visit.structure) =
-          value;
-    }
-    ASSERT_EQ(visits.size(), statistics.temporalCandidateActualizations);
-    std::map<uint64_t, std::vector<uint64_t>> traversals;
-    for (const auto &[ordinal, visit] : visits) {
-      ASSERT_TRUE(visit.implementation && visit.structure);
-      traversals[*visit.structure].push_back(*visit.implementation);
-    }
-    unsigned witnesses = 0;
-    for (const auto &[structure, traversal] : traversals) {
-      for (size_t begin = 0; begin < traversal.size(); ++begin) {
-        auto end = std::find(traversal.begin() + begin + 1, traversal.end(),
-                             traversal[begin]);
-        if (end == traversal.end())
-          continue;
-        std::set<uint64_t> intervening;
-        for (auto it = traversal.begin() + begin + 1; it != end; ++it)
-          EXPECT_TRUE(intervening.insert(*it).second)
-              << "structure=" << structure << " waiting=" << traversal[begin]
-              << " repeated=" << *it;
-        witnesses += !intervening.empty();
-      }
-    }
-    EXPECT_GT(witnesses, 0u);
-
-  } else {
-    EXPECT_EQ(statistics.traversal.schemesStarted, config.trials);
-    EXPECT_EQ(statistics.traversal.schemesCompleted, config.trials);
-    EXPECT_GT(statistics.traversal.candidateActualizations, config.trials);
-    EXPECT_EQ(statistics.assemblyBranchesStarted, 1u);
-    EXPECT_GT(statistics.assemblyBindingRejected, 0u);
-  }
-  if (extent == 1031 && config.mode == standard) {
-    std::vector<std::string> trace, ir;
-    llvm::SmallVector<llvm::StringRef> lines;
-    llvm::StringRef(text).split(lines, '\n');
-    for (auto line : lines)
-      if (line.contains("category=search-temporal ") ||
-          line.contains("category=search name=region-candidate-") ||
-          line.starts_with("wafer-compile: rejected-candidate ") ||
-          line.starts_with("wafer-compile: capacity-feedback "))
-        trace.push_back(line.str());
-    ASSERT_FALSE(trace.empty());
-    for (const auto &tile : result.executable->tiles) {
-      std::string module;
-      llvm::raw_string_ostream stream(module);
-      tile.getModule().print(stream);
-      ir.push_back(std::move(module));
-    }
-    if (config.cache == 0) {
-      referenceTrace = std::move(trace);
-      referenceIR = std::move(ir);
-    } else {
-      EXPECT_EQ(trace, referenceTrace);
-      EXPECT_EQ(ir, referenceIR);
-    }
-  }
-}
-
-TEST(ExecutableCompilationPolicyTest,
-     AssemblyGroupsHaveIndependentActualImplementations) {
-  const auto standard = wafer::SearchMode::Standard;
-  std::vector<std::string> referenceTrace, referenceIR;
-  for (auto config : {AssemblySearchConfiguration{1024, standard, 8, 42, 8},
-                      AssemblySearchConfiguration{1025, standard, 8, 42, 8},
-                      AssemblySearchConfiguration{1031, standard, 8, 42, 0},
-                      AssemblySearchConfiguration{1031, standard, 8, 42, 1},
-                      AssemblySearchConfiguration{1031, standard, 8, 42, 8}})
-    ASSERT_NO_FATAL_FAILURE(
-        expectAssemblyGroupSearch(config, referenceTrace, referenceIR));
-}
-
-TEST(ExecutableCompilationPolicyTest,
-     AssemblyImplementationFinishesItsChargedDeepProcess) {
-  // The first two structures have no shared assembly opportunity. Six
-  // independently charged schemes reach the first actual local branch in
-  // the third structure, then finish all six under a full retention width.
-  std::vector<std::string> trace, ir;
-  ASSERT_NO_FATAL_FAILURE(expectAssemblyGroupSearch(
-      {1031, wafer::SearchMode::Deep, 6, 6, 1}, trace, ir));
-}
-
 TEST(ExecutableCompilationPolicyTest,
      ActualPrefixCachePreservesCandidatesAndExecutableUnderEviction) {
   using namespace wafer::compiler::detail;
@@ -2315,13 +2094,8 @@ TEST(ExecutableCompilationPolicyTest,
 TEST(ExecutableCompilationPolicyTest,
      SharedDDRChecksActualDTESendAndWaitOrder) {
   for (int64_t extent : {1024, 1025, 1031}) {
-    // 5: last-iteration read; 6: conditional writer; 7: unknown read;
-    // 8: empty read loop; 9: off-grid read; 10: conditional read with DTE
-    // dependency cycle; 11: unreachable read; 12: live and dead reads of one
-    // resource; 13: bounded predicate proof exhausted. Modes 6-9/11/13 fail
-    // preflight without changing IR.
-    for (unsigned mode : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}) {
-      bool cycle = mode == 1 || mode == 10;
+    for (unsigned mode : {0, 1, 2, 3, 4}) {
+      bool cycle = mode == 1;
       SCOPED_TRACE(extent);
       SCOPED_TRACE(mode);
       auto parsed = wafer::compiler::testing::parseProgram();
@@ -2358,61 +2132,20 @@ TEST(ExecutableCompilationPolicyTest,
         beginRegion();
         if (!tile && cycle)
           transport();
-        bool loopDMA = mode == 4 || (mode >= 5 && tile);
-        bool conditionalDMA =
-            (mode == 6 && !tile) || (mode >= 5 && tile && mode != 6);
-        if (loopDMA)
+        if (mode == 4)
           ir << "%lb = arith.constant 0 : index\n"
-             << "%ub = arith.constant "
-             << (mode == 4   ? 3
-                 : mode == 8 ? 0
-                             : extent)
-             << " : index\n"
-             << "%step = arith.constant " << (mode == 4 ? 1 : 128)
-             << " : index\nscf.for %i = %lb to %ub step %step {\n";
-        if (conditionalDMA) {
-          if (mode == 6 || mode == 7)
-            ir << "scf.if %flag {\n";
-          else {
-            int64_t start = mode == 9 ? 5 : ((extent - 1) / 128) * 128;
-            if (mode == 11)
-              start = extent;
-            ir << "%start = arith.constant " << start << " : index\n"
-               << "%take = arith.cmpi " << (mode == 9 ? "eq" : "sge")
-               << ", %i, %start : index\n";
-            if (mode == 13) {
-              ir << "%false = arith.constant false\n";
-              std::string previous = "%take";
-              for (unsigned depth = 0; depth < 65; ++depth) {
-                std::string next = "%guard" + std::to_string(depth);
-                ir << next << " = arith.xori " << previous << ", %false : i1\n";
-                previous = next;
-              }
-              ir << "scf.if " << previous << " {\n";
-            } else {
-              ir << "scf.if %take {\n";
-            }
-          }
-        }
-        auto emitDMA = [&]() {
-          ir << "wafer.instr."
-             << (tile ? "rdma %arg to %buffer" : "wdma %buffer to %arg")
-             << " {byte_count = " << 2 * extent
-             << " : i64, inner_bytes = " << 2 * extent << " : i64, "
-             << (tile ? "src" : "dst") << "_iterations = array<i64: 1, 1, 1>, "
-             << (tile ? "src" : "dst")
-             << "_strides = array<i64: 0, 0, 0>} : " << (tile ? ddr : spm)
-             << " to " << (tile ? spm : ddr) << "\n";
-        };
-        emitDMA();
-        if (conditionalDMA)
-          ir << "}\n";
-        if (mode == 12 && tile) {
-          ir << "%never = arith.constant false\nscf.if %never {\n";
-          emitDMA();
-          ir << "}\n";
-        }
-        if (loopDMA)
+                "%ub = arith.constant 3 : index\n"
+                "%step = arith.constant 1 : index\n"
+                "scf.for %i = %lb to %ub step %step {\n";
+        ir << "wafer.instr."
+           << (tile ? "rdma %arg to %buffer" : "wdma %buffer to %arg")
+           << " {byte_count = " << 2 * extent
+           << " : i64, inner_bytes = " << 2 * extent << " : i64, "
+           << (tile ? "src" : "dst") << "_iterations = array<i64: 1, 1, 1>, "
+           << (tile ? "src" : "dst")
+           << "_strides = array<i64: 0, 0, 0>} : " << (tile ? ddr : spm)
+           << " to " << (tile ? spm : ddr) << "\n";
+        if (mode == 4)
           ir << "}\n";
         ir << "wafer.instr.ncc_join [0]\n";
         if (tile || mode == 3)
@@ -2436,28 +2169,8 @@ TEST(ExecutableCompilationPolicyTest,
         owners.push_back(std::move(module));
         tiles.push_back(wafer::TileId(tile));
       }
-      auto printModules = [&]() {
-        std::string text;
-        llvm::raw_string_ostream stream(text);
-        for (auto module : modules)
-          module.print(stream);
-        return text;
-      };
-      std::string before = printModules();
       auto completion = wafer::materializeSharedDDRCompletion(modules, tiles);
-      if ((mode >= 6 && mode <= 9) || mode == 11 || mode == 13) {
-        EXPECT_EQ(completion.failure,
-                  mode == 13 ? wafer::SharedDDRCompletionFailure::Indeterminate
-                             : wafer::SharedDDRCompletionFailure::Unsupported);
-        if (mode == 13) {
-          EXPECT_EQ(
-              wafer::analyzeCurrentCommunicationOrder(modules, tiles).status,
-              wafer::CommunicationOrderStatus::Indeterminate);
-        }
-        EXPECT_EQ(printModules(), before);
-        continue;
-      }
-      if (cycle || mode == 2) {
+      if (mode == 1 || mode == 2) {
         EXPECT_EQ(completion.failure,
                   wafer::SharedDDRCompletionFailure::Unsupported);
         EXPECT_NE(completion.detail.find(cycle ? "cycle" : "conditional"),
@@ -2504,7 +2217,7 @@ TEST(ExecutableCompilationPolicyTest,
           ++acquires;
           EXPECT_TRUE(mlir::isa<wafer::TileRegionOp>(op->getParentOp()));
           EXPECT_FALSE(op->getParentOfType<mlir::scf::ForOp>());
-          if (mode == 4 || mode == 5 || mode == 12) {
+          if (mode == 4) {
             EXPECT_TRUE(mlir::isa<mlir::scf::ForOp>(op->getNextNode()));
           }
         });
@@ -2513,171 +2226,119 @@ TEST(ExecutableCompilationPolicyTest,
       EXPECT_EQ(publishes, 1u);
       EXPECT_EQ(acquires, 1u);
       EXPECT_EQ(waits, 2u);
-      if (mode == 5) {
-        // Revalidate current placement, not merely the creation-time proof.
-        wafer::SyncDDRAcquireOp acquire;
-        modules[1].walk([&](wafer::SyncDDRAcquireOp op) { acquire = op; });
-        ASSERT_TRUE(acquire);
-        auto *cut = acquire->getNextNode();
-        acquire->moveAfter(cut);
-        EXPECT_FALSE(
-            wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
-        acquire->moveBefore(cut);
-        mlir::OpBuilder builder(acquire);
-        auto *duplicate = builder.clone(*acquire);
-        EXPECT_FALSE(
-            wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
-        duplicate->erase();
-        acquire->erase();
-        EXPECT_FALSE(
-            wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
-      }
     }
   }
 }
 
 TEST(ExecutableCompilationPolicyTest,
      SharedDDRManyResourcesPreserveExactReadersAndFreshValidation) {
-  for (int64_t extent : {1024, 1025, 1031})
-    for (auto [tileCount, conditional] :
-         {std::pair<unsigned, bool>{4, false}, {4, true}, {16, true}}) {
-      SCOPED_TRACE(tileCount);
-      SCOPED_TRACE(conditional);
-      SCOPED_TRACE(extent);
-      // A wide actual communication graph exercises publication lookup scaling;
-      // every payload retains a real rank-3 DMA extent.
-      unsigned resources = conditional ? 32 : 1024;
-      auto parsed = wafer::compiler::testing::parseProgram();
-      llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
-      llvm::SmallVector<mlir::ModuleOp> modules;
-      llvm::SmallVector<wafer::TileId> tiles;
-      std::string shape = "1x" + std::to_string(extent) + "x1xf16";
-      std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
-      std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
-      for (unsigned tile = 0; tile < tileCount; ++tile) {
-        std::string text;
-        llvm::raw_string_ostream ir(text);
-        ir << "module {\n";
-        for (unsigned id = 0; id < resources; ++id)
-          ir << "memref.global \"private\" @data" << id << " : " << ddr
-             << " {wafer.ddr_resource = #wafer.ddr_resource<" << id << ">}\n";
-        ir << "func.func @entry(";
-        bool firstArgument = true;
-        for (unsigned id = 0; id < resources; ++id) {
-          unsigned relative = (tile + tileCount - id % tileCount) % tileCount;
-          if (relative >= 3)
-            continue;
-          if (!firstArgument)
-            ir << ", ";
-          firstArgument = false;
-          ir << "%data" << id << ": " << ddr << " {wafer.ddr_binding = "
-             << "#wafer.ddr_binding<@data" << id << ", id = " << id << ", "
-             << (relative == 0 ? "write" : "read") << ">}";
-        }
-        ir << ") {\n%condition = arith.constant true\n";
-        for (unsigned id = 0; id < resources; ++id) {
-          unsigned relative = (tile + tileCount - id % tileCount) % tileCount;
-          if (relative >= 3)
-            continue;
-          bool write = relative == 0;
-          ir << "%result" << id << " = wafer.tile.region(%data" << id
-             << ", %condition : " << ddr << ", i1) -> (i1) { ^bb0(%arg: " << ddr
-             << ", %flag: i1): "
-             << "%buffer = memref.alloc() : " << spm << "\n";
-          if (conditional && !write) {
-            int64_t selected = (id % ((extent + 127) / 128)) * 128;
-            ir << "%lb = arith.constant 0 : index\n"
-               << "%ub = arith.constant " << extent << " : index\n"
-               << "%step = arith.constant 128 : index\n"
-               << "%selected = arith.constant " << selected << " : index\n"
-               << "scf.for %i = %lb to %ub step %step {\n"
-               << "%take = arith.cmpi eq, %i, %selected : index\n"
-               << "scf.if %take {\n";
-          }
-          ir << "wafer.instr."
-             << (write ? "wdma %buffer to %arg" : "rdma %arg to %buffer")
-             << " {byte_count = " << 2 * extent
-             << " : i64, inner_bytes = " << 2 * extent << " : i64, "
-             << (write ? "dst" : "src") << "_iterations = array<i64: 1, 1, 1>, "
-             << (write ? "dst" : "src")
-             << "_strides = array<i64: 0, 0, 0>} : " << (write ? spm : ddr)
-             << " to " << (write ? ddr : spm) << "\n";
-          if (conditional && !write)
-            ir << "} }\n";
-          ir << "wafer.instr.ncc_join [0]\nwafer.tile.yield %flag : i1 }\n";
-        }
-        ir << "return } }";
-        auto module =
-            mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
-        ASSERT_TRUE(module);
-        ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-        modules.push_back(*module);
-        owners.push_back(std::move(module));
-        tiles.push_back(wafer::TileId(tile));
+  for (int64_t extent : {1024, 1025, 1031}) {
+    SCOPED_TRACE(extent);
+    // A wide actual communication graph exercises publication lookup scaling;
+    // every payload retains a real rank-3 DMA extent.
+    constexpr unsigned resources = 1024;
+    auto parsed = wafer::compiler::testing::parseProgram();
+    llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> owners;
+    llvm::SmallVector<mlir::ModuleOp> modules;
+    llvm::SmallVector<wafer::TileId> tiles;
+    std::string shape = "1x" + std::to_string(extent) + "x1xf16";
+    std::string ddr = "memref<" + shape + ", #wafer.memory<ddr, tensor>>";
+    std::string spm = "memref<" + shape + ", #wafer.memory<spm, tensor>>";
+    for (unsigned tile = 0; tile < 4; ++tile) {
+      std::string text;
+      llvm::raw_string_ostream ir(text);
+      ir << "module {\n";
+      for (unsigned id = 0; id < resources; ++id)
+        ir << "memref.global \"private\" @data" << id << " : " << ddr
+           << " {wafer.ddr_resource = #wafer.ddr_resource<" << id << ">}\n";
+      ir << "func.func @entry(";
+      bool firstArgument = true;
+      for (unsigned id = 0; id < resources; ++id) {
+        unsigned relative = (tile + 4 - id % 4) % 4;
+        if (relative == 3)
+          continue;
+        if (!firstArgument)
+          ir << ", ";
+        firstArgument = false;
+        ir << "%data" << id << ": " << ddr << " {wafer.ddr_binding = "
+           << "#wafer.ddr_binding<@data" << id << ", id = " << id << ", "
+           << (relative == 0 ? "write" : "read") << ">}";
       }
-      auto result = wafer::materializeSharedDDRCompletion(modules, tiles);
-      ASSERT_TRUE(result.succeeded()) << result.detail;
-      unsigned publications = 0, acquisitions = 0;
-      wafer::SyncDDRPublishOp first;
-      for (auto module : modules) {
-        auto entry = *module.getOps<mlir::func::FuncOp>().begin();
-        unsigned localResources = resources * 3 / tileCount;
-        ASSERT_EQ(entry.getNumArguments(), 2 * localResources);
-        for (unsigned index = 0; index < localResources; ++index) {
-          auto data = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
-              index, wafer::kWaferDDRBindingAttrName);
-          auto ready = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
-              localResources + index, wafer::kWaferDDRBindingAttrName);
-          ASSERT_TRUE(data && ready);
-          EXPECT_EQ(ready.getResourceId(), resources + data.getResourceId());
-          EXPECT_EQ(ready.getAccess(), data.getAccess());
-          EXPECT_NE(ready.getAccess(), wafer::DDRAccess::None);
-          EXPECT_FALSE(entry.getArgument(localResources + index).use_empty());
-          EXPECT_EQ(entry.getArgument(localResources + index).getType(),
-                    mlir::MemRefType::get(
-                        {64}, mlir::IntegerType::get(parsed.context.get(), 8),
-                        mlir::MemRefLayoutAttrInterface{},
-                        wafer::MemoryAttr::get(parsed.context.get(),
-                                               wafer::MemorySpace::DDR,
-                                               wafer::MemLayout::Tensor)));
-        }
-        module.walk([&](wafer::SyncDDRPublishOp op) {
-          ++publications;
-          if (!first)
-            first = op;
-        });
-        module.walk([&](wafer::SyncDDRAcquireOp op) {
-          ++acquisitions;
-          if (conditional) {
-            EXPECT_TRUE(mlir::isa<wafer::TileRegionOp>(op->getParentOp()));
-            EXPECT_TRUE(mlir::isa<mlir::scf::ForOp>(op->getNextNode()));
-          }
-        });
-        if (conditional) {
-          ASSERT_TRUE(mlir::succeeded(wafer::rebuildRequiredNCCJoins(module)));
-          ASSERT_TRUE(mlir::succeeded(
-              wafer::planSPMMemoryModule(module, 0, 3 * 1024 * 1024, 16)));
-          unsigned allocations = 0;
-          module.walk([&](mlir::memref::AllocOp allocation) {
-            EXPECT_TRUE(allocation->hasAttr(wafer::kWaferSPMOffsetAttrName));
-            ++allocations;
-          });
-          EXPECT_GT(allocations, 0u);
-        }
+      ir << ") {\n%condition = arith.constant true\n";
+      for (unsigned id = 0; id < resources; ++id) {
+        unsigned relative = (tile + 4 - id % 4) % 4;
+        if (relative == 3)
+          continue;
+        bool write = relative == 0;
+        ir << "%result" << id << " = wafer.tile.region(%data" << id
+           << ", %condition : " << ddr << ", i1) -> (i1) { ^bb0(%arg: " << ddr
+           << ", %flag: i1): "
+           << "%buffer = memref.alloc() : " << spm << "\n"
+           << "wafer.instr."
+           << (write ? "wdma %buffer to %arg" : "rdma %arg to %buffer")
+           << " {byte_count = " << 2 * extent
+           << " : i64, inner_bytes = " << 2 * extent << " : i64, "
+           << (write ? "dst" : "src") << "_iterations = array<i64: 1, 1, 1>, "
+           << (write ? "dst" : "src")
+           << "_strides = array<i64: 0, 0, 0>} : " << (write ? spm : ddr)
+           << " to " << (write ? ddr : spm)
+           << "\nwafer.instr.ncc_join [0]\nwafer.tile.yield %flag : i1 }\n";
       }
-      EXPECT_EQ(publications, resources);
-      EXPECT_EQ(acquisitions, 2 * resources);
-      ASSERT_TRUE(first);
-      mlir::OpBuilder builder(first);
-      auto *duplicate = builder.clone(*first);
-      EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tiles).failure,
-                wafer::SharedDDRCompletionFailure::Contract);
-      duplicate->erase();
-      EXPECT_TRUE(wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
-      first.erase();
-      EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tiles).failure,
-                wafer::SharedDDRCompletionFailure::Contract);
+      ir << "return } }";
+      auto module =
+          mlir::parseSourceString<mlir::ModuleOp>(text, parsed.context.get());
+      ASSERT_TRUE(module);
+      ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+      modules.push_back(*module);
+      owners.push_back(std::move(module));
+      tiles.push_back(wafer::TileId(tile));
     }
+    auto result = wafer::materializeSharedDDRCompletion(modules, tiles);
+    ASSERT_TRUE(result.succeeded()) << result.detail;
+    unsigned publications = 0, acquisitions = 0;
+    wafer::SyncDDRPublishOp first;
+    for (auto module : modules) {
+      auto entry = *module.getOps<mlir::func::FuncOp>().begin();
+      constexpr unsigned localResources = resources * 3 / 4;
+      ASSERT_EQ(entry.getNumArguments(), 2 * localResources);
+      for (unsigned index = 0; index < localResources; ++index) {
+        auto data = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
+            index, wafer::kWaferDDRBindingAttrName);
+        auto ready = entry.getArgAttrOfType<wafer::DDRBindingAttr>(
+            localResources + index, wafer::kWaferDDRBindingAttrName);
+        ASSERT_TRUE(data && ready);
+        EXPECT_EQ(ready.getResourceId(), resources + data.getResourceId());
+        EXPECT_EQ(ready.getAccess(), data.getAccess());
+        EXPECT_NE(ready.getAccess(), wafer::DDRAccess::None);
+        EXPECT_FALSE(entry.getArgument(localResources + index).use_empty());
+        EXPECT_EQ(entry.getArgument(localResources + index).getType(),
+                  mlir::MemRefType::get(
+                      {64}, mlir::IntegerType::get(parsed.context.get(), 8),
+                      mlir::MemRefLayoutAttrInterface{},
+                      wafer::MemoryAttr::get(parsed.context.get(),
+                                             wafer::MemorySpace::DDR,
+                                             wafer::MemLayout::Tensor)));
+      }
+      module.walk([&](wafer::SyncDDRPublishOp op) {
+        ++publications;
+        if (!first)
+          first = op;
+      });
+      module.walk([&](wafer::SyncDDRAcquireOp) { ++acquisitions; });
+    }
+    EXPECT_EQ(publications, resources);
+    EXPECT_EQ(acquisitions, 2 * resources);
+    ASSERT_TRUE(first);
+    mlir::OpBuilder builder(first);
+    auto *duplicate = builder.clone(*first);
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tiles).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+    duplicate->erase();
+    EXPECT_TRUE(wafer::verifySharedDDRCompletion(modules, tiles).succeeded());
+    first.erase();
+    EXPECT_EQ(wafer::verifySharedDDRCompletion(modules, tiles).failure,
+              wafer::SharedDDRCompletionFailure::Contract);
+  }
 }
 
 TEST(ExecutableCompilationPolicyTest,

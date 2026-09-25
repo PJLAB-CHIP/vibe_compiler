@@ -817,6 +817,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             work_dir=pathlib.Path("work"),
             dump_compiler_ir=None,
             compile_timing=False, profile=False, kernel_timing=False, profile_trace_event_limit=None,
+            no_kernel_timing=False,
             capture_registers=False,
             board_diagnose_tool=None,
             optimization_policy="none",

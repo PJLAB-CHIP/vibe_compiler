@@ -96,7 +96,6 @@ wafer_add_component_unit_test(WaferPlanningUnitTests
     Planning/PhysicalDataflow/RegionDomainTest.cpp
     Planning/PhysicalDataflow/ExactPBQPSolverTest.cpp
     Planning/PhysicalDataflow/TemporalDomainTest.cpp
-    Planning/PhysicalDataflow/TensorAssemblySelectionTest.cpp
     Planning/PhysicalDataflow/SpatialDomainTest.cpp
     Planning/PhysicalDataflow/SpatialPlanTest.cpp
     TestSupport/Planning/SpatialDemandTestSupport.cpp
@@ -546,34 +545,6 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorAccessReuseTest)
   target_include_directories(WaferSystemCSimulatorAccessReuseTest PRIVATE
     ${CMAKE_SOURCE_DIR}/unittests)
-  add_executable(WaferSystemCSimulatorPackedUpdateTest
-    Simulator/SystemC/SystemCTargetModelPackedUpdateTest.cpp)
-  llvm_update_compile_flags(WaferSystemCSimulatorPackedUpdateTest)
-  target_link_libraries(WaferSystemCSimulatorPackedUpdateTest PRIVATE
-    WaferSystemCSimulatorTestSupport GTest::gtest)
-  foreach(case RANGE 0 8)
-    add_test(NAME WaferSystemCSimulatorPackedUpdateTest.${case}
-      COMMAND WaferSystemCSimulatorPackedUpdateTest
-        --gtest_filter=Windows/SystemCTargetModelPackedUpdateTest.MainAndTailPreserveNeighbouringBits/${case})
-    set_tests_properties(WaferSystemCSimulatorPackedUpdateTest.${case} PROPERTIES
-      LABELS "systemc-model;managed-dependencies;component"
-      ENVIRONMENT "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}")
-  endforeach()
-  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorPackedUpdateTest)
-  add_executable(WaferSystemCSimulatorOutputStoresTest
-    Simulator/SystemC/SystemCTargetModelOutputStoresTest.cpp)
-  llvm_update_compile_flags(WaferSystemCSimulatorOutputStoresTest)
-  target_link_libraries(WaferSystemCSimulatorOutputStoresTest PRIVATE
-    WaferSystemCSimulatorTestSupport GTest::gtest)
-  foreach(case RANGE 0 5)
-    add_test(NAME WaferSystemCSimulatorOutputStoresTest.${case}
-      COMMAND WaferSystemCSimulatorOutputStoresTest
-        --gtest_filter=Windows/SystemCTargetModelOutputStoresTest.MixedWritersPreserveEveryOutputByte/${case})
-    set_tests_properties(WaferSystemCSimulatorOutputStoresTest.${case} PROPERTIES
-      LABELS "systemc-model;managed-dependencies;component"
-      ENVIRONMENT "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}")
-  endforeach()
-  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCSimulatorOutputStoresTest)
   add_custom_target(check-wafer-systemc-model
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
       -R "^WaferSystemCSimulator"
