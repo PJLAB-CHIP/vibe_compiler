@@ -829,7 +829,7 @@ op verifier检查arity、format、正count、unit64、整除及比例、lhs/dst�
 10号proof负责source关系等价，terminal Instr仅表达已确定的物理分组执行。下游CRT和numeric model都按full范围消费，
 不能只执行首组，也不能按dst长度读取紧凑RHS。首轮完整组与tail的范围见10号，不由旧小case外推硬件有效计数位宽。
 实现前后同步ODS、builders/verifier、target/model及直接下游测试，未闭合前不得将该形式列入current production capability；
-具体覆盖见[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)。
+具体覆盖见[统一计划](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)。
 
 当前target LLVM reduce emission不传init，所以tile→instruction先验证tile-level SSA `init`与`init_value`互斥且类型一致。
 source-reduce legalization对满足既有native合同的输入优先生成原生归约，不以归约长度或编译展开预算阻止native检查。

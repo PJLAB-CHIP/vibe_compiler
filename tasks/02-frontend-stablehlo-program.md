@@ -276,7 +276,7 @@ Q/K/V保持原storage，mask进入F32 score，概率只在PV输入处窄化。
 ### 2.6 Attention composite 导出合同
 
 产品capture在typed SDPA调用处建立本节唯一composite；2.5节定义其框架展开策略，05号定义structured消费合同。
-实施和实卡资格见[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)，不由本设计代签。
+实施和实卡资格见[统一板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)，不由本设计代签。
 
 - Upstream IR / input：原始eval PyTorch/HF module及同一份静态typed输入，attention调用处仍可取得causal、位置和有效长度。
 - Current stage responsibility：通过现有产品capture保留逻辑attention的`stablehlo.composite`边界；

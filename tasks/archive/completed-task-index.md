@@ -9,6 +9,15 @@ Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前�
 真实规模覆盖合同。随后闭合的`foundational-coverage-matrix`补齐rank>=3、主要维度>=1024、整除/非整除及结构语义
 矩阵；以下原始证据需要与该补测项的fresh证据共同使用。
 
+## 2026-09-25恢复版本全矩阵计时复验
+
+本轮`board-testing`限定范围闭合：80项常规配置、84个执行步骤的完整数值、guard、16 Tile kernel timing与设备健康通过。
+额外两项长LM S1024/1025仅复查编译失败，未获得板端资格；既有取消计划不重新启动。
+Profile紧凑写入和调用方可选资源预算修复及直接主机检查已闭合；各case保留实际source/package/compiler/runner身份。
+步骤与覆盖见[归档计划](board-workload-matrix.md)，逐项结果见
+[计时表](../../docs/data/board-performance/board-kernel-timing-20260925.md)和
+[完整证据](../../docs/data/board-performance/board-kernel-timing-20260925.json)。
+
 ## 2026-09-22板测性能子步骤
 
 职责分拆与通用循环流水的实施及BF16主块/1031尾块实卡验收见[tile-loop-pipelining](tile-loop-pipelining.md)。

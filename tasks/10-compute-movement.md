@@ -385,7 +385,7 @@ geometry无法direct traversal时保留显式movement。
 直接下游为11号verifier、fresh completion/SPM、14号TargetCall/CRT及17号模型。
 入口沿用production与named TileToInstr conversion的同一个实现，不另建attention广播pass。
 本节不选择layout、tile或worker，不改变dtype、算术、division分解或原source广播语义；完成门禁见
-[本项覆盖矩阵](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)。
+[本项覆盖矩阵](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)。
 
 短向量形式证明`rhs_ordinal = dst_ordinal mod U`；完整分组形式扩展同一`TransferRealizability`证明体系为：
 

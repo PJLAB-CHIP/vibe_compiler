@@ -26,7 +26,33 @@
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
 
+## 2026-09-25：全矩阵 kernel timing 与可选 profile 预算
+
+恢复版本的80项常规配置、84个执行步骤已全部完成本轮fresh source/reference/package/no-card及单次实卡。
+完整输出、guard、16 Tile timing、正常清理和运行窗口诊断全部通过，无timeout/fatal、retry或reset。
+四项双步decode逐步记录，第二步消费本轮第一步的actual KV；FP16/BF16沿用原case，三项division保留原F32合同。
+每项的kernel本体、同次event及结果见[完整计时表](data/board-performance/board-kernel-timing-20260925.md)，
+另提供[CSV](data/board-performance/board-kernel-timing-20260925.csv)和[详细证据](data/board-performance/board-kernel-timing-20260925.json)。
+这些都是单次timing capture，不能代替普通包性能中位数或据此签性能收益。
+
+本轮额外复查的长LM S1024/1025 FP16均在executable-compilation失败，standard8/42下accepted=0；
+S1024的42次实际求值均被容量检查拒绝，S1025为29次容量拒绝及13次unsupported。两项未构包、未上板、没有timing，
+不计入上述80项通过，也不由本轮元数据修复代签原有LM能力。
+
+ResNet18的紧凑site-map实际为22659181 bytes、72409个调用点，仍超过原固定16 MiB和共享65536条预算。
+按用户要求，`9a9aacf6`将profile的字节/record预算改为调用方可选，默认均未设置；
+保留紧凑写入、整数溢出检查、严格schema、Tile/site身份、capture合同及digest，不删记录或按case放行。
+显式零预算仍是零，超过显式预算仍拒绝；同一reader读取完整ResNet18并通过fresh timing no-card。
+其首次实卡kernel本体10.797 ms、同次event19.381001 ms，完整1000元素输出及830320 bytes guard通过。
+
+最终修复的100项Runtime、34项Package、44项RunBoardIO和两项直接lit均通过，canonical完整增量及Ninja no-op通过。
+恢复实现为`9edd2671`，紧凑写入为`139d735a`，默认可选预算为`9a9aacf6`；
+已有本轮包和实卡保留各自工具身份，ResNet18使用重新构建的compiler与board runner，不声称所有case均由最后一个二进制重编。
+证据同时保存各次host失败及最终成功结果；未完成的LM/Tensor工作仍保存在独立WIP分支。
+
 ## 2026-09-25：profile metadata 紧凑写入修复
+
+本节记录`139d735a`阶段；最终profile默认预算已按上节改为不设固定上限。
 
 本轮FP16 biased-conv的1024/1025/1031三个配置开启timing后，在profile site-map发布阶段触发16 MiB JSON上限。
 原因是两空格缩进扩大文件；writer改为紧凑JSON，仅保留末尾换行。全部typed记录、schema、digest、reader检查和上限保持，
@@ -2340,7 +2366,7 @@ Generic同时从实际output permutation反解迭代坐标，修复转置输出�
 正式search仍使用8/42，但反复更换分区并重查这一不变缺口，人工取消前最后进度已有942次需求检查，runner总599.13秒。
 最终compiler的8/1 GDB诊断同样观察到93次需求检查，规划栈落在分区传播及矩形关系证明。
 `trials`没有限制这部分前置规划工作；不能把它解释为板卡卡死、仅仅预算太小或已经进入硬件lowering。
-主机搜索停止的版本边界、统计限制及后续通用修复步骤见[当前矩阵计划](../tasks/plans/board-workload-matrix.md)。
+主机搜索停止的版本边界、统计限制及后续通用修复步骤见[当前矩阵计划](../tasks/archive/board-workload-matrix.md)。
 
 固定FP16 block本轮默认8/42完整package/no-card通过：9 accepted、33容量、0 unsupported，主机1060.77秒。
 包三个文件及48份最终IR与上一轮逐字节一致，source保持初始正确快版本；前序修改相对初始实卡快包的设备回归仍待执行。

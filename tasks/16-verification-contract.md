@@ -274,7 +274,7 @@ decode后一步仍消费本轮前一步actual KV；旧cache前缀与整数端口
 覆盖独立attention的FP16/BF16、MHA/GQA、1024/1025/1031及`[1,28,4096,128]`Q/K/V，
 检查实际原module调用、F32输入/计算、最终dtype、所有端口及输入不变；整网与decode独立覆盖原forward和actual-state接续。
 所有可执行正例和性能保护case必须上板，verifier/非法输入/故障注入负例在主机验证拒绝，不能冒充板测通过。
-具体shape、执行顺序和性能证据归入[统一板测矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)。
+具体shape、执行顺序和性能证据归入[统一板测矩阵](archive/board-workload-matrix.md#attention导出展开与实卡验收)。
 
 ### 3.2 Canonical build gate
 

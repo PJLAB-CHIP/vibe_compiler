@@ -1,7 +1,7 @@
 # 物理搜索效率与 standard/deep 组织实施方案
 
 本方案归入现有 `board-testing` work item，稳定边界由[06号设计](../06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)拥有，
-任务状态只看[progress](../progress.md)，产品与性能保护沿用[统一板测矩阵](board-workload-matrix.md#搜索组织修改的性能验收)。
+任务状态只看[progress](../progress.md)，产品与性能保护沿用[统一板测矩阵](../archive/board-workload-matrix.md#搜索组织修改的性能验收)。
 本方案覆盖整个search，共用standard/deep实现；用户已授权按下述顺序实施到验收完成。
 已实施版本的证据保留在文末，与新合同验收分开；本次迁移进度只看progress。
 
@@ -362,7 +362,7 @@ unsupported分类、每stage执行次数/耗时、PBQP solves、prefix命中/淘
 不能只用取消的大任务、吞吐平均值或减少trials来宣称成功。若局部优化增加其它阶段开销，必须计入总成本。
 不预先承诺未经测量的加速倍数；host效率通过也不代签设备性能。
 
-设备验收沿用[统一规则](board-workload-matrix.md#搜索组织修改的性能验收)：
+设备验收沿用[统一规则](../archive/board-workload-matrix.md#搜索组织修改的性能验收)：
 standard固定原8/42，deep正式对照8/42并保留预算曲线；同时给出同actual-work或同wall的参照。
 原最好可复现性能目标不重置，缺测/波动/退化保持未完成，deep无核心实卡收益不能完成整个work item。
 

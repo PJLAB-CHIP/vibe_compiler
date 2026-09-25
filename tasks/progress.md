@@ -19,35 +19,26 @@
 
 ## 当前调度
 
-2026-09-25已按用户要求将生产实现恢复至 attention/GEMM 已上板的 `665452c5`，
-未完成的 LM/Tensor 工作已另存分支，恢复版本主机检查已通过。
-用户随后授权把现有正式板测配置全部重跑一轮，每项补齐 kernel timing；`board-testing` 重新为 `doing`，
-本轮不继续 LM/Tensor 算法整改或另起性能优化。用户进一步授权修复三项 biased-conv 的 profile JSON 打包超限，
-三项已通过紧凑JSON写入修复、fresh no-card与单次实卡，保持全部计时记录及原数值门槛；
-本轮已有79项、83个step通过实卡；ResNet18紧凑metadata仍超过原固定上限。
-用户已授权把profile容量限制改为可选资源预算、默认不设固定上限，当前补齐读取边界验证后重测ResNet18；具体结果见本轮计划。
+2026-09-25用户限定的本轮工作已完成：生产实现恢复到attention/GEMM已板测的`665452c5`，
+后续LM/Tensor工作完整保存在`wip/tensor-subset-materialization`；恢复后的80项常规板测配置、84个执行步骤
+全部完成fresh source/reference/package/no-card与单次实卡，完整输出、guard、16 Tile kernel timing、清理及设备健康通过。
+`board-testing`本轮范围记为`done`，当前没有自动接续任务。
 
-当前顺序：冻结工具身份与清单→fresh source/reference/timing package/no-card→逐项单次实卡→完整输出、guard、
-16 Tile kernel 本体与同次 event 及设备健康汇总。输入为之前 75 项既定配置加后续 5 项已验收 GEMM/attention 配置，
-共 80 项、84 个 step；另对两项已知失败的长 LM 重查编译结果，可构包才上板，失败如实保留。
-具体配置、覆盖矩阵与执行约束见[本轮计划](plans/board-workload-matrix.md#恢复版本的全矩阵-kernel-timing-复验2026-09-25)。
+三项biased-conv的profile JSON先通过紧凑写入修复；ResNet18仍有21.61 MiB、72409条调用点，
+按用户明确要求将profile字节/record预算改为调用方可选、默认未设置，保留严格格式、内容、整数和摘要校验。
+ResNet18已通过新版本fresh产品及首次实卡。相关主机检查、canonical完整增量和Ninja no-op通过。
+本轮每项保留实际工具身份，不将已有包冒充由最后一个二进制重编；
+[完整计时表](../docs/data/board-performance/board-kernel-timing-20260925.md)与
+[验收证据](../docs/data/board-performance/board-kernel-timing-20260925.json)记录逐项结果，实施步骤见
+[归档计划](archive/board-workload-matrix.md#恢复版本的全矩阵-kernel-timing-复验2026-09-25)。
 
-`665452c5` 位于长 LM Tensor 整改之前，保留已验收的 attention 优化、NCx 输入复用、直接 DMA 和统一计时。
-后续 LM/Tensor 相关提交及未提交工作完整保存在 `wip/tensor-subset-materialization`：
-`7d557e36` 为原始施工快照，`f1f87b3d` 为最后的局部修复尝试；该分支尚有生产反例失败，不能交付。
-恢复版本和分支保存的范围、板测依据及本轮检查见[撤回记录](archive/tensor-subset-materialization-reverted.md)。
+两项额外复查的完整长LM S1024/1025 FP16仍在executable-compilation失败，未构包、未上板、无timing，
+不计入上述80项通过。本轮仅完成对其失败状态的复查，不修复或代签长LM能力。
+`7d557e36`保存原始未完成施工快照，`f1f87b3d`保存最后局部修复尝试；WIP分支仍不可交付。
+回退范围及保护依据见[撤回记录](archive/tensor-subset-materialization-reverted.md)。
 
-后续独立搜索性能/deep 收益验收、三轮模型调优及 `production-host-readiness` 完整主机矩阵重签继续取消。
-旧 LM/Tensor 整改及其它取消计划不因本轮板测授权而重新启动。
-
-### 恢复版本的资格边界
-
-- attention/GEMM 既有实卡数值、guard、健康及性能证据保留：NCx BF16 GEMM M=N4096/K1024 与
-  2048×28-head attention 的普通 event 中位数为 3.203/3.544 ms；统一计时及注册入口随后也通过实卡。
-  原 Tensor 大 GEMM 与 attention 的已有健康结果保留，具体配置和计时口径见撤回记录。
-- 完整单层长 LM 未通过；S1024/1025 的编译、打包和板端能力不在本次回退中修复。
-  后续已撤回实现的 S1024 no-card、S1025 metadata 失败以及四项保护追加计时只保留为历史，不移作当前版本资格。
-- 回退已完成主机验证；本轮实卡持续推进，已完成配置和三项profile打包修复的实测结果见本轮计划。历史未通过门槛不改写为通过。
+后续独立搜索性能/deep收益验收、三轮模型调优及`production-host-readiness`完整主机矩阵重签继续取消。
+LM/Tensor整改及其它取消计划不因本轮板测完成而自动重开；单次timing不代替普通包性能中位数或未通过的历史门槛。
 
 ### 历史接续记录
 
@@ -100,7 +91,7 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 先以当前正式入口重新生成source、合法i64 IDs、完整logits reference及package，通过本轮guard no-card，
 再逐case单次实卡核对全部输出、guard、正常清理和普通耗时；当前处于主机准备，未签board-ready。
 模型接续范围仅这两项；新增通用整改及四项性能保护按上方最新要求，deep搜索、LocalConv性能整改、三轮调优和已收束的attention优化保持后置。
-具体覆盖和证据见[长序列LM接续](plans/board-workload-matrix.md#完整单层lm长序列实卡接续2026-09-23)。
+具体覆盖和证据见[长序列LM接续](archive/board-workload-matrix.md#完整单层lm长序列实卡接续2026-09-23)。
 
 2026-09-22用户授权接续剩余实卡case。仍归`board-testing`，先重签LLaMA block两种dtype及三项大GEMM，
 再完成ViT、GQA、普通/长cache两步decode、mask和其它受通用修改影响的既定配置。
@@ -130,7 +121,7 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 用户已确认本轮attention优化收束，现有实现和验收保留；其它维度切分与mask负载均衡暂缓，不自动开启新优化。
 本轮经过与最终取舍见[attention优化复盘](../docs/attention-optimization-retrospective.md)。
 下表保留本轮执行顺序与验收结论，取代下文历史检查点中的先后安排；具体步骤与证据见
-[性能计划](plans/board-workload-matrix.md#已有改动的收尾与接续)及[流水验收记录](archive/tile-loop-pipelining.md#通用流水验收2026-09-22)。
+[性能计划](archive/board-workload-matrix.md#已有改动的收尾与接续)及[流水验收记录](archive/tile-loop-pipelining.md#通用流水验收2026-09-22)。
 
 | 顺序 | 工作与当前状态 | 接续条件 |
 | --- | --- | --- |
@@ -151,7 +142,7 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 正式计时关闭Host采集与设备插桩，最终版本须有重复健康样本和剩余瓶颈说明。
 涉及通用pass必须先定位可复现根因，按通用IR语义和明确合法条件修复并覆盖同机制其它输入，禁止单case特判。
 本目标归board-testing，指定范围的数值、guard、正常清理及性能优化验收已闭合；不代签更广板测矩阵，见
-[BF16 2048性能目标与通用修复合同](plans/board-workload-matrix.md#bf16-2048性能目标与通用修复合同)。
+[BF16 2048性能目标与通用修复合同](archive/board-workload-matrix.md#bf16-2048性能目标与通用修复合同)。
 最新授权为所有生产exp统一使用Explp，覆盖score、行状态、merge与普通逐元素指数，dtype及原验收容差保持；
 统一TileToInstr映射、host近似reference及直接回归已通过；用户确认重启后，新目标包的实卡数值、guard、完成和正常退出通过。
 完整GEMM复制链的目标转交已通过完整主机回归、fresh no-card、三次普通实卡及独立profile；
@@ -160,7 +151,7 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 分组tail及输出融合本轮验收已完成；剩余方向、causal、行state发布与K/V重叠按本节顶部顺序接续。
 此前纯GEMM的Driver搜索计数断言已定位为派生reuse分支漏计；统一创建处计数修正后原输入回归通过，搜索选择和预算不变。
 各优化点的根因、实施边界及覆盖见
-[后续性能优化实施方案](plans/board-workload-matrix.md#后续性能优化实施方案)。
+[后续性能优化实施方案](archive/board-workload-matrix.md#后续性能优化实施方案)。
 当前会话已恢复并取得Explp版本健康实卡结果；原生转置族禁用约束保持。具体数字与验证边界见同一计划顶部。
 新BF16 2048生产包已完成fresh no-card和三次无插桩实卡基线，数值/guard/正常退出通过，性能尚未达标。
 11号GS重复读取优化已通过主机回归及同版本三次BF16实卡，性能明显改善但仍未达标；
@@ -172,7 +163,7 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 最新接续：用户已确认将KQ展开、VuVLoop与score布局优化方案落入文档。
 首轮prefill采用转置score、常规accumulator，Q=1保留QK；累加器整体转置先核算最终输出搬运。
 通用指令合同、实现边界、顺序及覆盖已记录于
-[实施方案](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)和对应编号设计。
+[实施方案](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)和对应编号设计。
 用户已授权按方案实现并上板验证；完整组VuVLoop、KQ展开及profile策略转交已接入。
 同时修复payload轴顺序及Tensor→blocked搬运的source stride缺陷；新版本BF16完整数值、guard、completion和厂商退出通过。
 本轮profile已取得；重复布局求解、厂商SDK函数表生命周期及局部完整复制的通用修复已通过新包实卡。
@@ -186,7 +177,7 @@ fresh 主机/no-card、原两项 BF16 各三次实卡、canonical/no-op通过。
 2026-09-21最新接续：Host寄存器诊断已迁入`wafer-board-diagnose`，普通入口默认关闭，显式开关才采集；
 当前4K 28-head attention在关闭采集/设备插桩条件下完成FP16/BF16各三次实卡，完整数值、guard及运行日志通过。
 中位数仍约79ms，高频采集不能解释主要耗时；整体性能工作和未验收矩阵仍未完成，board-testing保持doing。
-具体样本、工具覆盖与资格边界见[计划顶部](plans/board-workload-matrix.md#host诊断工具入仓与无采集计时)。
+具体样本、工具覆盖与资格边界见[计划顶部](archive/board-workload-matrix.md#host诊断工具入仓与无采集计时)。
 
 所有板测统一由`board-testing`这一个总任务管理，包含Add/DTE、通信、GEMM、组合计算、模型和性能。
 具体case与验收顺序记录在同一份板测计划中，逐次已测性能与根因追加到
@@ -199,7 +190,7 @@ consumer采集器曾将CT下溢/舍入状态误判为设备故障；厂商位定
 LSU_TIMEOUT低16位的门限因果结论保持，不将它当iteration合法性上限；排查经历见[复盘文档](../docs/tx81-tdma-timeout-investigation-retrospective.md)。
 本轮没有设备fatal或timeout；接续回到同一板测矩阵的未验收配置及性能工作，不自动重复已通过case。
 早期F32 fill独立状态、任意GS布局的通用计时保证和其它历史卡死不由本轮外推解释；整项仍为`doing`。
-具体覆盖和证据以[计划顶部](plans/board-workload-matrix.md#gs修复实卡验收2026-09-21)为准；下列较早检查点的临时顺序已被取代。
+具体覆盖和证据以[计划顶部](archive/board-workload-matrix.md#gs修复实卡验收2026-09-21)为准；下列较早检查点的临时顺序已被取代。
 
 2026-09-20用户修正板测方式：禁止为性能比较重新运行历史包，直接使用已有健康耗时记录并注明版本、配置及环境差异。
 设备恢复核实后的接续先覆盖当前版本尚未验收的case，不再交错旧包或启动原配对队列；必要重复计时只运行当前版本。
@@ -235,14 +226,14 @@ last-command与destination出现一致相关性，但未恢复唯一故障指令
 
 用户要求暂缓空间切分/搜索预算问题，先收敛当前版本的attention与mask方案。
 已整理[05号改进合同](05-local-compute-normalization.md#46-当前版本的mask改进合同)及
-[本轮实施顺序与覆盖矩阵](plans/board-workload-matrix.md#当前版本attention与mask改进方案)：
+[本轮实施顺序与覆盖矩阵](archive/board-workload-matrix.md#当前版本attention与mask改进方案)：
 用户最新选择已收敛为causal局部`0/-inf`模板＋整块AddVV；先实现模板与Add，再做同调用复用/DPS和可见域循环，
 随后优化其余bool/select的数值比较。普通覆盖语义保留；不新增有限性扫描或特殊值运行时分支。
 动态长度入口、paged KV和跨调用缓存延后；空间切分与搜索预算继续暂缓。
 方案已明确模板尺寸随实际tiling及tail确定，资源量和准备次数按实际布局与复用域描述，移除固定尺寸的正文示例。
 方案现已进入实现；原CT fill已完成的主机资格、设备停止状态和TDMA未闭合结论保持。
 用户随后要求记录其它计算中的多余开销：softmax逐score负无穷判断、最终零行结果的整块覆盖、广播分母后重复求倒数。
-三项已归入同一`board-testing`的[整改记录](plans/board-workload-matrix.md#attention其余计算的整改记录)和
+三项已归入同一`board-testing`的[整改记录](archive/board-workload-matrix.md#attention其余计算的整改记录)和
 [05号4.7合同](05-local-compute-normalization.md#47-attention行级计算整改合同)，主机改动及本轮产品矩阵已通过，设备矩阵仍待验收；
 接在causal主路径及其余predicate整改之后、完整主机/板端验收之前，不作为causal加法的前置。
 用户已授权按该计划推进到验收完成；2026-09-21已完成causal bias/Add、实际准备复用、KV可见域循环、数值compare及行级计算。
@@ -275,7 +266,7 @@ runner返回0及guard通过不能抵消设备告警，本次输出全零，仅�
 [本轮诊断证据](../docs/data/board-performance/tdma-causal-matrix-20260921.json)为准。
 
 当前新增attention方案已按用户要求落入02/05/06/08/10/16号设计及
-[统一实施与实卡矩阵](plans/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
+[统一实施与实卡矩阵](archive/board-workload-matrix.md#attention导出展开与实卡验收)，仍归`board-testing`。
 顺序为composite接入→宽状态/causal局部展开→GEMM/layout/movement修正→原PyTorch/HF module新reference→完整实卡与性能保护。
 新增Q/K/V均为`[1,28,4096,128]`的causal prefill，FP16/BF16分别验收；全部列出可执行正例都须上板。
 独立attention新reference在实现更新后才启用，旧实现通过它不是前置；整网reference和既定门限保持。
@@ -298,7 +289,7 @@ Q2还通过完整TargetModel输出。相同逐Tile GEMM/循环结构下，本轮
 板端actual KV接续与attention性能尚未重签，后续源码修改须重签其影响范围。
 随后处理prefill/decode展开、mask、CPU与同步成本；之后先完成本轮attention矩阵及受影响保护用例的
 全部编译、构包和fresh no-card，再核实设备恢复并逐例实卡验证。具体第5、6步见
-[当前实施计划](plans/board-workload-matrix.md#交接与接续计划)；此前停止的其它搜索/验证批次不随此授权重启。
+[当前实施计划](archive/board-workload-matrix.md#交接与接续计划)；此前停止的其它搜索/验证批次不随此授权重启。
 不再通过CPU逐元素生成规则mask；decode已在SPM中的私有rank-0广播源按现有证明直接用于VuV，避免SPM mapping读取。
 这不表示scalar数学统一由CT执行。后续已补current Instr的CPU scalar计费和独立register-only F32算术候选，
 两种执行方案沿同一actual leaf比较；定向layout/cost/search、正式target LLVM及完整Driver回归已通过。
@@ -318,7 +309,7 @@ CPU先验仍未校准，prefill的条件内动态工作量仍可为unknown，不
 [06号搜索合同](06-physical-dataflow-synthesis.md#75-主搜索实现分支与-deep-预算)及
 [现有搜索组织计划](plans/physical-search-organization.md)。已按用户纠正移除实现分支的基础可行前置条件。
 已补入核心及全部已通过case的逐项性能不下降、deep核心实卡收益门槛，详见
-[统一验收矩阵](plans/board-workload-matrix.md#搜索组织修改的性能验收)。用户已授权按方案实施到验收闭合，
+[统一验收矩阵](archive/board-workload-matrix.md#搜索组织修改的性能验收)。用户已授权按方案实施到验收闭合，
 当前已接入实现选择跨 retile 的绑定、独立分支状态、两种预算及正式入口，已修复 GEMM 驻留搜索和 LLaMA transport/collective 组合回归。
 LLaMA及大GEMM配对实卡的完整数值已通过；随后ViT1024 baseline输出通过，但该次运行后的内核检查发现TDMA异常，
 批次已停止，用户确认尚未恢复。此前将此异常关联到GEMM4097的记录已按原始日志更正，实际触发操作仍未知。
@@ -372,12 +363,12 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 
 ## 当前任务队列
 
-`board-testing` 当前只执行恢复版本的全矩阵 timing 复验；LM/Tensor 整改保存在 WIP 分支，未完成部分不改记为通过。
+`board-testing` 本轮限定的全矩阵 timing 复验已完成；LM/Tensor 整改保存在 WIP 分支，未完成部分不改记为通过。
 
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；本轮75项既定配置的完整数值、guard及237次普通实卡已闭合，十项主机model通过；各批次身份见本轮矩阵。4096³ GEMM保留小幅历史性能差距及根因未知；2026-09-23用户接受该量级并收束本次调查，不阻塞本轮配置验收。旧68项计数属于此前检查点，不作当前待测数量。早期fill独立状态与其它历史卡死不由本轮代签。2026-09-25按用户要求恢复已板测的665452c5，后续LM/Tensor工作保存在wip/tensor-subset-materialization；完整长LM保持未通过，不继续修算法。用户随后授权恢复版本全矩阵单次实卡并逐项记录kernel timing，当前执行中；三项biased-conv的profile JSON超限已修复并通过fresh实卡；后续独立搜索性能/deep收益及三轮模型调优继续取消。 | `tasks/plans/board-workload-matrix.md` |
+| 2 | `board-testing` | `done` | 16；关联15及各现有pipeline owner | 恢复版本的原始Torch XLA case、独立reference、current compiler/runtime及profile元数据 | 本轮80项常规配置、84个step的fresh no-card、单次实卡、完整输出/guard、16 Tile kernel timing及健康全部通过；三项biased-conv紧凑写入与ResNet18可选profile预算修复闭合。额外长LM S1024/1025仅完成编译复查，仍未通过且无timing，不计入80项验收。后续优化与独立完整主机矩阵继续取消。 | `tasks/archive/board-workload-matrix.md` |
 | 3 | `production-host-readiness` | `cancelled` | Q53 / 16 | 原定board-testing之后的current compiler、frontend、interface、package/runtime | 2026-09-25用户取消独立完整主机矩阵重签；保留历史证据，不宣称完成，不再排入当前交付。整改直接受影响的主机检查仍由board-testing负责 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-production-choice` | `done` | 06、13、16 | layout-resolved、structured-to-Tile complete AllGather current IR；feasibility已闭合的aggregate-buffer和range-aware completion | search将Ring与recursive doubling分别物化为candidate-owned actual IR并经MiniMalloc/target/cost比较；baseline和native路径不变；4/16-Tile、1024/1025/1031、eligible/ineligible/capacity与actual-cost selection矩阵fresh通过；不新增collective op、shadow plan或板端结论 | `tasks/plans/physical-dataflow-synthesis.md` |

@@ -145,7 +145,7 @@ model command与decoder必须保存全部必要分组参数，按10号地址关�
 SystemC/numeric adapter不得从symbol、layout名字或attention shape补回遗漏字段。整组、tail、原地更新和guard span用同一实际range验证。
 TargetCall descriptor、C声明/定义、LLVM参数顺序、模型解码和required-symbol检查同步更新，通过本轮no-card后才进入板端验证。
 该指令使用已有CT issue order/completion合同，不附加逐组join。覆盖与设备资格由
-[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有，SDK字段宽度不代签硬件计数上限。
+[统一计划](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有，SDK字段宽度不代签硬件计数上限。
 
 ### GEMM混合format调用
 

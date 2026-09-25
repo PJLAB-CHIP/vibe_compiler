@@ -211,7 +211,7 @@ score的GEMM、scale/mask、max/sub/exp/sum、概率转换与PV共同参与原la
 不统一强制NCx，也不把方向选择或预测指令数量加入PBQP。
 分组proof的scope、key和失效规则沿用当前只读type/map query；layout与lowering不得维护两份相近但不同的准入判断。
 覆盖主块/tail、batch padding、非连续映射、共享源和必要转换的正反例，检查实际转换链与fresh Instr/SPM结果；
-本轮覆盖由[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有。
+本轮覆盖由[统一计划](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)拥有。
 DPS不准确导致的复制回到producer修复；已确定storage的冗余copy只凭actual alias/effect/lifetime消除。
 循环不变转换沿用现有PhysicalMovementPlacement，不能为attention另建hoist或状态写回特判。
 同一placement处理实际allocating copy/convert及私有allocation的DPS load/fill：destination必须只由该操作初始化，
@@ -233,7 +233,7 @@ select继续遵守其独立读写顺序合同。此规则不新增layout、数�
 这样bufferization在已知步幅的分支内完成写回，避免先合并紧凑分配和原状态切片而丢失copy几何；有独立观察者或后定义operand时不改写。
 
 覆盖rank3+、1024/1025/1031的elementwise/convert、row/scalar broadcast、多use、跨循环及alias写入反例；
-检查被选layout、actual转换和直接Instr/SPM结果，并按[板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)
+检查被选layout、actual转换和直接Instr/SPM结果，并按[板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)
 完成attention、LLaMA、大GEMM和其它受影响正例的实卡保护。
 
 #### 现有求解与物化规则

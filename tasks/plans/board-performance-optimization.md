@@ -8,7 +8,7 @@
 其中保存配置、根因、实际修改、前后样本、PyTorch、artifact身份和归因限制；本计划只拥有当前实施检查点。
 
 用户指定的ResNet、ViT block、带embedding/LM head的单层LLaMA2、4096³ GEMM及选定补充case，
-统一按[扩展板测矩阵与三轮性能调优](board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
+统一按[扩展板测矩阵与三轮性能调优](../archive/board-workload-matrix.md)确定输入、完整输出、尾部/结构覆盖、DDR/DTE对照及完成条件。
 本轮范围为扩展矩阵中2026-09-17登记的53项，ResNet只验原生224，YOLO及新增GQA/长cache不在本轮范围。
 它们仍属于本work item，不另建网络或通信板测任务。下列较早检查点保留各自版本的证据，最新结果以扩展矩阵和性能记录为准。
 后续GQA的多轴contraction、状态协调及metadata view局部加载已通用修复，1024/1025在原默认预算下完成package/no-card；
@@ -56,7 +56,7 @@ source与初始快版本一致，前序修改相对初始快包的设备回归�
 最新组合版本首次BF16 completion超时；用户重启后完整FP16/BF16及两者连续执行均通过，第一项重测已完成。
 原超时未复现、根因未知，不将设备恢复描述为代码修复。第二项数值错误已定位到broadcast丢失非单位轴交换；
 通用修复及冻结未融合图的FP16/BF16完整实卡数值通过，block两种dtype及三组大GEMM保护通过，当前进入第三项。
-本轮唯一执行顺序及门槛由[扩展矩阵](board-workload-matrix.md)拥有：最新代码完整LM重测→未融合图数值根因→
+本轮唯一执行顺序及门槛由[扩展矩阵](../archive/board-workload-matrix.md)拥有：最新代码完整LM重测→未融合图数值根因→
 decode性能恢复→剩余五配置闭合→逐case性能优化。用户要求按1—5项严格顺序持续推进，完成一项即进入下一项。
 三轮仍分别检查复用/DDR、流水/等待、搜索选择/剩余热点；实际修改顺序由profile决定，不为凑轮次改代码。
 先区分历史runtime变化与生成代码变化，再拆完整LM的embedding、decoder、LM head实际耗时。

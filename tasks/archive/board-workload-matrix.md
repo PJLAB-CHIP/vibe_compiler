@@ -1,4 +1,7 @@
-# 扩展板测矩阵与三轮性能调优
+# 板测矩阵、历史调优与2026-09-25计时复验（归档）
+
+本轮用户限定的恢复版本计时复验已闭合：80项常规配置、84个执行步骤的完整数值、guard、16 Tile timing及设备健康全部通过。
+额外两项长LM保留本轮编译失败；原有未通过能力和已取消调优不由此归档改写为完成。
 
 2026-09-25用户要求有限修复失败即回退。生产反例仍未打通，按用户随后明确要求恢复至
 attention/GEMM 已板测的 `665452c5`。后续 LM/Tensor 工作完整保存在
@@ -39,13 +42,18 @@ attention/GEMM 已板测的 `665452c5`。后续 LM/Tensor 工作完整保存在
 kernel本体分别1.614/1.660/1.670 ms。25项runtime单测、peer/shared-DDR profile产品测试、canonical完整增量及Ninja no-op通过。
 全部source与首次失败输入逐byte相同；metadata由约19.39/19.90/20.40 MiB降至13.93/14.30/14.66 MiB。
 精确字节数、记录数和实际板测见[修复证据](../../docs/data/board-performance/profile-metadata-compact-20260925.json)。
-随后ResNet18也暴露同一JSON超限，纳入相同修复的产品复验；其结果待本轮矩阵汇总，不扩大算法整改。
-ResNet18紧凑site-map仍为22659181 bytes，第二次host尝试被原16 MiB预算拒绝，尚未上板。
+随后ResNet18也暴露同一JSON超限，紧凑site-map仍为22659181 bytes，第二次host尝试被原16 MiB预算拒绝，原失败已保留。
 用户明确要求不再设死阈值：按15号把profile的字节与record预算改为可选、默认不设上限，保留全部结构及内容校验。
 补齐默认大metadata读取、显式预算边界及损坏反例后，仅重新构建和补测ResNet18；其余79项、83个step的本轮实卡证据保留。
 可选预算实现的主机验证已通过：100项Runtime、34项Package、44项RunBoardIO、communication-profile及wafer-run两项lit，
 canonical完整增量及Ninja no-op；板端runner已按同一build重建。新profile fixture含16 Tile、81936个调用点，
-默认完整读取超过旧byte/record上限的清单，显式相等/少一/零预算及原损坏反例均已验证。ResNet18 fresh产品复验进行中。
+默认完整读取超过旧byte/record上限的清单，显式相等/少一/零预算及原损坏反例均已验证。
+`9a9aacf6`的ResNet18 fresh构包/timing no-card及首次实卡全部通过，实际完整读取72409个调用点；
+kernel本体10.797 ms，同次event19.381001 ms，全部输出、830320 bytes guard和设备健康正常。
+本轮80项常规配置、84个步骤至此全部通过；两项长LM在本轮8/42下accepted=0，保持未构包/未上板、无timing。
+完整逐项计时、各批次工具身份、metadata与source/package摘要及失败诊断见
+[计时表](../../docs/data/board-performance/board-kernel-timing-20260925.md)和
+[验收证据](../../docs/data/board-performance/board-kernel-timing-20260925.json)。
 已完成的实卡结果保留原工具身份；构建切换在设备case边界进行，失败的host尝试保留，不重复已完成的实卡。
 
 ## PyTorch case 集合与统一计时（2026-09-23）
@@ -1327,14 +1335,14 @@ causal mask的F32负无穷标量经4-byte inner、65,536次迭代广播成256 Ki
 本轮采集准备及真实访问已验证，TDMA根因与修复仍未完成；保留现场，先离线核查候选广播和字段更新语义，无需用户立即再重启。
 
 本矩阵属于现有 `board-testing`，由16号验证合同管理，接入
-[模型板端性能优化计划](board-performance-optimization.md)。用户指定的主范围是ResNet、
+[模型板端性能优化计划](../plans/board-performance-optimization.md)。用户指定的主范围是ResNet、
 ViT block、带embedding及LM head的单层LLaMA2，以及4096³ GEMM；补充长cache decode、GQA和batch共享权重。
 按用户最新要求移除DLRM和YOLOv5s；原42个配置及待按当前策略复验的BF16 LLaMA一起进入本轮验证。
 先完成正确性压测，再进行三轮“profile→根因→通用修改→正确性/性能回归”，正确性准备不占用三轮调优名额。
 任务状态及直接前置只在[progress](../progress.md)，实测结果统一进入
 [板端性能记录](../../docs/board-performance-results.md)。本文确定实施和验收矩阵，不表示新增case已生成或通过。
 
-搜索组织与 deep search 的设计调整见[同一任务内的实施方案](physical-search-organization.md)，
+搜索组织与 deep search 的设计调整见[同一任务内的实施方案](../plans/physical-search-organization.md)，
 用户已授权按此方案推进实现及验收，当前验收尚未闭合。代码修改保持原模型范围和数值门槛，新增下述性能完成条件；状态只看progress。
 
 ## Attention导出展开与实卡验收
@@ -1794,7 +1802,7 @@ deep收益必须同时闭合；实现过程中可先验证核心，再扩展全�
 Deep收益来自正式driver选择并交付的winner，不能事后从板测候选中挑最快者替代产品结果。
 对照前固定并记录deep的mode/width/trials，不把同名trials当成相同编译成本；同时记录actual evaluations、
 编译wall/RSS，并给出同wall或同actual-work的参照。性能提升指生成程序的设备耗时降低，编译开销另列。
-整个search效率重构另按[搜索组织方案](physical-search-organization.md#9-本项覆盖与验收矩阵)记录阶段工作、CPU、
+整个search效率重构另按[搜索组织方案](../plans/physical-search-organization.md#9-本项覆盖与验收矩阵)记录阶段工作、CPU、
 首次可行及最佳点出现时间；先比较相同trace的前缀复用，再比较提案/调度变化，不能以减少trial掩盖默认路径退化。
 两模式继续覆盖14/42/126预算曲线：standard检查求值前缀；deep交错及预算收尾不承诺完整trace前缀，
 但同预算须确定，增预算出现最佳objective或设备性能退化时不得签发验收。曲线不是任意输入单调性证明。
@@ -3390,7 +3398,7 @@ no-card日志中的`numeric_execution=false`仅描述runtime无设备验证；�
 ### 访问复用统一方案
 
 用户已确认统一空间/时间复用方案及净收益筛选，并授权开始实现。
-统一概念为`AccessReuse`，完整方案在[`access-reuse.md`](access-reuse.md)，编号设计边界见06号3.5。
+统一概念为`AccessReuse`，完整方案在[`access-reuse.md`](../plans/access-reuse.md)，编号设计边界见06号3.5。
 范围仍为现有跨Tile共享、基础驻留、固定步长滑动窗口和最多两级驻留，暂缓缓存替换；
 不强制M方向切分或B传播，不按GEMM/模型名触发，不增加search预算。
 按用户最新要求，候选生成前增加轻量净收益筛选：低收益、明显得不偿失或收益不明确的机会不物化、不做完整评分、不占trial；

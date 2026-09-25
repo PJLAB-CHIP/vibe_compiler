@@ -474,7 +474,7 @@ current tensor destination，shape只含本次actual batch/head、M tile和K2 bl
 ### 4.5 Composite、结构化causal与混合精度attention
 
 本节定义attention的共同合同，顺序与实卡覆盖由
-[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)拥有。先更新实现，再启用16号新reference；
+[统一板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)拥有。先更新实现，再启用16号新reference；
 旧实现能否通过新reference不是施工前置，不修改原健康性能目标。
 
 - Upstream IR / input：02号验证并保留语义的attention composite，或由已有matcher证明的完整structured attention root。
@@ -556,7 +556,7 @@ layout、physical transpose、broadcast指令与copy cleanup分别属于08/10/11
 本轮causal采用加法方案：按位置生成可见处为0、不可见处为`-inf`的局部bias，再加到score上。
 这项选择替代此前拟用的causal `0/1 + -inf源 + MaskMove`；普通bool/select及输入自带additive mask仍保留各自语义。
 不新增动态长度入口、paged KV、跨调用准备缓存、任意Python mask callback或新的空间搜索策略。
-实施顺序和资格状态分别由[板测计划](plans/board-workload-matrix.md#当前版本attention与mask改进方案)和`progress.md`拥有。
+实施顺序和资格状态分别由[板测计划](archive/board-workload-matrix.md#当前版本attention与mask改进方案)和`progress.md`拥有。
 
 Pipeline position：
 
@@ -691,7 +691,7 @@ causal加法先独立落地；softmax及finalize的行级整改由4.7单独规�
 输入为当前attention的局部score及`m/l/A`状态；输出仍是现有Linalg/Tensor/SCF和Tile/Instr。
 目标是把只依赖行状态的工作留在行向量上，消除正常输入也会执行的整块判断、填充、覆盖和重复倒数。
 `BQ/BK/D`分别取actual candidate的query行数、KV块长和输出列数，包含实际tail；batch/head前缀沿实际indexing maps表达，不预设固定块长。
-问题证据和实施步骤在[统一计划](plans/board-workload-matrix.md#attention其余计算的整改记录)，资格状态由`progress.md`拥有。
+问题证据和实施步骤在[统一计划](archive/board-workload-matrix.md#attention其余计算的整改记录)，资格状态由`progress.md`拥有。
 
 Pipeline position：
 
@@ -749,7 +749,7 @@ Pipeline position：
 ### 4.8 Attention展开方向与分组广播
 
 本节规定等价展开的接入合同；实施顺序与覆盖矩阵见
-[统一计划](plans/board-workload-matrix.md#attention展开方向与vuvloop实施方案)，实现状态以`progress.md`为准。
+[统一计划](archive/board-workload-matrix.md#attention展开方向与vuvloop实施方案)，实现状态以`progress.md`为准。
 `BQ/BK/D`取已经选定的query tile、KV block与输出列数，batch/head前缀由current maps表达；不预设256或其它块长。
 目标是减少score、行状态广播及布局转换，保持4.6的mask合同和4.7的行级计算语义。
 

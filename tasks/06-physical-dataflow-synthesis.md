@@ -57,7 +57,7 @@ Attention composite迁移按[05号4.5节](05-local-compute-normalization.md#45-c
 当前arith的index min/max通过共同ValueBounds external model提供与operand的大小关系；driver与wafer-opt注册同一模型。
 模板模式分析同时消费实际循环步长及包围分支的整数约束，不因有界上界不是常量而退化为全部偏移模式。
 这些改动不改变search预算/计费，不增加DTE专项或shadow plan；全部结构变换仍先物化、verify再分析，
-SPM合法性只由下述共同actual leaf决定。实施及逐case实卡门槛见[统一板测计划](plans/board-workload-matrix.md#attention导出展开与实卡验收)。
+SPM合法性只由下述共同actual leaf决定。实施及逐case实卡门槛见[统一板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)。
 
 ```text
 Pipeline position:
@@ -1955,7 +1955,7 @@ Deep改为交错且预算末尾收尾后，小预算完整trace不再保证是�
 Standard在原width/trials对比改前接受版本，deep对比同版本standard，均逐项完整数值通过且设备性能不下降；
 deep至少一个核心case取得超过波动、可重复的设备耗时降低。两种模式均守住改前性能，不能用平均值抵消单项退化，
 不能以慢版本重置原最好可复现目标。缺测、数值失败、退化或deep无收益均不满足整项完成条件。
-完整测量方法沿用[统一板测矩阵](plans/board-workload-matrix.md#搜索组织修改的性能验收)。
+完整测量方法沿用[统一板测矩阵](archive/board-workload-matrix.md#搜索组织修改的性能验收)。
 
 ## 8. Ownership、analysis 与实现边界
 
