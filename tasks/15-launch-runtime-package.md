@@ -85,6 +85,9 @@ Profile companion的target-site metadata覆盖16 Tile的全部typed target call�
 `PackageParseLimits::maxProfileJSONBytes`；普通manifest独立使用16 MiB的`maxJSONBytes`。
 Profile metadata的record/string/nesting与digest校验保持同一规则；writer和reader使用同一profile字节预算，
 超过该预算在发布/读取时明确失败，不能写出成功但默认runtime无法读取的profile。测试覆盖两种独立字节预算的边界。
+Profile writer同样输出紧凑JSON，仅保留末尾换行，避免site-map缩进空白挤占记录预算；字段、记录、digest和reader校验保持。
+超限诊断包含实际文件、字节数及上限。实际规模验证覆盖FP16 biased-conv的1024/1025/1031构包、timing no-card及实卡，
+直接reader边界测试和peer/shared-DDR profile产品测试覆盖字节限制、digest绑定及全部capture。
 
 `target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current kernel launch mode、entry ABI和
 ordered phases。它们必须与DeviceExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry

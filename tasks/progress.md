@@ -22,7 +22,9 @@
 2026-09-25已按用户要求将生产实现恢复至 attention/GEMM 已上板的 `665452c5`，
 未完成的 LM/Tensor 工作已另存分支，恢复版本主机检查已通过。
 用户随后授权把现有正式板测配置全部重跑一轮，每项补齐 kernel timing；`board-testing` 重新为 `doing`，
-本轮仅验证恢复版本，不继续 LM/Tensor 算法整改或另起性能优化。
+本轮不继续 LM/Tensor 算法整改或另起性能优化。用户进一步授权修复三项 biased-conv 的 profile JSON 打包超限，
+三项已通过紧凑JSON写入修复、fresh no-card与单次实卡，保持全部计时记录及原数值门槛；
+同类ResNet18及其余矩阵继续验证，具体结果见本轮计划。
 
 当前顺序：冻结工具身份与清单→fresh source/reference/timing package/no-card→逐项单次实卡→完整输出、guard、
 16 Tile kernel 本体与同次 event 及设备健康汇总。输入为之前 75 项既定配置加后续 5 项已验收 GEMM/attention 配置，
@@ -44,7 +46,7 @@
   原 Tensor 大 GEMM 与 attention 的已有健康结果保留，具体配置和计时口径见撤回记录。
 - 完整单层长 LM 未通过；S1024/1025 的编译、打包和板端能力不在本次回退中修复。
   后续已撤回实现的 S1024 no-card、S1025 metadata 失败以及四项保护追加计时只保留为历史，不移作当前版本资格。
-- 回退已完成主机验证；本轮实卡正在准备，尚无新结果。历史未通过门槛不改写为通过。
+- 回退已完成主机验证；本轮实卡持续推进，已完成配置和三项profile打包修复的实测结果见本轮计划。历史未通过门槛不改写为通过。
 
 ### 历史接续记录
 
@@ -374,7 +376,7 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；本轮75项既定配置的完整数值、guard及237次普通实卡已闭合，十项主机model通过；各批次身份见本轮矩阵。4096³ GEMM保留小幅历史性能差距及根因未知；2026-09-23用户接受该量级并收束本次调查，不阻塞本轮配置验收。旧68项计数属于此前检查点，不作当前待测数量。早期fill独立状态与其它历史卡死不由本轮代签。2026-09-25按用户要求恢复已板测的665452c5，后续LM/Tensor工作保存在wip/tensor-subset-materialization；完整长LM保持未通过，不继续修算法。用户随后授权恢复版本全矩阵单次实卡并逐项记录kernel timing，当前准备中；后续独立搜索性能/deep收益及三轮模型调优继续取消。 | `tasks/plans/board-workload-matrix.md` |
+| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；本轮75项既定配置的完整数值、guard及237次普通实卡已闭合，十项主机model通过；各批次身份见本轮矩阵。4096³ GEMM保留小幅历史性能差距及根因未知；2026-09-23用户接受该量级并收束本次调查，不阻塞本轮配置验收。旧68项计数属于此前检查点，不作当前待测数量。早期fill独立状态与其它历史卡死不由本轮代签。2026-09-25按用户要求恢复已板测的665452c5，后续LM/Tensor工作保存在wip/tensor-subset-materialization；完整长LM保持未通过，不继续修算法。用户随后授权恢复版本全矩阵单次实卡并逐项记录kernel timing，当前执行中；三项biased-conv的profile JSON超限已修复并通过fresh实卡；后续独立搜索性能/deep收益及三轮模型调优继续取消。 | `tasks/plans/board-workload-matrix.md` |
 | 3 | `production-host-readiness` | `cancelled` | Q53 / 16 | 原定board-testing之后的current compiler、frontend、interface、package/runtime | 2026-09-25用户取消独立完整主机矩阵重签；保留历史证据，不宣称完成，不再排入当前交付。整改直接受影响的主机检查仍由board-testing负责 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-production-choice` | `done` | 06、13、16 | layout-resolved、structured-to-Tile complete AllGather current IR；feasibility已闭合的aggregate-buffer和range-aware completion | search将Ring与recursive doubling分别物化为candidate-owned actual IR并经MiniMalloc/target/cost比较；baseline和native路径不变；4/16-Tile、1024/1025/1031、eligible/ineligible/capacity与actual-cost selection矩阵fresh通过；不新增collective op、shadow plan或板端结论 | `tasks/plans/physical-dataflow-synthesis.md` |

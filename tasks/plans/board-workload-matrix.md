@@ -33,6 +33,15 @@ attention/GEMM 已板测的 `665452c5`。后续 LM/Tensor 工作完整保存在
 全部 80 项常规配置共 84 个 step；加两项已知失败的长 LM，共 82 个配置的准备台账。
 数值、编译失败、设备故障与时间分别记录，已有历史性能中位数不替代本轮单次结果。
 
+本轮三项FP16 biased-conv在profile metadata发布时超过16 MiB JSON预算；用户已明确要求修复并补测。
+修复归15号package边界：去掉writer缩进空白，保留全部typed记录、既有预算和严格reader。
+原1024/1025/1031的fresh构包、timing no-card及各一次实卡均通过，完整数值、guard、16 Tile timing和设备健康正常；
+kernel本体分别1.614/1.660/1.670 ms。25项runtime单测、peer/shared-DDR profile产品测试、canonical完整增量及Ninja no-op通过。
+全部source与首次失败输入逐byte相同；metadata由约19.39/19.90/20.40 MiB降至13.93/14.30/14.66 MiB。
+精确字节数、记录数和实际板测见[修复证据](../../docs/data/board-performance/profile-metadata-compact-20260925.json)。
+随后ResNet18也暴露同一JSON超限，纳入相同修复的产品复验；其结果待本轮矩阵汇总，不扩大算法整改。
+已完成的实卡结果保留原工具身份；构建切换在设备case边界进行，失败的host尝试保留，不重复已完成的实卡。
+
 ## PyTorch case 集合与统一计时（2026-09-23）
 
 本项归现有board-testing，稳定合同与覆盖矩阵见15号“PyTorch 板测 case 的计时与布局绑定”。

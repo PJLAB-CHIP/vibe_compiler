@@ -2,7 +2,8 @@
 
 2026-09-25按用户要求恢复至已板测的 `665452c5`，保留 attention/GEMM 优化、NCx 输入复用和统一计时。
 后续 LM/Tensor 工作保存于 `wip/tensor-subset-materialization`；9月24日的产品和性能保护记录属于已撤回实现的历史，
-不能移作恢复版本的新资格。本次没有新增实卡或性能测量，任务状态见 [progress](../tasks/progress.md)。
+不能移作恢复版本的新资格。回退本身未新增实卡；随后用户授权的全矩阵kernel timing复验另记本轮结果，
+任务状态见 [progress](../tasks/progress.md)。
 
 本文保存可复用的性能测量与根因证据。任务状态、待办和实施顺序只在
 [`tasks/progress.md`](../tasks/progress.md)及其current plan中维护；本文不以局部收益代签模型或板测任务完成。
@@ -24,6 +25,25 @@
 - Trace：本Tile的Kcore `rdcycle`区间，可定位调用、发指令和等待。未校准周期频率及跨Tile时钟，不换算为Primary的ms；
   Trace还包含插桩扰动。调用区间内的`site-control`混有wrapper、同步和插桩，不能全算为计算或全算为可消除开销。
 - 一组单次前后观测不称为稳定均值；多个改动一起测量时只报告组合收益，不虚构逐项收益。
+
+## 2026-09-25：profile metadata 紧凑写入修复
+
+本轮FP16 biased-conv的1024/1025/1031三个配置开启timing后，在profile site-map发布阶段触发16 MiB JSON上限。
+原因是两空格缩进扩大文件；writer改为紧凑JSON，仅保留末尾换行。全部typed记录、schema、digest、reader检查和上限保持，
+超限诊断补充实际文件与字节数；不改变kernel或计时协议。
+
+| extent | site记录数 | 旧缩进形式 / 紧凑形式（bytes） | kernel本体（ms） | 同次event（ms） |
+| --- | ---: | ---: | ---: | ---: |
+| 1024 | 45432 | 20332681 / 14610889 | 1.614 | 5.505 |
+| 1025 | 46616 | 20864273 / 14993297 | 1.660 | 7.135 |
+| 1031 | 47800 | 21395865 / 15375705 | 1.670 | 10.979 |
+
+旧缩进大小由同一份完整记录按原writer布局重建，该重建方法已与本轮原writer文件逐byte核对；
+首次失败的staging文件已由原transaction清理，不声称保留了该失败文件。
+三项均重新导出原FP16、seed20260803、standard8/42的source/reference并构包；source与首次失败输入完全相同。
+fresh timing no-card及各一次实卡的全输出、guard、正常清理和设备健康通过，完整16 Tile duration已记录。
+单样本仅验证修复和计时闭合，不能从event波动推断性能变化。25项runtime profile/timing单测、直接profile产品测试、
+canonical完整增量及Ninja no-op通过；[完整证据](data/board-performance/profile-metadata-compact-20260925.json)保留工具与package身份、审计和原始日志路径。
 
 ## 2026-09-24：Tensor 子集物化的首轮性能保护
 
