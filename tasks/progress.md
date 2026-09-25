@@ -11,6 +11,7 @@
 - `later`只表示保留一个可追溯的候选合同，不表示已经批准实现，也不表示它是当前item的下一步。
   重新启动任何`later`项前，必须根据当前实现、产品调用者和本轮硬件/runtime事实重审其输入、输出、范围和覆盖矩阵；
   旧计划不能直接作为施工授权。
+- `cancelled`表示用户明确取消，退出当前排程；不代表完成，重新启动须有新的用户授权。
 - 状态变化只改对应行。详细checkpoint、覆盖矩阵和失败修复进入current plan；完成后整个计划移入archive。
 - 每项开始前读`AGENTS.md`、本表、编号设计及本项覆盖矩阵；算法调研、pinned API确认、实现、fresh验证和
   设计/LLVM/MLIR规范复审均在本项内闭合。涉及hardware/runtime/ABI/completion/resource时先读对应事实源。
@@ -19,6 +20,11 @@
 ## 当前调度
 
 2026-09-25接续完整单层LLaMA2长序列及Tensor子集物化整改，仍归`board-testing`，状态为`doing`。
+
+2026-09-25用户进一步收窄范围：取消后续独立搜索性能回归/deep收益验收、三轮模型调优及
+`production-host-readiness`完整主机矩阵重签。本轮只完成Tensor整改及原产品交付验收：
+入口迁移/旧路径清除、S1025打包修复、fresh产品/no-card、四项性能保护和两项完整LM实卡。
+整改直接受影响的none/search功能、预算、确定性及主机回归仍属于本项；取消项不再作为其完成前置。
 
 用户已授权按算法复审更新设计并重排任务。06/08/18号及[实施计划](plans/tensor-subset-materialization.md)已更新；
 已实现参数化DAG查询、块证明与共同生成，并检查首条实际下游纵向；正在迁移Temporal/Spatial和Tensor准备顺序，
@@ -405,8 +411,8 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 顺序 | Work item | 状态 | Owner | 直接输入 | 完成门禁 | 实施计划 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `spatial-admission-and-typed-outcomes` | `done` | 06；关联07、13、14、16 | current TensorProgram、IndexRelation、SpatialPlanDomain与actual memory/target leaf | 正式入口区分unsupported/indeterminate/contract error；双向relation协调与归约init/merge闭合；非均匀反例、actual executable/capacity反馈及同输入search成功；host/fresh no-card门禁 | `tasks/archive/spatial-admission-and-typed-outcomes.md` |
-| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；本轮75项既定配置的完整数值、guard及237次普通实卡已闭合，十项主机model通过；各批次身份见本轮矩阵。4096³ GEMM保留小幅历史性能差距及根因未知；2026-09-23用户接受该量级并收束本次调查，不阻塞本轮配置验收。旧68项计数属于此前检查点，不作当前待测数量。早期fill独立状态与其它历史卡死不由本轮代签。完整LM S1024/1025、搜索性能回归/deep收益及三轮模型调优仍未完成；原最好可复现目标不重置。 | `tasks/plans/board-workload-matrix.md` |
-| 3 | `production-host-readiness` | `queued` | Q53 / 16 | 已有通用通信/target transport实现、board-testing修复后的current compiler、frontend、interface、package/runtime | 按现版本重签完整source/IR/package/oracle/runner/no-card/SystemC矩阵；历史主纵向与smoke不代签current模型资格。不再等待独立通信开发项；真实板测由board-testing拥有，本项不运行设备 | `tasks/plans/physical-dataflow-synthesis.md` |
+| 2 | `board-testing` | `doing` | 16；关联02、05、06、08--11、13--15、17 | current compiler/runtime、原始Torch XLA模型及actual IR、独立PyTorch reference | 既有完整单层LM S16、未融合图及LLaMA/GEMM/ViT资格按记录版本保留；前轮82项host配置/86个package的fresh no-card及已验收Q1/Q2、小prefill资格见计划。长小颗粒GS的LSU timeout已由单指令隔离、低16位读写及门限单变量对照确认；统一Instr合并/分段实现9141a045已完成主机、三个紧密发射/consumer专项及原4K 28-head FP16/BF16实卡验收。两项attention全量数值、guard、16 Tile completion和厂商清理通过，无TDMA fatal；consumer的0x5000按SDK位定义单列浮点状态，未改硬件配置。BF16 2048 attention专项已完成指定验收并由用户确认收束；本轮75项既定配置的完整数值、guard及237次普通实卡已闭合，十项主机model通过；各批次身份见本轮矩阵。4096³ GEMM保留小幅历史性能差距及根因未知；2026-09-23用户接受该量级并收束本次调查，不阻塞本轮配置验收。旧68项计数属于此前检查点，不作当前待测数量。早期fill独立状态与其它历史卡死不由本轮代签。当前仅接续顶部Tensor整改及原产品验收，完整LM S1024/1025与四项性能保护仍待本轮闭合；后续独立搜索性能/deep收益及三轮模型调优已由用户取消。 | `tasks/plans/board-workload-matrix.md` |
+| 3 | `production-host-readiness` | `cancelled` | Q53 / 16 | 原定board-testing之后的current compiler、frontend、interface、package/runtime | 2026-09-25用户取消独立完整主机矩阵重签；保留历史证据，不宣称完成，不再排入当前交付。整改直接受影响的主机检查仍由board-testing负责 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 4 | `recursive-doubling-feasibility` | `done` | 13、16 | 非native、power-of-two participant complete AllGather；actual contiguous per-Tile gather buffer和现有unicast DTE | 4/16-Tile、1024/1025/1031 actual Instr覆盖精确`log2(P)`轮、每Tile `(P-1)×payload` bytes；fresh completion、MiniMalloc和transport binding通过；记录与Ring/native的actual差异及production接入缺口，不在无板端crossover证据时替换当前算法 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 5 | `recursive-doubling-production-choice` | `done` | 06、13、16 | layout-resolved、structured-to-Tile complete AllGather current IR；feasibility已闭合的aggregate-buffer和range-aware completion | search将Ring与recursive doubling分别物化为candidate-owned actual IR并经MiniMalloc/target/cost比较；baseline和native路径不变；4/16-Tile、1024/1025/1031、eligible/ineligible/capacity与actual-cost selection矩阵fresh通过；不新增collective op、shadow plan或板端结论 | `tasks/plans/physical-dataflow-synthesis.md` |
 | 6 | `mesh-all-to-all-production-choice` | `done` | 06、13、16 | current Tile peer IR中all-and-only complete personalized exchange；static homogeneous piece及完整rectangular Tile mesh | search比较现行direct/native与二维dimension-ordered aggregate的actual IR；后者只使用current source/receive buffers、actual pack/repack allocation和typed subview，4/16-Tile、1024/1025/1031精确覆盖；总logical bytes不变，4×4每Tile peer message由15降至6；全部candidate经fresh completion、MiniMalloc、target和cost，不发明route或shadow plan | `tasks/plans/physical-dataflow-synthesis.md` |
@@ -414,7 +420,8 @@ LLaMA block及大GEMM的完整数值和匹配性能是共用修改的保护门�
 | 8 | `distributed-all-reduce-production-choice` | `done` | 06、07、13、16 | current Tile peer IR中的complete full-buffer fanin、closed associative merge和complete result fanout；`distributed-reduce-scatter-production-choice`产出的Ring mechanics | AllReduce Ring复用同一actual ReduceScatter materializer并接现有AllGather，不维护第二套归约算法；ragged contiguous chunk、全部participant replicated result、2(P-1)轮及actual cost selection在1024/1025/1031、4/16-Tile闭合；其它形态保留central merge+fanout | `tasks/plans/physical-dataflow-synthesis.md` |
 
 
-通信实现独立排队项已收拢，既有实现不重复开发；现版本主机与实卡验证分别由上述Q53和board-testing拥有。
+通信实现独立排队项已收拢，既有实现不重复开发；Q53独立完整主机矩阵重签已按用户要求取消，
+本轮整改直接影响的主机检查及指定实卡验收仍由board-testing拥有。
 提交与范围见[调度收拢记录](archive/mesh-communication-task-reconciliation.md)。
 
 ## 已满足的直接前置

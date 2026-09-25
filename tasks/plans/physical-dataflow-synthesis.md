@@ -1,8 +1,10 @@
 # Physical Dataflow Current-IR实施计划
 
-当前本计划只承接`production-host-readiness`的现版本主机矩阵。
+本计划原承接`production-host-readiness`的现版本完整主机矩阵，2026-09-25用户已取消该独立重签任务。
+下文保留设计及历史证据，不再作为本轮待执行计划；状态以[progress](../progress.md)为准。
+Tensor整改直接受影响的主机/no-card验证仍由`board-testing`按本项覆盖执行，不因本次取消而省略。
 `mesh-communication-materialization`已退出独立待开发队列：已有实现与历史验收保留，
-现版本主机验证和实卡分别由Q53与`board-testing`拥有，不再次安排笼统的“通信边界复核”。
+不再次安排笼统的“通信边界复核”。
 提交、证据及归属见[通信任务调度收拢](../archive/mesh-communication-task-reconciliation.md)。
 
 ## 2026-09 架构收敛合同与历史验证
