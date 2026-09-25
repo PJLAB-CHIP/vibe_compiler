@@ -19,8 +19,8 @@
 
 ## 当前调度
 
-全仓文档整理已完成，归现有`board-testing`文档收尾和18号组织维护；
-迁移与检查见[文档整理记录](archive/documentation-maintenance.md)。当前没有自动接续的执行任务。
+文档内容复审已完成，归18号组织维护：AGENTS、20份编号设计及6份专题已核对职责、重复定义与过时说明，
+见[维护记录](archive/documentation-maintenance.md#内容复审)。当前没有自动接续的编译器或板端开发。
 
 恢复版本的指定全矩阵timing复验已完成。完整长LM S1024/1025仍编译失败，未构包、未上板、无timing；
 LM/Tensor未完成整改保存在`wip/tensor-subset-materialization`，不作为可交付能力。

@@ -139,7 +139,6 @@ post-attention bounded logical normalization
        attention -> online state contributions/merge
   -> current-op temporal tile-and-fuse, including online K2 stateful tiling
   -> online-attention decomposition and final current SSA/use graph
-  -> selected Tensor subset materialization and shared-use closure
   -> layout/view/function-boundary and region-local bufferization
   -> layout-resolved TileRegion
   -> movement/staging/boundary closure
@@ -262,6 +261,14 @@ Baseline与search使用同一完整合法label域。合法域只由明确的targ
 无固定layout要求的operation保留选择自由度，由完整转换成本决定布局。不能以缺少直接fixed-compute邻接为由删除某种layout，
 也不能把Tensor或Cx/NCx统一指定为计算布局。既有PBQP精确化简消费完整unary/binary factors。
 
+PBQP中的DPS init/result、SCF iter-arg/yield/result及已证明alias view共享value-group变量；多operand tuple由只枚举当前interface
+合法tuple的auxiliary variable及binary infinity factor表示，不支持的tuple不能变成finite penalty。
+每个dominance/effect cohort与目标layout使用`inactive`、`source-is-target`、`materialized`三态activation，只有第三态承担转换成本；
+apply恰创建一份对应SSA，跨block或intervening alias write/free分开cohort。
+Solver先验证完整canonical incumbent，再按stable variable index分解连通分量，一状态传播、R0/R1/R2及residual core共用checked work预算。
+结果区分`Optimal`、`Feasible`、`NoSolution`、`Indeterminate`、`BrokenContract`；合法incumbent与`NoSolution`并存属于contract error。
+完整assignment与semantic tie须对照独立flat oracle；记录status、variables/factors、work、wall和actual materialization数。
+
 #### 循环内状态的布局与重复搬运成本
 
 输入是当前Linalg/Tensor/SCF中的init、iter_args、yield、result及实际consumer，输出为同一PBQP assignment物化的
@@ -379,8 +386,7 @@ view绑定原storage，多个use共享同一`(source, target layout)` conversion
 按06号合同在实际静态非空循环前物化，随后重新One-Shot分析和SPM验证；不改普通pure graph，不绕过e-graph owner。
 Transformation只消耗assignment并改变目标clone；原query仅在其独立owner保持不变时继续供后继使用。
 
-C3先按production caller审计现有relation consumer，不以API存在推定缺口。已确认的layout降级是tensor view邻接值被机械并入一个
-`compactOnly` domain。One-Shot必然alias的DPS init/result及reshape/cast source/result现在进入同一个PBQP value group；每个候选layout由
+不因view邻接就把完整buffer-equivalent group降为compact-only。One-Shot必然alias的DPS init/result及reshape/cast source/result进入同一PBQP value group；每个候选layout由
 canonical logical `IndexRelation`和两端`PhysicalLayoutRelation`现场证明physical element mapping、footprint、alignment、padding与write
 injectivity一致。Compatible outer reshape可直接保持Cx/NCx类blocked mapping；改变channel/N blocked coordinate的reshape不能伪装zero-copy，
 fixed-layout use通过既有activation创建恰一个actual materialization。Range-changing slice/insert缺少base-offset、range、alias或effect proof时
@@ -493,7 +499,7 @@ candidate-owned current relation保存。
 不能在内层仍保留旧carrier时把外层一次未匹配当成最终结论，也不因此放宽nested-state的前置证明。
 PBQP、One-Shot与actual SPM均从改写后的IR重新建立。不得用猜测memref type或跨递归上下文的SSA缓存替代这一state边界。
 算法依据为[MLIR subset hoisting](https://mlir.llvm.org/docs/Passes/#-loop-invariant-subset-hoisting)；
-pinned缺陷参见[upstream修复](https://github.com/llvm/llvm-project/pull/188761)。本项矩阵在统一性能计划中维护。
+pinned缺陷参见[upstream修复](https://github.com/llvm/llvm-project/pull/188761)。本项验收矩阵见[已归档性能计划](archive/board-performance-optimization.md)；该记录不授权新一轮施工。
 
 Tile-local `scf.for`的tensor state采用固定destination：完成layout assignment与actual conversion后、One-Shot之前，
 先以只读One-Shot analysis检查yield与iter argument的buffer equivalence；仅非equivalent的state edge通过标准
@@ -516,9 +522,8 @@ SPM planner继续拒绝loop-body allocation跨backedge；没有通过该检查�
 和[IREE同类SCF状态问题](https://github.com/iree-org/iree/issues/16956)；具体alias、must-in-place与copy行为以pinned
 `BufferizationOps.cpp`、`SCF/Transforms/BufferizableOpInterfaceImpl.cpp`为准。该规则不读取attention或其它workload identity。
 
-Movement transformation完成后，以同一relation/physical-map/alias/effect/lifetime proof运行一次full-transfer cleanup；该cleanup必须在
-execution-structure和Instr scheduling前完成。现有Instr-only或test-only eliminator的独有正负资产迁移到这一owner后删除旧实现，
-不能并存两个production cleanup路径。
+完整copy消除的唯一production入口位于canonical Instr形成后、fresh completion之前，合同见§8。
+Tile层的view/局部movement清理不复制该kernel，也不按旧迁移设想另建一条full-transfer路径。
 
 Movement、descriptor和late cleanup只有在caller审计证明仍把general relation退化为identity、layout枚举或逐元素公式时才修改；已经使用
 `PhysicalAccessRelation`和symbolic descriptor cover的路径保持原owner。无production caller的API可以删除，但不能为了“发挥能力”建立新调用。
@@ -629,9 +634,8 @@ TileModule SSA传递；跨Tile依赖只能通过shared DDR或explicit communicat
 
 Structural和layout-resolved `wafer.tile.region`不签发SPM residency结论。Movement闭合后的physical TileRegion才表示一个Tile内的
 SPM ownership/lifetime domain。region内允许多个traversal和不同tile shape；
-root可以分别retain、spill、reload或release。任何跨region shaped value都必须由显式DDR store/completion/load
-materialize；SPM root/value/alias跨界非法。region boundary不是自动completion，仍访问root的
-compute/movement/communication必须完成后才能释放。
+root可以分别retain、spill、reload或release。跨Region数据遵守07号DDR或显式resident合同，未知SPM alias拒绝。
+Region boundary不是自动completion；root在实际release/reuse前必须完成仍访问它的compute/movement/communication。
 
 把多个traversal放入同一region只证明共享一个residency domain，不证明op fusion或coupled traversal。coupled traversal
 必须由producer work嵌入consumer traversal及其direct SSA tile use证明；同region的独立loop nests/local staging不能统计为

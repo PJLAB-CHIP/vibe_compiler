@@ -28,7 +28,8 @@ memory/target leaf，但每次分别拥有自己的materializer invocation、can
 
 ### 非均匀常量的计算输入
 
-已选Region/temporal窗口内的非均匀tensor literal及其metadata view仍由One-Shot的arith接口生成只读DDR global。
+[规则常量](structural-choice.md#已选局部需求中的规则常量)先按精确内容证明生成fill/insert_slice；其余非均匀tensor literal
+及metadata view由One-Shot的arith接口生成只读DDR global。
 布局准备阶段须为实际Linalg操作数创建SPM `bufferization.alloc_tensor` copy，之后PBQP才能分析其布局和后续转换；
 常量来源及alias group固定为Tensor布局。Copy只覆盖current operand的实际窗口，同一block中的同一immutable值可复用一次copy，
 不把完整常量搬入SPM、不按bool或模型名特判。下游沿既有bufferization、StorageLoad、Instr和SPM路径消费。

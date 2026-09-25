@@ -20,8 +20,8 @@ physical packet：
 | `src_iterations` | `DenseI64ArrayAttr` | source logical iterations，长度为 3，值为正数 |
 | `dst_strides` | `DenseI64ArrayAttr` | destination byte strides，长度为 3 |
 | `dst_iterations` | `DenseI64ArrayAttr` | destination logical iterations，长度为 3，值为正数 |
-| `src_offset` | `I64Attr` | allocation root内的非负source byte offset；GatherScatter可选携带；mapped RDMA/WDMA与`dst_offset`成对显式携带（包括0） |
-| `dst_offset` | `I64Attr` | allocation root内的非负destination byte offset；GatherScatter可选携带；mapped RDMA/WDMA与`src_offset`成对显式携带（包括0） |
+| `src_offset` | `I64Attr` | allocation root内非负source byte offset的静态形式；该端也可用`src_offset_value` SSA，不能同时指定；mapped DMA两端均须有offset |
+| `dst_offset` | `I64Attr` | allocation root内非负destination byte offset的静态形式；该端也可用`dst_offset_value` SSA，不能同时指定；mapped DMA两端均须有offset |
 
 contiguous movement 使用 `inner_bytes == byte_count`，stride 全 0，iteration 全 1。byte stride
 必须已经从 element stride 转换完成。instr-lowering IR与public CRT ABI统一携带最内层byte count、三层byte stride和
@@ -33,8 +33,8 @@ raw logical trip count，inactive dimension为1；每个kind-specific wrapper仍
 descriptor 表达不了的
 dynamic stride、超过 3 层的静态 stride 或不规则
 非连续访问，instr-lowering 必须结构化失败，不能生成名字上合法但下游无法 packetize 的 instruction op。
-compact RDMA/WDMA不携带`src_offset`/`dst_offset`，从operand root与accepted allocation offset形成地址；mapped
-RDMA/WDMA则必须成对携带offset。directional offset不是allocation placement fact，而是descriptor相对allocation root的
+无额外偏移的compact RDMA/WDMA从operand root与accepted allocation offset形成地址；mapped DMA两端分别显式给出
+静态attr或bounded SSA offset。下文offset统指对应端的这两种表示。directional offset不是allocation placement fact，而是descriptor相对allocation root的
 access fact；它由typed view和exact transfer proof物化并验证，不能由lowering从planner历史补猜。
 
 ### 7.2 RDMA / WDMA
@@ -85,9 +85,9 @@ instr-lowering 不负责把 whole-boundary DDR memref 按 tile shape 切成 subv
 explicit static boundary slice producer或selected materialization通过IR view
 显式提供。
 每个mapped transfer必须由统一logical-to-physical calculator证明all-and-only coverage、tail、payload、local offset和
-两端range；accepted结果是一条或多条显式RDMA/WDMA op，不保存transfer sidecar。动态 view、负 stride、
-bit-packed element、超过三层 stride/iteration 或不能静态证明 descriptor 的
-情况必须 structured failure，不能从 memref 名字或 shape 猜测。
+两端range；accepted结果是一条或多条显式RDMA/WDMA op，不保存transfer sidecar。动态shape/stride、负stride、
+不可表示的descriptor或未知offset范围拒绝。Bounded dynamic base offset沿SSA保留；packed BOOL只接受
+[10号的整字节证明](../10-compute-movement.md#packed-bool的分块dma)，不能推广为任意bit view或从名字/shape猜映射。
 
 一个direct cover拆成多条RDMA/WDMA时，每条op的`byte_count`只等于该条descriptor实际搬运的bytes，并独立满足
 `byte_count == inner_bytes * product(iterations)`；cover总bytes只能由这些显式op checked求和后与logical valid-domain

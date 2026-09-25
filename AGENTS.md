@@ -131,106 +131,40 @@ Pipeline position:
 - 默认不建立future-output IR。确有必要时须得到用户明确同意并建立编号设计；该IR自身必须是唯一authoritative representation，
   具有typed def-use、parser/printer、verifier、ownership/invalidation和唯一lowering路径。
 
-### SPM合法性
+### Memory与completion
 
-- SPM合法性只由actual candidate current IR上的唯一SPM规划路径决定。输入必须包含实际allocation、layout、SSA alias、effect、
-  completion和lifetime；只有成功生成并验证offset才是合法，只有带实际冲突demand的typed capacity rejection才是不合法。
-- 没有实际IR和实际规划结果时结论只能是unknown。footprint、shape公式、buffer倍数、upper bound、synthetic demand或预测lifetime
-  只能用于诊断/排序，不能进入admission、pruning、retile、fallback或winner合法性控制流。
-- 所有policy消费同一actual memory/target leaf。外层controller处理capacity反馈；capacity、timeout、unsupported和compiler error
-  保持typed区分。lowering和allocator不得自行retile、spill、
-  换layout、换buffer或选择下一候选。
-- 每个allocation必须有current-IR typed owner relation。materializer只能报告实际创建的buffer；出现无owner demand时按contract failure停止，
-  禁止按shape、类型、位置或“唯一root”补归因。
-- 测试使用真实规模actual candidate覆盖“物化→Instr→SPM规划→反馈”，并证明修改或删除估算逻辑不会改变SPM合法集合。
+- SPM合法性只来自actual candidate的实际allocation、layout、SSA alias、effect、completion和lifetime，以及唯一SPM规划路径。
+  成功生成并验证offset才是合法；带实际冲突demand的typed capacity rejection才是不合法；其余为unknown。
+- footprint、shape公式、buffer倍数、upper bound、synthetic demand和预测lifetime只能诊断/排序，不能控制admission、pruning、
+  retile、fallback或winner合法性。Allocation必须有current-IR typed owner；无owner demand按contract failure停止，不按shape、位置或唯一root补归因。
+- 所有policy共用actual memory/target leaf。外层controller处理typed capacity反馈；lowering/allocator不得自行retile、spill、
+  换layout、换buffer或选下一候选。完整失败分类和验证要求见09号。
+- 同步只来自current IR中的typed effect/token/control-flow/lifetime和硬件证据；unknown必须defer/reject或补证据。
+  不以“保守”为由插全局drain、固定worker join或issue后立即wait；同worker issue order本身不要求额外join。
+- 上层只保留依赖要求；最终completion stage在worker、order、movement、storage和control flow物化后重建
+  minimum-strength、latest-unavoidable的join/wait，lowering只验证和发射。Direct DTE token与NCC participant是不同完成域，不能互相替代；
+  token消费位置、动态次数和lifetime witness按11/13号验证。
+- View、allocation、destination mutation和copy语义在低层IR前确定。Tensor层使用DPS和`BufferizableOpInterface`；
+  memref/Instr层不得按users临时决定alias或allocation。
+- 不按buffer/op/symbol/文件/示例名称恢复语义；只消费type、shape/dtype、memory space、indexing map、SSA、control flow、effect和interface。
+- 未明确要求修改数值语义时，不分析或引入数值重排空间；保持现有算术operation和dtype，数值测试只作回归。
 
-### Completion、join与wait
+## 按修改范围必读的工程细则
 
-- 同步只能来自current IR中的typed effect/token/control-flow/lifetime和当前硬件/runtime/ABI文档。证据不足时结果是unknown，
-  必须defer/reject或先补证据，不能插入“保守”全局drain、固定worker join或issue后立即wait。
-- 如果当前硬件合同只要求同一worker保持issue order，不能仅因operation类别、loop backedge、region结束、state update或store/reload插join。
-  只有typed cross-worker hazard、完成域crossing、actual release/reuse或observable terminal可以要求completion。
-- Direct DTE token与NCC participant是不同完成域。recv wait在destination首次读取/复用前；send wait在source最后读取/转发/复用/释放前；
-  wait精确消费对应dynamic token，NCC join和DTE wait不能互相替代。
-- 上层算法、region/temporal construction和普通materializer只保留SSA/effect/token/lifetime要求，
-  不选择participant或completion位置。最终completion stage在worker、order、movement、storage和control flow均物化后，
-  从current IR重建minimum-strength、latest-unavoidable的join/wait；lowering只验证和发射。
-- 测试检查join/wait位置、participant/token、动态执行次数和直接lifetime witness。没有typed crossing的真实规模正例应断言
-  可避免的steady-state/non-terminal join为0；同步数量不得无理由随element、copy或attention block线性增长。
+下列细则承接本文件的工程硬约束，与本文件共同约束实现；按修改范围阅读，不在这里重复专业合同。
 
-### Memory、alias与语义恢复
+| 修改范围 | 规则的唯一落点 |
+| --- | --- |
+| ODS、interface、verifier、pass、analysis、rewrite、conversion、clone及C++错误/确定性 | [19号：MLIR工程](tasks/19-mlir-engineering.md) |
+| 源码owner、public/private API、CMake依赖、命名、迁移与删除 | [18号：源码组织](tasks/18-source-organization.md) |
+| Wafer-owned API、IR、文件格式、runtime ABI及fixture | [20号：唯一现行接口](tasks/20-interface-evolution.md)；不保留V2、兼容wrapper、双reader或新旧分支，外部版本按原协议保留 |
+| Candidate、layout、SPM与DDR | [06号](tasks/06-physical-dataflow-synthesis.md)、[08号](tasks/08-physical-realization.md)、[09号](tasks/09-spm-memory-planning.md)、[12号](tasks/12-ddr-memory-planning.md) |
+| Effect、completion、join与wait | [11号](tasks/11-instruction-ir.md)、[13号](tasks/13-communication.md)及其引用的硬件证据 |
+| 分层验证、oracle、no-card和板端 | [16号：验证](tasks/16-verification-contract.md) |
 
-- View、allocation、destination mutation和materializing copy在进入低层IR前必须有确定语义；lowering不得根据users临时决定alias或allocation。
-- Tensor层使用DPS和`BufferizableOpInterface`分析in-place/out-of-place；进入memref或Instr层后alias与effect必须已经确定。
-- 不根据buffer名、operation名、symbol拼写、文件名或示例名恢复语义。使用type/rank/shape/dtype、memory space、indexing map、
-  SSA use-def、region/control flow、effect和operation interface。
-- 任务没有明确修改数值语义时，不分析或引入数值重排空间；保持现有算术operation和dtype，数值测试只作回归。
-
-## MLIR工程规则
-
-### IR、schema与verifier
-
-- Pass输入和输出都必须通过verifier。verifier-valid输入触发crash/assert是pass bug。
-- op verifier只检查自身、owned region结构及直接operand/result/attribute关系；call graph、topology、alias/lifetime、completion和resource
-  closure在最近共同parent或显式validation pass检查。
-- 影响legality、rewiring或lowering的字段使用ODS argument/property、type或typed attribute，并通过generated accessor访问。
-- `Location`只保存source/diagnostic位置，不保存pointer、operation identity或跨pass语义。
-- 优先实现适用的RegionBranch、Call、MemoryEffect、ViewLike、DPS、Bufferizable或Tiling标准interface；仅在标准interface无法表达且有
-  明确消费者时新增Wafer interface。
-
-### Pass与analysis
-
-- Pass锚定到完成工作所需的最小operation。需要call graph、symbol closure、function-boundary bufferization或全局resource检查时才使用
-  func/module范围；可独立处理的`IsolatedFromAbove`使用nested pass。
-- `OperationPass`不得读取root sibling，不得修改root operand或parent block，也不得替换/删除自己的root。
-- Pass不在多次`runOnOperation`间保留可变状态，不使用可变全局状态；创建新dialect对象时声明dependent dialect。
-- Analysis只读current IR和显式只读target facts。IR mutation后默认失效；只有确实保持有效时才preserve。
-- 共享analysis的表达能力不决定transformation归属。只有selected tile、region、layout或其它下游choice可见后才能判断的改写留在该下游stage；
-  不能仅因上游也能调用同一analysis就提前决定。
-- 只有被多个pass重复消费且可安全失效的事实进入`AnalysisManager`；一次性validation、choice和跨clone工作数据留在当前调用。
-- atomic pass完成一个可验证变换；pipeline只组合稳定IR边界。搜索、module fan-out、外部工具和目录提交由compiler driver负责。
-
-### Rewrite、conversion与clone
-
-- `matchAndRewrite`确认匹配前不修改IR；所有修改经给定`PatternRewriter`。首次修改前完成shape/type/symbol/target等可能失败的检查，
-  失败使用`notifyMatchFailure`。
-- rollback期间不修改外部容器或其它无法回滚状态；返回success时必须已经修改IR。
-- Full conversion必须使所有输入op对`ConversionTarget`合法；partial conversion只处理明确illegal集合并紧跟stage verifier。
-  source op分类与postcheck使用同一trait/interface，新增source op不得被unknown-op规则静默放过。
-- 同一次clone用`IRMapping`；不用pointer、遍历顺序、ordinal、打印文本或symbol名恢复对应。
-- 试运行只clone最近的`IsolatedFromAbove` owner，外部operand映射到scratch自有value；scratch不得引用或增加原IR use。
-  不为取得anchor构造临时ModuleOp/FuncOp。为最终output、外部工具或reducer生成的clone必须说明owner、失败命运和下游消费者。
-- `fold`只做便宜、局部、确定的恒等式；canonicalizer只优化，不承担correctness legalization。Greedy rewrite限制root和工作量。
-- 当前设计已将某类ordinary pure graph等价探索交给e-graph时，该语言内新增的relation-driven等价式必须作为e-graph rule和只读callback实现；
-  不在e-graph入口前、extractor旁或materializer后增加同义greedy/DRR/C++旁路。Multi-use需要扩展同一request的root/shared-DAG合同，
-  不能以逐consumer pattern代替。
-
-### C++、错误与确定性
-
-- Public/跨stage API使用范围明确的typed结果；相关多结果返回命名struct，不用`bool`、字符串标签和多个nullable输出拼状态机。
-- 只读计算与IR修改分开，所有可能失败的检查尽量在首次mutation前完成。
-- move-only类型表达所有权；引用和裸pointer只在owner存活且IR未修改的当前epoch内使用。地址只能作局部查找键。
-- 本仓不使用C++ exception或RTTI。IR变换返回`LogicalResult`/`FailureOr`并发diagnostic；文件、runtime和library边界使用
-  `llvm::Error`/`Expected`。unsupported、capacity、indeterminate和compiler error保持typed区分。
-- `assert`和`llvm_unreachable`只用于verifier-valid输入下不可能发生的内部状态；不解析diagnostic文本控制流程。
-- 不使用可变singleton或没有失效规则的cache参与编译决策。
-- 输出IR、diagnostic和选择结果不得依赖地址、hash遍历或并行完成顺序；所有可观察排序都有完整semantic tie-break。
-- 优化性能前记录work count、pass/analysis timing、wall time和RSS；先减少重复遍历、重复materialization和过大scope。
-
-## 源码、接口与命名
-
-- 源码owner和依赖方向以18号设计为准，MLIR component边界以19号设计为准。CMake显式列source和direct library dependency，
-  同一translation unit只有一个production owner，不形成component循环依赖。
-- Public header自包含；private helper留在`lib/`。源码树不保留空目录、无consumer fixture、未注册test或generated cache。
-- Wafer-owned C++ API、IR、磁盘格式、runtime ABI和fixture只保留一个支持形式。修改时同步更新全部仓内producer、consumer、测试和文档，
-  不保留`V2`、compatibility wrapper、双reader或新旧分支。
-- 外部NPY、license、vendor规范、device runtime和第三方版本保留其原始名称与检查方式，不与Wafer内部版本规则混用。
-- 改名先读definition、constructor、consumer、verifier/lowering和pinned同类API；一次只改一个概念及直接调用链，检查旧名残留后再继续。
-- 用户否定某个名称时停止该命名方向并重新阅读实现，不自行换近义词继续修改。
-- type用名词，函数用动词短语，conversion同时说明source和target。namespace、强类型或parent已消除歧义时不重复阶段/范围限定。
-- 删除旧实现前指出新实现和对应测试；大规模迁移记录旧能力到新代码、正式调用路径和测试的映射。source未进CMake不等于无用。
-- 一个函数、pass或文件只解决一个明确问题；新增对象必须直接服务于legality、transformation、lowering或diagnostic。
-- 功能修改不夹带全树格式化、无关重命名或第二套总体设计。
+改名先读definition、constructor、consumer、verifier/lowering和pinned同类API；一次只改一个概念及直接调用链，
+检查旧名残留后再继续。用户否定名称时停止该方向，重新阅读实现，不自行换近义词继续。功能修改不夹带全树格式化、
+无关重命名或第二套总体设计。
 
 ## 文档、经验与版本控制
 

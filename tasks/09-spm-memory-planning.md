@@ -10,26 +10,14 @@ layout、accepted offset和target policy重算。只有实际MiniMalloc及独立
 rejection可以反馈controller，`ResourceExhausted`、unsupported和compiler failure保持原typed状态。High-water/headroom和
 bank preference只作accepted placement的诊断或soft ordering，不参与legality。
 
-Physical `wafer.tile.region`是单Tile residency boundary，不是arena或solver query。SPM root/alias不能跨Region；跨Region
-shaped value必须通过已物化的DDR store/completion/load。本文只消费11号定义的Wafer-tagged memref、`wafer.instr.*`
-和effects，不重复定义instruction op；DDR planning由12号拥有。
+Physical `wafer.tile.region`是单Tile residency boundary，不是arena或solver query。普通跨Region数据由显式DDR store/completion/load承接；
+07号定义的`resident`边界允许同Tile SPM root/alias沿显式SSA传播，必须有current owner、lifetime及completion证明。
+本层在完整entry中验证这些roots，不按region切断lifetime或各自假设独占SPM。本文消费11号Instr/effect合同；DDR planning由12号拥有。
 
 ## 1. 核心结论
 
-SPM planning 不能只做 byte-size estimate。候选 tile plan 是否合法，必须跑与下游一致的：
-
-```text
-selected physical encoding / transfer materialization
-  -> selected DDR tile-view materialization
-  -> instruction legalization / selection
-  -> instruction-level IR with unplaced Wafer-tagged memref values
-  -> storage requirement collection
-  -> liveness/effect analysis
-  -> derive all-and-only fixed SPM allocation problems from roots/lifetime/coexistence
-  -> 3 MiB fixed-capacity packing + shared physical geometry/range verification
-  -> target-ABI address/range/narrowing validation after selected-plan commit
-  -> target-codegen derivation from the selected executable facts; runtime only binds verified TileEntryArguments to planned addresses
-```
+SPM合法性来自actual Instr的storage demand、lifetime/effect、fixed-capacity solve与独立placement复验。
+验证后的offset继续接受DDR、transport、resource与ABI检查，全部通过才接受complete candidate；完整调用顺序见06号。
 
 如果candidate allocation没有被接受，不能生成等待下游修复的program，也不能保留partial placement；未提交top-level TileModule subtrees整体擦除。
 actual `ProvenInfeasible`可作为当前candidate的typed capacity rejection；`ResourceExhausted`或internal failure不形成capacity rejection。
@@ -43,7 +31,7 @@ Pipeline position:
   `wafer.tile.module`已包含完整`wafer.instr.*`、actual DDR views、unplaced
   SPM memrefs、selected encodings、movement、buffering、effects、order与completion；function boundary已经bufferize，Tile source op已经消失。
   不允许memory stage再补join/wait。不同Tile可以有不同op/loop/tail；nested
-  region、SPM alias跨Tile/region或typed opaque clobber fail closed。
+  region、跨Tile或不满足07号resident合同的SPM alias、typed opaque clobber fail closed。
 - Current stage responsibility:
   要求每个actual allocation有candidate transaction提供的current typed owner relation；逐Tile从current roots、control-flow
   coexistence与conflict重建all-and-only fixed problems；验证
@@ -104,7 +92,7 @@ captured group、选择不同task identity的`SelectLike`和非identity-preservi
 
 SPM planning以finalized Tile module为scope，对其完整current IR的全部roots统一收集demand、path-aware lifetime、coexistence和
 physical arena facts，再形成all-and-only fixed allocation problems。entry含一个或多个non-nested `wafer.tile.region`；nested
-region、SPM root/alias跨界及typed opaque clobber输入拒绝。region结构不预设problem/query数量。
+region、无resident证明的SPM root/alias跨界及typed opaque clobber输入拒绝。region结构不预设problem/query数量。
 
 actual SPM residency是本stage的late验证结论，不是上游action名称：只有current Instr IR中的producer/consumer root、
 SSA/view关系、movement、order及completion共同证明一个value在SPM持续可用，planner才按该lifetime放置它。同region不自动
@@ -112,7 +100,7 @@ SSA/view关系、movement、order及completion共同证明一个value在SPM持�
 
 planner跨完整entry跟踪typed worker NCC pending set与Direct DTE token：same-worker exact RAW/WAR/WAW可在安全loop backedge保持
 ordered pending；selective spill只结束目标root，不改变其它root lifetime。为真实reuse、observer或worker-domain切换出现的typed
-join/wait会更新pending state；region exit只要求仍访问其SPM roots的work完成，entry terminal完成全部observable generic async task、
+join/wait会更新pending state；region exit验证在此释放/复用的roots，显式resident roots继续按actual SSA追踪；entry terminal完成全部observable generic async task、
 DTE token和NCC participant。共享generic async analysis不替代DTE
 origin/wait legality，也不能把DDR的selected TileModule set/external-root/resource-limit语义反向引入SPM。
 
@@ -125,8 +113,9 @@ origin/wait legality，也不能把DDR的selected TileModule set/external-root/r
 终态实现的dynamic ownership只接受由`func.func`、`scf.if`和`scf.for`结构化拥有的non-nested residency regions；
 一个entry可有一个或多个，typed opaque clobber和unknown region owner拒绝。若不同regions可能并发，其roots按真实coexistence
 联合规划，不能各自假设独占3 MiB。
-SPM value不得成为`func.func`或tile-region边界；tile-region的所有data I/O只允许DDR value/view（function external或
-compiler-managed materialization），non-data control不能携带SPM alias；与SPM无关的pending completion按typed合同传播。唯一的helper边界是defined
+SPM value不得成为`func.func`边界；tile-region的data I/O默认是DDR value/view（function external或
+compiler-managed materialization），只有07号显式resident形式可传递SPM。Non-data control不能偷带SPM alias；
+pending completion按typed合同传播。唯一的helper边界是defined
 `async.func`的SPM formal，由tile-local call site传入且callee body须独立提供可验证的DTE/local/generic async
 effect/token relation，最终pending completion由caller真实observer/root release/entry terminal验证。active/async/parallel SPM scope中的
 indirect、external/unresolved或call graph上可能执行另一tile-region的
@@ -314,11 +303,10 @@ lifetime 从 IR 结构和 effect 推出：
   multi-instance/ping-pong placement，必须fail closed。
 - 非repeatable branch buffer只有在control-flow证明互斥时才能复用；`scf.for`内的分支每个动态iteration可重新选择，
   其相反branch path对packing仍按may-overlap处理。
-- region内的nested control-flow不自动截断lifetime；`wafer.tile.region` isolation禁止隐式capture，且SPM operand/result
-  不得形成cross-region data edge。同一resident allocation root的yield/result/consumer链必须保留在一个region；selected
-  spill结束该root，matching reload建立新root；它们在同一region内时不影响其它live roots，在下一个region时则
-  要求selected cut已另行结束或materialize切口上的全部SPM roots。typed opaque clobber和
-  nested `wafer.tile.region`结构化拒绝，不能从名字、task顺序或isolation trait恢复跨region SPM alias。
+- nested control-flow不自动截断lifetime；`wafer.tile.region` isolation禁止隐式capture。跨region的SPM
+  yield/result/consumer链须满足07号resident合同，并进入完整entry的同一root/lifetime分析。Selected spill结束目标root，
+  matching reload建立新root，不影响其它live roots。DDR cut上的非resident SPM依赖必须已显式物化。
+  typed opaque clobber与nested TileRegion拒绝；不能从名字、顺序或isolation trait恢复SPM alias。
 - compiler-managed DDR materialization cut按current IR中的managed DDR root、对应WDMA和RDMA到fresh managed SPM root识别。
   fresh completion在store后完成其participant worker，使被spill的SPM source可释放；reload前若同worker仍有intervening
   pending work，再插matching participant join。只有latest issue、fresh allocation和reload位于同一block且顺序可证时，
@@ -588,42 +576,18 @@ allocator不返回tile、layout、route或retention/release repair recipe，
 
 ## 10. Complete Candidate TileModule set 到 Actual Result
 
-SPM stage嵌入candidate Card transaction：
+本stage接收completion-closed canonical unplaced Instr。完整上游pipeline由[06号](06-physical-dataflow-synthesis.md)拥有；
+进入本leaf前，bufferization、movement、execution structure、Instr conversion、worker/order和completion必须已经闭合。
+本层只执行：fresh demand/lifetime/effect → fixed-capacity solve → 独立placement复验 → atomic offset apply到candidate IR。
+随后独立physical-alias verifier复核，共同leaf执行fresh range/descriptor/completion-consistency、DDR/transport/resource/ABI与actual cost检查。
 
-```text
-complete candidate TileModule set with typed IR
-  -> function-boundary and region-local bufferization / layout
-  -> movement and physical TileRegion boundary closure
-  -> current Tile execution structure / rotating slots
-  -> execution-structure-closed TileRegion legalization to Instr
-  -> verify actual stage chunks / movement / physical buffers / issue order / completion obligations
-  -> relation-backed redundant physical transfer normalization
-  -> current Instr worker/order and dependency-driven completion reconstruction
-  -> completion-closed canonical unplaced Instr handoff
-  -> fresh BufferDemand / lifetime / effect collection
-  -> fixed-capacity SPM solve + independent placement validation
-  -> atomic offset apply to candidate IR
-  -> fresh range / descriptor / completion-consistency revalidation / cost gates
-  -> derive and atomically validate DDR placement domains / transport / ABI acceptance
-  -> Accepted DeviceExecutable + actual cost, or typed rejection/failure
-```
+任何改变root、alias、effect或lifetime的上游mutation都使旧problem、offset和cost失效；memory leaf不能再次运行这些变换。
+只有lifetime/conflict证明不冲突的roots可复用range。独立physical-alias复验失败属于internal failure，不能生成exact no-good；
+allocator不能插join、改slot或反复packing修复。Offset本身不改变lifetime/completion。
 
-Candidate IR必须已经把TileRegion、retention/release、spill、encoding、transfer、execution structure和instruction sequence显式物化；
-SPM owner只从completion-closed Instr重算lifetime与demand。Completion在完整worker assignment形成后由上游current-Instr stage fresh构造；
-bufferization、Instr conversion、order或completion改变root、alias、effect或lifetime后，必须在进入本leaf前完成并使旧problem失效；
-memory leaf不得再次运行这些变换。旧offset和cost不得复用。packing只允许
-对lifetime/conflict证明为不冲突的roots复用range；
-accepted offsets形成后由独立physical-alias verifier复核。若复核失败，表示packing结果无效或上游proof不一致；未提交subtree
-被擦除并返回internal failure，不能形成exact no-good。offset本身不改变lifetime/completion，allocator不得
-就地插join、改slot或反复packing修复。
-
-function-boundary bufferization可能新增或删除buffer/movement，所以它与region-local bufferization在movement、execution structure、
-TileRegion relation listener与Instr conversion之前完成；
-之后的current-Instr completion stage闭合join/wait，再把finalized
-Tile Instr program从final instruction IR派生problems并fresh recost；任一Tile未被接受都擦除整个未提交selected TileModule set，
-不产生Tile-local survivor，也不返回planner。actual placement完成后从current explicit DDR arenas/domains重建并原子验证
-DDR/transport/resource事实，不消费SPM-side compatibility signature。
-
+任一Tile失败，整个未提交candidate TileModule set被擦除，不保留Tile-local survivor或partial offset。
+所有Tile接受后，DDR/transport/resource从自身current arenas/domains重建并原子验证，不消费SPM-side compatibility signature。
+只有§9规定的actual capacity rejection可作为外层controller的容量反馈；其它结果保持typed区分。
 
 ## 11. Runtime / ABI Boundary
 
@@ -650,9 +614,8 @@ package/runtime不得再扫描raw memref/offset恢复role、alias或lifetime。
   stride 或 packet field，ABI/packet emission 在 very-late lowering 中从当前 IR 派生对应参数；
   不能把它们作为独立access descriptor在主线IR中传递。
 
-这个 boundary 不重新选择 layout，也不重新移动 materialization cut。若某个 Wafer-tagged memref
-无法由 accepted facts 派生合法 address/range 参数，说明前面的 layout/SPM plan 不合法，应返回
-planner，而不是让 LLVM lowering 才失败。
+该boundary不重选layout或materialization cut。Address/range/narrowing无法由current facts证明时，
+在DeviceExecutable接受前返回对应typed failure；不能把一般ABI/contract failure当成capacity反馈，也不能让lowering隐式重选候选。
 
 ## 12. IR 表达
 
@@ -694,11 +657,10 @@ accepted range/arena relation；formation后package/runtime只消费
   working bank phase按`(offset / 256) mod 8`重算。二者都不是accepted attr。
 
 每个Tile的SPM window是Tile-local physical arena。每个finalized Tile module的全部roots从current IR派生fixed
-allocation problems并在3 MiB window内all-and-only规划；entry含一个或多个non-nested physical regions。SPM memref/root/alias不得跨region boundary；
-region result若是data只能发布DDR value/view，其root可以是function
-external或compiler-managed materialization。region内部的selective spill/store结束目标root，matching reload建立distinct root，且
-不影响其它live root。任意SPM raw escape、仍访问前一region roots的pending work或无法解析的provenance结构化拒绝。输出仍保持
-offset-only，size/alignment/lifetime/bank phase从accepted IR重算。
+allocation problems并在3 MiB window内all-and-only规划；entry含一个或多个non-nested physical regions。Region I/O遵守07号
+DDR或显式resident合同。Selective spill/store结束目标root，matching reload建立distinct root，不影响其它live root；
+resident root沿actual SSA保持lifetime，release/reuse前必须闭合其pending work。Raw escape或unknown provenance拒绝。
+输出仍为offset-only，size/alignment/lifetime/bank phase从accepted IR重算。
 
 当前dataflow边界：
 
@@ -769,10 +731,9 @@ SPM / tile-region verifier 至少检查：
 - async buffer在matching completion前不能复用；仅same-worker exact RAW/WAR/WAW ordered successor可接管访问。
 - host-visible writeback和communication boundary有明确participant join/exact wait/sync。
 - 每个有assigned work的physical `wafer.tile.module`包含一个或多个non-nested `wafer.tile.region`；nested region或typed opaque clobber输入拒绝。
-- physical `wafer.tile.region`不得传递SPM buffer/root/alias；所有data I/O必须是DDR。region内selective spill与cross-region cut必须
-  完整表达各自store/completion/load；region exit只验证仍访问其roots的pending work已由显式typed completion清空，
-  不因region结构插入或执行wait/join；complete candidate TileModule set coverage确保allocation problems
-  all-and-only覆盖每个root。
+- physical Region I/O只接受DDR或07号已验证的resident SPM。Selective spill与DDR cut显式表达store/completion/load；
+  resident roots不在region exit截断lifetime。实际release/reuse前必须闭合对应pending work，不因region结构插wait/join。
+  Complete candidate的allocation problems必须all-and-only覆盖每个root。
 - bank phase soft preference不参与verifier legality；verifier只重算accepted offset的range/alignment/
   overlap。任何因phase冲突拒绝hard-valid placement、插入spill/region/join或依赖bank attr的实现均违反本合同。
 - tile-region只允许sequential func/scf.if/scf.for ownership；active/async/parallel scope中的unknown/external/
@@ -790,28 +751,14 @@ SPM / tile-region verifier 至少检查：
   的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
   allocation range 和 op verifier 一致推出。
 
+SPM准入回归必须使用真实规模actual candidate覆盖物化→Instr→规划→typed反馈，
+并证明修改或删除footprint/shape等估算逻辑不会改变SPM合法集合。
+
 ## 14. 与 Physical-Dataflow Planning 的关系
 
-全局output DAG见`tasks/01-architecture.md`，planning合同见`tasks/06-physical-dataflow-synthesis.md`。Pre-memory stages不签发SPM合法性；
-本层为每个complete candidate TileModule set中每个Tile的`#wafer.memory<spm, *>`分配actual offset或返回typed rejection：
-
-```text
-complete candidate TileModule set
-  -> actual compute form / encoding / transfer / TileRegion and retention/release already in typed IR
-  -> fresh instruction storage / effect demands
-  -> fixed-capacity SPM evaluation and validated placement
-  -> fresh offset-dependent instruction / descriptor / range / completion gates
-  -> actual cost
-  -> candidate DDR exact evaluation / transport / ABI coordinator
-  -> Accepted DeviceExecutable, or typed rejection/failure with no committed subtree
-```
-
-Region、retention、tile/loop、implementation、encoding、transfer、spill/recompute、buffering和order已由上游在current IR中表达；
-typed opaque clobber输入直接拒绝。Allocator不创建或修改boundary、不建议或修改choice，也不按名字或case恢复语义；
-外层controller比较Accepted results。
-NCC participant join、communication wait和DTE completion是不同event，lifetime analysis只能按各自typed
-worker/effect/token合同处理；NCC completion只接受typed participant join。
-
+Pre-memory stages不签发SPM合法性；完整candidate调用顺序与accepted result比较归06号，实际offset与typed反馈归本设计。
+Allocator不创建或修改boundary、不建议choice，也不按名字或case恢复语义。
+NCC participant join、generic async completion与Direct DTE wait分别按自身worker/effect/token合同验证，不能互相代替。
 
 ## 15. 后续扩展
 

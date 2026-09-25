@@ -35,80 +35,12 @@ BN融合的1024/1025/1031正例须经过actual Tile/Instr/SPM，断言channel中
 
 #### 6.1.1 Layout assignment 与 exact PBQP
 
-Layout合法域直接从current structural TileRegion的SSA value/use、consumer interface、exact `IndexRelation`和可验证encoding构造。
-Baseline与search都调用同一个query-local PBQP layout optimizer；它不是search state，也不共享两条policy的candidate owner。
-Baseline与search对每个实际layout-input求解一次无外部附加约束的完整assignment；outer search不再逐value/use重新约束并枚举布局。
-PBQP保留完整合法域与canonical feasible合同。FirstUse和可选LoopInvariant从同一个未修改的实际输入及同一assignment分别clone、apply、bufferize，
-再经过完整下游；它们是copy placement选择。单个PBQP解不保证覆盖所有SPM可行布局或全局最快结果。
-PBQP在当前IR上按实际 materialization 的 physical bytes（含 padding）与一次 materialization unit
-进行 query-local 排序；最终search winner仍由物化后的其它choice和actual objective决定。该排序不能替代实际 MiniMalloc。
+完整合法域、factor、activation、成本、solver状态与覆盖统一由[08号布局合同](../08-physical-realization.md#22-layout-assignment-与cleanup)维护。
+Baseline与search对每个actual layout-input调用一次相同PBQP query，取得完整factor-valid assignment；outer search不逐value/use附加约束重求解。
+Search只在immutable query owner存活期间保留assignment，经IRMapping分别应用于FirstUse/LoopInvariant的独立clone，随后bufferize。
+Query不跨owner mutation保存，下游只消费actual IR。PBQP最优仅针对本次布局目标，不保证覆盖所有SPM可行布局或设备最优结果。
 
-C3不因某value邻接view就把整个buffer-equivalent group机械降为`compactOnly`。One-Shot必然alias的DPS init/result和reshape/cast
-source/result先合并为一个PBQP value group；它们不是两个可独立选择的buffer变量。该group枚举完整layout交集，但每个state必须由canonical
-logical `IndexRelation`与两端`PhysicalLayoutRelation`现场证明physical element mapping、footprint、alignment、padding及write injectivity
-一致，才可作为同一buffer的zero-copy state。Fixed-layout consumer需要不兼容layout时沿既有activation创建actual shared
-materialization；缺少base-offset/range/alias/effect proof的slice/insert继续只允许standard view layout并fail closed。证明随IR mutation失效，
-不进入PBQP之后的side table。
-
-PBQP factor graph只在一次query内存在：value/use是当前SSA的局部变量，op tuple constraint通过auxiliary factor表达；hard factor以
-显式infinity拒绝不支持的layout tuple、alias或use binding。优化目标是本次assignment实际创建的layout materialization
-physical bytes（含padding）加一次 materialization unit：
-
-```text
-layout_cost =
-    Σ actual materialization (physical_bytes + 1)
-```
-
-每个最终会创建一个actual `bufferization.alloc_tensor` layout copy的选择计其 physical footprint 加1；same-layout、exact metadata view、alias和inactive
-activation计0。同一dominance/effect cohort中的shared conversion只计一次，不能按use重复计价；不同cohort或不同target layout分别计价。
-该目标不读取NE/Vector throughput、descriptor、instruction、DDR/NoC、SPM duration或其它硬件性能信息。
-等bytes/unit cost的assignment使用完整stable semantic tie-break。Hard infinity只表示已证明illegal；finite objective累加溢出
-返回`Indeterminate`，不能转成infinity或`NoSolution`。PBQP的`Optimal`只表示在当前合法layout域内bytes/unit cost最小，不表示
-最终硬件性能最优。
-
-Query-local PBQP可以删除没有 live consumer 的group state：若某layout既不是该group任一live fixed-compute result的publication layout，也不是
-任一current fixed use要求的layout，选择它不会被实际 current use 消费；有可用relevant state时删除该state不改变可行assignment集合。若该group
-没有任何live compute/use target，则所有state目标相同，只保留原domain中的第一个canonical state。该约简不修改current IR或原始合法性
-证明；无use result不产生publication cost，因为apply也不会为它创建actual materialization。
-
-Solver必须区分`Optimal`、`Feasible`、`NoSolution`、`Indeterminate`和`BrokenContract`。Layout transformation先从同一current
-value group、use domain、op tuple和conversion activation构造一个完整canonical feasible assignment；普通value选择domain中的
-canonical state，fixed compute use选择其typed required state，不一致处选择actual materialization activation。该assignment必须先通过
-PBQP自身的unary/factor检查，再作为exact solver的incumbent。Factor graph先按stable variable index分解connected components；一状态
-变量可在任意degree精确传播，随后R0/R1/R2与residual core均受同一checked work budget约束；全assignment tie-break必须与独立flat
-oracle一致。Exact search及同分选择完成时返回`Optimal`；预算耗尽时保留搜索过程中已验证的最佳完整assignment并返回`Feasible`，
-包含残余搜索、独立分量及同分选择的中断。不能以初始解覆盖已找到的低成本解；同分选择中断保留已证明的主成本下界。两种成功状态使用同一
-assignment类型和唯一apply实现，不建立第二条layout lowering。`NoSolution`与已验证incumbent并存是`BrokenContract`；没有合法canonical
-assignment的source在mutation前按typed unsupported停止，不能猜测layout或把问题推给下游。
-Assignment选中后在各自candidate owner上创建actual view/alias/allocation/layout materialization。
-Search只在未修改的layout-input owner存活期间保留query与assignment以生成placement兄弟；该owner关闭时一并销毁，
-已物化的下游不读取solver对象。
-
-第17、18项的每个实际layout-input必须恰调用一次PBQP并得到`Optimal`或`Feasible`，且两者都携带完整、factor-valid并已apply的
-assignment；记录status、variables、factors、solver work、wall以及apply后的actual materialization数。`Feasible`只表示本次没有完成
-完整最优合同；仅当lowerBound等于cost时主成本已证最优，同分选择仍可能未完成。`Indeterminate`只允许在没有合法incumbent时返回，并阻止规定产品case完成；不能通过提高
-timeout、放宽work budget或下游layout repair掩盖。性能工作继续优化exact factor formulation、connected-component reduction或有证明的
-dominated-state约简，但不影响编译正确性所需的canonical assignment。
-
-Current实现以buffer-equivalent SSA value group、每个实际consumer use和op layout tuple为query-local变量。DPS result/destination、
-SCF iter-arg/yield/result以及已证明的alias view只共享同一value-group变量；不能用source structured node、operation ordinal或
-bufferization后的反查恢复对应。多operand tuple用一个只枚举该op当前interface明确支持tuple的auxiliary variable编码，auxiliary
-state通过binary infinity factor约束各value/use，不能把不支持的tuple变成finite penalty。
-
-同一source的多个read-only use可以共享一个actual conversion，但PBQP不能按use重复计价。每个可共享的dominance/effect cohort和
-目标layout使用一个三态activation variable：`inactive`、`source-is-target`、`materialized`。Source-layout factor只允许与当前
-primary layout一致的第二态；use factor要求选择该layout的use对应第二或第三态；只有第三态承担一次conversion cost。不同block、
-存在intervening alias write/free或dominance不能覆盖全部use时建立不同cohort。Apply必须与activation一一对应创建一个SSA
-materialization；same-layout、inactive和没有use的activation不创建operation。
-
-Target descriptor query不进入layout PBQP。第16项可以把该query抽为shared只读analysis，服务actual lowering、inventory和最终candidate
-cost/winner比较，但不能改变第15项的layout合法域或bytes/unit objective。PBQP apply后，下游只从new current IR fresh计算
-descriptor、engine work和movement；不保存descriptor plan或future Instr inventory，也不把这些性能信息反向写入layout assignment。
-
-Current shared query位于Tile-to-Instr request-local lowering support，由layout movement与mapped elementwise/broadcast共同调用；它只接收
-current memref type、projected relation和可选typed subview offset。规则性Tensor↔Cx/NCx cover直接生成有限descriptor，general relation仍走
-`PhysicalAccessRelation`；二者均产生actual Instr并由同一inventory计数。第16项orchestration依次执行structured-to-Tile、boundary
-movement、execution structure、standalone fanout、per-Tile Instr/cleanup/fresh completion和唯一actual leaf，不保存query结果跨stage。
+Descriptor query归10号request-local lowering，不能反向改变PBQP合法域或成本；actual descriptor/engine work由下游fresh分析。
 
 #### 6.1.2 Output DPS 与一次bufferization
 
@@ -228,7 +160,7 @@ Region order。shortest-hop query只作performance ordering，
 effect和control flow重算completion与memory。无法从current topology连接participant、无法证明payload完全一致或物化后stage
 verifier失败时，当前candidate返回typed failure，不退回flat direct fanout或DDR donor。
 
-Movement形成后运行一次current-IR exact cleanup。只有full payload、same storage、same physical map且alias/effect/lifetime安全时
+完整transfer cleanup按08号在canonical Instr形成后、fresh completion前运行。只有full payload、same storage、same physical map且alias/effect/lifetime安全时
 才删除transfer；partial、permuted、真正layout-changing、unknown ownership或不受支持的control flow全部保留。Cleanup与layout
 creation共用`PhysicalLayoutRelation`/`TransferRealizability` proof，不保留Tile与Instr两套production eliminator。
 
@@ -253,7 +185,7 @@ execution structure、worker或completion，也不从上游plan恢复这些事�
 compute/movement issue、memref use-def、effect、token和control flow。
 
 其中 movement descriptor 的循环层级由对应 Instr ABI 直接约束：RDMA/WDMA 使用最多三层静态 endpoint stride/iteration，
-没有动态 offset SSA；GatherScatter 在 descriptor 结构相同且 source/destination offset 通过 checked affine recurrence 可证明时，
+起点允许11号规定的静态attr或经范围证明的动态offset SSA。GatherScatter在descriptor结构相同且source/destination offset通过checked affine recurrence可证明时，
 由一个 current SCF loop 携带动态 offset，不能把不可表达的端点或非 affine 序列强行合并。`tile.reduce` 先尝试单个或串联多个
 合法 `InstrReduceOp`，只有 native signature 不可表达时才使用 G/S + accumulator fallback；movement descriptor 的循环不能代替
 带数据依赖的 reduction recurrence。

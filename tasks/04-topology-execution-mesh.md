@@ -96,19 +96,11 @@ wafer.target.topology @default {
 通用topology op可表达multi-card、torus和unavailable coordinate，只证明表示与verifier能力，不代表multi-card
 SPMD、transport或runtime已经实现。
 
-### 2.3 明确禁止的旧等式
+### 2.3 身份域的隔离
 
-旧whole-rank架构中把logical execution identity直接绑定Tile的合同全部删除，具体包括：
-
-- `execution-ranks in {1,16}`；
-- logical mesh的shape product被要求等于available Tile数量；
-- logical execution identity被映射成包含Tile坐标的四元组；
-- 第一个logical execution实例绑定Tile `(0,0)`，或16个实例按行主序绑定16个Tile；
-- logical program数量被要求等于physical launch数量；
-- card-partition collective group直接作为片内NoC peer/route。
-
-logical `partition_id`、physical `card_id`和local physical `tile_id`即使某个single-card case里数值偶然相同，也不能
-跨domain比较、复制或通过文件/vector位置恢复。
+Logical partition、physical card、Tile和launch slot分别验证，不能用count相等、数值偶合或vector位置绑定。
+Logical mesh不得携带Tile坐标，card-partition collective group不直接成为片内NoC peer/route；
+program数量不决定physical launch数量。
 
 ## 3. 可重算的 topology analysis
 
@@ -130,17 +122,9 @@ Tile set查询距离和邻接。
 
 ## 4. Helper 与 structured-program 交接
 
-frontend driver遵循以下顺序：
-
-1. 创建source program的transaction-owned snapshot；
-2. parse/verify source IR与program metadata；
-3. 按validated `ExecutionConfig.numPartitions`建立或核对logical card-partition mesh；
-4. 从current target identity独立materialize/verify target topology；
-5. 复制helper input，只传helper能解释的StableHLO、sharding和logical partition配置；
-6. helper返回post-SPMD card-local programs后，重建并核对同一logical mesh和target topology；
-7. 校验distributed boundary、parameter shard partition domain和payload；
-8. local normalization和structured legality通过后写出、重新parse并再次执行exact-config/program verification；
-9. 全部通过才发布card-local structured-program directory。
+完整frontend事务见[03号](03-shardy-spmd.md)。本层在helper调用前按validated num_partitions建立logical mesh、
+按current target identity独立建立physical topology；helper后及最终readback重新验证相同的partition和物理域。
+Distributed boundary和parameter shard须与logical partition domain一致。
 
 topology/mesh不是helper必须保留的unknown op，也不是opaque sidecar。logical partition配置由typed driver拥有；
 physical topology可以在helper边界后fresh重建，因为helper不消费Tile语义。helper path、output path和pass名不

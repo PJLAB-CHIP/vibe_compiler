@@ -137,6 +137,10 @@ SystemC将mapping acquire及标量访问作为同步Kcore observer，存在冲�
 覆盖i32/i64边界位型、rank3/1024/1025/1031/16 Tile的实际索引→行地址→全输出；另测mapping越界、未完成NCC写入和
 错误pointer来源。该合同只签发主机功能；设备延迟、发令成本及cache行为按硬件事实和本轮板测单独验收。
 
+Native控制流白名单允许i32与F32之间的等宽bitcast，以承接mapped scalar读取、Memset raw value及VS immediate；
+F32算术只按上文四种opcode合同开放，不由bitcast额外开放
+pointer reinterpretation或浮点control flow。逐bit检查正负零、普通值、Infinity和NaN payload，经16个Tile的实际host JIT转回同一原始字段。
+
 ## 3. SystemC functional-event architecture
 
 ### 3.1 Process model
@@ -185,6 +189,14 @@ Direct-DTE families。每个family分三层负责：
 同一规则适用于RDMA/WDMA、gather-scatter、fill/mask/convert、GEMM、elementwise、reduce、conv/pool/unpool、TDMA、
 peripheral和transport。unsupported组合返回typed error，不能落到“近似执行”、host library默认行为或第二解释器。
 
+### Packed predicate 与 select movement
+
+输入为actual TargetBit2FPCommand/TargetMaskMoveCommand及其SPM内容，输出为精确read/write effects；SystemC仍负责原有worker及completion。
+Bit2FP按logical bit解包为目标F16/BF16/F32的0/1。MaskMove消费相同格式的canonical 0/1 mask，true复制source、false保留原destination；
+其它mask值保持typed unsupported，不推测硬件语义。两项按原预算约束工作，physical codec保留padding/guard。
+覆盖rank3 1024/1025/1031 Bool常量、广播mask、两种半精度、inline与参数常量的source→package→SystemC完整输出；
+直接命令检查false保留、packed tail和不支持的mask编码。本项不增加compiler opcode或修改target ABI。
+
 ## 5. Numeric contract
 
 target numeric command、physical tensor、formal arithmetic和backend evidence是四个owner，不存在跨四者共享的profile/registry：
@@ -198,6 +210,10 @@ target numeric command、physical tensor、formal arithmetic和backend evidence�
 compiler/ABI legality不读取formal/target numeric backend support；model support和board correlation也不能反向签发compiler legality。
 历史`NumericSemantics` aggregate、model profile、capability pattern和resolved command不是current合同，也不保留
 compatibility surface。
+
+整体numeric library名为`WaferTargetNumericBackend`；有界精确oracle为`WaferFormalNumeric`，只有具体策略明确声明时才可作其fallback，
+不属于oneDNN实现。`WaferOneDNNBackend`拥有GEMM/reorder及其managed dependency和qualification；
+`WaferSystemCSimulator`独立拥有command、memory、event与completion，调用numeric backend不转移这些职责。
 
 ### 5.1 Physical codec
 
@@ -238,6 +254,14 @@ FP16/BF16极值补齐1024/1025/1031的0/1、负值、正负零、无穷和NaN；
 unsupported；源显式padding与count_include_pad除数不在模型中猜测。所有检查和work budget拒绝先于结果写入；
 结果只作为pending write发布，input记录同一pending read供NCC完成与reuse验证。这是主机数学范围，不新增板端资格。
 
+#### Formal GEMM 的独立输出并行
+
+输入为已验证的FormalGemmOperation、同次invocation的不可变logical inputs及原work budget。较大的实际GEMM可按输出元素并行；
+每个元素仍依次调用原APFloat FMA evaluator，K顺序、psum加法位置和最终转换完全不变。各worker只写自有结果/error/flags slot，
+完成后按原row-major顺序汇总，选择首个错误；任一错误仍不发布部分结果或context flags。使用LLVM既有parallel执行设施，不增加MLIR依赖或数值policy。
+覆盖rank3 1024/1025/1031、F16/BF16/F32、transpose、psum及flags，逐codeword对照同一公开scalar evaluator组成的串行oracle；
+预算拒绝在执行前保持不变。记录work/wall/RSS，并以整层实际TargetModel保持原门限验证。该主机并行不修改任何target同步或设备指令。
+
 ### 5.3 `WaferOneDNNBackend` qualification lane
 
 大规模支持项可以进入qualified oneDNN implementation，但必须：
@@ -250,6 +274,17 @@ unsupported；源显式padding与count_include_pad除数不在模型中猜测。
 
 完整output与独立CPU expected比较。整数/bit pattern采用exact；浮点使用case-owned dtype policy和明确容差，同时单独检查
 NaN/Inf分类、shape、bytes与guard。
+
+### 5.4 Managed-reference tensor
+
+Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是精确扩宽；写回复用共享`convertTargetScalar`的F32→BF16 nearest-even规则，
+不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约消费5.2节同一数学子集，NaN和其它原不支持域仍typed拒绝。
+覆盖rank3 1024/1025/1031、正负零、subnormal、普通值、最大有限数与舍入边界，对照formal完整codeword；全LM继续使用原比较合同。
+
+生产指数统一为11号的 `ExpLp` 后，managed-reference增加独立分支：按F32常量log2(e)先乘、再调用host `exp2`，
+最后由相同codec写回实际F16/BF16/F32。该分支按厂商软件模型可见顺序提供近似参考，不用 `std::exp` 冒充ExpLp；
+不宣称与设备primitive逐bit一致。原Exp数学oracle保持独立，已有不支持的exact lane保持typed拒绝。
+rank3 1024/1031的负/正有限域与0、负无穷检查数学误差及实际存储结果；设备数值与加速比由board-testing另验。
 
 ## 6. Aggregate target module 与Tile执行
 
@@ -304,32 +339,3 @@ Whole-program scale默认只要求compiler/package/no-card闭合；只有model c
 - target-call成功不证明current loader/provider可执行同一module；exact package execution另行验证。
 - model与board相关性必须使用current source/config/payload/ABI和held-out cases，不能读取历史raw重新签发。
 - Host qualification在fresh package/no-card完整矩阵通过后只能到`board-ready`；真实matched A/B通过前不得标`done`。
-
-### Packed predicate 与 select movement
-
-输入为actual TargetBit2FPCommand/TargetMaskMoveCommand及其SPM内容，输出为精确read/write effects；SystemC仍负责原有worker及completion。
-Bit2FP按logical bit解包为目标F16/BF16/F32的0/1。MaskMove消费相同格式的canonical 0/1 mask，true复制source、false保留原destination；
-其它mask值保持typed unsupported，不推测硬件语义。两项按原预算约束工作，physical codec保留padding/guard。
-覆盖rank3 1024/1025/1031 Bool常量、广播mask、两种半精度、inline与参数常量的source→package→SystemC完整输出；
-直接命令检查false保留、packed tail和不支持的mask编码。本项不增加compiler opcode或修改target ABI。
-
-Native控制流白名单允许i32与F32之间的等宽bitcast，以承接mapped scalar读取、Memset raw value及VS immediate；
-F32算术只按上文四种opcode合同开放，不由bitcast额外开放
-pointer reinterpretation或浮点control flow。逐bit检查正负零、普通值、Infinity和NaN payload，经16个Tile的实际host JIT转回同一原始字段。
-
-Managed-reference tensor后端在既有F16/F32之外接入BF16。BF16读取是精确扩宽；写回复用共享`convertTargetScalar`的F32→BF16 nearest-even规则，
-不另写舍入算法。Same-shape convert和逐元素域使用F16/BF16/F32，归约消费5.2节同一数学子集，NaN和其它原不支持域仍typed拒绝。
-覆盖rank3 1024/1025/1031、正负零、subnormal、普通值、最大有限数与舍入边界，对照formal完整codeword；全LM继续使用原比较合同。
-
-生产指数统一为11号的 `ExpLp` 后，managed-reference增加独立分支：按F32常量log2(e)先乘、再调用host `exp2`，
-最后由相同codec写回实际F16/BF16/F32。该分支按厂商软件模型可见顺序提供近似参考，不用 `std::exp` 冒充ExpLp；
-不宣称与设备primitive逐bit一致。原Exp数学oracle保持独立，已有不支持的exact lane保持typed拒绝。
-rank3 1024/1031的负/正有限域与0、负无穷检查数学误差及实际存储结果；设备数值与加速比由board-testing另验。
-
-### Formal GEMM 的独立输出并行
-
-输入为已验证的FormalGemmOperation、同次invocation的不可变logical inputs及原work budget。较大的实际GEMM可按输出元素并行；
-每个元素仍依次调用原APFloat FMA evaluator，K顺序、psum加法位置和最终转换完全不变。各worker只写自有结果/error/flags slot，
-完成后按原row-major顺序汇总，选择首个错误；任一错误仍不发布部分结果或context flags。使用LLVM既有parallel执行设施，不增加MLIR依赖或数值policy。
-覆盖rank3 1024/1025/1031、F16/BF16/F32、transpose、psum及flags，逐codeword对照同一公开scalar evaluator组成的串行oracle；
-预算拒绝在执行前保持不变。记录work/wall/RSS，并以整层实际TargetModel保持原门限验证。该主机并行不修改任何target同步或设备指令。

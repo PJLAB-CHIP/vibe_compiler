@@ -111,8 +111,8 @@ Physical TileRegion才是一个Tile内的SPM ownership/lifetime domain。一个p
 - actual layout conversion、view/alias、scratch、accumulator和staging；
 - local/DDR/peer/collective movement以及typed effect/token。
 
-SPM root和shaped alias不跨TileRegion。若选择不同region，所有跨界shaped data必须由actual DDR store/completion/load或
-其它已定义boundary IR表达。Region boundary本身不是join、device barrier或launch boundary。Operation verifier只检查三种form共同的
+SPM root和shaped alias只有在上述显式`resident`合同闭合时才能跨同Tile Region。其它跨界shaped data必须由actual DDR store/completion/load或
+已定义typed communication表达。Region boundary本身不是join、device barrier或launch boundary。Operation verifier只检查三种form共同的
 局部type/region关系；各stage verifier分别拒绝本stage不允许的form，不能通过一个phase attr绕过检查。
 
 ## 4. Region membership 与coupled traversal
@@ -150,9 +150,9 @@ Region formation必须覆盖fanout的每个use、reduction partial/merge、effec
 - `ReductionMergeRequirement::mergeTile`只在本次structural transformation中选择merge op所属TileModule。成功后merge op本身不保存
   Tile ID：parent TileModule是唯一位置事实，actual SSA operands是唯一contribution事实。不得建立`merge ID -> TileId`、
   `RegionExecutionId -> operation`或按Region顺序恢复的映射。
-- 第13--15项的rewriter listener用`IRMapping`或显式replacement同步retarget；无法映射、duplicate或stale endpoint立即成为
+- temporal、decomposition和layout阶段的rewriter listener用`IRMapping`或显式replacement同步retarget；无法映射、duplicate或stale endpoint立即成为
   compiler contract failure，不能按type、位置、ordinal、Location或名称恢复。
-- 第16项movement是唯一consumer：它从layout-resolved actual endpoints和current effect生成local、DDR或peer movement，
+- movement阶段是唯一consumer：它从layout-resolved actual endpoints和current effect生成local、DDR或peer movement，
   all-and-only消费relations。Physical form不得残留logical boundary relation；relation不进入Instr、memory、target或package。
 
 这类relation描述的是当前IR中已经存在的两端value，不是future movement/buffer plan。它只在同一candidate transaction和IR
@@ -191,52 +191,20 @@ epoch内存活，不能由planning session、analysis cache或全局side table�
    merge parent和source不变。Success后只把同一owner与actual endpoint relations交给current-op temporal tile-and-fuse；`RegionPlan`、
    `RootRegionWork`和`RegionExecutionId`不跨过该边界。
 
-## 6. 下游Physical与Execution Stages
+## 6. 直接下游与form转换
 
-Temporal tile-and-fuse只消费上述structural owner和current relation。它从live current operation建立query-local choice，使用pinned SCF
-tiling/fusion生成canonical loops、producer SSA和必要main/tail；online-attention的parallel/K2轴走同一个`TilingInterface`，K2 tile以三个
-actual DPS state作为loop-carried values。Choice apply后立即销毁，不携带`RegionExecutionId`。
+本stage只交付structural owner和actual endpoint relations。后续stage的完整算法、失败与覆盖分别由其owner定义：
 
-Domain与apply都锚定当前TileRegion：domain只借用live operation handle，full-local choice不修改IR，active choice立即替换同一owner。
-第13项从 live current operation 建立完整 temporal domain：general reshape、broadcast、multi-use view chain 和可证明的 affine
-window 都通过 exact relation 选择 independent 或 joint tiling。选择立即物化为同一 owner 上的 SCF/SSA；不创建静态 wave 清单、
-跨 Region traversal ID 或旁路 delivery 状态。Ragged loop 只 peel 最后一次迭代，并在本 Region 内收紧 actual slice、Linalg 和
-online-attention 的静态类型。
+| 下游 | 输入与输出边界 | 规则owner |
+| --- | --- | --- |
+| Temporal tile-and-fuse | 当前op/interfaces与typed choice → 同owner的SCF/SSA、main/tail及真实producer tile；不保留RegionExecutionId | [06号structural choice](06-physical-dataflow/structural-choice.md) |
+| Online-attention decomposition | 已tiled三状态op → QK、mask、row state、PV等Linalg/Tensor/SCF；不重选block/merge owner | [05号](05-local-compute-normalization.md) |
+| Layout/bufferization | 当前value/use → actual memref endpoint、alias、allocation及layout-resolved form | [08号](08-physical-realization.md) |
+| Movement | actual endpoints/SSA/effect → DDR、resident-SPM或typed通信；消耗全部boundary relations，形成physical form | [08号](08-physical-realization.md) |
+| Execution structure | physical form → 实际循环、slot allocation/select和reuse义务；无跨stage recipe | [10号](10-compute-movement.md) |
 
-Producer与consumer之间允许存在static pure support chain。Spatial demand与Temporal fusion共用06号定义的current-op tensor indexing
-relation builder；query结果保留完整composed `IndexRelation`和borrowed current endpoints，不能降级成私有`dimension+offset`协议。
-Single-root或joint Apply先生成actual consumer slices，再计算它们到producer的exact image；一个parametric rectangle或work-bounded、互斥、
-static-shape pieces使用pinned tensor reshape/subset与producer `TilingInterface`形成loop-local tile。Joint choice还要求全部current uses具有
-相同domain/tile/order和exact demand，并在一个common SCF loop中顺序消费一次producer tile。不为view创建独立TileRegion、跨stage
-temporal scope或future recipe，也不为不兼容use部分融合或clone producer。
-Constant `pad`按pinned interface实际tile且非零padding轴在derived consumer保持full extent，随后与constant `tensor.generate`一起降为
-local Linalg fill/insert；`pack/unpack`在static main/tail type收紧后降为local reshape。Concat/insert链只组装requested tile的有限exact
-pieces，fused producer的empty destination也必须缩为tile-local empty。不能证明或不能实际构造的chain保持独立traversal，其完整buffer必须
-在后续current IR中显式存在，不能在本stage按SPM估算强制fusion。
-
-随后online-attention decomposition只替换已经tiled的current op，生成actual QK、scale/mask、Maximum/Sum/Accumulator update、PV和slice；
-它不选择Tile、block或merge owner。两项都不从planning choice重建TileModule/TileRegion或candidate owner；若immutable op signature需要替换，
-由parent anchor执行并在同一rewrite中retarget actual endpoints。
-
-Layout stage先一次完成function-boundary与region-local bufferization，再由current value type及`IndexRelation`/
-`PhysicalLayoutRelation`解释physical mapping。Analysis不创建buffer。一个layout
-conversion只在actual consumer需要时创建；多个use共享同一SSA result时不重复materialization。如果physical map、alias、
-effect或lifetime不能证明零copy，保留explicit materialization或返回typed unsupported。该stage只生成layout-resolved form。
-
-Movement不是type cast。每个movement op必须显式拥有source、destination、domain、direction和effect。不从value名、shape、
-future value ID或donor scan恢复movement。Cleanup只删除current IR上已证明fully redundant的transfer，不移动region cut、
-改route或创建spill/recompute。该stage把layout-resolved form闭合为physical form。
-
-Movement闭合后，execution-structure transformation才可依据current physical TileRegion选择并立即物化Serialized或software-pipelined
-结构。Pipelined结果必须显式包含prefix/steady/tail、chunk control、rotating allocation roots、slot SSA选择以及实际movement/compute
-occurrence和下游必须闭合的reuse/observation obligation；不能把cross-stage execution plan、buffer multiplicity或预测lifetime带到
-Instr或memory stage。
-
-Current transformation入口只接收同一IR epoch的actual `scf.for`、top-level operation groups、stage assignment和可选的
-`memref.alloc` rotation binding。Serialized是verifier-checked byte-equivalent identity；pipelined choice立即调用pinned SCF机械
-pipeliner生成prologue/kernel/epilogue。Rotating binding在allocation所属TileRegion内创建全部actual slot roots，并以归一化
-`(iv-lower)/step % multiplicity`形成loop-local`arith.select` SSA；caller-owned relation在同一transaction扩展到每个slot。
-这些query-local choice和raw handle不越过调用，downstream只看到rewritten SCF/memref/SSA/effect。
+这些阶段不重建candidate owner；签名变化必须由合法parent anchor替换，并在同一rewrite中retarget endpoints。
+无法映射的endpoint按contract failure停止，不按type、位置或名称恢复。Analysis在mutation后失效。
 
 ## 7. Control flow、event 与completion
 
@@ -300,7 +268,7 @@ fallback builder或partial result。Unsupported semantics、resource exhaustion�
 - graph attention对每个selected owner破坏性转换一次；FA一个K2 spatial owner，FD的K2 contributions all-and-only覆盖且各自产生
   Accumulator/Maximum/Sum，selected merge op的parent TileModule等于`mergeTile`、SSA operands等于全部contributions；空shell和
   execution-to-op mapping为零；
-- 第13项从live online-attention切parallel/K2并产生exact main/tail；第14项对每个tiled online-attention恰分解一次；进入layout前
+- temporal tiling从live online-attention切parallel/K2并产生exact main/tail；online-attention decomposition对每个tiled online-attention恰分解一次；进入layout前
   graph/online attention均为零；
 - structural candidate owner每attempt只新建或clone一次；tile/fuse和online-attention decomposition均不额外clone TileModule owner；
 - exact/partial view、layout-compatible/incompatible、shared conversion、alias和explicit copy；

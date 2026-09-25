@@ -48,7 +48,7 @@ Accepted owner原样交给下游和最终publication，不重建IR或offset。
 
 ## 2. Pipeline Contract
 
-Attention composite迁移按[05号4.5节](05-local-compute-normalization.md#45-composite结构化causal与混合精度attention)
+Attention的实际空间/时间物化按[05号4.5节](05-local-compute-normalization.md#45-composite结构化causal与混合精度attention)
 补齐本stage的actual spatial/temporal物化：保留绝对query/key位置与有效KV域，跳过完全不可见块的读取、计算和state update，
 边界块交给唯一decomposition。两种切分都保持当前tile中间shape、coupled F32 state及exact coverage。
 对实际KV循环，若position与IV有可证明的固定偏移，query/end在该循环内不变，且不可见迭代只会原样传递所有state，
@@ -57,7 +57,7 @@ Attention composite迁移按[05号4.5节](05-local-compute-normalization.md#45-c
 当前arith的index min/max通过共同ValueBounds external model提供与operand的大小关系；driver与wafer-opt注册同一模型。
 模板模式分析同时消费实际循环步长及包围分支的整数约束，不因有界上界不是常量而退化为全部偏移模式。
 这些改动不改变search预算/计费，不增加DTE专项或shadow plan；全部结构变换仍先物化、verify再分析，
-SPM合法性只由下述共同actual leaf决定。实施及逐case实卡门槛见[统一板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)。
+SPM合法性只由下述共同actual leaf决定。既有实施与逐case验收记录见[归档板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)。
 
 ```text
 Pipeline position:
@@ -70,7 +70,7 @@ Pipeline position:
   search才枚举Spatial/Region transformation choice并交给search-owned structural materializer。Materializer把selected graph attention
   直接变成每个actual Tile上的三结果online-attention、state endpoints和merge/finalize。两条policy随后从各自candidate current IR建立并
   立即应用temporal tile-and-fuse；online-attention的K2使用三个DPS state的stateful Tiling，之后确定性分解为Linalg/Tensor/SCF，
-  在实际Tensor子集的共享选择与局部物化闭合后，再依次完成layout/view/bufferization、movement、execution structure、
+  再依次完成layout/view/bufferization、movement、execution structure、
   TileRegion-to-Instr、worker/order/completion，再以completion-closed Instr进入共同actual leaf。
 - Output IR / files:
   policy-complete、verifier-valid的TileModule/TileRegion/Instr IR，以及由同一accepted owner形成的
@@ -116,7 +116,7 @@ ownership/lifetime domain，并可以包含：
 - local view/layout conversion和movement；
 - explicit scratch、accumulator、staging和effect ordering。
 
-SPM root和shaped alias不跨TileRegion。Structural/layout-resolved form以tensor boundary保存尚未physical闭合的logical edge；
+SPM root和shaped alias只有满足07号显式resident合同时才能跨同Tile Region；其它情况禁止跨界。Structural/layout-resolved form以tensor boundary保存尚未physical闭合的logical edge；
 physical form中的跨region shaped data必须由actual DDR store/completion/load或其它已定义的boundary IR表达；跨Tile data由
 actual peer/collective send、recv、token/wait和destination staging表达。
 TileRegion boundary本身不是completion boundary。
@@ -136,31 +136,10 @@ SCF region argument、yield及result使用一致的状态layout；转换选择�
 
 ### 3.5 访问复用统一分析边界
 
-统一概念为访问复用（`AccessReuse`）；第一版限定为可证明内容不变的读取。
-本节定义访问复用边界；关系推导、pipeline接入和覆盖矩阵见[访问复用专题](06-physical-dataflow/access-reuse.md)。
-
-- Upstream IR / input：已选spatial/temporal/layout并完成BoundaryMovement的candidate current Tile IR，显式load/subview/SCF、
-  typed source/resource identity、effect/alias及现有buffer owner关系。
-- Current stage responsibility：`AccessReuseAnalysis`统一解释同源读取的Tile位置、循环域、精确IndexRelation与内容不变性；
-  search先用这些current事实与同cohort成本参数做轻量净收益筛选，只为预期净收益明显的机会生成复用候选，
-  `materializeAccessReuse`在独占候选中落实。分析不选择cache或peer owner，
-  不记录未来buffer、offset、lifetime或completion。
-- Output IR / files：可失效的只读分析结果，以及实际物化的现有allocation/view/copy、Tile load/peer与SCF；
-  新buffer全部具备current owner，无缓存专用IR和跨stage旁路协议。
-- Downstream consumer：原execution structure、Instr、communication/completion、唯一SPM/DDR及actual cost；
-  每次相关IR mutation后分析失效，旧anchor不能按名称或遍历序号恢复。
-- User-level driver / named pipeline：现有search的physical movement候选入口；production与显式资格测试调用同一typed变换API，
-  不新增负责自动搜索的pass。旧跨Tile输入共享分析迁入同一owner，不与另一套时间复用pass独立决策。
-- Explicit non-goals：缓存替换、任意层级、动态/间接访问、多轴滑动、近似窗口、GEMM模板、强制空间划分或Ring、
-  新layout/同步算法及预测SPM准入；保持原算术与dtype。
-- Completion criteria：保留原peer能力；基础驻留、单轴固定步长滑动、相邻scope最多两级及时间/空间组合进入同一候选链；
-  低收益机会不产生额外clone/物化/完整评分或trial；联合只包含通过收益门槛的机会。方案覆盖矩阵逐项有actual下游witness，
-  并分别证明通过门槛的GEMM组合可表达、可行、可搜索及实际收益。
-
-缓存范围从选定scope的当前读集合精确推导，不另设自由尺寸搜索。scope选择是物化参数，不是SPM合法性结论。
-访问窗口、重复流量及同cohort参数用于性能收益筛选与排序；扣除新增DTE传输/启动及SPM复制，不仅比较单块大小。
-筛选是search的启发式取舍，不能用缓存footprint或预测lifetime过滤SPM合法性，也不能猜测join/wait或伪造actual inventory。
-实际容量仍只能由完整候选的allocation、layout、alias、effects、completion与lifetime规划结果判断；收益门槛见访问复用专题第5.1节。
+[AccessReuse专题](06-physical-dataflow/access-reuse.md)唯一维护只读复用的关系、收益筛选、物化与矩阵。
+输入是BoundaryMovement之后的actual load/subview/SCF、typed source identity及alias/effect；输出是同一候选内真实的
+allocation/view/copy、load/peer和SCF，直接交execution structure、Instr、completion、actual SPM/DDR与cost。
+收益筛选是显式启发式，不能把footprint、预测lifetime或同步推测变成合法性；所有新buffer必须有current typed owner。
 
 ## 4. Search 输入、选择与candidate ownership
 
@@ -235,26 +214,9 @@ Instr或package。
 - Event graph、lifetime、buffer demand和cost是可重算analysis result，不进入IR、candidate key或跨mutation cache。
 - 如果下游需要一项无法从current IR重算的信息，先修改源IR表示，不增加side plan。
 
-源码稳定职责为：
-
-- TensorProgram analysis：structured semantics、exact demand和Spatial/Region choice domain；
-- current-candidate planning：从live operation/interfaces建立query-local Temporal等search choice；每个actual layout-input的完整assignment由单次query-local PBQP产生，在placement的actual clone中apply；query只在其immutable owner上有效；
-- TensorProgram/TileModule/TileRegion transforms：structural materialization、selected temporal tile-and-fuse apply、online-attention decomposition、
-  layout/view/bufferization和movement；
-- TileRegion-to-Instr conversion：deterministic target-abstract lowering；
-- Instr analysis/transforms：worker/order、completion、lifetime和memory problem derivation；
-- actual memory/transport/target leaf：offset、range、resource、ABI和DeviceExecutable acceptance；
-- compiler controller：choice exploration、typed feedback、budget与winner ownership。
-
-## 9. 实现迁移
-
-Current迁移必须遵守：
-
-1. 先为一个stage建立唯一actual-IR producer和直接下游test，再在同一work item删除旧shadow owner。
-2. 不保留V2、mode switch、compatibility wrapper、fallback或baseline/search共享complete materializer。
-3. 删除旧source前，将其独有的relation、algorithm和negative test迁到new owner；只检查旧plan字段或parity的fixture不迁移。
-4. 旧archive、profile、package和generated output不参与current correctness或完成结论。
-5. 新路径切换后对旧type、builder、domain、state、materializer、verifier、CMake、test和doc做零残留检查。
+源码与组件归属由[18号](18-source-organization.md)维护，analysis/clone/rewrite工程规则由[19号](19-mlir-engineering.md)维护，
+接口切换由[20号](20-interface-evolution.md)维护。迁移须先取得actual producer到直接下游witness，再删除旧owner及其残留。
+旧实现独有的relation、算法与负例迁入新owner；仅验证shadow-plan parity的fixture不延续。
 
 ## 10. Verification and Done Criteria
 
@@ -273,12 +235,12 @@ Current迁移必须遵守：
   后续stage不再调用e-graph；搜索扩展budget结束仍按05号合同提取已证明等价式，关系/提取证据不足才保持原component；budget状态不进入candidate key或legality；
 - structural materialization对每个FA owner或FD K2 contribution创建all-and-only一个三结果online-attention；selected merge Tile由parent
   TileModule证明，参与 state 由 SSA 证明，不存在 empty shell、规划句柄到 operation 的映射或 `merge ID -> TileId`；
-- 第13项只从live current operations建立temporal domain；online-attention的parallel轴由`TilingInterface`处理、K2由
-  三个DPS state处理K2。第14项只分解已tiled op；layout入口graph/online attention均为零；
+- temporal tiling只从live current operations建立temporal domain；online-attention的parallel轴由`TilingInterface`处理、K2由
+  三个DPS state处理K2。online-attention decomposition只分解已tiled op；layout入口graph/online attention均为零；
 - temporal domain只在exact total single-valued proof下删除派生参数；non-unique、unsupported和indeterminate case保留原自由维度或
   独立producer，Region candidate不因fusion无法证明而消失；
 - Spatial与Temporal共用同一static tensor indexing relation builder；single-use dense-offset/unit-reshape、general reshape、all-use direct/view、
-  broadcast hoist和互斥window成功case均证明原完整producer及第15项对应完整intermediate allocation/copy为零；overlap/unsupported choice
+  broadcast hoist和互斥window成功case均证明原完整producer及layout/bufferization对应完整intermediate allocation/copy为零；overlap/unsupported choice
   保持actual独立buffer并由后续MiniMalloc判断，不转换成SPM估算结论；
 - instrumentation on/off产生同一IR、candidate result和package；
 - 每个candidate的actual TileModule/TileRegion/Instr owner只物化一次，winner不重建；

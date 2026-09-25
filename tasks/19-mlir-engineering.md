@@ -109,10 +109,13 @@ owner、lifetime 或 completion；消费后在共同下游入口移除。不能�
 
 ### 3.3 Alias、view 与 bufferization
 
+优先复用适用的RegionBranch、Call、MemoryEffect、ViewLike、DPS、Bufferizable与Tiling标准interface；
+只有标准接口不能表达且存在明确verifier/lowering消费者时，才新增Wafer interface。
+
 - `ViewReshapeOp` 收敛为纯 alias view；若 shape/layout 需要 materialization，显式产生 allocation/movement，再构造 view，
   不允许同一个 op 的 lowering 有时 alias、有时分配。
-- `MoveInsertSliceOp` 若合同为更新 destination，则 result 必须 alias destination；需要 out-of-place 时由 caller 显式
-  allocate/copy，不能在 lowering 中按 users 临时切换语义。
+- `MoveInsertSliceOp`直接更新destination且无result；需要functional out-of-place时由caller先显式copy旧destination，
+  不能在lowering中按users临时切换alias或allocation语义。
 - `ComputeElementwiseOp` 当前独立 result 不能暗中把只读 operand 作为 accumulate destination。需要 in-place 的上层
   tensor op应满足 DPS，并通过 `BufferizableOpInterface`/One-Shot alias analysis 决定；进入 memref/Instr 层后 alias
   关系必须确定。
@@ -143,7 +146,7 @@ Module scope 本身不是问题。One-Shot function-boundary bufferization、sha
 legality、output writing 和 Target LLVM full conversion确实需要全局视图，必须保留。问题是把局部工作揉进这些
 pass，或为获得 ModuleOp anchor 人工包装已经 `IsolatedFromAbove` 的 TileRegion。
 
-operation pass 不能替换或删除自己的 anchor。因此 TileRegion pass只 lower/normalize region body并产出局部 summary；若
+`OperationPass`不得读取root sibling、修改root operand或parent block，也不能替换或删除自己的anchor。因此 TileRegion pass只 lower/normalize region body并产出局部 summary；若
 stage要消除 `wafer.tile.region` wrapper或重接 parent SSA results，该 transformation以父 `func::FuncOp` 为 anchor，消费
 RegionBranch contract完成原子替换。不能为了“region-local”破坏 pass manager 的 root不变量。
 
@@ -196,7 +199,7 @@ function/TileRegion bufferization、TileRegion→Instr、function级outstanding 
 
 - 只读且完全由当前 anchor IR 推导；需要的target事实已经作为该IR的typed op/type/attr存在，而不是来自外部配置、
   pass option、singleton或隐式context state；
-- 同一 pipeline 被多个 pass 消费，或重算开销显著；
+- 同一 pipeline 被多个 pass 重复消费；仅重算昂贵不足以把一次性工作提升为共享analysis；
 - mutation 后能按 MLIR preservation/invalidation 规则安全失效。
 
 首批对象包括 topology/symbol/call summary、structured timeline、lifetime/conflict summary 和 region-local physical relation。
@@ -221,30 +224,18 @@ candidate物化top-level TileModule subtrees后进入独立IR epoch；candidate 
 source IR与partial memo在session中保持immutable，但不得保存candidate pointer/relation/offset。这样共享的是query实现和typed schema，
 不是cache或lifetime。
 
+共享analysis的表达能力不决定transformation归属。只有selected tile、region或layout可见后才能判断的改写留在该下游stage，不能因上游也能调用analysis而提前决定。
+
 ### 5.3 DataFlow 与 interface-driven traversal
 
-同一static tensor support relation被Spatial demand和Temporal fusion消费时，使用Analysis/Linalg中的一个policy-free typed builder。
-Builder读取current `WaferTensorIndexingOpInterface`和`IndexRelation`并返回exact/unsupported/resource/broken分类；不为不同consumer复制
-operation-specific reshape/slice规则，也不把operation/value handle缓存到下一IR epoch。是否执行view-transparent fusion由该只读proof决定，
-实际IR构造复用pinned tensor subset/reshape pattern与`TilingInterface`，随后经同一`PatternRewriter`、relation listener和verifier提交。
-只读relation/interface preflight无法证明requested tile可表示时保持独立producer；已经签发exact-derived并开始rewrite后，pinned mechanics失败是
-candidate compiler failure，销毁该transaction，不以bounding box、完整producer fallback或后端容量推测补写IR。
+同一current-IR relation由policy-free typed builder提供，Spatial demand和Temporal fusion等consumer共用查询实现；
+不重复operation-specific规则，不把operation/value handle缓存到下一IR epoch。Relation exactness与generator可表达性分别检查；
+签发exact-derived并开始rewrite后失败，销毁candidate transaction，不能用bounding box、完整producer或容量推测补写IR。
 
-Structured operand/result map的dialect adapter及沿SSA组合到producer的逻辑关系也由同一Analysis/Linalg入口提供。
-Selected tile的数学image、不变性和互斥查询不拥有循环或storage；temporal决定是否共享并调用TilingInterface物化。
-Relation exact与generator可表达性分别检查，不能将窗口/广播的map算术再复制到各条融合路径。
-Ordinary fusion只通过`queryTemporalFusion`收集producer的全部terminal uses；direct、透明view链和多use共用同一group协议及准入。
-生成helper可以分别执行结果slice、局部view或共同循环，但不得另建按拓扑类别分流的融合分析入口。消费者已派生到其它root时，
-共享需求继续沿current result/operand关系组合到实际selected root；不能因缺少独立consumer choice而跳过需求一致性检查。
-
-Logical e-graph对ordinary pure connected component使用ordered multi-root request，不在MLIR中创建tuple/super-root op。Importer对同一current
-SSA只建立一个e-node；Rust对多个runner roots使用同一e-class选择，并把结果deterministic hash-cons为共享DAG。C++先验证全部root
-replacement及unique computeId/semantic facts，再按一个transaction物化每个unique node一次并原子替换全部roots。任一root失败擦除本轮全部
-new ops，不能部分提交其它branch。General reshape through compute必须是egg dynamic rule和只读relation callback，不得在pass入口、extractor
-之前或materializer之后增加同义greedy/DRR/C++ pattern；现有egg外all-users Access rewrite在C1删除。
-
-Temporal multi-use不是上述logical DAG extraction。它只在Spatial/Region已经物化、完整temporal choice可见后建立query-local independent/joint
-choice；joint materializer直接构造common SCF loop并调用current roots的`TilingInterface`，不回头运行e-graph或先合并成临时Linalg graph。
+具体逻辑等价、multi-root/shared-DAG transaction由[05号](05-local-compute-normalization.md)拥有；该语言中的relation-driven等价式
+必须进入同一bounded e-graph rule和只读callback，不在入口、extractor或materializer旁增加同义greedy/DRR/C++路径。
+Temporal multi-use的query-local choice、共同循环和TilingInterface物化由[06号](06-physical-dataflow-synthesis.md)拥有；它消费已物化
+Spatial/Region和当前temporal choice，不回头运行e-graph或先创建临时Linalg图。
 
 RegionBranch、Call、MemoryEffect、ViewLike/alias 和 structured op interface 提供通用 flow edge。MLIR DataFlowSolver 可以
 承担可组合的 SSA/control-flow fixed point；Wafer custom lattice 只保留 path-sensitive异步命令完成条件、target resource 和
@@ -262,6 +253,8 @@ container verifier或显式 validation pass一次验证。verifier 不能访问 
 ## 6. Rewrite、conversion 与 declarative infrastructure
 
 ### 6.1 PatternRewriter transaction
+
+`matchAndRewrite`确认匹配前不修改IR；返回success时必须已经修改IR。
 
 - pattern 内对已有 IR 的 create/replace/erase/operand/attr mutation 全部通过 rewriter；新 op attrs 优先在 builder state
   一次构造，必要时使用 `modifyOpInPlace`。
@@ -316,6 +309,8 @@ decision representation、最窄scope、owner、失败语义、artifact命运和
 ### 7.2 Wafer分类
 
 同一clone transaction使用`IRMapping`；不用ordinal、walk顺序、打印文本、默认symbol名或跨epoch裸指针恢复对应。
+试运行只clone最近的`IsolatedFromAbove` owner，外部operand映射到scratch自有value；scratch不得引用或增加原IR use。
+不为取得anchor构造临时ModuleOp/FuncOp。最终output、外部工具和reducer的clone必须说明owner、失败命运和直接consumer。
 Wafer中的root duplication只允许以下明确类别：
 
 | 类别 | owner与产物命运 | 约束 |
@@ -352,20 +347,19 @@ Dormant source是否删除由18号能力迁移流程决定，不能因包含clon
 - Integration从真实TensorProgram推进到直接下游output；performance诊断记录实际clone/materialization/pass次数、wall和RSS，
   不能用并行、缓存或较小shape掩盖重复whole-root work。
 
-IR/analysis/rewrite/conversion/pipeline正例默认rank至少3、主要迭代维度至少1024，并成对覆盖1024与1025/1031，
-实际经过多Tile、multiple block/wave、remainder和tail。tiny只用于有界oracle、最小verifier负例、scalar/zero-rank或
-单点定位，并有同机制真实规模对应项。测试必须检查本stage的exact output和直接consumer，不只检查pass成功。
-## 9. 保留的正面实践
+测试规模、整除/非整除和tiny例外统一遵守[AGENTS测试覆盖](../AGENTS.md#测试覆盖)。每层仍须检查exact output和直接consumer。
 
-整改不得回退下列现有实践：
+## 9. C++、错误与确定性
 
-- `IsolatedFromAbove`、显式 TileRegion SSA boundary、region verifier ordering 与 recursive effects；
-- Target LLVM closed legality/full conversion后的 non-LLVM absence check；
-- One-Shot Bufferization external model 与 function-boundary分析；
-- SPM/DDR placement全部成功后一次写入offset，失败不修改 IR；
-- selected-root scoped constant-select rewrite；
-- pass dependent dialect声明、fresh verifier、typed exact rejection/indeterminate failure分类；
-- production standalone-module creation与atomic directory rename的真实module/device scope。
+- Public/跨stage API使用范围明确的typed结果；相关多结果返回命名struct，不用bool、字符串标签和多个nullable输出拼状态机。
+- 只读计算与IR修改分开；所有可能失败的检查尽量在首次mutation前完成。
+- move-only类型表达所有权；引用和裸pointer只在owner存活且IR未修改的当前epoch内使用。地址只能作局部查找键。
+- 不使用C++ exception或RTTI。IR变换返回`LogicalResult`/`FailureOr`并发diagnostic；文件、runtime和library边界使用
+  `llvm::Error`/`Expected`。unsupported、capacity、indeterminate和compiler error保持typed区分，不解析diagnostic文本控制流程。
+- Pass输入和输出必须通过verifier；verifier-valid输入触发crash/assert是pass bug。`assert`和`llvm_unreachable`只用于合法输入下不可能的内部状态。
+- 不使用可变全局状态、singleton或没有失效规则的cache参与编译决策。
+- 输出IR、diagnostic和选择结果不依赖地址、hash遍历或并行完成顺序；所有可观察排序都有完整semantic tie-break。
+- 优化前记录work count、pass/analysis timing、wall time和RSS；先减少重复遍历、重复materialization和过大scope。
 
 ## 10. 官方依据
 

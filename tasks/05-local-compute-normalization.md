@@ -29,8 +29,8 @@ Pipeline position:
 - Downstream consumer:
   physical-dataflow planning从normalized current graph的固定semantic roots构造Spatial/Region choice和exact demand/coupled
   contribution/merge。Choice闭合后，candidate structural materialization把graph attention直接转换为每个selected Tile上的
-  `online_attention`、三个state endpoint和merge/finalize；第13项从这些current ops生成并立即应用parallel/K2 temporal tiling，
-  第14项再机械分解为canonical Linalg/Tensor/SCF。后续layout、movement、bufferization、Instr、completion和memory只从该current IR生成或重算。
+  `online_attention`、三个state endpoint和merge/finalize；temporal tiling从这些current ops生成并立即应用parallel/K2 temporal tiling，
+  online-attention decomposition再机械分解为canonical Linalg/Tensor/SCF。后续layout、movement、bufferization、Instr、completion和memory只从该current IR生成或重算。
 - User-level driver / named pipeline:
   `wafer-compile`的`none`与`search`在policy分叉前共同运行同一normalization；
   `wafer-lower-stablehlo-to-linalg`及attention normalization leaf pipeline只用于IR replay和focused tests。
@@ -447,7 +447,7 @@ result，不进入planning record、名字约定或future value ID。
 - 每个tiled op返回更新后的Accumulator、Maximum和Sum；不能把三个result当成相互独立的reduction；
 - `getResultTilePosition`分别使用output/row/row indexing map给出三个state的exact offsets/sizes；K2不出现在result map中，因此同一state
   slice成为下一次K2 iteration的DPS init；
-- Spatial FD contribution使用同一online step，但cross-Tile combine由第12项在selected merge Region中物化为actual coupled SSA，不调用
+- Spatial FD contribution使用同一online step，但cross-Tile combine由structural materialization在selected merge Region中物化为actual coupled SSA，不调用
   pinned generic reduction driver重建future partial tensor。
 
 仓库pinned `PartialReductionOpInterface`没有IREE当前实现依赖的partial-result tile-position方法；其SCF driver还假设partial result rank与
@@ -473,9 +473,8 @@ current tensor destination，shape只含本次actual batch/head、M tile和K2 bl
 
 ### 4.5 Composite、结构化causal与混合精度attention
 
-本节定义attention的共同合同，顺序与实卡覆盖由
-[统一板测计划](archive/board-workload-matrix.md#attention导出展开与实卡验收)拥有。先更新实现，再启用16号新reference；
-旧实现能否通过新reference不是施工前置，不修改原健康性能目标。
+本节定义attention的共同合同；独立reference由16号拥有，既有施工与实卡记录见
+[归档板测矩阵](archive/board-workload-matrix.md#attention导出展开与实卡验收)。历史计划不授权新一轮施工。
 
 - Upstream IR / input：02号验证并保留语义的attention composite，或由已有matcher证明的完整structured attention root。
 - Current stage responsibility：统一形成现有`wafer.linalg_ext.attention`，验证位置、mask、head映射和数值语义；
@@ -553,8 +552,8 @@ layout、physical transpose、broadcast指令与copy cleanup分别属于08/10/11
 
 本节规定局部mask生成、可见域循环和准备复用的共同合同；主机与实卡资格由计划和progress分别记录。
 本轮范围是现有static attention、bool/additive mask、causal、MHA/GQA、单/多token decode及tail。
-本轮causal采用加法方案：按位置生成可见处为0、不可见处为`-inf`的局部bias，再加到score上。
-这项选择替代此前拟用的causal `0/1 + -inf源 + MaskMove`；普通bool/select及输入自带additive mask仍保留各自语义。
+Causal采用加法方案：按位置生成可见处为0、不可见处为`-inf`的局部bias，再加到score上。
+普通bool/select及输入自带additive mask保留各自源语义，不套用causal加法。
 不新增动态长度入口、paged KV、跨调用准备缓存、任意Python mask callback或新的空间搜索策略。
 实施顺序和资格状态分别由[板测计划](archive/board-workload-matrix.md#当前版本attention与mask改进方案)和`progress.md`拥有。
 
@@ -668,18 +667,10 @@ API按[Arith定义](https://mlir.llvm.org/docs/Dialects/ArithOps/#arithceildivsi
 | packed bool模板 | 用于已有bool消费链时实计转换和padding；本轮causal直接生成数值bias，不新增packed host mask ABI |
 | 任意select改成加法或乘法 | 本轮causal选择不扩展为通用select改写；其它source显式覆盖语义保持 |
 
-通用比较优化保持source `arith.cmp*`的i1语义。在实际`comparison → Bit2Fp`链上选择厂商数值结果指令，
-Instr以destination type区分packed BOOL和数值0/1；必要的结果编码沿同一TargetCall/CRT ABI显式传递。
-同步修改verifier、effect/physical span、模型、cost及packet发射；有其它bool consumer时保留其正确表示，不为融合增加未经比较的重复工作。
-VV/VS/VuV/VuVLoop只使用对应dtype、单位、tail和物理遍历已有证明的组合；source比较仍返回`i1`，
-Instr的packed BOOL与数值0/1结果按实际consumer选择，不能把结果类型与比较输入类型混为一谈。
-
-填充与broadcast分开：已证明uniform的完整或连续区域用fill，底层统一为按原始storage bits的`XorVV + AddVS`；
-普通broadcast优先消费合法VS/VuV形式，无法直接消费的映射保留有证明的GatherScatter/copy。
-非同值规律不能用两条fill伪造；位置模板由整数常量计算或原predicate产生，不按mask名字选择指令。
-
-causal加法先独立落地；softmax及finalize的行级整改由4.7单独规定，不作为causal加法实现的前置。
-原有运算仍受通用数值比较、fill复用和DPS优化覆盖；保留`math.exp`、既定dtype及验收容差。
+Source比较保持i1；实际`comparison → Bit2Fp`链的数值0/1结果、consumer编码和覆盖由[11号指令合同](11-instruction-ir/operations.md)拥有。
+Fill的storage-bit语义与`XorVV + AddVS`实现由[14号](14-target-code-generation.md)拥有。模板从实际位置与predicate生成，
+不按mask名字选择指令；非均匀规律不能伪装uniform fill。普通broadcast按合法VS/VuV或显式movement处理。
+行级softmax/finalize见§4.7，causal选择不改变其原算术、dtype或验收阈值。
 
 采用[FlexAttention](https://pytorch.org/blog/flexattention/)区分块可见性与score修改的组织方式，
 以及[FlashInfer variants](https://github.com/flashinfer-ai/flashinfer/blob/main/include/flashinfer/attention/variants.cuh)
@@ -806,11 +797,9 @@ merge/finalize的DPS init若未被scalar region读取，只是输出目的地，
 保留原方向；不能在step内插入往返。Q=1及不含完整query unit的独立state保持原方向。
 这属于online state展开，不能扩展为ordinary pure graph入口旁的通用等价改写。
 
-方向取舍依据：本轮相同Explp、复制优化和输出融合版本中，常规accumulator实际每Tile静态GS为44，
-转置accumulator为14，但前者三次中位数4.233ms，后者4.401ms。常规方向的广播由重复读取扩展为多条宽搬运；
-转置方向仍需2字节颗粒输出恢复，少指令并不等于低成本。故当前不自动引入非平凡输出置换。
-这是指定输入上的实测决策，不是所有shape的普遍性能定理；后续如扩大选择范围，仍须核对实际粒度、动态次数及净收益，
-不得用预测buffer或estimated SPM控制合法性。完整实验身份与数值见板端性能记录。
+当前不自动引入非平凡accumulator输出置换：少指令不保证更低搬运成本，窄粒度输出恢复可能抵消收益。
+指定输入的实测比较及身份保存在[板端性能记录](../docs/board-performance-results.md)；它不构成所有shape的性能定理。
+扩大选择域仍须核对实际粒度、动态次数与净收益，不能用estimated SPM控制合法性。
 SCF类型一致性依[官方合同](https://mlir.llvm.org/docs/Dialects/SCFDialect/#scffor-scfforop)，
 map重排依[Linalg合同](https://mlir.llvm.org/docs/Dialects/Linalg/)；API以pinned源和原decomposition测试确认。
 
@@ -832,7 +821,8 @@ subset `S`，定义：
 
 ```text
 m(S) = max(scores(S))
-p(S) = exp(scores(S) - m(S))
+exponent_max(S) = (m(S) == -inf ? 0 : m(S))
+p(S) = exp(scores(S) - exponent_max(S))
 l(S) = sum(p(S))
 a(S) = sum(p(S) * V(S))
 state(S) = (m(S), l(S), a(S))
@@ -842,8 +832,9 @@ state(S) = (m(S), l(S), a(S))
 
 ```text
 m = max(m_left, m_right)
-left_scale  = exp(m_left  - m)
-right_scale = exp(m_right - m)
+exponent_max = (m == -inf ? 0 : m)
+left_scale  = exp(m_left  - exponent_max)
+right_scale = exp(m_right - exponent_max)
 l = left_scale * l_left + right_scale * l_right
 a = left_scale * a_left + right_scale * a_right
 state = (m, l, a)
@@ -852,10 +843,14 @@ state = (m, l, a)
 完整K2 coverage结束后只执行一次：
 
 ```text
-output = a / l
+coefficient = 1 / l
+if zero_fully_masked and l == 0:
+  coefficient = 0
+output = a * coefficient
 ```
 
-这些式子定义algorithm dataflow和state ownership。具体arithmetic operation、dtype及source mask/scale语义继续由current IR原样表达；
+负无穷行只替换指数所用的maximum，state中的maximum仍为负无穷；全屏蔽输出是否置零由原`zero_fully_masked`语义决定。
+这些式子定义algorithm dataflow和state ownership，具体行级算术和低精度边界见§4.7。具体arithmetic operation、dtype及source mask/scale语义继续由current IR原样表达；
 本任务不引入其它数值策略或search coordinate。
 
 ### 5.2 FlashAttention
@@ -930,7 +925,7 @@ Mode与tiling坐标严格正交：
 | `flash_decoding` | 每个output piece至少两个nonempty、无重叠且完整覆盖的K2 contributions，以及唯一merge Tile | 每contribution一个online state chain；remote state endpoints和一个actual coupled merge/finalize | 每个contribution内部仍可有任意多个exact K2 blocks |
 
 因此temporal block数量、query length、online-attention occurrence数量、普通shape大小或TileRegion数量都不能正向证明FD。K2 cardinality只在
-SSA cache-state协议已经成立后检查是否至少能形成两个nonempty contributions；它不能独立完成分类。第12项在任何mutation前同时检查
+SSA cache-state协议已经成立后检查是否至少能形成两个nonempty contributions；它不能独立完成分类。structural materialization在任何mutation前同时检查
 graph `algorithm`与closed Spatial choice：FA收到多个spatial K2 contributions，或FD收到少于两个contributions、coverage hole/overlap、缺失/
 重复merge Tile，均返回typed mode/contract failure；不得自动切换algorithm。转换成功后不再复制mode attr，因为差异已由actual contribution
 数量、parent TileModule、state endpoints和merge SSA完整表达。
@@ -959,9 +954,9 @@ selected merge Tile: Tile 2
 
 Structural materialization在四个Tile中分别创建覆盖本地K2 interval的`online_attention`，每个产生
 `(Accumulator_i, Maximum_i, Sum_i)`。Tile 2的merge Region直接使用本地state；Tile 0/1/3分别通过三个cross-Tile actual endpoints输入。
-Merge op位于`wafer.tile.module(tile_id = 2)`，不再保存`tile_id`字段；其12个state operands说明全部四个参与者。第13项若为每个local K2
+Merge op位于`wafer.tile.module(tile_id = 2)`，不再保存`tile_id`字段；其12个state operands说明全部四个参与者。temporal tiling若为每个local K2
 range选择128的temporal block，则前三个contribution各有两个完整iteration，Tile 3的263长度形成`128 + 128 + 7`，最后7是唯一tail。
-第14项只分解这些loop内的online-attention；selected spatial merge和parent Tile不变。
+online-attention decomposition只分解这些loop内的online-attention；selected spatial merge和parent Tile不变。
 
 同一shape的FA只有一个K2 spatial owner；该owner本地遍历完整`[0, 1031)`并形成相同的128-block recurrence，不产生cross-Tile state merge。
 
@@ -1013,59 +1008,17 @@ K2 partition及stable embedding/merge owner；`search`枚举同一spatial domain
 
 ### 6.3 Candidate-owned online-attention materialization与decomposition
 
-Spatial/Region choice闭合后立即进入candidate transaction；不先构造physical value、storage、event或schedule的未来图。
-每个candidate执行：
+Structural/Temporal的事务和端点维护分别遵守[06号](06-physical-dataflow-synthesis.md)与[07号](07-tile-region.md)；
+本节只规定attention emitter的交接。Structural materialization按§5创建actual online states、merge/finalize和三个remote endpoints，
+位置由parent TileModule、参与者由SSA表达。Temporal只从live op使用stateful Tiling形成K2 recurrence和main/tail。
 
-```text
-spatial/region choice
-  -> validate current TensorProgram and recomputable attention semantic query
-  -> create one candidate-owned top-level TileModule subtrees
-  -> ordinary spatial work becomes actual Linalg/Tensor/SSA
-  -> selected attention becomes actual online_attention contributions, state endpoints and merge/finalize
-  -> build query-local temporal choices from current operations and immediately tile/fuse
-       ordinary/parallel: TilingInterface
-       online K2: stateful TilingInterface
-  -> decompose tiled online_attention to canonical Linalg/Tensor/SCF
-  -> build/apply current-SSA layout assignment, exact views and bufferization
-  -> deterministically convert layout-resolved Linalg compute to wafer.tile.gemm/reduce/elementwise
-  -> materialize actual movement on current SSA
-  -> lower to Instr, then derive worker/order/completion from current Instr
-  -> verify no attention or executable Linalg source remains
-  -> actual TileModule/Instr -> DeviceExecutable memory/target gate
-```
+Decomposition在首次mutation前验证全部online op的static tile type、roles与maps；同一rewriter/listener逐op替换为
+QK、score/mask、Maximum/Sum/Accumulator update、PV及必要slice。不重建SCF loop、TileRegion signature、spatial merge/finalize或boundary endpoint，
+不重新运行全图e-graph、选择block/Tile或创建worker/join/wait。Named pipeline与compiler adapter调用同一kernel。
 
-Structural materialization直接消费fixed algorithm、K2 spatial contribution、Tile embedding和`mergeTile`。FA在一个spatial owner中创建
-`online_attention`；FD在每个selected contribution TileRegion中创建覆盖本地exact K2 interval的`online_attention`，并在selected merge
-TileModule中创建actual coupled merge/finalize。Merge op不携带Tile ID：其parent TileModule是唯一位置事实，其SSA operands是唯一参与者事实。
-本地state直接接SSA，remote state创建三个actual structural endpoints；后续movement只消费这些current values。
-
-Temporal tiling不读取规划阶段的 execution identity 或预物化 temporal 状态。Baseline和search分别从自己candidate中的live
-`TilingInterface` operation建立query-local complete domain，选择后立即rewrite并丢弃choice。FA的K2在一个Tile内
-形成multi-result SCF state recurrence；FD的每个local contribution可在自己的K2 interval上继续形成同样的recurrence。1024 aligned与
-1025/1031 tail遵守06号统一main/remainder合同。
-
-Online-attention decomposition只读取已经tiled的current op和三个DPS state，创建actual QK、scale/mask、Maximum/Sum/Accumulator update、PV
-以及必要tensor slices，然后擦除该op。它不重跑全图e-graph或generic tile-and-fuse，不根据future inventory重放IR，不clone整个candidate
-owner，也不创建worker、Instr、join或wait。无法分解时销毁candidate，不保留online-attention进入layout，也不调用另一builder。
-
-Module-level transformation在首次mutation前验证全部online op的static tile type、roles和maps；成功后用同一rewriter/listener逐op替换，
-不创建或改写SCF loop、TileRegion signature、spatial merge/finalize或boundary endpoint。Named pipeline与compiler adapter调用同一kernel；
-layout handoff verifier要求graph/online attention均为零。
-
-compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
-但该Linalg只存在于candidate top-level TileModule subtrees transaction内部，不是公开stop stage。Rejected/loser subtree整体销毁，final winner不重建。
-Movement、buffer和completion不属于Linalg；它们由直接stage读取current SSA/Instr后生成，不由attention prepared builder预建。
-
-进入actual memory/target gate前必须满足：
-
-- `wafer.linalg_ext.attention`和`wafer.linalg_ext.online_attention`在layout入口均为零；
-- 可执行Linalg source op为零；
-- all-and-only actions、values、buffers、messages和events已在current IR中表达且可由直接stage verifier解释；
-- 每个actual allocation都有current typed owner relation，SPM/DDR/transport结果来自该candidate IR；
-- source TensorProgram在candidate失败或落选时保持不变。
-
-本设计只增加一个candidate structural阶段的`wafer.linalg_ext.online_attention`，不新增`wafer.tile.attention`、
-`wafer.instr.attention`、attention TargetCall或package/runtime algorithm字段。
+输出Linalg复用标准indexing/verifier及10号structured-to-Tile；它是candidate内部中间态，不是公开stop stage。
+Layout入口要求graph/online attention为零，Instr入口要求可执行Linalg为零；所有buffer/effect必须实际存在并有typed owner。
+失败销毁candidate且source保持不变，winner保留同一actual owner。没有attention专用Tile/Instr/TargetCall或runtime algorithm字段。
 
 ## 7. Bounded Access-Relation E-Graph Normalization
 
@@ -1321,7 +1274,7 @@ E-graph只接收前序pinned MLIR folds之后仍有非相邻或rewrite-order冲�
 
 一次pass invocation按ordinary pure connected component各运行一个multi-root egg request；没有egg外fanout rewrite，也不因某个root先成功而
 重跑同一component。一个成功request必须使共享输出DAG的unique `Access`数量严格减少，或在`Access`不变时使canonical `Concat`及总node数
-按既定结构顺序严格下降；否则保持原component。第二次运行同一pass必须byte-equivalent。
+按既定结构顺序严格下降；否则保持原component。已达到饱和的输入第二次运行同一pass必须byte-equivalent；预算截断后的行为见本节预算合同。
 
 函数返回的static shaped value若不是当前DPS/Tiling producer，可以在同一次调用内临时包一层identity DPS output closure作为合法commit
 point；该closure必须在component收集前创建，并在request结束前精确移除或被提取结果消费。它不进入输出IR，也不计入logical
@@ -1383,22 +1336,8 @@ Tensor/Linalg node只创建一次，并收集全部root replacement。旧roots�
 
 ### 7.6 与后续pipeline的隔离
 
-稳定运行顺序是：
-
-```text
-official StableHLO-to-Linalg
-  -> pinned canonicalization / CSE / supported folds
-  -> attention semantic recognition
-  -> bounded logical e-graph normalization
-  -> final TensorProgram legality
-  -> StructuredDAG / exact demand / physical-dataflow pipeline
-```
-
-E-graph在policy分叉前只运行一次，只选择ordinary logical graph表达。后续attention expansion必须直接产生其owner定义的canonical
-actual Linalg；若它产生冗余IR，应修正该emitter或其本地canonicalization，不能再次调用本pass。Tile-and-fuse、layout PBQP、
-`PhysicalLayoutRelation`、movement、bufferization、Instr和memory只读取e-graph已经提交并verify的current IR或各自后续mutation结果，
-不读取relation service、e-class或extractor，也不反向扩大本pass的accepted Linalg形式。现有共享`IndexRelation`实现、API、测试及所有
-下游caller保持不变；下游从改写后的current IR fresh重算自己的relation。
+§12定义唯一production顺序。E-graph在policy分叉前运行一次，后续stage只消费其verified current IR并fresh重算自身analysis。
+Attention展开若产生冗余，修正emitter或其局部canonicalization；不能重跑本pass、读取e-class/提取状态，或让下游反向扩大本pass的accepted Linalg形式。
 
 ### 7.7 覆盖矩阵
 
@@ -1512,8 +1451,8 @@ selected pieces，而不是只检查op或pass成功。
    shape/map/init/final owner一致，planning query前后IR byte-identical；
 7. 只读语义查询不产生action/value/materialization ID；structural materialization后每个FA owner或FD contribution的
    Accumulator/Maximum/Sum、merge/finalize和external boundary all-and-only存在于current IR，没有empty shell或hidden inventory；
-8. candidate transaction中graph attention被破坏性转换一次；第13项从current online-attention直接切parallel/K2并形成necessary tail，
-   第14项对每个tiled online-attention恰分解一次；layout入口两种attention op均为零，生成的Linalg/Tensor/SCF随后全部成为existing
+8. candidate transaction中graph attention被破坏性转换一次；temporal tiling从current online-attention直接切parallel/K2并形成necessary tail，
+   online-attention decomposition对每个tiled online-attention恰分解一次；layout入口两种attention op均为零，生成的Linalg/Tensor/SCF随后全部成为existing
    wafer.tile compute，失败注入保持source和parent原样；
 9. `none`和`search`从同一normalized TensorProgram分别走自己的policy-specific materializer；baseline直接消费固定规则，
    search才消费explicit structural choice。两者在policy-complete Instr后消费共同actual leaf；不存在attention algorithm axis或whole-program clone；

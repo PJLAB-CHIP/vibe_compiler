@@ -140,8 +140,9 @@ cross-card transport、package和runtime consumer；本层不通过扩展Tile映
 
 ## 4. 原子性与失败语义
 
-`wafer-compile`先把source program完整复制到transaction-owned snapshot。parser、frontend verifier和helper只读
-snapshot；原source不被原地补topology、改MLIR或写shards。helper和local normalization都发生在唯一staging root内。
+`wafer-compile`隔离source的IR、metadata和目录结构；大payload由`ProgramDataHandoff`持有content-stable source与checked range，
+不复制整棵data tree。parser、verifier和helper消费这些transaction-owned输入，原source不被原地修改；helper与local normalization
+在staging内运行，新shard只在bytes实际改变时物化。数据所有权与读取合同见[02号](02-frontend-stablehlo-program.md)。
 
 只有下列检查全部成功后，card-local structured-program directory才通过同filesystem rename变为可见：
 

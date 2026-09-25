@@ -66,9 +66,9 @@ topology和message matching只使用physical IDs，不从slot ordinal推断邻�
 op不携带runtime slot、raw route、DTE/FSM allocation、remote address、cost或owner label。cross-Tile数据不能以SSA
 capture跨越TileModule；sender/receiver必须分别拥有显式op和本地SPM root。
 
-peer buffer root也不能跨`wafer.tile.region`：每个region严格属于一个Tile的SPM residency domain。若收到的
-shaped payload需要由后续sibling region消费，当前region必须显式写入DDR并完成，下一region再显式load；不能把SPM
-root/alias或携带该alias的control token作为region I/O。
+每个Region严格属于一个Tile。Peer receive buffer若由后续sibling Region消费，默认经显式DDR store/completion/load；
+只有满足07号resident、同Tile owner及09号actual lifetime验证时才可沿SPM SSA传递。Matching receive wait仍须先于首次读取，
+control token不能替代storage owner或偷带SPM alias。
 
 ### 3.2 Physical-dataflow communication materialization
 
@@ -459,6 +459,11 @@ no-card只做parse/semantic/binding/capability validation；board provider才执
 package/runtime不重新选择peer、route、algorithm或memory placement。
 
 ## 7. Failure、Atomicity 与 Verification
+
+同步回归须检查join/wait位置、participant/token、动态次数及直接lifetime witness。
+没有typed crossing的真实规模正例，可避免的steady-state/non-terminal join必须为0；
+同步数量不能无理由随element、copy或attention block线性增长。同worker issue order足够时，
+operation类别、loop backedge、region结束、state update或store/reload本身不要求额外join。
 
 ### 区域与传输选择的覆盖合同
 

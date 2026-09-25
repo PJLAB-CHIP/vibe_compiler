@@ -79,7 +79,7 @@ Canonical JSON按serializer固定字段顺序输出紧凑对象和数组，只�
 字节预算覆盖合法的大entry ABI，不能让record验证已接受的实际模型仅因较小的默认reader预算而无法交付。
 本边界的输入是verified typed manifest，输出由同一严格reader与runtime binding消费；不修改schema、参数ordinal、resource
 identity、entry ABI或payload。完成检查覆盖16 Tile各2048/4000条shared workspace引用的合法roundtrip与binding、字节上限
-恰好相等/少一字节、record超限、截断及非canonical空白；实际source到package验证由统一板测计划的完整模型承担。
+恰好相等/少一字节、record超限、截断及非canonical空白；实际source到package验证采用完整模型；板端状态仅由progress及本轮证据判定。
 
 Profile companion的target-site metadata覆盖16 Tile的全部typed target call；其规模随实际程序增长，
 不使用固定文件大小或record条数作为模型合法性条件。`PackageParseLimits::maxProfileJSONBytes`和
@@ -148,9 +148,6 @@ Package组装按当前Tile entry的typed binding解析不可变参数/常量，�
 全卡相等检查只覆盖外部input/output的完整typed边界；不可变数据沿每entry的resource index找到
 ProgramTensorId，再经唯一ProgramDataHandoff与selected descriptor合并。共享identity的dtype、shape、slice
 仍须一致；不按其它Tile的ordinal或表长度推断identity，也不补造未使用的常量槽。
-
-本项修复的是14号已允许不同TargetTensor集合后，Package writer仍比较完整binding表的遗漏；
-输入、输出和直接下游沿第1节，既有可成功组装的package内容不改变，不改设备代码、数值、搜索或runtime ABI。
 
 | 覆盖输入/结构分支 | exact输出、拒绝与直接下游 |
 | --- | --- |
@@ -241,6 +238,14 @@ Kernel aggregation在选定physical Tile对应的row后、首次slot load前调�
 
 `tile_id`与`launch_slot`是独立typed domains；launch slot必须dense且唯一，但不要求等于Tile ID。
 Module ID/path/vector位置不承担Tile identity。
+
+### 各 Tile 独立参数行
+
+参数 ordinal 在 entry 内 dense、zero-based；不同 Tile 的共享资源数量、位置可以不同。共享身份只由 ResourceId 决定。
+Runtime 按每个 entry 的实际 arguments 规划 row，并按 launch_slot 串接 TileMajor 行或提交 TileRow 地址；不能要求所有行等长。
+Manifest 对共享资源的大小、对齐、初始化和全卡读写 closure 校验不变，记录数及字节上限不扩大。
+本项输入、生成边界、non-goals、完成条件与覆盖矩阵见14号“按实际参与者生成共享 DDR 参数”；fake provider 与真实 package/no-card
+共同覆盖地址绑定，实卡结果仍由 board-testing 独立签署。
 
 ## 4. Package writing与owner
 
@@ -553,11 +558,3 @@ Host/no-card至少覆盖：
 - TileRT：采用prepare一次、地址稳定、重复执行；不假设GPU单kernel或闭源内部实现。
 - vLLM/SGLang：只用于压力测试未来固定容量state和step metadata；scheduler/cache policy不进入本合同。
 - Wafer的DeviceExecutable、TileEntryArgument、kernel pointer row、workspace offsets、RDMA/WDMA、Direct-DTE和provider能力始终是主事实源。
-
-### 各 Tile 独立参数行
-
-参数 ordinal 在 entry 内 dense、zero-based；不同 Tile 的共享资源数量、位置可以不同。共享身份只由 ResourceId 决定。
-Runtime 按每个 entry 的实际 arguments 规划 row，并按 launch_slot 串接 TileMajor 行或提交 TileRow 地址；不能要求所有行等长。
-Manifest 对共享资源的大小、对齐、初始化和全卡读写 closure 校验不变，记录数及字节上限不扩大。
-本项输入、生成边界、non-goals、完成条件与覆盖矩阵见14号“按实际参与者生成共享 DDR 参数”；fake provider 与真实 package/no-card
-共同覆盖地址绑定，实卡结果仍由 board-testing 独立签署。

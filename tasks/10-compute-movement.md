@@ -89,8 +89,8 @@ selected physical dataflow存在于`builtin.module`内all-and-only top-level
 
 每个`wafer.tile.region`严格属于一个Tile。07定义的structural和layout-resolved form允许尚未physical闭合的logical tensor
 boundary，但不签发SPM residency结论，也不能进入本节的Tile-to-Instr conversion。Physical form的任何跨region shaped value
-必须显式store到DDR并由下一regionload，或由已定义typed communication闭合；SPM memref/root/alias不能作为region
-argument/result。把producer和consumer放入同一region只表示共享SPM
+默认显式store到DDR并由下一region load，或由typed communication闭合；只有满足07号`resident`、同Tile owner及
+lifetime/completion证明时才允许SPM argument/result。把producer和consumer放入同一region只表示共享SPM
 residency domain，不等于op fusion或coupled traversal；只有producer work实际嵌入consumer traversal、其中间tile由direct
 SSA use连接且没有独立producer traversal/DDR materialization时，才是coupled traversal。实际residency也不能由action名
 宣告，必须由actual roots、movement、effects、order、completion和09的late offset gate共同证明。
@@ -106,7 +106,7 @@ selected `wafer.tile.*` op必须满足：
 - parser/printer round trip不改变verifier或lowering结论；
 - 不携带search score、rejected alternatives、raw packet、launch slot、runtime handle或name-derived role。
 
-SPM value/alias不能跨TileModule，也不能跨TileRegion boundary。跨region数据显式store/load；跨Tile数据由
+SPM value/alias不能跨TileModule；跨Region按07号DDR或显式resident合同验证。跨Tile数据由
 peer/collective communication与destination staging表达。TileRegion boundary不是completion或barrier。
 
 多stage流水不是一个target-abstract mode。LoopPipelining的输出Tile IR必须显式包含每个chunk/temporal
@@ -211,41 +211,13 @@ Instr、DDR/SPM规划及SystemC exact后，原ViT完整package/no-card与实卡�
 
 ### Attention structured decomposition
 
-`wafer.linalg_ext.attention`只存在于normalized TensorProgram。Spatial/Region materialization把它破坏性转换为per-Tile三结果
-`wafer.linalg_ext.online_attention`、FD state endpoints和selected merge/finalize；temporal stage再从current interfaces物化parallel/K2
-loops。紧随其后的decomposition不接收spatial/temporal旁路计划，只在既有loop和Accumulator/Maximum/Sum SSA上生成
-`tensor.extract_slice`与Linalg compute。05号4.8的方向选择在同一展开调用内立即消费，结果只保存在实际maps/shape/SSA中：
+本层消费[05号](05-local-compute-normalization.md)生成的普通Linalg/Tensor/SCF：graph attention先成为online state，
+temporal tiling后才decompose。05号拥有score、mask、行状态、方向和数值边界；本层不选择block、partition、merge owner或同步。
+进入Tile→Instr前，graph/online attention和可执行Linalg source必须为零；不定义Tile/Instr attention op。
 
-```text
-QK contraction
-  -> scale / optional mask
-  -> row maximum / exponential / row sum
-  -> PV contraction
-  -> running-state update or spatial-state merge
-  -> final divide
-```
-
-这些Linalg ops使用current output piece、K2 tile/tail和FD contribution state；它们不得重新选择block、partition、merge owner或loop order。
-展开后的layout、view、buffer、movement和event只能由直接stage从current SSA/Instr生成。
-
-固定展开顺序为QK(K1 reduction)→原score region（scale与bool/additive mask）→位置定义的causal/有效KV域屏蔽→row maximum→
-old-state normalization→probability→row sum→PV(K2 reduction)。位置屏蔽的当前实现和改进合同分别见05号4.5、4.6。
-softmax与finalize的行级计算整改见05号4.7；broadcast依赖必须保留到直接consumer，不能把行倒数重新扩大成整个输出上的计算。
-Score/probability destination只覆盖current M tile×K2 block及batch/head coordinates；QK/PV和state update使用普通DPS
-Linalg，保留既有SCF iter args；current arithmetic和dtype语义不变。
-展开只保留tensor SSA数值与SCF state语义；通用循环destination绑定由08号layout/bufferization阶段负责。
-本层不为Maximum、Accumulator或Sum另建state写回特判，也不根据loop boundary插入completion。
-Bufferized Linalg的DPS destination已拥有确定storage/alias语义；structured-to-Tile必须把computed值写回该destination，
-即使type相同也不能用dominated-use替换把memref mutation当作tensor SSA重命名。现有view、loop-carried state和外部observer
-继续引用原buffer；必要copy是actual movement，后续cleanup只能凭既有exact alias/effect证明消除。
-相邻逐元素写回的共同消冗余规则见08号：精确destination输入的identity坐标与其它不重叠输入的broadcast/permutation分别证明，
-不能仅因另一输入需要映射而否定原地更新；进入Tile→Instr时destination及alias已经确定。
-随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
-`wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
-
-进入Tile-to-Instr前，graph/online attention和可执行Linalg source必须全部消失。Scratch、state、conversion、movement和event必须是
-current IR中有current SSA owner和typed effect的actual objects；不能由lowering临时猜测或补齐。本文不定义`wafer.tile.attention`或
-`wafer.instr.attention`。
+Bufferized Linalg的DPS destination已经拥有确定storage。Structured-to-Tile必须写回该destination，不能因type相同就以
+dominated-use替换把memref mutation当成tensor SSA重命名；现有view、loop state和外部observer继续引用原buffer。
+必要copy是actual movement，只能由本文件的StorageOptimization或08号canonical Instr cleanup凭exact proof删除。
 
 ### GEMM
 
@@ -518,8 +490,8 @@ map typed fail。转换前完成全module preflight，转换后可执行Linalg�
 
 `materializeTileBoundaryMovement`消费每个current tensor/memref bridge及`StructuredBoundaryRelation`恰一次：外部和同Tile跨Region值变成
 destination-style DDR load/store，跨Tile值变成matching peer send/recv与其dynamic token wait；unused logical input被删除，observable output
-直接绑定第15项建立的DDR destination。Entry return若与同一actual output endpoint重复，只删除重复return bridge，不创建第二次publication。
-转换后TileRegion shaped boundary全部是DDR memref，SPM root不跨Region，relation只剩current operation/buffer owner。
+直接绑定layout/bufferization建立的DDR destination。Entry return若与同一actual output endpoint重复，只删除重复return bridge，不创建第二次publication。
+转换后TileRegion shaped boundary为DDR或07号验证的resident SPM，未证明的SPM alias不能跨Region；relation只剩current operation/buffer owner。
 
 ## 6. Tile-to-Instr Conversion
 

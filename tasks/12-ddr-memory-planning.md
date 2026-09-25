@@ -30,8 +30,8 @@ compiler IR 合同。
 - 对 external input/output DDR view 做 descriptor、view/root byte range和capacity validation，并输出exact movement bytes。
 - 对当前Tile module内compiler-managed workspace、resident constant、显式spill DDR temporary等non-external
   allocation，在default arena中规划symbolic range/offset/size/alignment，并用完整TileModule内selective
-  spill/materialization和SSA use-def的lifetime/reuse证明互不冲突；任何跨region shaped value都必须经显式DDR
-  store/completion/load，region shaped data I/O必须是DDR，nested region与SPM跨界拒绝。
+  spill/materialization和SSA use-def的lifetime/reuse证明互不冲突；DDR跨Region值必须经显式store/completion/load；
+  SPM boundary另按07号resident与09号lifetime合同验证，nested Region仍拒绝。
 - 成功表示candidate DDR view、offset和IR-derived demand可被下游直接消费；失败擦除未提交top-level TileModule subtrees并返回typed result。
   allocator不修补candidate，也不内置reduction/tile repair策略。
 - 保持 DDR accepted allocation fact 显式：由 SSA use-def、memref type、view、descriptor 和
@@ -81,7 +81,7 @@ owner-independent primitive，但必须从自己的current IR重新建立problem
 DDR专属职责是解析TileRegion DDR boundary、external root/descriptor range、default arena、largest-contiguous、
 high-water、exact movement bytes并原子提交`wafer.ddr.offset`。Compiler-managed allocation、caller-owned origin和async
 task identity保持不同typed引用。所有DDR read/write effect必须活到current IR证明的completion或same-worker exact
-successor；Region data I/O不得携带SPM alias。Generic async、loop和call的支持范围沿用09号共同分析规则；缺少
+successor；未满足07号resident合同的Region data I/O不得携带SPM alias；已验证resident SPM由09号消费，不进入DDR demand。Generic async、loop和call的支持范围沿用09号共同分析规则；缺少
 interprocedural arena/resource summary时fail closed。
 
 Validated placement只在fresh complete TileModule set上原子apply；随后重新运行transport、range和ABI等所有
@@ -241,25 +241,25 @@ workspace/resident backing才获得accepted offset。persistent state或其它�
 Rules:
 
 - RDMA source must be `#wafer.memory<ddr, *>`; destination must be `#wafer.memory<spm, *>`。DDR source
-  descriptor可以strided，SPM destination只能sequential；`src_offset`和`dst_offset`都必须显式存在，即使为0，且都相对各自
-  allocation root。
+  descriptor可以strided，SPM destination只能sequential。Mapped descriptor两端都须有root-relative offset，
+  每端使用11号的静态attr或bounded SSA形式；无额外offset的compact形式按operand root解释。
 - WDMA source must be `#wafer.memory<spm, *>`; destination must be `#wafer.memory<ddr, *>`。SPM source
-  只能sequential，DDR destination descriptor可以strided；两端root-relative offset同样都必须显式存在。
+  只能sequential，DDR destination descriptor可以strided；offset表示与RDMA相同。
 - view offset是从SSA view链重算的proof input；instruction offset已经是最终root-relative descriptor起点。recovery必须验证
   `descriptor_*_root_offset = view_root_offset + segment_relative_offset`，range公式只使用descriptor root offset一次，不能再把
   view offset重复相加。
-- tile-region data block arguments必须是DDR，并解析回对应region DDR operands；SPM data/root/alias和仍访问它们的
-  pending event/control不能作为region I/O，与SPM无关的typed event/control按自身interface验证。
+- 本planner处理的tile-region DDR data block arguments解析回对应DDR operands；resident SPM的owner/lifetime由07/09号验证。
+  其它SPM data/root/alias及未闭合pending event不能伪装为DDR I/O，typed event/control按自身interface验证。
 - tile-region DDR results inherit the root relation of the corresponding `wafer.tile.yield` DDR value；result的后续SSA
   consumer必须把compiler-managed DDR root lifetime延长到region之外，不能因isolated boundary截断；
-  这不自动建立region cut；一个或多个sibling regions均可存在，但nested region与SPM跨界拒绝。
+  这不自动建立region cut；允许多个sibling regions，nested Region及无resident证明的SPM跨界拒绝。
 - root/origin查询递归闭合`ViewLikeOpInterface`、`SelectLikeOpInterface`、`scf.if`和`scf.for`，并保留
   path condition；loop backedge union对body中已建立的view同样可见。
 - tracked DDR result必须来自`memref.alloc`或受支持alias/control-flow interface；其它producer结构化拒绝，
   不能伪装成external root。
 - loop body allocation若通过memref或async handle跨backedge携带，必须有未来multi-instance placement；当前拒绝。
-- view/root memref shape, offset and strides must be static and non-negative unless a future descriptor form
-  explicitly supports dynamic bounds and verifier can prove them.
+- Root footprint及descriptor geometry须静态可证；base offset可为11号支持的bounded SSA形式，
+  必须证明非负及最大access end。不能把支持动态base offset推广为动态allocation shape或stride。
 - physical bytes use `computeWaferPhysicalTensorInfo`, so Cx/NCx physical bytes, alignment padding and
   bitpacked limitations stay consistent with SPM planning and instruction lowering.
 - mapped transfer的一条或多条descriptor必须由instruction层的descriptor-cover证明对应logical index relation的
@@ -283,7 +283,7 @@ explicit arenas/placement domains形成fixed-capacity problems。problem/query�
 5. Compute physical bytes and alignment from memref type, Wafer layout and target policy.
 6. Build lifetime intervals from SSA use-def, region/control-flow and explicit async token/typed NCC join/wait effects，
    covering every Tile module and mandatory explicit-spill producer-to-last-consumer relations。
-   普通traversal、loop、spill点和region结构不自动截断lifetime；region exit只完成仍访问其SPM roots的work，entry terminal
+   普通traversal、loop、spill点和region结构不自动截断lifetime；实际release/reuse前完成对应root的work，entry terminal
    必须没有observable pending event。generic async handle同时传播root和独立task identity；`async.await`/direct-group
    `async.await_all`只完成其path实际覆盖的task，NCC join仍只完成其participant worker。
 7. Build conflict edges for intervals that may overlap in time and require distinct DDR bytes.
@@ -333,8 +333,8 @@ DDR memory planning verifies:
 - 每个tracked alias/control-flow result必须有可解析RootRef或ValueOriginRef；只有DDR function-entry tensor adapter
   是显式external-root例外。不能按结果静态memory-space、`to_memref`自身或generic-to-DDR cast自封external root。
 - 每个有assigned work的Tile module含一个或多个non-nested `wafer.tile.region`；nested region或typed opaque clobber输入拒绝。
-  region所有data argument/result必须解析为DDR root/view，SPM memref/root/alias不得跨region；region exit只要求仍访问其
-  SPM roots的pending work完成，entry terminal闭合observable pending set。
+  DDR data argument/result必须解析为DDR root/view，resident SPM按07/09号验证；不因region exit截断resident lifetime。
+  实际root release/reuse前闭合对应pending work，entry terminal闭合observable pending set。
 - structured lifetime analysis只接受single-block function/tile-region与`scf.if` / `scf.for`；path condition
   使用按`uint64_t` decision id排序的sparse decision set，不存在64个decision point上限。未结构化、
   multi-block region、decision id域或编译资源耗尽必须结构化拒绝，不得退化为线性op顺序。
@@ -525,5 +525,5 @@ Expected coverage:
 显式spill DDR lifetime不是deferred work：只要producer store、可信completion、consumer load及其relation已由
 当前SSA、view、region、explicit allocation或transport facts表达，它就是Tile module / DeviceExecutable verification的
   mandatory输入；region内selective spill只结束目标SPM root，并通过DDR store/completion/load连接matching reload。
-  cross-region data同样必须走显式DDR合同；nested region或SPM root跨界拒绝。关系无法表达时candidate
+  cross-region DDR data同样遵守本合同；nested Region或无resident证明的SPM跨界拒绝。关系无法表达时candidate
 必须结构化失败或先扩IR，不能退回局部task planning。

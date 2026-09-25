@@ -82,11 +82,8 @@ package并fresh no-card；职责已由后继接管时直接从current queue移�
 
 ### 通用执行纪律
 
-所有板测由同一个总work item消费编译器实现和主机准备交付的产品产物，统一管理算子、通信、组合计算、模型和性能。
-正确性与性能是同一任务内的检查阶段，不再拆成多个板测任务。该任务拥有case、PyTorch reference、实际执行结果、
-性能记录及覆盖完成判定；通信实现work item拥有current IR变换、legality、completion、lowering及相应主机回归。
-GEMM、卷积、attention等产品板测不归入通信实现的完成门禁。发现编译器或runtime缺陷时按对应设计修复，
-随后将新产物交回同一板测项复验；不能借此混用两个任务的状态，也不能由局部板测结果宣称编译器全项完成。
+板测任务消费current编译器与runtime产物，负责case、独立reference、实卡正确性、性能与覆盖结论；实现任务负责IR、
+legality、completion和主机回归。具体任务划分与执行顺序只由[progress](progress.md)拥有，取消的历史计划不能授权新板测。
 
 - 每轮代码/测试改变后只使用本轮build和本轮输出；历史raw/log/report只作审计记录，不作为test input。
 - producer/consumer合同或runner失去current executable路径时，即使source与oracle仍存在，也不能沿用旧`board-ready`；
@@ -102,14 +99,9 @@ GEMM、卷积、attention等产品板测不归入通信实现的完成门禁。�
 - 默认板端数据类型为FP16/BF16；只有格式/ABI/转换/数值边界本身或真实source要求F32时才使用F32并记录理由。
 - 测试报告必须核对实际执行数量、skip/unsupported清单和feature配置；`ctest passed`本身不证明关键lit或source vertical执行。
 
-编译器IR、analysis、planning、rewrite、conversion和lowering的主线正例直接使用真实规模的多维shape，而不是用个位数
-shape代签：默认rank至少为3，至少一个主要迭代维度不小于1024；partition、tiling和loop必须成对覆盖`1024`等整除
-长度与`1025`、`1031`等非整除长度，并让空间case实际跨越可用Tile数、temporal case实际形成多个block/wave。只解析或改写
-static IR不会因logical shape变大而按元素分配内存，因此这类case没有缩成个位数的理由。只有有界逐点穷举oracle、最小
-verifier负例、scalar/zero-rank合同或单一故障定位可以使用小shape，并写明原因；同一被测机制仍必须有真实规模正例。
-每项完成证明按语义等价类建立矩阵，至少检查整除/非整除、单轴/多轴以及相关fan-in/fan-out、broadcast、reduction、
-view/slice类别；不能以任意一个case成功代签。断言必须落到该边界的exact coverage、无重叠、owner、demand、merge、tail和
-下游可消费结果，而不只是`success`。本条是测试覆盖合同，不是IR合法shape、workload matcher或优化策略。
+测试规模、tiny例外、整除/tail与exact输出要求统一遵守[AGENTS测试覆盖](../AGENTS.md#测试覆盖)。
+本层补充：各项按语义等价类覆盖单轴/多轴及相关fan-in/fan-out、broadcast、reduction、view/slice；这些是测试合同，
+不作为合法shape、matcher或优化策略。
 
 该矩阵必须写在当前work item对应的编号设计或实施计划小节中，并在任何production代码修改前完成。矩阵逐行说明输入
 等价类、代表shape、预期的exact结果、typed failure和直接下游witness；不适用的维度必须写明原因，不能只引用本节的
@@ -247,9 +239,7 @@ Python由共同policy工厂提供唯一阈值；同一case策略原样传递到T
 
 #### Attention的原module宽精度reference
 
-本节是05号attention更新完成后启用的reference合同；实施顺序固定为先接通composite、宽状态、局部展开和相关lowering，
-再切换reference、对齐完整数值，最后完成实卡与性能保护。旧实现可能不满足新reference，不要求它先通过，
-也不因此放宽新实现门槛或重置旧健康性能目标。当前实现状态只看progress。
+本节定义attention的当前独立reference；不保存旧实现到新实现的施工顺序或历史性能状态。
 
 - Upstream input：实际送板的同一份已量化FP16/BF16输入、框架module、配置、位置/mask及本轮actual输出。
 - Current stage responsibility：在编译capture之外直接调用原PyTorch/HF module的`forward`生成独立expected，
@@ -296,36 +286,15 @@ Pipeline position:
   default preset可从valid managed dependencies配置；完整默认target增量构建无Wafer warning；全部本地registered CTest及`check-wafer`实际运行；安装组件闭合；无意外skip/unsupported。
 ```
 
-当前checkout只维护`build/`这一棵主工程CMake tree。`build/third_party`与configured helper属于dependency artifact；明确需要
-TX SDK、sanitizer或debug的特殊配置由具备该环境的owner在workspace外临时维护，用完删除，不能成为普通完成证据。任务号、配置名、
-agent或日期不得形成repo-local第二build、install、test output或cache路径。
-
-每次源文件、CMake、generated input或public header修改后，可以先构建具体target取得快速反馈，但在形成任何完成结论或提交前必须在
-同一`build/`执行无target的完整默认增量构建。Ninja只重建失效节点；不得以删除build、重新configure或创建新目录代替dependency
-tracking。只有toolchain、preset、managed dependency identity或CMake配置变化时才重新configure同一build；clean build属于CI、配置迁移
-或明确的构建系统故障定位。
-
-`default`开启compiler、framework importer、StableHLO、SPMD、numeric、`WaferTargetNumericBackend`、SystemC和全部本地unit；关闭外部TX board SDK与真实设备
-执行。产品安装只从该配置产生，并使用`Compiler`与`Runtime`组件选择交付内容；本仓当前不支持runtime-only build。依赖缺失或managed
-record失配在configure失败，不能自动关feature继续构建。
+单一build、增量构建、configure条件、feature集合与并行度统一遵守[AGENTS构建规则](../AGENTS.md#canonical主机构建)。
+本节拥有构建产物到测试和安装的验收：default完整增量构建、实际测试执行、Compiler/Runtime安装组件及第二次Ninja no-op。
+依赖缺失或managed record失配直接失败，不能自动关feature。
 
 Pinned LLVM/MLIR必须保留statistics支持，供lit验证实际pass work count。使用关闭assertion的Release依赖时，配置LLVM为
 `LLVM_FORCE_ENABLE_STATS=ON`，并让主工程使用同一安装的header和library；空statistics报告不能作为零work的证据，也不能跳过对应测试。
 
-Target numeric本地执行采用按职责分层的唯一命名：
-
-- `WaferTargetNumericBackend`是整体功能与model-facing library。它消费decoded numeric request、target physical tensor bytes和显式budget，
-  返回destination bytes、numeric flags与backend evidence；它不是compiler codegen backend，也不拥有command/event/memory时序。
-- `WaferFormalNumeric`是有界精确oracle；只有具体的后端策略明确声明时才可作为该策略的 fallback，不属于 oneDNN 实现，也不拥有
-  通用 fallback 协议。
-- `WaferOneDNNBackend`是`WaferTargetNumericBackend`当前用于GEMM/reorder的具体host执行实现；oneDNN managed dependency、environment
-  identity与qualification record由该层拥有。qualification使用formal oracle作比较，不会因此把formal实现改名为oneDNN。
-- `WaferSystemCSimulator`仍独立消费完整target command、memory、event与completion合同。它可以调用target numeric backend完成一个numeric
-  command，但不由numeric backend替代。
-
-current CMake/API/CLI只保留上述职责名称。历史`bulk model`、`Bulk*`、`bulk-model`和`bulk-then-formal`均不是受支持协议；改名必须同步
-更新定义、构造方、直接使用者、qualification producer/reader、managed dependency、link closure和测试，不保留alias、旧option、双reader或
-旧record kind。
+Numeric组件职责与名称由[17号](17-target-execution-model.md#5-numeric-contract)维护；接口迁移遵守[20号](20-interface-evolution.md)。
+验证须覆盖全部定义/producer/consumer、qualification record、managed dependency和link closure，不保留旧接口分支。
 
 lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因当前产品缺口、未编译repository-managed依赖或历史fixture而不能运行，
 应修复、迁移或从current suite删除，不能登记为通过。真正依赖外部board、OS或target的测试由其明确配置owner执行，并在本地报告中
@@ -340,7 +309,7 @@ lit的`UNSUPPORTED`和skip只表示未执行。canonical build中的测试若因
 | source/CMake/public header修改 | library、tool、unit、generated source和link closure | 任一default target编译或链接失败即work item失败 | 无target完整构建实际到达全部启用default target；无Wafer warning；不复用其它build object | 受影响unit/lit/CTest随后从同一build运行 |
 | 定向与聚合测试 | 全部本地registered CTest、base/model unit、Dialect/Frontend/Pipelines/Spmd/Transforms/Tools lit | FAIL、XPASS、UNRESOLVED、TIMEOUT及意外UNSUPPORTED均失败 | focused case可单独运行；`ctest --preset default`不按label过滤；`check-wafer`实际运行聚合suite且零意外skip | work item完成与physical-dataflow/host-qualification gate |
 | product install | full、`Compiler`、`Runtime` component | 缺文件、跨component泄漏、build绝对路径或不可执行资源失败 | full含compiler/runtime；Compiler含compiler/helper/frontend资源且无runtime tool；Runtime含run/loader资源且无compiler | install-tree smoke及package/runtime consumer |
-| 特殊配置 | board SDK、sanitizer、debug | 未满足外部前置时不创建或typed停止 | 不在repo内建立第二CMake tree，不代签canonical build gate | 对应board或诊断owner |
+| 外部环境验证 | board SDK或设备 | 前置不满足时明确报告未执行 | 独立证据不代签canonical主机构建；仍遵守AGENTS单一build约束 | 对应board或诊断owner |
 
 ### 3.3 编译与设备热点修复的证据边界
 
@@ -403,7 +372,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 
 ### 4.3 Search correctness 与 exact gates
 
-- semantic、spatial、region和temporal choice domain从current TensorProgram惰性生成；choice闭合后立即生成actual TileRegion IR；
+- Graph semantic algorithm由05号固定；Spatial/Region domain从current TensorProgram生成并物化actual TileRegion，Temporal domain随后从live candidate op生成；
   layout、movement、bufferization、execution structure、communication和order的候选与验证只读各自current candidate IR；
 - temporal域同时覆盖完整all-iterator tile vector与selected traversal内会改变reuse/lifetime/tail的有限
   wave-loop order；regular
@@ -675,8 +644,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 ### 10.3 Coverage and end-to-end evidence
 
-- Production positive默认rank至少3、主要迭代维度至少1024，并成对覆盖1024与1025/1031，实际经过多Tile、
-  multiple block/wave、remainder和tail。tiny只用于有界oracle、最小负例和scalar/zero-rank，并有同机制真实规模对应项。
+- Production测试规模与tiny例外遵守AGENTS；本节按下列跨stage语义逐项取得证据。
 - generic chain/diamond/fanout/reduction、mixed compute/movement、layout/view、capacity rejection、attention prefill/decode
   分别检查exact coverage、owner、merge、tail、movement、lifetime、completion及直接下游结果，而不是只断言成功。
 - layout/movement cleanup必须成对覆盖same-layout、shared conversion、exact metadata view、full same-map transfer和

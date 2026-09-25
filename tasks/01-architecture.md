@@ -10,53 +10,17 @@
 
 ## 1. 架构原则
 
-1. **source semantics只有一个owner。** 数学语义来自verified program与structured tensor IR；compiler不从op、buffer、
-   parameter、symbol、文件名或workload名字恢复语义。
-2. **analysis、choice、actual candidate和publication分离。** Analysis从current source/candidate IR和immutable target facts重算；
-   pre-structural state只保存Spatial/Region choice。这些choice闭合后立即在独立transaction中物化actual TileRegion IR；graph attention
-   同时成为per-Tile三状态online-attention及actual merge/endpoints。Temporal choice随后只从live candidate operations建立并立即apply；
-   online-attention decomposition形成actual Linalg/Tensor/SCF；再后的
-   layout/bufferization、movement、execution structure、Instr/order/completion和memory只读各自current IR。Rejected/loser owner销毁，
-   final winner不重建并只发布一次。
-3. **graph algorithm与physical-dataflow decision分层。** 05号normalization在policy分叉前把已证明的完整Q/K/V attention一次性归一为
-   一个自包含semantic op并确定FA或FD；physical-dataflow search不重新选择graph algorithm，只展开Tile placement、不同op/branch/wave并行、
-   TileRegion membership和explicit replica。Structural choice闭合后立即进入actual IR；自由temporal tile/loop order再由live op interfaces
-   生成并立即apply，fusion由
-   current SSA、indexing relation和effect决定。Physical encoding、
-   storage、communication、movement和buffered overlap均在current candidate IR上实施。下游不得late fallback、reselection或repair。
-   只有通过共同actual gate的owner进入winner比较和publication。
-4. **spatial mapping和TileRegion membership先物化，自由temporal tiling再从current IR闭合。** Fusion不是独立
-   delivery/placement choice；Region materialization后，standard tile-and-fuse只从current SSA、op interfaces、indexing relation和effect决定actual
-   loop内/外producer。`tile.region`先表示一个Tile内的selected execution/local-storage scope；只有movement闭合后的physical form才表示
-   SPM ownership/lifetime domain。current `tile.module`可有一个或多个non-nested regions。
-   region内部可以有多个actual traversal/loop nest、不同tile shape、逐root lifetime、explicit replica及typed movement；
-   跨region data必须显式DDR materialize，SPM root/value/alias不跨界。Stored/direct、retain/recompute和spill不作为Region旁路状态；
-   只有改写后的operation、SSA、allocation与movement表达这些结果。
-   region boundary不自动产生join，只要求仍访问其SPM roots的work完成；Tile entry completion闭合observable effects。
-5. **output原子形成。** 单Tile、单traversal、代表program或未覆盖card内all-and-only Tile modules的partial set
-   都不是可发布结果；全部Tile通过后才形成`DeviceExecutable`，所有package成员readback通过后才发布`ExecutablePackage`。
-6. **同一次target lowering服务两个consumer。** device link与repo-owned TargetCall/SystemC CModel消费同一owner-backed
-   target module set，禁止为模型第二次lower或从package反向重建compiler output。
-7. **证据不越级。** verifier、no-card、target model、profile-scoped hardware behavior、exact package、board
-   correctness、packet和timing是不同证据层；SystemC只提供untimed functional-event容器，板端单case也只证明绑定
-   profile与输入域内的行为，二者都不能自动证明vendor packet、通用hardware numeric、性能或cycle accuracy。
-8. **扩展先有consumer。** 当前IR能重算的事实不新增attr/sidecar；新op、type、attr或output字段必须有明确creator、
-   verifier、lowering和downstream consumer。
-9. **rewrite采用必须有实效。** linked、registered或debug可调用不等于机制就绪；planning mechanism必须有production
-   consumer，selected rewrite必须由named pipeline在通用source上构造actual IR并被下游直接消费。机制具备direct witness不等于production采用；只有统一选择中的
-   `search` winner由`wafer-compile`原子提交，才形成production采用证据。实现复用MLIR interface、
-   PatternRewriter和DialectConversion，不建立独立机制审批或registry。
-10. **先复用MLIR语义。** DPS、tiling、view/subset、effect、type inference、rewrite和conversion由标准interface/
-    IR机制拥有；Wafer-specific interface只填补明确target gap，不能把current op已有字段重新收集成Demand、Info、
-    Effect或Plan旁路对象。selected target事实进入typed Wafer IR，派生关系保持局部analysis。
-11. **编译成功与发布成功是同一事实。** source-to-package library的primary result是已readback且原子提交的
-    `ExecutablePackage`，不是中间`DeviceExecutable`。CLI成功状态与package可见性一一对应；target-model、IR dump和
-    board qualification是独立consumer，不能在package提交后改写production compile结果。
-12. **大参数所有权和layout逐层明确。** verified source给出logical parameter/constant identity以及transaction-owned
-    `ProgramDataRange`；target ABI给出`TargetTensor`的dtype、shape、`MemLayout`、physical bytes与alignment；package writer再决定
-    `program-data.bin`中的offset；runtime只把file range映射为`BoardDeviceMemory base + offset`。这四层不能互相推断，path、name、
-    shape或相同digest也不创建sharing。每次compile对每个`TargetTensor`只转换一次；program data非空时，runtime对完整文件只分配和上传一次，
-    为空时不产生对应provider调用。
+- 数学语义来自verified source和current IR；不从op、buffer、parameter、symbol、文件或workload名称恢复。
+- Analysis只读current IR和显式target facts；choice立即作用于candidate-owned IR，verify后重算analysis。
+  Rejected/loser销毁，winner持有实际通过验证的同一owner，不重放旁路计划。
+- 新对象须有明确creator、verifier、lowering和consumer，优先使用标准MLIR接口；不把可重算事实复制到attr/sidecar。
+- 机制就绪须有真实source到直接下游的witness；production采用另须由统一search选择winner并由wafer-compile提交，linked/registered或debug可调用不代签。
+- Graph algorithm由05号normalization确定；06号只选择物理执行。IR层次及专业细节分别由下述owner维护。
+- 全部Tile通过资源和target检查后才形成DeviceExecutable；全部package成员readback后才原子发布。
+- Device link与TargetCall/SystemC消费同一次lowering的owner-backed target modules；模型不另行lower或从package反建IR。
+- Host、model、no-card、board、packet和timing证据分别验收，不能互相代签。
+- ProgramTensor、TargetTensor、数据range与读取owner分离；同次compile每个TargetTensor只转换一次。
+  Runtime对非空program data整文件分配/上传一次，空文件不调用provider；精确数据身份与共享条件归02/15号。
 
 ## 2. End-to-End Pipeline Contract
 
@@ -169,45 +133,15 @@ output的实现索引，不能提升为额外架构层。
 由target/package owner readback；它不是planner choice，也不是physical-dataflow completion前置。当前schema和字段状态以
 `tasks/progress.md`、target/package owner文档及live public types为准。
 
-## 5. Physical-Dataflow Selection 边界
+## 5. 物理执行选择
 
-card-local optimizer-ready TensorProgram是candidate generator的语义输入。required normalization由05拥有；
-physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer OpInterface和可重算`IndexRelation`读取当前IR。
+`none`从固定规则直接构造baseline；`search`拥有structural choice frontier。两者分别持有attempt/candidate owner，
+均从同一normalized TensorProgram出发；不互相fallback。Spatial/Region先形成actual TileRegion，随后Temporal、
+layout/bufferization、movement、execution structure和Instr在同一current IR上依次落实。
 
-责任严格分层：
-
-1. 05号normalization只从typed SSA证明完整Q/K/V attention并产生一个`wafer.linalg_ext.attention`；FA/FD是op上的
-   fixed graph fact，不进入physical search domain。K/V spatial partition由Spatial choice选择；materialization直接把graph op转换成
-   per-Tile三状态online-attention和selected merge/finalize。K/V local block由该current op的stateful `TilingInterface`选择并物化，
-   随后确定性decomposition构造actual Linalg/Tensor/SCF implementation，再
-   确定性转换为existing wafer.tile compute。未来若引入其它semantic optimization，
-   必须由自己的设计定义表示与selection owner，不能复用attention attr充当registry；
-2. Query-local analysis从current source或candidate IR形成exact demand、ready/live set、`IndexRelation`、liveness/lifetime和
-   resource/dependence graph；这些结果可失效、可重算，不跨IR mutation或进入accepted output；
-3. Pre-structural state只保存Tile/work assignment、TileRegion membership和explicit replica choice。选择闭合后立即物化actual TileRegion IR；
-   Temporal及layout/movement/transport、execution structure、buffer/slot和issue/event order从各自current IR生成并立即apply，不得作为
-   future IR state跨stage传递；
-4. current theoretical cost只聚合comparison cohort统一enabled的numeric terms；有实际参数用实际值，其次用已有理论值，完全未知的term对
-   整批候选删除。performance Unknown、proof/promotion margin不属于选择合同；
-5. Spatial/Region choice闭合后立即构造一次actual TileModule/TileRegion；Temporal及后续choice作用于current IR。Rejected/loser owner销毁，
-   allocator、completion、communication和cost owner均不产生repair；
-6. Candidate TileModule set先在current physical TileRegion上物化execution structure/rotating slot，再投影为all-and-only Tile Instr programs，
-   在current Instr上应用worker/order并fresh重建completion；completion-closed Instr再经过actual SPM/DDR/transport/ABI gates，memory leaf不补join/wait；
-   Accepted results按actual cost与semantic tie-break比较，final winner保留首次accepted owner并原子形成DeviceExecutable/package publication。
-
-Graph attention由一个explicit `wafer.linalg_ext.attention`表示。Normalization从Linalg indexing map、iterator、scalar region、use-def、view和
-observable semantics证明完整Q/K/V关系，并从functional KV-cache append/return SSA确定FA或FD。Spatial planning选择physical K2 partition和
-merge Tile，exact-demand analysis证明coupled partial/merge；physical search不构造algorithm alternatives。Structural materialization直接创建
-per-Tile `wafer.linalg_ext.online_attention`的Accumulator/Maximum/Sum、remote endpoints和selected merge/finalize。随后Temporal stage从live
-interfaces切parallel/K2，decomposition再生成actual Linalg/Tensor/SCF；整个过程不保存future inventory或plan-ID mapping，final winner不重建。
-KV cache继续是普通tensor SSA/function-result语义，不进入runtime-owned cache或名字/参数matcher。
-
-合法候选域使用event dispatch和finite semantic breakpoints惰性生成。exact coverage、topology symmetry、canonical
-dedup和已证明的performance bound可以在不删除合法最优解时剪枝；SPM capacity只由current candidate actual planning决定。beam、候选cap、随机启发式或其它
-可能损失最优性的trade-off只能在实际负载profiling后启用并持续用小图完整枚举oracle校准。`none`保留同pipeline
-deterministic baseline；driver/process cancellation终止整个transaction且不发布partial output。
-
-详细算法由05/06拥有；selected MPMD与TileRegion materialization、physical realization和direct target-abstract lowering分别由07、08和10拥有。
+Attention的固定FA/FD语义、三状态online form和decomposition由[05号](05-local-compute-normalization.md)定义；
+查询域、预算、候选排序与事务由[06号](06-physical-dataflow-synthesis.md)定义。预算不把unknown改成合法或不可行，
+SPM准入只由actual planning决定。取消整个compile时销毁transaction，不发布部分结果。
 
 ## 6. Selected Execution、Memory、Communication 与 Completion
 
@@ -225,7 +159,7 @@ deterministic baseline；driver/process cancellation终止整个transaction且�
 - Direct、Ring和ordered-Tree只作为movement planning的topology-aware proposals，展开为普通transfer/combine plan；Ring cycle和Tree edge/root从
   current topology/placement推导。selected IR只保留p2p、local work、token/wait/typed completion，不保存算法名或通信sidecar。
 - `wafer.tile.region`的structural/layout-resolved form保存selected execution与尚未physical闭合的logical boundary；physical form才是
-  SPM residency domain，数据operand/result为variadic DDR或由typed communication闭合，SPM root/value/alias禁止跨boundary。
+  SPM residency domain，数据operand/result为variadic DDR或由typed communication闭合，只有满足07号`resident`、同Tile owner和lifetime/completion证明时才允许SPM boundary；其它SPM alias禁止跨界。
   current `tile.module`可有一个或多个non-nested regions；多个traversal、不同tile shape、逐root lifetime、resident edge和
   selective spill/reload由SCF/SSA/movement表达。region cut是联合搜索选择并显式materialize的dataflow action，不是结构推断；
   completion owner依据final effects/events/ranges在root释放、真实observer和Tile entry completion处闭合，不能把region结构自动当成join。
@@ -290,48 +224,12 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 7B block、GEMM/MLP、convolution、attention和branched workload只是通用算法与scale evidence；模型名、shape、parameter位置和
 最终fusion视图不进入IR协议、query key或rewrite规则。
 
-## 10. 稳定跨stage合同
+## 10. 专业设计入口
 
-| 维度 | 稳定合同 |
-| --- | --- |
-| source | 产品adapter与pre-exported input形成唯一static-ranked StableHLO source；card partition显式；logical data identity、checked range与transaction lifetime分离 |
-| decision | graph normalization产生fixed semantic roots；baseline从current TensorProgram和固定规则直接构造actual IR，不创建search choice state；search才拥有structural choice frontier和materializer；两者后续都只在各自current IR上变换，只有Accepted owner进入发布 |
-| value semantics | 算术operation和dtype语义由上游IR拥有；physical-dataflow只消费这些事实，不增加数值policy或search axis |
-| physical realization | top-level TileModule/TileRegion、typed physical movement、Instr及actual lifetime-derived SPM/DDR offsets共同闭合 |
-| communication | endpoint、payload、token、wait和completion来自current topology、selected movement及actual lifetime；不存在late route或同步repair |
-| output/runtime | all-and-only Tile DeviceExecutable、same-lowering target modules、target-ready immutable data、ExecutablePackage和side-effect-free no-card计划形成单一发布链 |
-| evidence | hard legality/capacity与performance estimate分离；host、model、no-card、board correctness、packet和timing各自只签发本层结论 |
+各层唯一owner与文件导航见[设计索引](README.md)，任务状态和直接前置见[progress](progress.md)。
+本架构不复制专业合同、施工顺序或另一份owner清单。
 
-本表不记录施工顺序、完成状态或外部门禁；这些只读`tasks/progress.md`与current实施计划。
-## 11. Owner 索引
-
-| Stable boundary | Owner |
-| --- | --- |
-| 主架构、IR/module/package graph与跨层不变量 | 01 |
-| frontend program directory与verification | 02 |
-| Shardy/XLA SPMD与card-level partition | 03 |
-| target topology、card partition与Tile domain | 04 |
-| local structured tensor normalization、attention graph algorithm与collective boundary | 05 |
-| physical-dataflow selection、candidate materialization与DeviceExecutable构造 | 06 |
-| selected TileModule/TileRegion materialization与SPM ownership/lifetime containment | 07 |
-| physical encoding attr/type语义、view、transfer realizability analysis与descriptor cover | 08 |
-| SPM lifetime、allocation与accepted offsets | 09 |
-| source-op typed lowering interface/external model与selected compute/movement IR | 10 |
-| complete instruction IR、geometry与narrowing legality | 11 |
-| DDR demand、lifetime与accepted offsets | 12 |
-| card-partition collective boundary、Tile communication lowering与card-scoped Direct DTE verification | 13 |
-| target conversion、CRT ABI、TargetLLVM/module writing与capability registry | 14 |
-| typed manifest、package、RuntimeInvocationPlan与provider boundary | 15 |
-| 跨stage verification contract与evidence口径 | 16 |
-| target execution model、`WaferTargetNumericBackend`、SystemC与board correlation | 17 |
-| source/build ownership、依赖与测试镜像 | 18 |
-| 跨IR层的ODS、interface、operation-scoped pass/analysis、rewrite/conversion与named pipeline工程合同 | 19 |
-| profile-scoped compiler-hardware行为与外推边界 | `docs/tx81-compiler-hardware-calibration.md` |
-
-编号是owner导航，不表示transform顺序或任务优先级。专题文件路径只从`tasks/README.md`读取，动态前置只从
-`tasks/progress.md`读取；不要在其它文档绑定本文件章节号。
-
-## 12. 长期扩展规则
+## 11. 长期扩展规则
 
 跨卡transport、dynamic shape、quant、compute-time streamed weights、MoE、跨package persistent prepack/cache和timing
 calibration都是合理方向；offline target-ready data与bounded source range ownership不属于这些远期执行能力，

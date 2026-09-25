@@ -82,64 +82,23 @@ bookkeeping及单library helper留在`lib/Wafer/...`的private header。`include
 目录和target使用稳定语义名称，不含任务号、TX81目录、`V2`、`Current`、`Legacy`、`Facade`或实现状态。外部ABI文件中的
 TX81 spelling保持原协议。重命名必须同步定义、直接consumer、verifier/lowering、CMake、测试和current文档。
 
-## 3. 目标源码树
+Type用名词，函数用动词短语，conversion同时说明source和target；namespace、强类型或parent已消除歧义时不重复限定。
+一个函数、pass或文件只解决一个明确问题；新增对象直接服务于legality、transformation、lowering或diagnostic。
+删除旧实现前指出新实现和对应测试；大规模迁移记录旧能力到新代码、正式调用路径和测试的映射。
+source未进CMake不等于无用。源码树不保留空目录、无consumer fixture、未注册test或generated cache。
 
-`include/Wafer`与`lib/Wafer`的稳定component如下：
+## 3. 目录细分
 
-```text
-Wafer/
-├── ABI/
-├── IR/
-│   ├── LinalgExt/
-│   ├── Tile/
-│   ├── Instr/
-│   └── Topology/
-├── Analysis/
-│   ├── ControlFlow/
-│   ├── Module/
-│   ├── Linalg/
-│   ├── Tile/
-│   └── Instr/
-├── Planning/
-│   └── PhysicalDataflow/
-├── Transforms/
-│   ├── Module/
-│   ├── StableHLO/
-│   ├── Linalg/
-│   ├── Tile/
-│   └── Instr/
-├── Conversion/
-│   ├── StableHLOToLinalg/
-│   ├── TileToInstr/
-│   └── InstrToLLVM/
-├── CodeGen/
-│   └── LLVM/
-├── Frontend/
-├── Driver/
-│   ├── PhysicalDataflow/
-│   ├── ProgramData/
-│   └── StandaloneTileModules/
-├── Target/
-│   └── PhysicalTensor/
-├── Simulator/
-│   ├── Memory/
-│   ├── Invocation/
-│   ├── Kernel/
-│   ├── Reference/
-│   │   ├── Formal/
-│   │   └── Numeric/
-│   ├── OneDNN/
-│   └── SystemC/
-├── Package/
-│   ├── Manifest/
-│   ├── Profile/
-│   └── Writer/
-├── Runtime/
-│   ├── Board/
-│   ├── Invocation/
-│   └── Profile/
-└── Support/
-```
+一级component及第二层规则见§2。下表只列其中需要额外约定的细分；实际文件清单由源码与CMake共同维护，本文不复制目录树。
+
+| Component | 细分职责 |
+| --- | --- |
+| IR | LinalgExt、Tile、Instr、Topology |
+| Driver | PhysicalDataflow、ProgramData、StandaloneTileModules |
+| Target | PhysicalTensor |
+| Simulator | Memory、Invocation、Kernel、Reference/{Formal,Numeric}、OneDNN、SystemC |
+| Package | Manifest、Profile、Writer |
+| Runtime | Board、Invocation、Profile |
 
 ## 4. 关键owner边界
 
@@ -310,7 +269,7 @@ Conversion不得调用tool；compiler core不得依赖Runtime/Board或Simulator 
 
 CMake为稳定component建立真实library target并显式列出source、generated dependency和`LINK_LIBS`。不得跨目录通过父作用域
 聚合source list，也不得以单个全组件unit executable掩盖public-header、自包含或link closure错误。同一translation unit只能被
-一个production library编译；需要共享时先建立最窄真实library。
+一个production library编译；需要共享时先建立最窄真实library。Component依赖不得形成环。
 
 ## 7. 组织门禁
 
@@ -340,6 +299,10 @@ CMake为稳定component建立真实library target并显式列出source、generat
 - 移动内容同步更新实际链接。归档中的历史symbol、命令和版本保持原意，不机械改成现行实现。
 
 文档修改的覆盖检查如下；不以减少行数替代内容核对。
+
+内容精简须逐条区分有效约束、重复定义、历史施工和未实现方案。重复规则收敛到一个现行owner并保留直接链接；
+调整AGENTS时保留约束的适用范围与强度，专业细则可由它明确引用的编号设计承接。当前能力与已撤回方案分开说明；
+未经源码或现有证据确认的结论不能因删字变成“已支持”。不为缩短单页继续增加只有转述作用的专题文件。
 
 | 输入类别 | 必须保留或修正的内容 | 直接消费者检查 |
 | --- | --- | --- |

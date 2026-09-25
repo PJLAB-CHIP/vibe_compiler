@@ -428,13 +428,13 @@ reshape fold：splat的切片可直接重塑同一scalar attribute，不必枚�
 | temporal主块/尾块、动态offset且静态result | 沿用实际slice和原initializer tiling，不为完整常量生成SPM buffer | 多block/tail后actual allocator成功 |
 | 单矩形双值literal；rank3/4、1024/1025、FP16/BF16及F32 | 背景、矩形及完整结果逐位一致；零个global读取，实际fill与insert_slice进入bufferization | source AvgPool边界计数、actual Instr/SPM及完整输出 |
 | 多值、非矩形、超过扫描预算、未折叠view、完整值仍被使用 | 不误改数值或擅自缩小真实需求；现有pow指数处理保持 | 负向保留与正式consumer回归 |
+| 原ViT及固定FP16 LLaMA | 默认预算、原始source/dtype；记录实际候选与包，无卡不代签板端 | 完整模型编译/no-card及原包/IR对账 |
 
 规则literal的物化是selected storage阶段对实际常量字节的确定表示，不是ordinary graph等价搜索。
 比较标准memref.global的常量地址方案与已有fill/insert_slice路径：当前target ABI没有隐式global地址通道，
 后者直接复用已支持的内存和movement语义，避免给边界计数另设ABI。每个literal最多扫描1,048,576个元素，
 只控制这次只读压缩工作，不作为SPM admission或候选合法性；不能压缩时保留原literal及原typed下游结果。
 测试必须同时检查不规则literal未被错误物化和真实AvgPool的直接消费者，不能由“没有global”单独签正确性。
-| 原ViT及固定FP16 LLaMA | 默认预算、原始source/dtype；记录实际候选与包，无卡不代签板端 | 完整模型编译/no-card及原包/IR对账 |
 
 ### 5.3 Temporal tiling
 
@@ -481,8 +481,8 @@ Pinned `SwapExtractSliceWithFillPatterns.cpp` 的单 use 前置只能覆盖单�
 
 本项覆盖要求由本节拥有；当时的验证结果见[性能优化归档](../archive/board-performance-optimization.md)的通用temporal修复节。
 
-每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。第12项输出后，
-规划阶段的 region/root 记录和预物化 temporal 状态均已在本边界消费，不能作为第13项的 operation identity。
+每个actual traversal选择complete temporal tile vector和loop order，不允许单一标量`tile_size`代替多轴语义。structural materialization输出后，
+规划阶段的 region/root 记录和预物化 temporal 状态均已在本边界消费，不能作为temporal tiling的 operation identity。
 Baseline和search分别从自己candidate内的live `TilingInterface` operation建立query-local domain；choice选中后
 立即rewrite同一owner并销毁domain。需要试行alternative时，controller clone最近的`IsolatedFromAbove` owner并用该次clone的
 `IRMapping`取得对应operation，不按名称、walk order或ordinal恢复。
@@ -526,7 +526,7 @@ state省略的consumer broadcast轴保持full extent，公共行轴使用一致t
 
 `online_attention`的parallel/output/K2轴使用同一个`TilingInterface`，K2 tile以三个DPS result携带actual
 Accumulator/Maximum/Sum。FA在唯一spatial owner内形成K2 recurrence；FD的每个local contribution在自己的exact K2 interval内形成相同
-recurrence。K1在该层保持full extent，decomposition后成为QK Linalg contraction的普通reduction codegen问题。第14项不再选择K1/K2、
+recurrence。K1在该层保持full extent，decomposition后成为QK Linalg contraction的普通reduction codegen问题。online-attention decomposition不再选择K1/K2、
 contribution或merge Tile。
 
 Temporal tiling已经产生actual `tensor.extract_slice`后，若其source是仅删除unit维度的collapse，
@@ -707,8 +707,8 @@ output/K2 partition、Tile embedding、Region membership和FD merge Tile。Struc
   merge/finalize；本地state直接接SSA，remote state通过三个actual tensor endpoints进入merge Region；
 - merge op不保存Tile ID；parent TileModule给出位置，SSA operands给出参与者。Spatial choice在成功物化后销毁。
 
-第13项在这些current ops上执行ordinary/parallel `TilingInterface` tile-and-fuse，并对online-attention K2调用pinned
-stateful `TilingInterface` SCF tiler。它不查看内部QK/PV，也不预构造score tensor。第14项随后只把已经tiled的
+temporal tiling在这些current ops上执行ordinary/parallel `TilingInterface` tile-and-fuse，并对online-attention K2调用pinned
+stateful `TilingInterface` SCF tiler。它不查看内部QK/PV，也不预构造score tensor。online-attention decomposition随后只把已经tiled的
 `online_attention`确定性分解成QK contraction、scale/mask、Maximum/Sum/Accumulator update、PV和tensor slices；不重新选择tile、
 contribution或merge owner，不接收future inventory，也不clone整个candidate owner。进入layout时两种attention op都必须为零。
 
