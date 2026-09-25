@@ -13,6 +13,9 @@ PyTorch板测入口在真实板测时默认开启轻量计时，同时记录stre
 `--no-card`默认仍验证普通包，明确使用`--kernel-timing`可验证计时capture。
 显式`--profile`仍执行完整profile；需要与旧性能基线同口径的无插桩普通包时，使用`--no-kernel-timing --device-timing`。
 轻量模式只运行timing capture一次，保留正常完成与清理，不运行完整profile的三次采集。
+Profile元数据默认不设固定文件大小或记录数上限，完整调用点清单不会因模型变大而被默认预算拒绝。
+嵌入式调用者可通过`PackageParseLimits`显式设置profile资源预算；结构、内容、capture与摘要校验始终执行，
+具体边界见[15号package合同](../tasks/15-launch-runtime-package.md#3-current-package-schema)。
 普通包没有首尾插桩，也没有record分配。两种event口径在记录中分别标明，不能互作性能回归样本。
 
 正式case集合新增BF16 NCx性能配置：`single-card-gemm-m4096-k1024-n4096-ncx`（seed20260803）及

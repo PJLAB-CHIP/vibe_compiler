@@ -369,8 +369,11 @@ struct PackageManifest {
 
 struct PackageParseLimits {
   uint64_t maxJSONBytes = 16 * 1024 * 1024;
-  uint64_t maxProfileJSONBytes = 16 * 1024 * 1024;
   uint64_t maxRecords = 65536;
+  // Profile inventories grow with the program. Only impose resource budgets
+  // when the caller supplies them; zero is an explicit empty budget.
+  std::optional<uint64_t> maxProfileJSONBytes;
+  std::optional<uint64_t> maxProfileRecords;
   uint64_t maxStringBytes = 4096;
   uint64_t maxShapeRank = 16;
   uint64_t maxJSONNesting = 32;

@@ -129,9 +129,11 @@ requireObject(const llvm::json::Value &value, llvm::StringRef context) {
 
 llvm::Error accountRecords(uint64_t amount, uint64_t &total,
                            const PackageParseLimits &limits) {
-  if (amount > limits.maxRecords || total > limits.maxRecords - amount)
-    return invalid("profile instrumentation exceeds record limit");
+  if (amount > std::numeric_limits<uint64_t>::max() - total)
+    return invalid("profile instrumentation record count overflows");
   total += amount;
+  if (limits.maxProfileRecords && total > *limits.maxProfileRecords)
+    return invalid("profile instrumentation exceeds record limit");
   return llvm::Error::success();
 }
 
@@ -153,8 +155,11 @@ loadJSONDocument(llvm::StringRef path, llvm::StringRef label,
     return llvm::createStringError(buffer.getError(),
                                    "failed to read " + label + ": " + path);
   llvm::StringRef contents = (*buffer)->getBuffer();
-  if (contents.size() > limits.maxProfileJSONBytes)
-    return invalid(label + " exceeds JSON byte limit");
+  if (limits.maxProfileJSONBytes &&
+      contents.size() > *limits.maxProfileJSONBytes)
+    return invalid(label + " exceeds JSON byte limit: " + path + " (" +
+                   llvm::Twine(contents.size()) + " bytes, limit " +
+                   llvm::Twine(*limits.maxProfileJSONBytes) + ")");
   if (exceedsJSONNesting(contents, limits.maxJSONNesting))
     return invalid(label + " exceeds JSON nesting limit");
   llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(contents);

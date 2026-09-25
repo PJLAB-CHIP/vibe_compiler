@@ -50,8 +50,7 @@ writeJSONFile(llvm::StringRef path,
                             error.message());
     return mlir::failure();
   }
-  // Large site maps must spend their bounded byte budget on records, not
-  // indentation. Keep all profile documents compact, as package manifests are.
+  // Keep large site maps compact without dropping any program records.
   llvm::json::OStream json(output, /*IndentSize=*/0);
   write(json);
   output << "\n";
@@ -66,16 +65,6 @@ writeJSONFile(llvm::StringRef path,
     reject(diagnostics,
            "failed to read back profile instrumentation metadata: " +
                readback.getError().message());
-    return mlir::failure();
-  }
-  if ((*readback)->getBufferSize() >
-      runtime::PackageParseLimits{}.maxProfileJSONBytes) {
-    reject(
-        diagnostics,
-        ("profile instrumentation metadata exceeds JSON byte limit: " + path +
-         " (" + llvm::Twine((*readback)->getBufferSize()) + " bytes, limit " +
-         llvm::Twine(runtime::PackageParseLimits{}.maxProfileJSONBytes) + ")")
-            .str());
     return mlir::failure();
   }
   llvm::Expected<llvm::json::Value> parsed =

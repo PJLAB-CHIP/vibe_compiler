@@ -24,7 +24,8 @@
 用户随后授权把现有正式板测配置全部重跑一轮，每项补齐 kernel timing；`board-testing` 重新为 `doing`，
 本轮不继续 LM/Tensor 算法整改或另起性能优化。用户进一步授权修复三项 biased-conv 的 profile JSON 打包超限，
 三项已通过紧凑JSON写入修复、fresh no-card与单次实卡，保持全部计时记录及原数值门槛；
-同类ResNet18及其余矩阵继续验证，具体结果见本轮计划。
+本轮已有79项、83个step通过实卡；ResNet18紧凑metadata仍超过原固定上限。
+用户已授权把profile容量限制改为可选资源预算、默认不设固定上限，当前补齐读取边界验证后重测ResNet18；具体结果见本轮计划。
 
 当前顺序：冻结工具身份与清单→fresh source/reference/timing package/no-card→逐项单次实卡→完整输出、guard、
 16 Tile kernel 本体与同次 event 及设备健康汇总。输入为之前 75 项既定配置加后续 5 项已验收 GEMM/attention 配置，

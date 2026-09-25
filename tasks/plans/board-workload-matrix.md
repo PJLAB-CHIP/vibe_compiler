@@ -40,6 +40,12 @@ kernel本体分别1.614/1.660/1.670 ms。25项runtime单测、peer/shared-DDR pr
 全部source与首次失败输入逐byte相同；metadata由约19.39/19.90/20.40 MiB降至13.93/14.30/14.66 MiB。
 精确字节数、记录数和实际板测见[修复证据](../../docs/data/board-performance/profile-metadata-compact-20260925.json)。
 随后ResNet18也暴露同一JSON超限，纳入相同修复的产品复验；其结果待本轮矩阵汇总，不扩大算法整改。
+ResNet18紧凑site-map仍为22659181 bytes，第二次host尝试被原16 MiB预算拒绝，尚未上板。
+用户明确要求不再设死阈值：按15号把profile的字节与record预算改为可选、默认不设上限，保留全部结构及内容校验。
+补齐默认大metadata读取、显式预算边界及损坏反例后，仅重新构建和补测ResNet18；其余79项、83个step的本轮实卡证据保留。
+可选预算实现的主机验证已通过：100项Runtime、34项Package、44项RunBoardIO、communication-profile及wafer-run两项lit，
+canonical完整增量及Ninja no-op；板端runner已按同一build重建。新profile fixture含16 Tile、81936个调用点，
+默认完整读取超过旧byte/record上限的清单，显式相等/少一/零预算及原损坏反例均已验证。ResNet18 fresh产品复验进行中。
 已完成的实卡结果保留原工具身份；构建切换在设备case边界进行，失败的host尝试保留，不重复已完成的实卡。
 
 ## PyTorch case 集合与统一计时（2026-09-23）

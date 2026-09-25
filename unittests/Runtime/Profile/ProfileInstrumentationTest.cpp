@@ -524,13 +524,13 @@ protected:
   llvm::SmallString<256> instrumentation;
 };
 
-TEST_F(ProfileInstrumentationTest, ProfileMetadataUsesItsOwnBoundedJSONBudget) {
+TEST_F(ProfileInstrumentationTest, ProfileMetadataUsesOptionalJSONBudget) {
   llvm::SmallString<256> path(instrumentation);
   llvm::sys::path::append(path, "site-map.json");
   auto contents = llvm::MemoryBuffer::getFile(path);
   ASSERT_TRUE(static_cast<bool>(contents));
   const std::string padded =
-      std::string(4 * 1024 * 1024, ' ') + (*contents)->getBuffer().str();
+      std::string(16 * 1024 * 1024, ' ') + (*contents)->getBuffer().str();
   std::error_code error;
   llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
   ASSERT_FALSE(error);
@@ -540,11 +540,16 @@ TEST_F(ProfileInstrumentationTest, ProfileMetadataUsesItsOwnBoundedJSONBudget) {
   ASSERT_NO_FATAL_FAILURE(writeActivation());
 
   wafer::runtime::PackageParseLimits limits;
+  EXPECT_FALSE(limits.maxProfileJSONBytes);
+  auto unlimited = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_TRUE(static_cast<bool>(unlimited))
+      << llvm::toString(unlimited.takeError());
   limits.maxProfileJSONBytes = padded.size();
   auto exact = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary, limits);
   ASSERT_TRUE(static_cast<bool>(exact)) << llvm::toString(exact.takeError());
-  --limits.maxProfileJSONBytes;
+  --*limits.maxProfileJSONBytes;
   auto tooSmall = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary, limits);
   ASSERT_FALSE(static_cast<bool>(tooSmall));
@@ -552,12 +557,97 @@ TEST_F(ProfileInstrumentationTest, ProfileMetadataUsesItsOwnBoundedJSONBudget) {
       llvm::toString(tooSmall.takeError()).find("profile site map exceeds"),
       std::string::npos);
 
+  limits.maxProfileJSONBytes = 0;
+  auto emptyBudget = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_FALSE(static_cast<bool>(emptyBudget));
+  EXPECT_NE(llvm::toString(emptyBudget.takeError()).find("JSON byte limit"),
+            std::string::npos);
+
   limits.maxProfileJSONBytes = padded.size();
   limits.maxJSONBytes = 1;
   auto packageTooSmall = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary, limits);
   ASSERT_FALSE(static_cast<bool>(packageTooSmall));
   llvm::consumeError(packageTooSmall.takeError());
+}
+
+TEST_F(ProfileInstrumentationTest, LargeSiteMapUsesOptionalRecordBudget) {
+  // This isolates parser budgets; the fixture's tiny ABI buffers are irrelevant
+  // to site inventory size. Real ResNet18 packaging is the product witness.
+  llvm::SmallString<256> path(instrumentation);
+  llvm::sys::path::append(path, "site-map.json");
+  auto contents = llvm::MemoryBuffer::getFile(path);
+  ASSERT_TRUE(static_cast<bool>(contents));
+  auto document = llvm::json::parse((*contents)->getBuffer());
+  ASSERT_TRUE(static_cast<bool>(document));
+  constexpr uint64_t sitesPerTile = 5121;
+  for (auto &tile : *document->getAsObject()->getArray("tiles")) {
+    auto *sites = tile.getAsObject()->getArray("sites");
+    const llvm::json::Object prototype = *sites->front().getAsObject();
+    const auto ordinal = *prototype.getInteger("target_call_ordinal");
+    for (uint64_t index = sites->size(); index < sitesPerTile; ++index) {
+      llvm::json::Object site = prototype;
+      site["site_id"] = index;
+      site["instruction_ordinal"] = index;
+      site["correlation_key"] =
+          "registry:" + std::to_string(ordinal) +
+          ":structural-occurrence:" + std::to_string(index);
+      sites->push_back(std::move(site));
+    }
+  }
+  std::string encoded;
+  llvm::raw_string_ostream output(encoded);
+  llvm::json::OStream json(output);
+  json.value(*document);
+  output << "\n";
+  ASSERT_NO_FATAL_FAILURE(writeText(path, encoded));
+  ASSERT_NO_FATAL_FAILURE(writeActivation());
+
+  wafer::runtime::PackageParseLimits limits;
+  EXPECT_FALSE(limits.maxProfileRecords);
+  ASSERT_GT(encoded.size(), 16u * 1024 * 1024);
+  constexpr uint64_t siteCount = 16 * sitesPerTile;
+  ASSERT_GT(siteCount, limits.maxRecords);
+  auto unlimited = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_TRUE(static_cast<bool>(unlimited))
+      << llvm::toString(unlimited.takeError());
+  EXPECT_EQ(unlimited->getSiteCount(), siteCount);
+  ASSERT_EQ(unlimited->getSiteMap().size(), 16u);
+  for (const auto &tile : unlimited->getSiteMap()) {
+    ASSERT_EQ(tile.sites.size(), sitesPerTile);
+    EXPECT_EQ(tile.sites.back().siteId, sitesPerTile - 1);
+  }
+
+  // Three captures, 20 static-cost records per Tile, and two Tile containers
+  // per Tile are accounted in addition to the actual site records.
+  limits.maxProfileRecords = siteCount + 3 + 16 * (20 + 2);
+  auto exact = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_TRUE(static_cast<bool>(exact)) << llvm::toString(exact.takeError());
+  --*limits.maxProfileRecords;
+  auto tooSmall = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_FALSE(static_cast<bool>(tooSmall));
+  EXPECT_NE(llvm::toString(tooSmall.takeError()).find("exceeds record limit"),
+            std::string::npos);
+  limits.maxProfileRecords = 0;
+  auto emptyBudget = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_FALSE(static_cast<bool>(emptyBudget));
+  EXPECT_NE(
+      llvm::toString(emptyBudget.takeError()).find("exceeds record limit"),
+      std::string::npos);
+
+  limits.maxProfileRecords.reset();
+  limits.maxRecords = 1;
+  auto manifestTooSmall = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary, limits);
+  ASSERT_FALSE(static_cast<bool>(manifestTooSmall));
+  EXPECT_NE(llvm::toString(manifestTooSmall.takeError())
+                .find("package manifest exceeds record limit"),
+            std::string::npos);
 }
 
 TEST_F(ProfileInstrumentationTest,

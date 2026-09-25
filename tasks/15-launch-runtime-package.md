@@ -81,13 +81,16 @@ Canonical JSON按serializer固定字段顺序输出紧凑对象和数组，只�
 identity、entry ABI或payload。完成检查覆盖16 Tile各2048/4000条shared workspace引用的合法roundtrip与binding、字节上限
 恰好相等/少一字节、record超限、截断及非canonical空白；实际source到package验证由统一板测计划的完整模型承担。
 
-Profile companion的target-site metadata覆盖16 Tile的全部typed target call，使用独立16 MiB JSON字节预算
-`PackageParseLimits::maxProfileJSONBytes`；普通manifest独立使用16 MiB的`maxJSONBytes`。
-Profile metadata的record/string/nesting与digest校验保持同一规则；writer和reader使用同一profile字节预算，
-超过该预算在发布/读取时明确失败，不能写出成功但默认runtime无法读取的profile。测试覆盖两种独立字节预算的边界。
-Profile writer同样输出紧凑JSON，仅保留末尾换行，避免site-map缩进空白挤占记录预算；字段、记录、digest和reader校验保持。
-超限诊断包含实际文件、字节数及上限。实际规模验证覆盖FP16 biased-conv的1024/1025/1031构包、timing no-card及实卡，
-直接reader边界测试和peer/shared-DDR profile产品测试覆盖字节限制、digest绑定及全部capture。
+Profile companion的target-site metadata覆盖16 Tile的全部typed target call；其规模随实际程序增长，
+不使用固定文件大小或record条数作为模型合法性条件。`PackageParseLimits::maxProfileJSONBytes`和
+`maxProfileRecords`为调用方可选的资源预算，默认均未设置；显式零表示零预算，不表示无限制。
+普通manifest的`maxJSONBytes/maxRecords`独立，不用于限制profile调用点清单。
+Profile writer输出紧凑JSON并通过默认严格reader验证后发布；reader仍校验exact字段、string/nesting、
+整数与计数溢出、全部Tile及site身份、capture合同和digest。显式资源预算不足时在设备作用前明确拒绝，
+不删减记录、不根据模型名特殊放行、不改schema、设备代码或计时协议，也不引入自适应内存阈值。
+直接下游为同一runtime profile/timing reader。完成覆盖为：超过旧16 MiB/65536条的合法metadata默认完整读取，
+显式byte/record预算恰好相等、少一及零预算，普通manifest预算独立拒绝，原损坏/摘要反例继续拒绝；
+实际产品覆盖三项biased-conv及完整ResNet18的fresh构包、timing no-card和实卡。
 
 `target`记录compiler-fixed target identity、runtime ABI和module format；`launch`直接记录current kernel launch mode、entry ABI和
 ordered phases。它们必须与DeviceExecutable、target module readback及全部entries逐项相等，runtime不得从module path或entry
