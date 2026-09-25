@@ -91,7 +91,45 @@
               "mean_abs_error": 2.413289642078098e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-m4096-k1024-n4096-ncx-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "b006855889d46e968f30ad2560364bef8fb468986f364ce61d4c6bcc783aeda9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  4096,
+                  1024
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  1024,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -190,7 +228,59 @@
               "mean_abs_error": 3.965543557693617e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-28-heads-2048-ncx-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -293,7 +383,59 @@
               "mean_abs_error": 3.965543557693617e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-28-heads-2048-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "34404487290c141d926eca712466517faecac2b73961b716adaffbf4d0be50ae",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  28,
+                  2048,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -395,7 +537,45 @@
               "mean_abs_error": 0.000240578658676327
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-4096-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "6cdfbd1680fd9543dd287efde185d12a2366d3300240abb8e28befa5c8ac1cb0",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -493,7 +673,45 @@
               "mean_abs_error": 0.00030439076586930014
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-4096-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "902aa6d51ba7e700d15451474a86bf66659ae3f300aa806bebafe4078cef874c",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -591,7 +809,45 @@
               "mean_abs_error": 0.00030822417685369484
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-tail-4097-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "9c083b4428da5fe73fd590d03847ca0ecb55454e39aeb8b1ec89abbadbd285d3",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  4097,
+                  4097
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  4097,
+                  4097
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  4097,
+                  4097
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -689,7 +945,35 @@
               "mean_abs_error": 0.0006795400404371321
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/llama-2-7b-block-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "08676c1da2ba0df3064de1b66ae0bda03c5d2d8ff6483051b89bbf4d7404acbe",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -800,7 +1084,35 @@
               "mean_abs_error": 8.751855057198554e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/llama-2-7b-block-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "9961bcd0e32dd27272f858b02b7067ca2f0d341cd4f9c13cd0cad40dd34072e0",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  16,
+                  4096
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -907,7 +1219,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/all-reduce-sum-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "7b4a2c8519e67b7a60a26357253fdc6b274c07faa7919334e3bfe269ba36ed4f",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  16,
+                  1024,
+                  1
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1024,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  16,
+                  1024,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1001,7 +1351,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/all-reduce-sum-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "cd9998a4e72bfcd50cbd318308e878dcb0a6ac66a4ae79ab19f3e88eab487d9e",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  16,
+                  1025,
+                  1
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1025,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  16,
+                  1025,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1095,7 +1483,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/all-reduce-sum-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "60e433240595d49aa3bcaaa1864f18a3d79eba7c4e8837ada9d69ff98db79ed8",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  16,
+                  1031,
+                  1
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1031,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  16,
+                  1031,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1190,7 +1616,47 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/allgather-add-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "661568cf21decc9ee5ced0289e1338390d7f2f92d6eb53cec2a924e9683b8af0",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  16,
+                  16,
+                  1,
+                  1024
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  16,
+                  16,
+                  1,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1285,7 +1751,47 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/allgather-add-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "085b189050158def7569bc403606621a6613144640f68e7f3cb7fc449c3702e7",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  16,
+                  16,
+                  1,
+                  1025
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  16,
+                  16,
+                  1,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1380,7 +1886,47 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/allgather-add-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "60ef15bb30efd224bbb35fddb94e04cb804d6115dc36aa0a5b41d9484723156c",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  16,
+                  16,
+                  1,
+                  1031
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1,
+                  1031
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  16,
+                  16,
+                  1,
+                  1031
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1474,7 +2020,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/alltoall-transpose-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "3a3add235db643990e79977c371922a823e305ee86c393a8cf524ecc8cc284f9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  1024,
+                  16,
+                  1
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1024,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1024,
+                  16,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1568,7 +2152,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/alltoall-transpose-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "88eec7d73499e83f5315eb48456345d8846b50ed9a7f3eb2e862fd8dc414df8c",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  1025,
+                  16,
+                  1
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1025,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1025,
+                  16,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1662,7 +2284,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/alltoall-transpose-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "450b60379f37aa4ce4045ae485a5778582c640b745097b950907f3ad249cd81b",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  1031,
+                  16,
+                  1
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1031,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1031,
+                  16,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1791,7 +2451,103 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-causal-decode-two-tokens-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "442f05e30abaca5e10c0d1c0f4736fd8e62617f3c2650a20fa7d2a438c1e723a",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_new",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_new",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 4,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -1928,7 +2684,103 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-causal-decode-two-tokens-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "8f8a4a0d11b089b64336c2973b380d8473fdeacfb220c943483616ee12735a95",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_new",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_new",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 4,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  2,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  1,
+                  1026,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -2064,7 +2916,90 @@
               "mean_abs_error": 2.530384790588869e-10
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-bfloat16/step_01/source-program/functions/forward.meta",
+            "source_meta_sha256": "e6c1c9805f574facdf8a12da8bdea5127038da2a75dbdef12295ade7c6c90a6d",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  1023,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  1023,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  1024
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         },
         {
           "step": 2,
@@ -2140,7 +3075,90 @@
               "mean_abs_error": 3.85249533304354e-10
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-bfloat16/step_02/source-program/functions/forward.meta",
+            "source_meta_sha256": "5b60ab92874991ef5b2271b0dd64ba3ecca4e22b5cba4a078f47723de1437287",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  1025
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -2315,7 +3333,90 @@
               "mean_abs_error": 2.816022970364429e-10
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-float16/step_01/source-program/functions/forward.meta",
+            "source_meta_sha256": "66b7a9ec010cf68327cb191a63a783694df117878c8b53ee39a4f4cddd10857b",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  1023,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  1023,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         },
         {
           "step": 2,
@@ -2391,7 +3492,90 @@
               "mean_abs_error": 3.0644203922370585e-10
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-float16/step_02/source-program/functions/forward.meta",
+            "source_meta_sha256": "e39acd6dd577de30d65a8ec02c47d4e53f09bf4113cc6f317532c7b7659a5f9f",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -2566,7 +3750,90 @@
               "mean_abs_error": 6.327506777931627e-11
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-long-4096-bfloat16/step_01/source-program/functions/forward.meta",
+            "source_meta_sha256": "79bfb7228eb1812f30de97eff0e74d7c71584ce071ace84c1616f135c02a0099",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  4094,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  4094,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  4095
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         },
         {
           "step": 2,
@@ -2642,7 +3909,90 @@
               "mean_abs_error": 9.640643838793039e-11
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-long-4096-bfloat16/step_02/source-program/functions/forward.meta",
+            "source_meta_sha256": "486b3ba24d69a789a3e1cc7db4c875c2119347fd4cb370f28271120bb8bc940c",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -2817,7 +4167,90 @@
               "mean_abs_error": 7.041776609653663e-11
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-long-4096-float16/step_01/source-program/functions/forward.meta",
+            "source_meta_sha256": "a3f09514449f8733348a2591e3dc02153c438b84170f8ff77eb0f3de8ec07f6b",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  4094,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  4094,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  4095
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         },
         {
           "step": 2,
@@ -2893,7 +4326,90 @@
               "mean_abs_error": 7.668532475690881e-11
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-decode-kv-cache-long-4096-float16/step_02/source-program/functions/forward.meta",
+            "source_meta_sha256": "18b7e2d6dc6f4d079689fbdf1684fee0dbd97895b415340dcc898f1dbaebb8ec",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_past",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_past",
+                "shape": [
+                  1,
+                  32,
+                  4095,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1,
+                  4096
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K_updated",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V_updated",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3039,7 +4555,70 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-fully-masked-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "f4292657e1c152cc62270945564c180bf356a47c45467dad649f69e6de138856",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  33
+                ],
+                "dtype": "bool"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3143,7 +4722,70 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-fully-masked-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "f385884125f25cdda86496853f0d8df76997e9d09caa52980e75e2e8687b63a9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  33
+                ],
+                "dtype": "bool"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3247,7 +4889,59 @@
               "mean_abs_error": 5.4912772820020495e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-gqa-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "59cb797325c9d46d6fc393ed5ffd49a57eb59bc17ac508c49ab080d7a73362cd",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  8,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  8,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3350,7 +5044,59 @@
               "mean_abs_error": 6.903135854940956e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-gqa-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "bb7d1ecbb87897cfee6cd36252bbf19e01939f3a2256bb02e5f2ca1f17f814a9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  8,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  8,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  32,
+                  1024,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3453,7 +5199,59 @@
               "mean_abs_error": 5.4757374170837534e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-gqa-tail-1025-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "ac0fb02918a3be4c760a6aa52c64d153f236d0e5546db0e46c65d6ff5fa33b1a",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  8,
+                  1025,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  8,
+                  1025,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3556,7 +5354,59 @@
               "mean_abs_error": 6.911380900774242e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-gqa-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "3a2c25484bb4768ae7af004241d623dbec11d65c7496f139214500f5f0e9fea2",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  8,
+                  1025,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  8,
+                  1025,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  32,
+                  1025,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3659,7 +5509,70 @@
               "mean_abs_error": 0.00019764257694987464
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-noncausal-additive-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "872355e29c2dc3329d116ced31b1dcd44f1ae1afe833230969256d4fc91a7315",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  33
+                ],
+                "dtype": "float32"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3762,7 +5675,70 @@
               "mean_abs_error": 2.4271264919661917e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-noncausal-additive-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "5d053ca4d490a3ee3cb231cba09ae396bfaf307621e970c3e02f9e5ed22865ce",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  33
+                ],
+                "dtype": "float32"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3865,7 +5841,59 @@
               "mean_abs_error": 0.00015680779142712709
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-noncausal-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "fe4836f10e760a20883524d44e107ee56c07b01ffe83dba4ecb3a42b7f512d4d",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -3967,7 +5995,59 @@
               "mean_abs_error": 1.9768833226407878e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-noncausal-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "24954be311b532000439f366f11e08cb1cc13e6a6167ea706dc33e81483ffabf",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4069,7 +6149,70 @@
               "mean_abs_error": 0.0001758072871780314
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-padding-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "f4292657e1c152cc62270945564c180bf356a47c45467dad649f69e6de138856",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  33
+                ],
+                "dtype": "bool"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4173,7 +6316,70 @@
               "mean_abs_error": 2.247294287371915e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-padding-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "f385884125f25cdda86496853f0d8df76997e9d09caa52980e75e2e8687b63a9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  33,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1,
+                  33
+                ],
+                "dtype": "bool"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4277,7 +6483,59 @@
               "mean_abs_error": 5.482793386590856e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "65181e4ef438971dee9f7e03c8d291551336ed9374c6ef87e19cb87fea72d98c",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4380,7 +6638,59 @@
               "mean_abs_error": 7.0958958531264216e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "111dc52b31f7e446486c72e99af741f4c76dc95277f6469fe75289c3a05bff80",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1024,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4483,7 +6793,59 @@
               "mean_abs_error": 3.5738137604823805e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-llama-2-7b-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "5d0c2d8c0e141bf9a7c1b75853c8ca3c7cbc3535a38285e00726cb5223fbd742",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  32,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4586,7 +6948,59 @@
               "mean_abs_error": 5.526621814635469e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-tail-1025-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "1d7b9a5c9cd5110327d2ccc29e8d3b65a551233a73d5963a978d1d739975aaa6",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4689,7 +7103,59 @@
               "mean_abs_error": 6.944528985314253e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "810a87b199741d8967608ea039c08c4f5167a5e23462b733595952dfc151211f",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4792,7 +7258,59 @@
               "mean_abs_error": 5.53878649938707e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-tail-1031-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "dee6b19ed6b70f35db5c5b90ab832d5c8d698689091548c142780aa5730c18a9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4895,7 +7413,59 @@
               "mean_abs_error": 7.25022881182505e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "ae5999066fa4f016574042215c1d5803f59a286219729a174eca42d027fc2bf8",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -4998,7 +7568,70 @@
               "mean_abs_error": 0.00011756059310467142
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-sliding-window-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "baddb3a8e0cbeca66726826f41cf2b2926ad9b47414e8b41e760e9305eb1a197",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  1031
+                ],
+                "dtype": "bool"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -5102,7 +7735,70 @@
               "mean_abs_error": 1.472424897478848e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-sliding-window-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "70413b4f00ba4fec6007921afa3b486f86613dcbb92d80f2cba70669fed98f65",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 3,
+                "name": "mask",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  1031
+                ],
+                "dtype": "bool"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -5206,7 +7902,59 @@
               "mean_abs_error": 5.569501598252029e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-valid-kv-prefix-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "0d4666aadde49da1b0faa2b8aa46fdc1710bc031b93954d619e13172739fc402",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -5309,7 +8057,59 @@
               "mean_abs_error": 7.0969996655859595e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-valid-kv-prefix-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "af565b88a9add242345bd9de6e09e584c3746857539542b5db77617615ac05d1",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  1,
+                  1031,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  1,
+                  1025,
+                  64
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -5411,7 +8211,45 @@
               "mean_abs_error": 3.72281753726611e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/batch-shared-rhs-gemm-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "0fda011a168073ab01376234b05f2ef69a43506882768aaea59be86cda9e0f28",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  4,
+                  1024,
+                  1024
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  1024,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  4,
+                  1024,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -5509,7 +8347,45 @@
               "mean_abs_error": 3.98056979692812e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/batch-shared-rhs-gemm-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "df5430964b02d09c3ab5fee94cabf2f8313a40ed9b2a42f517814459738ef3a1",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  4,
+                  1025,
+                  1031
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  1031,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  4,
+                  1025,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -5608,7 +8484,56 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/biased-conv-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "eac260b3960b8fb0549a7259fd6bf418d5f016837a0ff11c51c4864fc6143ac9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  3
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "bias",
+                "shape": [
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d600e7a07ed370a87e8c1d1b5f642b113bcb972a8d0029768b8bdd8fafe5b2b3",
@@ -5768,7 +8693,56 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/biased-conv-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "b239413257c487f6162da9c29abd5e09e8a2cdfff1630afc6ca6c379ef2b6d5f",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1025
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  3
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "bias",
+                "shape": [
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d600e7a07ed370a87e8c1d1b5f642b113bcb972a8d0029768b8bdd8fafe5b2b3",
@@ -5928,7 +8902,56 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/biased-conv-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "71f919286036e2e53e1b0781d484dbec9d544ac6ca817d5232e6dc33de5dfb3d",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1031
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  3
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "bias",
+                "shape": [
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1031
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d600e7a07ed370a87e8c1d1b5f642b113bcb972a8d0029768b8bdd8fafe5b2b3",
@@ -6101,7 +9124,65 @@
               "mean_abs_error": 0.020833333333333332
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/conv-mixed-dag-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "1ee083f59bb5c99432936cf12f65e67b9483662a86116337f61e11958df6e575",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1025
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  3
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "bias",
+                "shape": [
+                  24
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "joined",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1025
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "sum",
+                "shape": [
+                  1,
+                  24
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6215,7 +9296,65 @@
               "mean_abs_error": 0.021484375
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/conv-mixed-dag-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "34c1383364e62786f77acabd55996efebdabbceb675f22415f97b6be34639911",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  3
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "bias",
+                "shape": [
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "joined",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "sum",
+                "shape": [
+                  1,
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6311,7 +9450,45 @@
               "max_abs_error": 9.5367431640625e-07
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/division-float32/source-program/functions/forward.meta",
+            "source_meta_sha256": "1a60460b85a0a98c775897533c9cbec7a0f38bd69eb0a2987923b4955e4a8235",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  2,
+                  4,
+                  1024
+                ],
+                "dtype": "float32"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  2,
+                  4,
+                  1024
+                ],
+                "dtype": "float32"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  2,
+                  4,
+                  1024
+                ],
+                "dtype": "float32"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6405,7 +9582,45 @@
               "max_abs_error": 9.5367431640625e-07
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/division-tail-1025-float32/source-program/functions/forward.meta",
+            "source_meta_sha256": "9386a8171935bd3977a0dcf592599e01723d3694340ca74b9dc755729f8c3bcb",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  2,
+                  4,
+                  1025
+                ],
+                "dtype": "float32"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  2,
+                  4,
+                  1025
+                ],
+                "dtype": "float32"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  2,
+                  4,
+                  1025
+                ],
+                "dtype": "float32"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6499,7 +9714,45 @@
               "max_abs_error": 9.5367431640625e-07
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/division-tail-1031-float32/source-program/functions/forward.meta",
+            "source_meta_sha256": "b730e3ca2866d6a3a42b237b61acc82a0f735975866202eea8800262320cc325",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "lhs",
+                "shape": [
+                  2,
+                  4,
+                  1031
+                ],
+                "dtype": "float32"
+              },
+              {
+                "position": 1,
+                "name": "rhs",
+                "shape": [
+                  2,
+                  4,
+                  1031
+                ],
+                "dtype": "float32"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  2,
+                  4,
+                  1031
+                ],
+                "dtype": "float32"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6608,7 +9861,58 @@
               "mean_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/heterogeneous-tiling-dataflow-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "e7d4c9b06b026a59e0415da8542a8be2ea0ee6f5c6c14fd68f14dc6c2e9d50d3",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  96,
+                  64
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  64,
+                  80
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "bias",
+                "shape": [
+                  80
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "mixed",
+                "shape": [
+                  96,
+                  80
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "sum",
+                "shape": [
+                  96
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6708,7 +10012,34 @@
               "mean_abs_error": 0.008649159720662283
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/llama-2-7b-single-layer-lm-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "8202ff3b9edccd7eff6993bece709120b77d7d3711a8d21ce2af27020929569d",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "input_ids",
+                "shape": [
+                  1,
+                  16
+                ],
+                "dtype": "int64"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "logits",
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6821,7 +10152,34 @@
               "mean_abs_error": 0.0011090881550917403
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/llama-2-7b-single-layer-lm-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "aad972e0a923dd4a32f68f01298677f4fa0873f945b9b6cf7c9c2d7c3bcc8d58",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "input_ids",
+                "shape": [
+                  1,
+                  16
+                ],
+                "dtype": "int64"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "logits",
+                "shape": [
+                  1,
+                  16,
+                  32000
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -6931,7 +10289,48 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/local-conv-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "91495e9002ea056c6a1e1df60c167f7fd645b99dd41be6d21caac0bab2c0bc35",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  3
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7026,7 +10425,48 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/local-conv-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "44b023f89497ff942a19e3ed018d930d5faebceb51186893e9bdcd6d941ca50b",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1025
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  2,
+                  3
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  24,
+                  9,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7121,7 +10561,48 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/local-conv-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "65cb4fd9bebef78ce0e6f75d159048b0eeba1a5177b82f9eefdcad7ca28b6c33",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  16,
+                  8,
+                  1031
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "W",
+                "shape": [
+                  24,
+                  16,
+                  3,
+                  2
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1032
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7224,7 +10705,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/local-reduce-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "67fa48f1666a3d93954919c19d7d4f385e4a4c07bf188aa1e29bd4611fa8e798",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "sum_dim3",
+                "shape": [
+                  1,
+                  24,
+                  8
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "sum_dim2_3",
+                "shape": [
+                  1,
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7327,7 +10846,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/local-reduce-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "a592d8c19465aa4b28fb81121e0f110d14ec7fe3c2d70263ce9aab21fc23f343",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "sum_dim3",
+                "shape": [
+                  1,
+                  24,
+                  8
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "sum_dim2_3",
+                "shape": [
+                  1,
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7430,7 +10987,45 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/local-reduce-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "69c71308e4ec0f5f2999c5aba1a5db0299d4ae28d1b3acd96573b59c781c69a1",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  1,
+                  24,
+                  8,
+                  1031
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "sum_dim3",
+                "shape": [
+                  1,
+                  24,
+                  8
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "sum_dim2_3",
+                "shape": [
+                  1,
+                  24
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7524,7 +11119,35 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/reduce-scatter-sum-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "c516811c0daa23fe65175b1f322666fa966ec3f80f6a4286e3fbc2f833a13db5",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1024,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  1024,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7617,7 +11240,35 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/reduce-scatter-sum-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "28131f0b8884b11defef641697496ad37be623aff37e4f5b84f7a9f5c46acec8",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1025,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  1025,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7710,7 +11361,35 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/reduce-scatter-sum-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "a5d72d27dd50fa314907c07efbab2e07aff815827a187d088235b3561782985d",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "rhs",
+                "shape": [
+                  16,
+                  1031,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  1,
+                  1031,
+                  1
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -7806,7 +11485,35 @@
               "mean_abs_error": 0.00048774290084838866
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/resnet18-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "1e45209f85ff7f0f3758569e68dd7ef53b3a6961c8fe76aa533783326eab202f",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "image",
+                "shape": [
+                  1,
+                  3,
+                  224,
+                  224
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "logits",
+                "shape": [
+                  1,
+                  1000
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "796464e01b3e94a7f8650cb63cdcd12d8a7af6a3a7c8fdf5abaaa046bc39b861",
@@ -8124,7 +11831,35 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/sigmoid-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "1c2698b76e3297c806dcf0a59f15fda9da0db9c6669f8cd40145f3a97efd462d",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  2,
+                  4,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  2,
+                  4,
+                  1024
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8217,7 +11952,35 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/sigmoid-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "3fd2c85bf4e838bc7bd332b3a303316d00686e6c66ac34ab7e411701fd9b84fc",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  2,
+                  4,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  2,
+                  4,
+                  1025
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8310,7 +12073,35 @@
               "max_abs_error": 0.0
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/sigmoid-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "6c7de73bd99255a8fbd539a06a209bfc5ed03a2801812ca2fe3bb71fa0ff05cf",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "X",
+                "shape": [
+                  2,
+                  4,
+                  1031
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "Y",
+                "shape": [
+                  2,
+                  4,
+                  1031
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8407,7 +12198,45 @@
               "mean_abs_error": 5.086333658255171e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "f7b0e05503ffc202eb92b5bb67334f94f7641886832be0b1596013b8137d4094",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  1024,
+                  256
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  256,
+                  512
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  1024,
+                  512
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8505,7 +12334,45 @@
               "mean_abs_error": 2.413289642078098e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-m4096-k1024-n4096-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "b006855889d46e968f30ad2560364bef8fb468986f364ce61d4c6bcc783aeda9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  4096,
+                  1024
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  1024,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  4096,
+                  4096
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8603,7 +12470,45 @@
               "mean_abs_error": 5.082593848110974e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "99f4af1989fadc975e0b19cb9027684bbb6d8c53fe194076fe7c248f2b376ef9",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  1025,
+                  257
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  257,
+                  513
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  1025,
+                  513
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8701,7 +12606,45 @@
               "mean_abs_error": 5.423794766486917e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/single-card-gemm-tail-1031-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "4c863a150f5072629c165f6873f1e8070cfda6c0a3ebb919c1f58e21094fbb38",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "A",
+                "shape": [
+                  1,
+                  1031,
+                  263
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "B",
+                "shape": [
+                  1,
+                  263,
+                  519
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "C",
+                "shape": [
+                  1,
+                  1031,
+                  519
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8799,7 +12742,35 @@
               "mean_abs_error": 8.109063946903916e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/vit-encoder-block-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "5a4b71f6c7cdcacb2c2b2ff5a2bb6cb6d9dcd081589fa049637d012a0cdf16f6",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1024,
+                  768
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1024,
+                  768
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -8913,7 +12884,35 @@
               "mean_abs_error": 8.158878703427509e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/vit-encoder-block-tail-1025-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "3f4ad9f33ea1856baf3372817c0126aff43895721013b4c70969f2593e5046ac",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "hidden",
+                "shape": [
+                  1,
+                  1025,
+                  768
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "hidden_out",
+                "shape": [
+                  1,
+                  1025,
+                  768
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -9028,7 +13027,59 @@
               "mean_abs_error": 2.837150680182298e-05
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-28-heads-4096-bfloat16/source-program/functions/forward.meta",
+            "source_meta_sha256": "d36bd80083357f1b478cb2f350fac618933abfb3693db81bdc2263180626a815",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "bfloat16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "bfloat16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -9131,7 +13182,59 @@
               "mean_abs_error": 3.5728729780462994e-06
             }
           ],
-          "device_healthy": true
+          "device_healthy": true,
+          "source_shape": {
+            "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/board/attention-prefill-28-heads-4096-float16/source-program/functions/forward.meta",
+            "source_meta_sha256": "1cb451d282429f0d9a28381116181904d87bd90dfbc48a6dc3503985a83aec98",
+            "inputs": [
+              {
+                "position": 0,
+                "name": "Q",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 1,
+                "name": "K",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              },
+              {
+                "position": 2,
+                "name": "V",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ],
+            "outputs": [
+              {
+                "position": 0,
+                "name": "O",
+                "shape": [
+                  1,
+                  28,
+                  4096,
+                  128
+                ],
+                "dtype": "float16"
+              }
+            ]
+          }
         }
       ],
       "compiler_sha256": "d159a580d631904b4f8b4e3f2ab97ac6631ba2304a1c5be0ac72c08edb1eff48",
@@ -9199,7 +13302,34 @@
         "wafer-compile: search-current-ir coverage=incomplete-no-candidate structural=3 actual=42 accepted=0 exact_rejected=42 capacity_refinements=42 unavailable_refinements=0 unsupported=0 indeterminate=0",
         "wafer-compile: compilation failed at the executable-compilation stage"
       ],
-      "failure_reason": "当前 search 8/42 未找到可执行候选；未构包、未上板，无 timing。"
+      "failure_reason": "当前 search 8/42 未找到可执行候选；未构包、未上板，无 timing。",
+      "source_shape": {
+        "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/prepared/llama-2-7b-single-layer-lm-1024-float16/source-program/functions/forward.meta",
+        "source_meta_sha256": "96dd9df1f7374940f06ab1d3c276d9bae42062ac81eb3fd3ff0c915995782ab2",
+        "inputs": [
+          {
+            "position": 0,
+            "name": "input_ids",
+            "shape": [
+              1,
+              1024
+            ],
+            "dtype": "int64"
+          }
+        ],
+        "outputs": [
+          {
+            "position": 0,
+            "name": "logits",
+            "shape": [
+              1,
+              1024,
+              32000
+            ],
+            "dtype": "float16"
+          }
+        ]
+      }
     },
     {
       "name": "llama-2-7b-single-layer-lm-tail-1025-float16",
@@ -9223,7 +13353,34 @@
         "wafer-compile: search-current-ir coverage=incomplete-no-candidate structural=3 actual=42 accepted=0 exact_rejected=29 capacity_refinements=29 unavailable_refinements=0 unsupported=13 indeterminate=0",
         "wafer-compile: compilation failed at the executable-compilation stage"
       ],
-      "failure_reason": "当前 search 8/42 未找到可执行候选；未构包、未上板，无 timing。"
+      "failure_reason": "当前 search 8/42 未找到可执行候选；未构包、未上板，无 timing。",
+      "source_shape": {
+        "source_meta": "/data/vibe_compiler-validation/board-kernel-timing-20260925/prepared/llama-2-7b-single-layer-lm-tail-1025-float16/source-program/functions/forward.meta",
+        "source_meta_sha256": "2519b5b58e75ff11d1c85beaf9fb647b4d36221d34190a8f2b59da24cba417df",
+        "inputs": [
+          {
+            "position": 0,
+            "name": "input_ids",
+            "shape": [
+              1,
+              1025
+            ],
+            "dtype": "int64"
+          }
+        ],
+        "outputs": [
+          {
+            "position": 0,
+            "name": "logits",
+            "shape": [
+              1,
+              1025,
+              32000
+            ],
+            "dtype": "float16"
+          }
+        ]
+      }
     }
   ],
   "limitations": [

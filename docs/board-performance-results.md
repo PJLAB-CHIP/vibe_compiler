@@ -31,7 +31,7 @@
 恢复版本的80项常规配置、84个执行步骤已全部完成本轮fresh source/reference/package/no-card及单次实卡。
 完整输出、guard、16 Tile timing、正常清理和运行窗口诊断全部通过，无timeout/fatal、retry或reset。
 四项双步decode逐步记录，第二步消费本轮第一步的actual KV；FP16/BF16沿用原case，三项division保留原F32合同。
-每项的kernel本体、同次event及结果见[完整计时表](data/board-performance/board-kernel-timing-20260925.md)，
+每项的实际输入/输出shape、kernel本体、同次event及结果见[完整计时表](data/board-performance/board-kernel-timing-20260925.md)，
 另提供[CSV](data/board-performance/board-kernel-timing-20260925.csv)和[详细证据](data/board-performance/board-kernel-timing-20260925.json)。
 这些都是单次timing capture，不能代替普通包性能中位数或据此签性能收益。
 
