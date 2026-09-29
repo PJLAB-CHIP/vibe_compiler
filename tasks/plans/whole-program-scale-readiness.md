@@ -14,7 +14,7 @@ Q53独立完整主机矩阵已取消。下述Q53资格是本候选保留的启�
 Pipeline position:
 - Upstream IR / input:
   Q60 verified source、Q58 ProgramData handoff、Q53 board-ready的single-entry static-ranked single-card
-  none/search pipeline和Q56 current ExecutablePackage。
+  none/search pipeline和符合15号合同的current ExecutablePackage。
 - Current stage responsibility:
   通过普通产品driver重放source verification、SPMD、structured lowering、physical-dataflow、DeviceExecutable、
   target-data conversion和package readback；测量whole-program work并消除其唯一owner中的重复工作。

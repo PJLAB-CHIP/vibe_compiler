@@ -115,3 +115,12 @@ AGENTS移出的约束分别由19号§3–7/§9（schema、interface、scope、an
 - 全仓Markdown本地路径与章节锚点检查通过；既有101段实验正文、218条经验记录及已归档/延后计划的保留检查通过。
 - `python3 -B utils/checks/check_source_organization.py`和`python3 -B utils/checks/check_ir_organization.py`通过。
 - 完整diff与`git diff --check`通过；本轮仅Markdown修改，不运行无关编译、no-card或设备测试。
+
+### Q56状态补核（2026-09-29）
+
+此前内容复审遗漏了Q56初始`board-ready`与后续统一板测之间的核对。按用户追问补查Git引入记录、
+current package/runtime、回归定义和2026-09-25板测原始JSON后，清理旧独立排程，Q57/Q61依赖改为15号现行合同。
+原实现、测试、历史正文和候选覆盖矩阵保留；未增加专项板测完成结论，Q57仍延后。
+具体依据见[Q56核对记录](executable-package-and-resident-runtime.md#2026-09-29状态核对)。
+检查通过：7份修改文档的122个本地链接/锚点、历史正文及候选范围/覆盖保留、原始JSON摘要和完整diff；
+`git diff --check`通过。本次仅修改文档，未运行编译、主机测试或板测。

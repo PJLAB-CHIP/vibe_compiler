@@ -13,7 +13,7 @@
 | [compiler-entry-productization.md](compiler-entry-productization.md) | 已完成Q59/Q60的compiler transaction与frontend产品入口实施记录；稳定合同只读01、02、15、18--20 |
 | [compiler-terminology-and-naming.md](compiler-terminology-and-naming.md) | 已完成的源码、IR和component命名整改记录；稳定命名规则只读18、19和AGENTS |
 | [interface-version-consolidation.md](interface-version-consolidation.md) | 已完成Q55的current-only接口版本收敛记录；稳定接口规则只读20及各格式owner |
-| [executable-package-and-resident-runtime.md](executable-package-and-resident-runtime.md) | 已完成Q56 package/runtime闭合及Q57早期设想；Q57 current计划只读`tasks/plans/resident-static-execution.md` |
+| [executable-package-and-resident-runtime.md](executable-package-and-resident-runtime.md) | Q56实现与资格历史、2026-09-29状态核对及Q57早期设想；Q57 current计划只读`tasks/plans/resident-static-execution.md` |
 | [program-data-and-whole-program-scale.md](program-data-and-whole-program-scale.md) | 已完成Q58 program-data ownership及Q61早期设想；Q61 current计划只读`tasks/plans/whole-program-scale-readiness.md` |
 | [physical-dataflow-synthesis-q52-plan-history.md](physical-dataflow-synthesis-q52-plan-history.md) | Q52第1--11项、旧路径删除账本和早期第12--20项展开；后续Q52/Q53验收见`physical-dataflow-host-readiness.md`，当前合同由06号设计拥有 |
 | [mlir-engineering-reference-snapshot.md](mlir-engineering-reference-snapshot.md) | 19号MLIR工程合同收敛前的代表实现对照、pinned commit和完整调研链接；不作为current规则 |

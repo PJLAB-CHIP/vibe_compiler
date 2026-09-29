@@ -3,7 +3,8 @@
 本文件于2026-08-21从`tasks/progress.md`拆出，保存已经闭合任务的完成边界和证据入口。它是历史索引，
 不参与current调度，不替代编号设计文档、当前实施计划或代码事实。后续完成的work item在退出current queue时追加到这里。
 
-Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前状态继续保留在`tasks/progress.md`。
+Q56原`board-ready`是2026-08的实施检查点；2026-09-29核对后，独立排程并入15号维护及统一板测。
+此调整不新增专项板测`done`结论，依据与资格边界见[核对记录](executable-package-and-resident-runtime.md#2026-09-29状态核对)。
 
 下列前四个current work item的实现边界和历史提交保持`done`，但其原测试使用了过多个位数shape，不能满足后来明确的
 真实规模覆盖合同。随后闭合的`foundational-coverage-matrix`补齐rank>=3、主要维度>=1024、整除/非整除及结构语义

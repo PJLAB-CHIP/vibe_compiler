@@ -42,6 +42,8 @@ LM/Tensor未完成整改保存在`wip/tensor-subset-materialization`，不作为
 
 
 通信实现独立排队项已收拢，提交与范围见[调度收拢记录](archive/mesh-communication-task-reconciliation.md)。
+Q56不再独立排程：package/runtime由15号维护，验证归16号及统一板测；旧`board-ready`的
+[核对记录](archive/executable-package-and-resident-runtime.md#2026-09-29状态核对)保留原始资格边界。
 
 ## 已满足的直接前置
 
@@ -52,7 +54,6 @@ LM/Tensor未完成整改保存在`wip/tensor-subset-materialization`，不作为
 | Q50.0 | `done` | policy-complete Instr共同消费的actual SPM/DDR/transport/target leaf | 06、09、12--14 |
 | Q51/Q50.S | `done` | structural choice/domain算法和attention semantic/decomposition donor；不作为current事实源 | 05、06；历史见completed index |
 | Q55 | `done` | current target/package/runtime interface | `tasks/archive/interface-version-consolidation.md` |
-| Q56 | `board-ready` | current package data与host/no-card合同；真实板端未执行 | `tasks/archive/executable-package-and-resident-runtime.md` |
 | Q60 | `done` | product frontend与portable StableHLO ingestion | `tasks/archive/compiler-entry-productization.md` |
 
 ## 延后候选（重新立项前必须重审）
@@ -62,7 +63,7 @@ LM/Tensor未完成整改保存在`wip/tensor-subset-materialization`，不作为
 
 | Tracking ID | Semantic key | 状态 | 调度判断 | 重新启动条件 | 完成边界 | Owner / plan |
 | --- | --- | --- | --- | --- | --- | --- |
-| Q57 | `resident-static-execution` | `later` | 低优先级；只在确有常驻调用者时考虑 | 有明确的resident API调用者、板端窗口和fresh输入；Q53已取消，须先重新授权并满足其host/no-card资格前置，Q56仍须满足原门槛 | 同一package的prepare/submit*/close；load-once、data H2D-once、稳定地址、typed completion和poison板端闭合 | 15--17；`tasks/plans/resident-static-execution.md` |
+| Q57 | `resident-static-execution` | `later` | 低优先级；只在确有常驻调用者时考虑 | 有明确的resident API调用者、板端窗口和fresh输入；Q53已取消，须先重新授权并满足其host/no-card资格前置；15号package/runtime须通过启动时的host/no-card检查并备齐板端case | 同一package的prepare/submit*/close；load-once、data H2D-once、稳定地址、typed completion和poison板端闭合 | 15--17；`tasks/plans/resident-static-execution.md` |
 | Q61 | `whole-program-scale-readiness` | `later` | 低优先级；属于规模资格而非核心编译能力 | 冻结完整程序输入、资源预算和验收owner；Q53已取消，须先重新授权并满足其host/no-card资格前置，同时保持Q58/Q60要求 | 普通产品driver处理完整小模型、data-heavy和graph-heavy程序；work、I/O、wall、RSS、disk和package bytes可对账 | 01--02、06、14--18；`tasks/plans/whole-program-scale-readiness.md` |
 | Q48 | `semantic-superoptimization` | `later` | 研究/可选方向；不属于FA/FD核心闭合 | 有明确的语义alternative消费者、收益假设和独立等价oracle；Q53已取消，须重新授权并达到原board-ready前置，再重审TensorProgram表示和Q52 handoff合同 | actual structured MLIR alternatives经query-local等价证明后各自进入Q52 current-IR pipeline；只有accepted owner发布 | 05--08、10--11、16--18；`tasks/plans/semantic-superoptimization.md` |
 | Q47 | `target-abi-retirement` | `later` | 仅剩板端资格性质；不作为新的compiler开发项 | current interface/package/transaction已闭合且取得真实板端资格窗口；先核对archive中的旧完成边界与current ABI | current package定向重签ordinary与Direct-DTE host/no-card/board纵向；不回放历史package | 11、14--17、20 |

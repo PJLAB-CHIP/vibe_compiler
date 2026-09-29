@@ -1,12 +1,13 @@
 # Program data package 与设备常驻执行实施计划
 
-> 归档说明：本文保留Q56完成记录和Q57早期设计。Q57 current计划只读
-> `tasks/plans/resident-static-execution.md`，package/runtime稳定合同只读15--17号设计。
+> 归档说明：本文保留Q56实现、当时资格记录和Q57早期设计；正文中的状态、缺口及施工顺序均为历史记录。
+> 旧Q56排程的处理见[2026-09-29状态核对](#2026-09-29状态核对)。Q57 current计划只读
+> [resident-static-execution](../plans/resident-static-execution.md)，package/runtime稳定合同只读15--17号设计。
 
 设计合同由`tasks/14-target-code-generation.md`、`tasks/15-launch-runtime-package.md`和
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 
-状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56已落下
+归档时状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56已落下
 `DeviceExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支；首轮review的六个闭环项
 （TargetTensor canonical identity、selected representation materialization、TileRow单一invocation allocation、program-data
 canonical layout verification、package root all-and-only closure、中立package support library）均已修复并配回归测试；
@@ -230,3 +231,27 @@ transport/profile状态和provider failure state。one-shot API只能成为同�
 - 把source checkpoint、NPY目录或compiler IR复制进执行package；
 - 只通过manifest fixture，未走fresh source→DeviceExecutable→target data→package→no-card；
 - 用IREE/PJRT/TileRT/vLLM类型名替代Wafer对象，却没有对应现有producer、consumer和verifier。
+
+## 2026-09-29状态核对
+
+Q56于北京时间2026-08-16由`1eba954e`引入（提交时间为2026-08-15 17:30:54 UTC），
+同日`af38114b`实现package-owned parameter/constant与one-shot kernel runtime。
+后者明确记录当时未跑真实板端、add case与runner已经准备，所以留下`board-ready`。
+2026-08-29的`8edccfcb`归档了本计划，但该状态仍留在progress，未随后续统一板测同步。
+
+功能仍由[15号](../15-launch-runtime-package.md)拥有：权重/常量按target representation进入
+`data/program-data.bin`，runtime为非空数据做一次allocation/H2D，各Tile按base+offset取参。
+这是现有执行链的一部分。当前实现、回归和后续证据对应如下：
+
+| 核对内容 | 当前落点与证据边界 |
+| --- | --- |
+| 非空/空program data及Tile地址 | [BoardRuntime](../../lib/Wafer/Runtime/Board/BoardRuntime.cpp)仍执行该路径；[BoardRuntimeTest](../../unittests/Runtime/Board/BoardRuntimeTest.cpp)中的`PackageOwnedTargetTensorUsesOneProgramDataAllocationAndBasePlusOffsetAddressing`及`EmptyProgramDataIssuesNoProgramDataProviderCall`分别断言调用次数、地址和空数据行为 |
+| package文件与数据范围 | [PackageManifestTest](../../unittests/Package/Manifest/PackageManifestTest.cpp)保留digest、offset/alignment/padding、trailing bytes及未声明成员拒绝测试 |
+| 实际模型执行 | [2026-09-25原始记录](../../docs/data/board-performance/board-kernel-timing-20260925.json)的80项通过配置、84个step均有no-card及板端数值/guard/健康结果；按`artifact_hashes[].package_sha256`中的`package/data/program-data.bin`摘要核对，50项为空数据，30项为非空数据，后者包括LLaMA block及single-layer LM |
+| 独立回归入口 | [Board注册](../../test/Board/CMakeLists.txt)仍保留`wafer-board-program-data-add`，调用[单op runner](../../test/Board/Cases/wafer_board_single_op_add_test.py)；该case继续有回归价值，不因任务号退出排程删除 |
+
+据此撤下旧Q56独立排队行，将能力维护和验证分别交回15/16号及统一板测。候选计划改为引用现行package合同，
+原资格要求保留，不再以Q56旧状态作前置。
+本次只核对源码、测试定义和历史记录，没有重新运行主机或设备测试，也不新增Q56专项`done`结论；
+调用次数的精确断言来自fake-provider测试定义，不能从模型板测推导。上述记录也不证明独立add case本轮执行过，
+或两项长LM编译失败已经修复。Q57的跨多次submit常驻执行仍是延后候选，未由one-shot结果验收。

@@ -1,8 +1,8 @@
 # 设备常驻静态执行实施计划
 
 状态：Q57 `resident-static-execution`为`later`（低优先级，重新立项前必须重审）。本文件是候选设计，不是当前实现授权。
-只有出现明确的resident API调用者、板端窗口和fresh输入后才重新核对本合同。Q56 package/runtime闭合历史见
-`tasks/archive/executable-package-and-resident-runtime.md`；稳定package、runtime和completion合同由
+只有出现明确的resident API调用者、板端窗口和fresh输入后才重新核对本合同。Package/runtime实施历史及旧Q56状态核对见
+[归档记录](../archive/executable-package-and-resident-runtime.md#2026-09-29状态核对)；稳定package、runtime和completion合同由
 15、16、17号设计文档拥有。
 
 Q53独立完整主机矩阵已取消。下述Q53资格是本候选保留的启动门槛，不是当前已满足的前置；
@@ -13,7 +13,8 @@ Q53独立完整主机矩阵已取消。下述Q53资格是本候选保留的启�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q56 board-ready的single-card ExecutablePackage、Q53 board-ready的DeviceExecutable行为及qualified TX provider。
+  符合15号且在启动时通过host/no-card、备齐板端case的single-card ExecutablePackage，
+  Q53 board-ready的DeviceExecutable行为及qualified TX provider。
 - Current stage responsibility:
   将同一memory plan和module set的lifetime从一次invoke延长为prepare/submit*/close；建立device generation、
   explicit completion和poison传播，但不改变compiler ABI、package data或Tile指令。
