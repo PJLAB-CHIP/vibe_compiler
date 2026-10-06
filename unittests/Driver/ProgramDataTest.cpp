@@ -887,7 +887,8 @@ TEST_F(ProgramDataTest, CandidateLiteralsBindThroughIsolatedRegions) {
       module.walk([&](mlir::memref::GetGlobalOp) { ++reads; });
       EXPECT_EQ(reads, 0u);
     }
-    const auto &range = handoff.getRanges().front();
+    auto ranges = handoff.getRanges();
+    const auto &range = ranges.front();
     std::vector<uint8_t> bytes(range.getRegionLength());
     ASSERT_FALSE(handoff.materializeRange(range, bytes));
     ASSERT_EQ(bytes.size(), values.size() * sizeof(float));
