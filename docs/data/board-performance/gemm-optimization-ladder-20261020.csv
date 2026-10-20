@@ -1,0 +1,8 @@
+name,label,display_group,layout,candidate_evaluation,kernel_median_ms,event_median_ms,kernel_speedup_vs_baseline,event_speedup_vs_baseline,ddr_read_mib,effective_tflops_kernel
+tensor-candidate-37,基础分块：4×4 空间划分，无跨 Tile 复用,main,tensor,37,3.537,4.508,1.0,1.0,256,9.71437330166808
+tensor-candidate-39,本地驻留复用：A 分片留在 SPM，16×1 空间划分,main,tensor,39,2.807,3.743,1.2600641254007838,1.2043815121560246,136,12.240733298183114
+tensor-candidate-38,非蛇形 NoC + 驻留复用：B 驻留/按列直发，A 按行转发,main,tensor,38,2.186,3.516,1.6180237877401646,1.2821387940841866,40,15.718087085086916
+ncx-winner,蛇形 NoC + NCx 直接搬运：当前 NCx 自动选择,main,ncx,32,1.794,3.066,1.971571906354515,1.4703196347031964,40,19.15258548940914
+tensor-candidate-35,仅调整分块：16×1 空间划分，无输入驻留/NoC,additional,tensor,35,3.887,4.843,0.9099562644713146,0.9308279991740657,192,8.839654841265757
+tensor-candidate-23,普通 NoC：B 按列直发，无驻留复用,additional,tensor,23,3.61,4.851,0.9797783933518006,0.9292929292929293,160,9.517933065927977
+tensor-winner,蛇形 NoC + A 驻留：Tensor 布局自动选择,additional,tensor,32,2.239,3.518,1.5797230906654758,1.281409891984082,16,15.346019815989282

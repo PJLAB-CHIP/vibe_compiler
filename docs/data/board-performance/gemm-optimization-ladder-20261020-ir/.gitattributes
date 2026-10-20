@@ -1,0 +1,4 @@
+# Preserve compiler-dump trailing blank lines so evidence hashes stay exact.
+*/instruction/*.mlir whitespace=-blank-at-eof
+*/tile-dataflow/*.mlir whitespace=-blank-at-eof
+*/target-llvm/*.ll whitespace=-blank-at-eof

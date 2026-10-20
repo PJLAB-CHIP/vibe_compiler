@@ -22,6 +22,10 @@
 文档内容复审已完成，归18号组织维护：AGENTS、20份编号设计及6份专题已核对职责、重复定义与过时说明，
 见[维护记录](archive/documentation-maintenance.md#内容复审)。当前没有自动接续的编译器或板端开发。
 
+2026-10-20用户指定的M=N4096/K1024 BF16 GEMM策略对照已完成，归`board-testing` / 16号；
+各档fresh构包、no-card及实卡证据见[本轮报告](../docs/board-performance/2026-10-20.md)。
+这次定向测量不重签历史全矩阵，也不恢复已取消的三轮模型调优。
+
 恢复版本的指定全矩阵timing复验已完成。完整长LM S1024/1025仍编译失败，未构包、未上板、无timing；
 LM/Tensor未完成整改保存在`wip/tensor-subset-materialization`，不作为可交付能力。
 独立搜索性能/deep收益验收、三轮模型调优及Q53完整主机矩阵重签已取消，均不自动恢复。

@@ -19,6 +19,7 @@
 
 | 日期 | 内容 |
 | --- | --- |
+| [2026-10-20](board-performance/2026-10-20.md) | M=N4096/K1024 BF16 GEMM七档策略对照：基础分块、驻留复用、非蛇形/蛇形NoC及NCx；21次实卡 |
 | [2026-09-25](board-performance/2026-09-25.md) | 全矩阵 kernel timing 与可选 profile 预算；profile metadata 紧凑写入修复 |
 | [2026-09-24](board-performance/2026-09-24.md) | Tensor 子集物化的首轮性能保护 |
 | [2026-09-23](board-performance/2026-09-23.md) | NCx case 注册与统一计时；Kernel 本体轻量计时；NCx 输入复用与直接 DMA 整改等 |
